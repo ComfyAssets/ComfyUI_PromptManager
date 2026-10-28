@@ -1,6 +1,9 @@
         class GalleryManager {
             // A Cancel on a thumbnail job another tab or System started (#249 System S5, review I1).
             static THUMBNAILS_STOPPED_FOLLOWING = 'Stopped following thumbnail generation started elsewhere; it keeps running in Activity';
+            // The page-only settings Page options edits and resets (#330 S13-13); System › Appearance owns the others.
+            static PAGE_OPTION_KEYS = Object.freeze(['checkThumbnailsAtStartup', 'lazyLoading', 'defaultLimit', 'gridColumns',
+                'infiniteScroll', 'debugMode', 'apiTimeout']);
 
             constructor() {
                 this.images = [];
@@ -14,10 +17,6 @@
                 this.thumbSize = 'md'; // sm, md, lg
                 this.infiniteScroll = false;
                 this.loadingMore = false;
-                // Duplicate scan: a server-side job the modal follows (see scanDuplicates)
-                this.dupScan = ScanProgress.initialState();
-                this.dupSource = null;
-                this.dupResults = null;
 
                 this.api = ApiClient.createApiClient();
                 // The page's lifetime ends when it starts to leave: WebKit fails a fetch a leaving page starts
@@ -45,7 +44,6 @@
                 this.applySettings(this.getSettings());
                 this.loadFolderTree();
                 this.loadImages();
-                this.resumeDuplicateScan();
 
                 // Check thumbnails at startup if enabled
                 this.checkThumbnailsAtStartup();
@@ -87,7 +85,7 @@
                 document.getElementById('limitSelector').addEventListener('change', (e) => this.changeLimit(parseInt(e.target.value)));
                 document.getElementById('gridViewBtn').addEventListener('click', () => this.setViewMode('grid'));
                 document.getElementById('listViewBtn').addEventListener('click', () => this.setViewMode('list'));
-                document.getElementById('settingsBtn').addEventListener('click', () => this.showSettings());
+                document.getElementById('pageOptionsBtn').addEventListener('click', () => this.showSettings());
                 document.getElementById('autoTagBtn').addEventListener('click', () => this.showAutoTagModal());
                 document.getElementById('addPromptBtn').addEventListener('click', () => this.showAddPromptModal());
                 document.getElementById('retryBtn').addEventListener('click', () => this.loadImages());
@@ -104,28 +102,12 @@
                 document.getElementById('closeSettingsBtn').addEventListener('click', () => this.hideSettings());
                 document.getElementById('saveSettingsBtn').addEventListener('click', () => this.saveSettings());
                 document.getElementById('resetSettingsBtn').addEventListener('click', () => this.resetSettings());
-                document.getElementById('generateThumbnailsBtn').addEventListener('click', () => this.generateThumbnails());
-                document.getElementById('clearCacheBtn').addEventListener('click', () => this.clearCache());
-                document.getElementById('rescanFolderBtn').addEventListener('click', () => this.rescanFolder());
-                document.getElementById('scanDuplicatesBtn').addEventListener('click', () => this.scanDuplicates());
-                document.getElementById('dupScanPill').addEventListener('click', () => this.openDuplicatesModal());
                 document.getElementById('galleryScroll').addEventListener('scroll', () => this.maybeLoadMore(), { passive: true });
-                
-                // Duplicates modal event listeners
-                document.getElementById('closeDuplicatesBtn').addEventListener('click', () => this.hideDuplicatesModal());
-                document.getElementById('selectAllBtn').addEventListener('click', () => this.selectAllDuplicates());
-                document.getElementById('removeDuplicatesBtn').addEventListener('click', () => this.removeDuplicates());
                 
                 // Close modal on outside click
                 document.getElementById('settingsModal').addEventListener('click', (e) => {
                     if (e.target.id === 'settingsModal') {
                         this.hideSettings();
-                    }
-                });
-                
-                document.getElementById('duplicatesModal').addEventListener('click', (e) => {
-                    if (e.target.id === 'duplicatesModal') {
-                        this.hideDuplicatesModal();
                     }
                 });
 
@@ -1729,36 +1711,16 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.body.style.overflow = '';
             }
 
+            /** Page options: only the page's own settings (System › Appearance owns the rest of `gallerySettings`). */
             loadSettingsFromStorage() {
                 const settings = this.getSettings();
-                
-                // Load checkbox settings
-                document.getElementById('lazyLoadingToggle').checked = settings.lazyLoading;
-                document.getElementById('autoLoadMetadataToggle').checked = settings.autoLoadMetadata;
-                document.getElementById('cacheMetadataToggle').checked = settings.cacheMetadata;
-                document.getElementById('showFilePathsToggle').checked = settings.showFilePaths;
-                document.getElementById('sidebarCollapsedByDefaultToggle').checked = settings.sidebarCollapsedByDefault;
-                document.getElementById('infiniteScrollToggle').checked = settings.infiniteScroll;
-                document.getElementById('showImageInfoToggle').checked = settings.showImageInfo;
-                document.getElementById('debugModeToggle').checked = settings.debugMode;
                 document.getElementById('checkThumbnailsAtStartup').checked = settings.checkThumbnailsAtStartup;
-                
-                // Load video settings
-                document.getElementById('videoAutoplayToggle').checked = settings.videoAutoplay;
-                document.getElementById('videoMuteToggle').checked = settings.videoMute;
-                document.getElementById('videoLoopToggle').checked = settings.videoLoop;
-                
-                // Load select settings
-                document.getElementById('imageQualitySelect').value = settings.imageQuality;
-                document.getElementById('defaultViewModeSelect').value = settings.defaultViewMode;
+                document.getElementById('lazyLoadingToggle').checked = settings.lazyLoading;
                 document.getElementById('defaultLimitSelect').value = settings.defaultLimit;
                 document.getElementById('gridColumnsSelect').value = settings.gridColumns;
-                
-                // Load input settings
+                document.getElementById('infiniteScrollToggle').checked = settings.infiniteScroll;
+                document.getElementById('debugModeToggle').checked = settings.debugMode;
                 document.getElementById('apiTimeoutInput').value = settings.apiTimeout;
-                
-                // Update thumbnail status
-                document.getElementById('thumbnailStatus').textContent = settings.thumbnailsGenerated ? 'Generated' : 'Not generated';
             }
 
             getSettings() {
@@ -1773,28 +1735,17 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             saveSettings() {
-                // The workspace shares this object (its layout and density, #249 System S3), so a Save starts from what is
+                // The workspace shares this object (System › Appearance, #249 System S3), so a Save starts from what is
                 // stored and keeps every key this dialog does not edit.
                 const settings = {
                     ...this.getSettings(),
+                    checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
                     lazyLoading: document.getElementById('lazyLoadingToggle').checked,
-                    imageQuality: document.getElementById('imageQualitySelect').value,
-                    defaultViewMode: document.getElementById('defaultViewModeSelect').value,
                     defaultLimit: parseInt(document.getElementById('defaultLimitSelect').value),
                     gridColumns: parseInt(document.getElementById('gridColumnsSelect').value),
-                    showImageInfo: document.getElementById('showImageInfoToggle').checked,
-                    autoLoadMetadata: document.getElementById('autoLoadMetadataToggle').checked,
-                    cacheMetadata: document.getElementById('cacheMetadataToggle').checked,
-                    showFilePaths: document.getElementById('showFilePathsToggle').checked,
-                    sidebarCollapsedByDefault: document.getElementById('sidebarCollapsedByDefaultToggle').checked,
                     infiniteScroll: document.getElementById('infiniteScrollToggle').checked,
                     debugMode: document.getElementById('debugModeToggle').checked,
                     apiTimeout: parseInt(document.getElementById('apiTimeoutInput').value),
-                    checkThumbnailsAtStartup: document.getElementById('checkThumbnailsAtStartup').checked,
-                    // Video settings
-                    videoAutoplay: document.getElementById('videoAutoplayToggle').checked,
-                    videoMute: document.getElementById('videoMuteToggle').checked,
-                    videoLoop: document.getElementById('videoLoopToggle').checked
                 };
 
                 try {
@@ -1810,12 +1761,22 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
+            /** Resets only the Page options keys to their defaults; every other stored key stays (#330 S13-13). */
             resetSettings() {
-                if (confirm('Reset all settings to defaults? This cannot be undone.')) {
-                    localStorage.removeItem('gallerySettings');
-                    this.loadSettingsFromStorage();
-                    this.showNotification('Settings reset to defaults', 'success');
+                if (!confirm('Reset these page options to their defaults?')) return;
+                const defaults = GallerySettings.DEFAULT_SETTINGS;
+                const settings = { ...this.getSettings() };
+                for (const key of GalleryManager.PAGE_OPTION_KEYS) settings[key] = defaults[key];
+                try {
+                    localStorage.setItem('gallerySettings', JSON.stringify(settings));
+                } catch (e) {
+                    console.error('Failed to reset page options:', e);
+                    this.showNotification('Failed to reset page options', 'error');
+                    return;
                 }
+                this.loadSettingsFromStorage();
+                this.applySettings(settings);
+                this.showNotification('Page options reset to defaults', 'success');
             }
 
             applySettings(settings) {
@@ -1847,73 +1808,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 gridContainer.style.removeProperty('grid-template-columns'); // undo a thumb-size override
                 gridContainer.style.setProperty('--gallery-columns', GallerySettings.gridColumnsStyle(columns));
                 gridContainer.classList.add('gallery-columns-custom');
-            }
-
-            async generateThumbnails() {
-                const btn = document.getElementById('generateThumbnailsBtn');
-                const status = document.getElementById('thumbnailStatus');
-                const progressContainer = document.getElementById('thumbnailProgress');
-                const progressBar = document.getElementById('progressBar');
-                const progressText = document.getElementById('progressText');
-                const progressPercent = document.getElementById('progressPercent');
-                const progressDetails = document.getElementById('progressDetails');
-                const progressETA = document.getElementById('progressETA');
-                
-                btn.disabled = true;
-                btn.textContent = 'Generating...';
-                status.textContent = 'Initializing thumbnail generation...';
-                progressContainer.classList.remove('hidden');
-                
-                // Initialize progress display
-                progressBar.style.width = '0%';
-                progressPercent.textContent = 'Starting...';
-                progressText.textContent = 'Connecting to server...';
-                progressDetails.textContent = 'Preparing to scan output directory...';
-                progressETA.textContent = '';
-                
-                try {
-                    // Start thumbnail generation with progress updates
-                    const result = await this.generateThumbnailsWithProgress({
-                        quality: document.getElementById('imageQualitySelect').value
-                    });
-                    
-                    // Update settings on success
-                    const settings = this.getSettings();
-                    settings.thumbnailsGenerated = true;
-                    localStorage.setItem('gallerySettings', JSON.stringify(settings));
-                    
-                    status.textContent = 'Generation completed';
-                    progressText.textContent = 'Completed!';
-                    progressDetails.textContent = `Generated ${result.count} new, skipped ${result.skipped || 0} existing (${result.total_images} total) in ${result.elapsed_time}s`;
-                    
-                    this.notifyThumbnailsDone(result);
-                    
-                    // Hide progress after a delay
-                    setTimeout(() => {
-                        progressContainer.classList.add('hidden');
-                    }, 3000);
-                    
-                } catch (error) {
-                    console.error('Thumbnail generation error:', error);
-                    console.error('Error details:', error.stack);
-                    status.textContent = 'Generation failed';
-                    progressText.textContent = 'Failed';
-                    progressDetails.textContent = error.message;
-                    progressBar.style.width = '0%';
-                    progressBar.classList.add('bg-pm-error');
-                    progressPercent.textContent = 'Error';
-
-                    this.showNotification('Failed to generate thumbnails: ' + error.message, 'error');
-
-                    // Hide progress after a delay
-                    setTimeout(() => {
-                        progressContainer.classList.add('hidden');
-                        progressBar.classList.remove('bg-pm-error');
-                    }, 5000);
-                } finally {
-                    btn.disabled = false;
-                    btn.textContent = 'Generate';
-                }
             }
 
             /** Ask the server to stop thumbnail job `jobId` at its next file boundary (#249 System S5). */
@@ -1962,564 +1856,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         eventSource.close();
                     },
                 };
-            }
-
-            async generateThumbnailsWithProgress(options) {
-                const progressBar = document.getElementById('progressBar');
-                const progressText = document.getElementById('progressText');
-                const progressPercent = document.getElementById('progressPercent');
-                const progressDetails = document.getElementById('progressDetails');
-                const progressETA = document.getElementById('progressETA');
-                const cancelBtn = document.getElementById('cancelThumbnailsBtn');
-                
-                return new Promise((resolve, reject) => {
-                    // Show cancel button
-                    cancelBtn.classList.remove('hidden');
-                    
-                    
-                    // Set up Server-Sent Events
-                    // The progress route is POST (it generates files), so read it with SseStream like the autotag streams
-                    const eventSource = SseStream.connect(`/prompt_manager/images/generate-thumbnails/progress?quality=${encodeURIComponent(options.quality)}`, { method: 'POST' });
-                    
-                    // Log connection
-                    
-                    let cancelled = false;
-                    let resultData = null;
-                    const canceller = this.thumbnailCanceller(eventSource);
-                    eventSource.addEventListener('job', event => canceller.identify(event.data));
-                    
-                    // Handle cancellation. The work is an Activity job that outlives this stream, so closing it no
-                    // longer stops anything: ask the server to stop this stream's job by its id (review I1).
-                    const cancelHandler = () => {
-                        if (cancelled) return;
-                        cancelled = true;
-                        cancelBtn.removeEventListener('click', cancelHandler);
-                        cancelBtn.classList.add('hidden');
-                        const following = canceller.following;
-                        canceller.request();
-                        reject(new Error(following ? GalleryManager.THUMBNAILS_STOPPED_FOLLOWING : 'Thumbnail generation cancelled by user'));
-                    };
-                    cancelBtn.addEventListener('click', cancelHandler);
-                    
-                    // Handle scanning/status events
-                    eventSource.addEventListener('status', (event) => {
-                        if (cancelled) return;
-                        const data = JSON.parse(event.data);
-                        progressText.textContent = data.message || 'Processing...';
-                        if (data.phase === 'scanning') {
-                            progressDetails.textContent = 'Scanning output folder for images and videos...';
-                            progressBar.style.width = '0%';
-                            progressPercent.textContent = 'Scanning...';
-                        } else {
-                            progressDetails.textContent = 'Preparing thumbnail generation...';
-                        }
-                        
-                        // Log status updates
-                        if (this.getSettings().debugMode) {
-                        }
-                    });
-                    
-                    // Handle start event
-                    eventSource.addEventListener('start', (event) => {
-                        if (cancelled) return;
-                        const data = JSON.parse(event.data);
-                        // Show detailed file type breakdown if available
-                        const fileBreakdown = (data.image_count !== undefined && data.video_count !== undefined) 
-                            ? ` (${data.image_count} images, ${data.video_count} videos)`
-                            : '';
-                        progressText.textContent = `Starting to process ${data.total_images} media files${fileBreakdown}...`;
-                        progressDetails.textContent = data.message || `Found ${data.total_images} images and videos to process`;
-                        progressBar.style.width = '0%';
-                        progressPercent.textContent = '0%';
-                        progressETA.textContent = 'Calculating...';
-                        
-                        // Log start event
-                        if (this.getSettings().debugMode) {
-                        }
-                    });
-                    
-                    // Handle progress updates
-                    eventSource.addEventListener('progress', (event) => {
-                        if (cancelled) return;
-                        const data = JSON.parse(event.data);
-                        
-                        // Update progress bar
-                        progressBar.style.width = `${data.percentage}%`;
-                        progressPercent.textContent = `${data.percentage}%`;
-                        
-                        // Update text with current file being processed and action
-                        const fileInfo = data.current_file ? ` - ${data.current_file}` : '';
-                        const actionText = data.action === 'skipped' ? ' [Skipping]' : data.action === 'generating' ? ' [Generating]' : '';
-                        progressText.textContent = `Processing ${data.file_type || 'file'}... (${data.processed}/${data.total_images})${fileInfo}${actionText}`;
-                        
-                        // More detailed progress information
-                        const elapsedText = data.elapsed ? ` | Time: ${Math.floor(data.elapsed)}s` : '';
-                        const failedText = data.error_count ? `, Failed: ${data.error_count}` : '';
-                        progressDetails.textContent = `Generated: ${data.generated}, Skipped: ${data.skipped}${failedText} | Rate: ${data.rate} img/s${elapsedText}`;
-                        
-                        // Update ETA
-                        if (data.eta > 0 && data.eta < 3600) {
-                            const etaText = data.eta > 60 ? `${Math.floor(data.eta / 60)}m ${Math.floor(data.eta % 60)}s` : `${Math.floor(data.eta)}s`;
-                            progressETA.textContent = `ETA: ${etaText}`;
-                        } else {
-                            progressETA.textContent = '';
-                        }
-                        
-                        // Log to console for debugging if debug mode is enabled
-                        if (this.getSettings().debugMode) {
-                        }
-                    });
-                    
-                    // Handle completion
-                    eventSource.addEventListener('complete', (event) => {
-                        if (cancelled) { canceller.ended(); return; }
-                        resultData = JSON.parse(event.data);
-                        
-                        // Update final progress
-                        progressBar.style.width = '100%';
-                        progressPercent.textContent = '100%';
-                        progressText.textContent = 'Completed!';
-                        
-                        // Show detailed completion message
-                        const errorCount = resultData.error_count || (resultData.errors ? resultData.errors.length : 0);
-                        const errors = errorCount > 0 ? ` (${errorCount} errors)` : '';
-                        const rateText = resultData.processing_rate ? ` at ${resultData.processing_rate} img/s` : '';
-                        progressDetails.textContent = `Generated: ${resultData.count} new, Skipped: ${resultData.skipped} existing | Total: ${resultData.total_images} files | Time: ${resultData.elapsed_time}s${rateText}${errors}`;
-                        
-                        // Show first error if any occurred
-                        if (resultData.errors && resultData.errors.length > 0 && this.getSettings().debugMode) {
-                            console.error('First thumbnail error:', resultData.errors[0]);
-                        }
-                        progressETA.textContent = 'Done';
-                        
-                        // Log completion details
-                        if (this.getSettings().debugMode) {
-                            if (resultData.errors && resultData.errors.length > 0) {
-                                console.warn('Thumbnail generation errors:', resultData.errors);
-                            }
-                        }
-                        
-                        // Clean up
-                        eventSource.close();
-                        cancelBtn.removeEventListener('click', cancelHandler);
-                        cancelBtn.classList.add('hidden');
-                        
-                        resolve(resultData);
-                    });
-                    
-                    // Per-file failures: count them, keep listening
-                    eventSource.addEventListener('file_error', (event) => {
-                        if (cancelled) return;
-                        try {
-                            const data = JSON.parse(event.data);
-                            console.warn('Thumbnail failed:', data.current_file || data.file || '', data.error || '');
-                        } catch (e) {
-                            console.warn('Thumbnail failed (unparseable event)');
-                        }
-                    });
-
-                    // Handle errors
-                    eventSource.addEventListener('error', (event) => {
-                        if (cancelled) { canceller.ended(); return; }
-                        const data = JSON.parse(event.data);
-                        
-                        // Clean up
-                        eventSource.close();
-                        cancelBtn.removeEventListener('click', cancelHandler);
-                        cancelBtn.classList.add('hidden');
-                        
-                        reject(new Error(data.error || 'Thumbnail generation failed'));
-                    });
-                    
-                    // Handle EventSource errors
-                    eventSource.onerror = (error) => {
-                        if (cancelled) { canceller.ended(); return; }
-                        console.error('EventSource error:', error);
-                        console.error('EventSource readyState:', eventSource.readyState);
-                        
-                        // Check if connection is closing normally
-                        if (eventSource.readyState === eventSource.CLOSED) {
-                        } else {
-                            console.error('EventSource connection failed');
-                        }
-                        
-                        // Clean up
-                        eventSource.close();
-                        cancelBtn.removeEventListener('click', cancelHandler);
-                        cancelBtn.classList.add('hidden');
-                        
-                        // Only reject if we don't have result data
-                        if (!resultData) {
-                            reject(new Error('Connection to server lost during thumbnail generation'));
-                        }
-                    };
-
-                    // Stream ended without a complete/error frame (close() does not trigger this)
-                    eventSource.onclose = () => {
-                        if (cancelled) canceller.ended();
-                        if (cancelled || resultData) return;
-                        cancelBtn.removeEventListener('click', cancelHandler);
-                        cancelBtn.classList.add('hidden');
-                        reject(new Error('Connection to server closed before thumbnail generation finished'));
-                    };
-                });
-            }
-
-
-            /**
-             * Clear cache (#222): the server's thumbnails by their own request, then only the browser entries Prompt
-             * Manager owns as a cache (cache-ownership.js; preferences and other tools' storage stay). Nothing is
-             * claimed that did not happen: a refused or lost server clear changes nothing here, and the toast says what
-             * the browser part removed, or that nothing of Prompt Manager's is cached, or that storage was refused.
-             */
-            async clearCache() {
-                if (!confirm('Clear PromptManager cache and thumbnails? This will NOT affect your original images.')) return;
-                let response;
-                try {
-                    response = await ApiClient.fetchUrl('/prompt_manager/images/clear-thumbnails', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' }
-                    });
-                } catch (error) {
-                    console.warn('Could not clear server thumbnails:', error);
-                    this.showNotification('Thumbnails were not cleared: the server could not be reached.', 'error');
-                    return;
-                }
-                if (!response.ok) {
-                    // Refused (a running job holds the thumbnails): say why and claim nothing.
-                    const data = await response.json().catch(() => ({}));
-                    this.showNotification(`Thumbnails were not cleared: ${data.error || `HTTP ${response.status}`}`, 'error');
-                    return;
-                }
-                // Read through a getter: a browser that refuses storage throws on `localStorage` itself.
-                const browser = await window.CacheOwnership.clearOwned({ storage: () => localStorage,
-                    cacheStorage: 'caches' in window ? window.caches : null });
-                try {
-                    const settings = this.getSettings();
-                    settings.thumbnailsGenerated = false;
-                    localStorage.setItem('gallerySettings', JSON.stringify(settings));
-                } catch (error) {
-                    console.warn('Could not record the cleared thumbnails:', error);
-                }
-                document.getElementById('thumbnailStatus').textContent = 'Not generated';
-                this.showNotification(`Thumbnails cleared; original images untouched. ${window.CacheOwnership.clearMessage(browser)}`,
-                    browser.partial ? 'warning' : 'success');
-            }
-
-            async rescanFolder() {
-                const btn = document.getElementById('rescanFolderBtn');
-                btn.disabled = true;
-                btn.textContent = 'Scanning...';
-                
-                try {
-                    // The listing is cached on the server; ask it to rewalk the folders first
-                    const result = await this.api.post('/prompt_manager/gallery/rescan', {});
-                    this.hideSettings();
-                    await Promise.all([this.loadFolderTree(), this.loadImages(1)]);
-                    const where = result.roots === 1 ? 'the output folder' : `${result.roots} folders`;
-                    this.showNotification(`Rescanned ${where}: ${result.total} files`, 'success');
-                } catch (error) {
-                    console.error('Rescan error:', error);
-                    this.showNotification('Failed to rescan folder', 'error');
-                } finally {
-                    btn.disabled = false;
-                    btn.textContent = 'Rescan';
-                }
-            }
-
-            // ── Duplicate scan ──────────────────────────────────────────────
-            // The scan runs on the server (POST /scan_duplicates/stream starts or attaches).
-            // Closing the modal only hides it: a pill shows progress and reopens it, and a
-            // reload re-attaches to a scan that is still running.
-            scanDuplicates() {
-                if (this.dupScan.status === ScanProgress.RUNNING) {
-                    this.openDuplicatesModal();
-                    return;
-                }
-                this.dupResults = null;
-                this.dupScan = ScanProgress.reduceScanEvent(ScanProgress.initialState(), {
-                    type: 'progress', progress: 0, status: 'Starting...', processed: 0, found: 0,
-                });
-                this.setDuplicateButton(true);
-                this.openDuplicatesModal();
-                this.attachDuplicateStream();
-            }
-
-            attachDuplicateStream() {
-                if (this.dupSource) this.dupSource.close();
-                const source = SseStream.connect('/prompt_manager/scan_duplicates/stream', { method: 'POST', body: '{}' });
-                this.dupSource = source;
-                source.onmessage = (e) => {
-                    let data;
-                    try {
-                        data = JSON.parse(e.data);
-                    } catch (_) {
-                        return;
-                    }
-                    this.applyDuplicateEvent(data);
-                };
-                source.onerror = () => {
-                    if (this.dupSource !== source || this.dupScan.status !== ScanProgress.RUNNING) return;
-                    setTimeout(() => this.resumeDuplicateScan(), 2000);
-                };
-                source.onclose = () => {
-                    if (this.dupSource === source && this.dupScan.status === ScanProgress.RUNNING) this.resumeDuplicateScan();
-                };
-            }
-
-            async resumeDuplicateScan() {
-                let status;
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/scan_duplicates/status');
-                    if (!response.ok) return;
-                    status = await response.json();
-                } catch (_) {
-                    return;
-                }
-                const state = ScanProgress.fromStatus(status);
-                if (state.status !== ScanProgress.RUNNING) {
-                    if (this.dupScan.status === ScanProgress.RUNNING) {
-                        // The scan we were following ended while we were away
-                        const last = status.last_event;
-                        const terminal = last && (last.type === 'complete' || last.type === 'error');
-                        this.applyDuplicateEvent(terminal ? last : { type: 'error', message: 'the server no longer reports a running scan' });
-                    }
-                    return;
-                }
-                this.dupScan = state;
-                this.setDuplicateButton(true);
-                this.renderDuplicateProgress();
-                if (document.getElementById('duplicatesModal').classList.contains('hidden')) this.showDuplicatePill();
-                this.attachDuplicateStream();
-            }
-
-            applyDuplicateEvent(data) {
-                const next = ScanProgress.reduceScanEvent(this.dupScan, data);
-                if (next === this.dupScan) return;
-                this.dupScan = next;
-                this.renderDuplicateProgress();
-                if (next.status === ScanProgress.DONE) {
-                    this.dupResults = Array.isArray(data.duplicates) ? data.duplicates : [];
-                    this.setDuplicateButton(false);
-                    const modalOpen = !document.getElementById('duplicatesModal').classList.contains('hidden');
-                    if (modalOpen) {
-                        this.hideDuplicatePill();
-                        this.displayDuplicates(this.dupResults);
-                    } else {
-                        this.showDuplicatePill(`Duplicate scan done: ${this.dupResults.length} groups · click to view`);
-                    }
-                    this.showNotification(`Found ${this.dupResults.length} duplicate image groups`, 'info');
-                } else if (next.status === ScanProgress.FAILED) {
-                    this.setDuplicateButton(false);
-                    this.hideDuplicatePill();
-                    this.hideDuplicatesModal();
-                    this.showNotification(`Duplicate scan failed: ${next.message}`, 'error');
-                }
-            }
-
-            renderDuplicateProgress() {
-                const state = this.dupScan;
-                const bar = document.getElementById('dupProgressBar');
-                const text = document.getElementById('dupProgressText');
-                if (bar) bar.style.width = `${state.progress}%`;
-                if (text) text.textContent = state.status === ScanProgress.RUNNING ? `${state.progress}% · ${state.processed} files hashed` : state.statusText;
-                const pill = document.getElementById('dupScanPillText');
-                if (pill && state.status === ScanProgress.RUNNING) pill.textContent = `Finding duplicates ${state.progress}% · ${state.processed} files`;
-            }
-
-            setDuplicateButton(running) {
-                const btn = document.getElementById('scanDuplicatesBtn');
-                if (!btn) return;
-                btn.disabled = running;
-                btn.textContent = running ? 'Scanning...' : 'Scan';
-            }
-
-            showDuplicatePill(label) {
-                const pill = document.getElementById('dupScanPill');
-                if (label) document.getElementById('dupScanPillText').textContent = label;
-                pill.classList.remove('hidden');
-            }
-
-            hideDuplicatePill() {
-                document.getElementById('dupScanPill').classList.add('hidden');
-            }
-
-            /** Show the modal in whatever state the scan is in: progress, or results. */
-            openDuplicatesModal() {
-                this.hideDuplicatePill();
-                document.getElementById('duplicatesModal').classList.remove('hidden');
-                document.getElementById('duplicatesModal').classList.add('flex');
-                document.body.style.overflow = 'hidden';
-                if (this.dupScan.status === ScanProgress.DONE && this.dupResults) {
-                    this.displayDuplicates(this.dupResults);
-                    return;
-                }
-                document.getElementById('duplicatesScanStatus').classList.remove('hidden');
-                document.getElementById('duplicatesContent').classList.add('hidden');
-                document.getElementById('duplicatesFooter').classList.add('hidden');
-                this.renderDuplicateProgress();
-            }
-
-            showDuplicatesModal() {
-                this.openDuplicatesModal();
-            }
-
-            hideDuplicatesModal() {
-                document.getElementById('duplicatesModal').classList.add('hidden');
-                document.getElementById('duplicatesModal').classList.remove('flex');
-                document.body.style.overflow = '';
-                // Minimize rather than abandon: the scan keeps running on the server
-                if (this.dupScan.status === ScanProgress.RUNNING) this.showDuplicatePill();
-            }
-
-            displayDuplicates(duplicates) {
-                const scanStatus = document.getElementById('duplicatesScanStatus');
-                const content = document.getElementById('duplicatesContent');
-                const footer = document.getElementById('duplicatesFooter');
-                const list = document.getElementById('duplicatesList');
-                const count = document.getElementById('duplicatesCount');
-                
-                scanStatus.classList.add('hidden');
-                
-                if (duplicates.length === 0) {
-                    list.innerHTML = '<div class="text-center py-4 text-pm-secondary">No duplicate images found! 🎉</div>';
-                    content.classList.remove('hidden');
-                    return;
-                }
-                
-                count.textContent = duplicates.length;
-                list.innerHTML = '';
-                
-                duplicates.forEach((group, groupIndex) => {
-                    const groupEl = document.createElement('div');
-                    groupEl.className = 'bg-pm-surface rounded-pm-md p-4 border border-pm';
-                    
-                    groupEl.innerHTML = `
-                        <div class="mb-3 text-sm font-medium text-pm-secondary">
-                            Duplicate Group ${groupIndex + 1} (${group.images.length} identical ${escapeHtml(group.images[0].media_type)}s)
-                        </div>
-                        <div class="mb-3 p-3 bg-pm-primary rounded text-sm text-pm-secondary">
-                            <strong>Content Hash:</strong> ${escapeHtml(String(group.hash || '').substring(0, 16))}...
-                        </div>
-                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                            ${group.images.map((image, imageIndex) => `
-                                <div class="flex items-start p-3 bg-pm-primary rounded border border-pm ${imageIndex === 0 ? 'border-pm-success' : ''}">
-                                    <div class="flex-shrink-0 mr-3">
-                                        ${image.media_type === 'video' ? `
-                                            <div class="w-20 h-20 bg-pm-input rounded flex items-center justify-center relative">
-                                                ${image.thumbnail_url ? `
-                                                    <img src="${escapeHtml(ApiClient.resolveUrl(image.thumbnail_url))}" alt="Video thumbnail" class="w-full h-full object-cover rounded">
-                                                ` : `
-                                                    <svg class="w-8 h-8 text-pm-secondary" fill="currentColor" viewBox="0 0 20 20">
-                                                        <path d="M2 6a2 2 0 012-2h6l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/>
-                                                    </svg>
-                                                `}
-                                                <div class="absolute bottom-0 right-0 bg-black/75 text-pm text-xs px-1 rounded">VIDEO</div>
-                                            </div>
-                                        ` : `
-                                            <img src="${escapeHtml(ApiClient.resolveUrl(image.thumbnail_url || image.url))}" alt="${escapeHtml(image.filename)}"
-                                                 class="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80"
-                                                 onclick="this.parentElement.parentElement.querySelector('.image-preview').click()">
-                                        `}
-                                    </div>
-                                    <div class="flex-1 min-w-0">
-                                        <div class="text-sm text-pm-secondary mb-2">
-                                            <div class="font-medium truncate" title="${escapeHtml(image.filename)}">${escapeHtml(image.filename)}</div>
-                                            <div class="text-xs text-pm-secondary mt-1">
-                                                <span class="font-medium">Size:</span> ${this.formatFileSize(image.size)} •
-                                                <span class="font-medium">Modified:</span> ${new Date(image.modified_time * 1000).toLocaleDateString()}
-                                            </div>
-                                            <div class="text-xs text-pm-muted mt-1 truncate" title="${escapeHtml(image.relative_path)}">
-                                                ${escapeHtml(image.relative_path)}
-                                            </div>
-                                        </div>
-                                        <div class="flex items-center justify-between">
-                                            <div class="flex items-center space-x-2">
-                                                <button class="image-preview text-xs bg-pm-accent hover:bg-pm-accent-hover text-pm px-2 py-1 rounded"
-                                                        data-action="open-url" data-url="${escapeHtml(ApiClient.resolveUrl(image.url))}">
-                                                    View Full
-                                                </button>
-                                            </div>
-                                            <div class="flex items-center">
-                                                ${imageIndex === 0 ? `
-                                                    <span class="px-3 py-1 bg-pm-success text-pm text-xs rounded">KEEP (Oldest)</span>
-                                                ` : `
-                                                    <label class="flex items-center">
-                                                        <input type="checkbox" class="duplicate-checkbox" data-group="${groupIndex}" data-image-path="${escapeHtml(image.path)}"
-                                                               class="w-4 h-4 text-pm-error bg-pm-input border-pm rounded focus:ring-pm-error">
-                                                        <span class="ml-2 text-sm text-pm-error">Delete</span>
-                                                    </label>
-                                                `}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    `;
-                    
-                    list.appendChild(groupEl);
-                });
-                
-                content.classList.remove('hidden');
-                footer.classList.remove('hidden');
-            }
-
-            selectAllDuplicates() {
-                const checkboxes = document.querySelectorAll('.duplicate-checkbox');
-                const selectBtn = document.getElementById('selectAllBtn');
-                
-                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                
-                checkboxes.forEach(cb => {
-                    cb.checked = !allChecked;
-                });
-                
-                selectBtn.textContent = allChecked ? 'Select All to Delete' : 'Deselect All';
-            }
-
-            async removeDuplicates() {
-                const checkboxes = document.querySelectorAll('.duplicate-checkbox:checked');
-                
-                if (checkboxes.length === 0) {
-                    this.showNotification('No duplicate images selected for removal', 'warning');
-                    return;
-                }
-                
-                const confirmation = confirm(`Are you sure you want to permanently delete ${checkboxes.length} duplicate image files? This action cannot be undone!`);
-                if (!confirmation) return;
-                
-                const btn = document.getElementById('removeDuplicatesBtn');
-                btn.disabled = true;
-                btn.textContent = 'Deleting...';
-                
-                try {
-                    const imagePaths = Array.from(checkboxes).map(cb => cb.dataset.imagePath);
-                    
-                    const response = await ApiClient.fetchUrl('/prompt_manager/delete_duplicate_images', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ image_paths: imagePaths })
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.showNotification(`Successfully deleted ${imagePaths.length} duplicate image files`, 'success');
-                        this.hideDuplicatesModal();
-                        this.loadImages(); // Refresh the gallery
-                    } else {
-                        throw new Error(data.error || 'Failed to delete duplicate images');
-                    }
-                } catch (error) {
-                    console.error('Remove duplicates error:', error);
-                    this.showNotification('Failed to delete duplicate images', 'error');
-                } finally {
-                    btn.disabled = false;
-                    btn.textContent = 'Remove Selected';
-                }
             }
 
             formatFileSize(bytes) {
@@ -2621,7 +1957,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                                 ${missingCount} images need new or updated thumbnails (${imageCount} total images). Generate them for faster loading?
                             </p>
                             <p class="text-sm text-pm-muted mb-3">
-                                Only missing or outdated thumbnails will be generated. Existing current thumbnails will be kept. You can change startup checks in Gallery Settings.
+                                Only missing or outdated thumbnails will be generated. Existing current thumbnails will be kept. You can change startup checks in Page options.
                             </p>
                             <div class="flex space-x-3">
                                 <button id="thumbnailPromptNo" class="flex-1 px-4 py-2 bg-pm-input hover:bg-pm-hover text-pm rounded-pm-md transition-colors">

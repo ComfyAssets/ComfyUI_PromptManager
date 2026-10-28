@@ -8,8 +8,6 @@
     <script src="js/html-escape.js"></script>
     <script src="js/image-helpers.js"></script>
     <script src="js/gallery-settings.js"></script>
-    <script src="js/cache-ownership.js"></script>
-    <script src="js/scan-progress.js"></script>
     <script src="js/api-client.js"></script>
     <script src="js/png-metadata.js"></script>
     <script src="js/list-state.js"></script>
@@ -76,9 +74,14 @@
                                 class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             List View
                         </button>
-                        <button id="settingsBtn"
-                                class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="settingsBtn" href="workspace#/system/appearance" target="_blank" rel="noopener"
+                           title="Opens System › Appearance in a new tab"
+                           class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Settings
+                        </a>
+                        <button id="pageOptionsBtn" type="button"
+                                class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                            Page options
                         </button>
                         <button id="autoTagBtn"
                                 class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
@@ -176,7 +179,7 @@
         <div class="bg-pm-surface rounded-pm-md max-w-2xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm">
             <div class="p-3 border-b border-pm">
                 <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-pm">Gallery Settings</h3>
+                    <h3 class="text-sm font-semibold text-pm">Page options</h3>
                     <button id="closeSettingsBtn" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
                         <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
@@ -190,25 +193,9 @@
                 <div class="space-y-3">
                     <h4 class="text-sm font-semibold text-pm">Performance Settings</h4>
 
-                    <!-- Thumbnail Generation -->
-                    <div class="bg-pm-input rounded-pm-sm p-3">
-                        <div class="flex items-center justify-between mb-2">
-                            <div>
-                                <h5 class="text-pm text-xs font-medium">Generate Thumbnails</h5>
-                                <p class="text-xs text-pm-secondary">Create optimized thumbnails for faster loading</p>
-                            </div>
-                            <button id="generateThumbnailsBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs rounded-pm-sm transition-colors">
-                                Generate
-                            </button>
-                        </div>
-                        <div class="text-xs text-pm-muted mb-2">
-                            Status: <span id="thumbnailStatus">Not generated</span>
-                            <div class="text-xs text-pm-muted mt-1">
-                                Thumbnails speed up gallery loading. Original images always used for viewing and metadata.
-                            </div>
-                        </div>
+                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
                         <!-- Check thumbnails at startup -->
-                        <div class="flex items-center justify-between py-2 border-t border-pm">
+                        <div class="flex items-center justify-between">
                             <div>
                                 <label class="text-xs text-pm-secondary">Check thumbnails at startup</label>
                                 <p class="text-xs text-pm-muted">Prompt to generate thumbnails if missing when opening gallery</p>
@@ -218,43 +205,9 @@
                                 <div class="w-11 h-6 bg-pm-input peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pm-accent rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-pm after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pm-accent"></div>
                             </label>
                         </div>
-                        <!-- Progress bar (hidden by default) -->
-                        <div id="thumbnailProgress" class="hidden">
-                            <div class="flex items-center justify-between text-xs text-pm-secondary mb-1">
-                                <span id="progressText">Processing...</span>
-                                <div class="flex items-center gap-2">
-                                    <span id="progressPercent">0%</span>
-                                    <button id="cancelThumbnailsBtn" class="text-pm-error hover:text-pm-error text-xs px-2 py-1 bg-pm-error-tint rounded-pm-sm hidden">
-                                        Cancel
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="w-full bg-pm-input rounded-full h-2">
-                                <div id="progressBar" class="bg-pm-accent h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                            </div>
-                            <div class="flex items-center justify-between text-xs text-pm-muted mt-1">
-                                <span id="progressDetails">Scanning images...</span>
-                                <span id="progressETA" class="text-pm-muted"></span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Image Loading -->
-                    <div class="bg-pm-input rounded-pm-sm p-3">
-                        <h5 class="text-pm text-xs font-medium mb-2">Image Loading</h5>
-                        <div class="space-y-2">
-                            <div class="flex items-center justify-between">
-                                <label class="text-xs text-pm-secondary">Lazy Loading</label>
-                                <input type="checkbox" id="lazyLoadingToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                            </div>
-                            <div class="flex items-center justify-between">
-                                <label class="text-xs text-pm-secondary">Image Quality</label>
-                                <select id="imageQualitySelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
-                                    <option value="high">High (Original)</option>
-                                    <option value="medium" selected>Medium (Optimized)</option>
-                                    <option value="low">Low (Fast)</option>
-                                </select>
-                            </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs text-pm-secondary">Lazy Loading</label>
+                            <input type="checkbox" id="lazyLoadingToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
                         </div>
                     </div>
                 </div>
@@ -264,13 +217,6 @@
                     <h4 class="text-sm font-semibold text-pm">Display Settings</h4>
 
                     <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Default View Mode</label>
-                            <select id="defaultViewModeSelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
-                                <option value="grid" selected>Grid View</option>
-                                <option value="list">List View</option>
-                            </select>
-                        </div>
                         <div class="flex items-center justify-between">
                             <label class="text-xs text-pm-secondary">Items per Page</label>
                             <select id="defaultLimitSelect" class="px-2 py-1 bg-pm-input border border-pm rounded-pm-sm text-pm text-xs">
@@ -290,91 +236,11 @@
                             </select>
                         </div>
                         <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Show Media Info</label>
-                            <input type="checkbox" id="showImageInfoToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Collapse Sidebar by Default</label>
-                            <input type="checkbox" id="sidebarCollapsedByDefaultToggle" class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                        <div class="flex items-center justify-between">
                             <div>
                                 <label class="text-xs text-pm-secondary">Infinite Scrolling</label>
                                 <p class="text-[11px] text-pm-muted">Load the next page as you scroll instead of showing page controls</p>
                             </div>
                             <input type="checkbox" id="infiniteScrollToggle" class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                    </div>
-
-                    <!-- Video Settings -->
-                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
-                        <h5 class="text-pm text-xs font-medium mb-2">Video Settings</h5>
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Autoplay Videos</label>
-                            <input type="checkbox" id="videoAutoplayToggle" class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Mute Videos by Default</label>
-                            <input type="checkbox" id="videoMuteToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Loop Videos</label>
-                            <input type="checkbox" id="videoLoopToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Metadata Settings -->
-                <div class="space-y-3">
-                    <h4 class="text-sm font-semibold text-pm">Metadata Settings</h4>
-
-                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Auto-load Metadata</label>
-                            <input type="checkbox" id="autoLoadMetadataToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Cache Metadata</label>
-                            <input type="checkbox" id="cacheMetadataToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <label class="text-xs text-pm-secondary">Show File Paths</label>
-                            <input type="checkbox" id="showFilePathsToggle" checked class="w-4 h-4 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Maintenance -->
-                <div class="space-y-3">
-                    <h4 class="text-sm font-semibold text-pm">Maintenance</h4>
-
-                    <div class="bg-pm-input rounded-pm-sm p-3 space-y-2">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <h5 class="text-pm text-xs font-medium">Clear Cache</h5>
-                                <p class="text-xs text-pm-secondary">Clear cached metadata and thumbnails</p>
-                            </div>
-                            <button id="clearCacheBtn" class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs rounded-pm-sm transition-colors">
-                                Clear
-                            </button>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <h5 class="text-pm text-xs font-medium">Rescan Output Folder</h5>
-                                <p class="text-xs text-pm-secondary">Refresh the image list from disk</p>
-                            </div>
-                            <button id="rescanFolderBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs rounded-pm-sm transition-colors">
-                                Rescan
-                            </button>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <h5 class="text-pm text-xs font-medium">Find Duplicate Images</h5>
-                                <p class="text-xs text-pm-secondary">Scan for duplicate images based on file content</p>
-                            </div>
-                            <button id="scanDuplicatesBtn" class="px-3 py-1 bg-pm-warning hover:bg-pm-warning text-pm text-xs rounded-pm-sm transition-colors">
-                                Scan
-                            </button>
                         </div>
                     </div>
                 </div>
@@ -395,6 +261,14 @@
                     </div>
                 </div>
 
+                <p class="text-xs text-pm-secondary">Thumbnails, cache, file listing and duplicates are in System.
+                    <a id="pageOptionsMaintenanceLink" href="workspace#/system/maintenance" target="_blank" rel="noopener"
+                       title="Opens System › Maintenance in a new tab" class="text-pm-accent hover:underline">Maintenance</a>
+                    ·
+                    <a id="pageOptionsSourcesLink" href="workspace#/system/sources" target="_blank" rel="noopener"
+                       title="Opens System › Sources &amp; scans in a new tab" class="text-pm-accent hover:underline">Sources &amp; scans</a>
+                </p>
+
             </div>
             <div class="p-3 border-t border-pm flex justify-end gap-2">
                 <button id="resetSettingsBtn" class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
@@ -403,71 +277,6 @@
                 <button id="saveSettingsBtn" class="px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Save Settings
                 </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Minimized duplicate scan: shown while it runs with its modal hidden, or when results are waiting -->
-    <button id="dupScanPill" type="button" title="Show duplicate scan"
-            class="hidden fixed bottom-4 right-4 z-40 px-3 py-1.5 bg-pm-surface border border-pm shadow-pm rounded-pm-md text-xs text-pm hover:bg-pm-hover transition-colors">
-        <span class="inline-block w-1.5 h-1.5 rounded-full bg-pm-accent mr-1.5 align-middle animate-pulse"></span><span id="dupScanPillText" class="align-middle">Scanning...</span>
-    </button>
-
-    <!-- Duplicates Modal -->
-    <div id="duplicatesModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-md max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm">
-            <div class="p-3 border-b border-pm">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-pm">Duplicate Images Found</h3>
-                    <button id="closeDuplicatesBtn" class="p-2 rounded-pm-sm hover:bg-pm-hover transition-colors">
-                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div class="p-3 overflow-y-auto max-h-[calc(90vh-200px)]">
-                <div id="duplicatesScanStatus" class="py-6">
-                    <div class="max-w-md mx-auto bg-pm-input rounded-pm-md p-3">
-                        <div class="flex items-center justify-between mb-1.5">
-                            <span class="text-pm text-xs font-medium">Scanning for duplicate images</span>
-                            <span id="dupProgressText" class="text-pm-secondary text-xs">Starting...</span>
-                        </div>
-                        <div class="w-full bg-pm-primary rounded-full h-1.5">
-                            <div id="dupProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-                        </div>
-                        <p class="text-[11px] text-pm-muted mt-2">Every file is hashed, so this takes a while on a large library. You can close this window; the scan keeps running and the results will be waiting.</p>
-                    </div>
-                </div>
-                <div id="duplicatesContent" class="hidden">
-                    <div class="mb-3 p-3 bg-pm-error-tint border border-pm-accent rounded-pm-sm">
-                        <div class="flex items-start">
-                            <svg class="w-4 h-4 text-pm-error mt-0.5 mr-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
-                            </svg>
-                            <div>
-                                <h4 class="text-pm-error text-xs font-medium">Warning: Removing duplicate images cannot be undone!</h4>
-                                <p class="text-pm-secondary text-xs mt-1">When you remove a duplicate image, the selected file will be permanently deleted from disk. Choose carefully which images to keep.</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="duplicatesList" class="space-y-3">
-                        <!-- Duplicates will be populated here -->
-                    </div>
-                </div>
-            </div>
-            <div id="duplicatesFooter" class="hidden p-3 border-t border-pm flex justify-between items-center">
-                <div class="text-xs text-pm-secondary">
-                    <span id="duplicatesCount">0</span> duplicate image groups found
-                </div>
-                <div class="flex gap-2">
-                    <button id="selectAllBtn" class="px-3 py-1 bg-pm-input hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                        Select All to Delete
-                    </button>
-                    <button id="removeDuplicatesBtn" class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                        Delete Selected
-                    </button>
-                </div>
             </div>
         </div>
     </div>

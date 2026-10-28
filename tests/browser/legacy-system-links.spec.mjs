@@ -15,6 +15,11 @@ const LABELS = Object.freeze({
     diagnostics: 'Diagnostics & logs',
 });
 
+async function openPageOptions(page) {
+    await page.locator('#pageOptionsBtn').click();
+    await expect(page.locator('#settingsModal')).toBeVisible();
+}
+
 // One row per System link of the design's §2 map: the page, the control's label, how to find it, the section it opens
 // and what a test must arrange before the control shows.
 const LINKS = Object.freeze([
@@ -22,6 +27,11 @@ const LINKS = Object.freeze([
     { page: 'admin', label: 'Maintenance', locate: page => page.locator('#maintenanceBtn'), section: 'maintenance' },
     { page: 'admin', label: 'Backup DB', locate: page => page.locator('#backupBtn'), section: 'backups' },
     { page: 'admin', label: 'Restore DB', locate: page => page.locator('#restoreBtn'), section: 'backups' },
+    { page: 'gallery', label: 'Settings', locate: page => page.locator('#settingsBtn'), section: 'appearance' },
+    { page: 'gallery', label: 'Page options Maintenance', reveal: openPageOptions,
+        locate: page => page.locator('#pageOptionsMaintenanceLink'), section: 'maintenance' },
+    { page: 'gallery', label: 'Page options Sources & scans', reveal: openPageOptions,
+        locate: page => page.locator('#pageOptionsSourcesLink'), section: 'sources' },
     { page: 'admin', label: 'Diagnostics', locate: page => page.locator('#diagnosticsBtn'), section: 'diagnostics' },
     { page: 'admin', label: 'View Logs', locate: page => page.locator('#logsBtn'), section: 'diagnostics' },
 ]);
@@ -80,6 +90,10 @@ for (const link of LINKS) {
 }
 
 test('a System link sends no request from the legacy page', async ({ page, context, request }) => {
+    // The gallery's thumbnail startup check (K9) reads its status on a timer of its own; it is off here.
+    await page.addInitScript(() => {
+        localStorage.setItem('gallerySettings', JSON.stringify({ checkThumbnailsAtStartup: false }));
+    });
     for (const link of LINKS) {
         const control = await openLink(page, request, link);
         // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
@@ -192,4 +206,46 @@ test('Page options keeps the page-only settings admin', async ({ page, request }
     await expect(page.locator('#infiniteScrollSession')).toBeChecked();
     await page.locator('#pageOptionsBtn').click();
     await expect(page.locator('#infiniteScrollDefault')).toBeChecked();
+});
+
+test('Page options keeps the page-only settings gallery', async ({ page }) => {
+    // Native Appearance keys and the startup prompt's own keys are in the shared object before the page opens.
+    const stored = { defaultViewMode: 'list', imageQuality: 'high', showImageInfo: false, videoMute: false,
+        autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
+        checkThumbnailsAtStartup: false };
+    await page.addInitScript(value => {
+        if (!sessionStorage.getItem('seeded')) {
+            sessionStorage.setItem('seeded', '1');
+            localStorage.setItem('gallerySettings', value);
+        }
+    }, JSON.stringify(stored));
+    const listed = page.waitForResponse(item => item.url().includes('/prompt_manager/images/output?'));
+    await page.goto(PAGES.gallery);
+    await listed;
+    await openPageOptions(page);
+    const dialog = page.locator('#settingsModal');
+    await expect(dialog.locator('h3')).toHaveText('Page options');
+    // Exactly the page-only settings (G5).
+    expect(await dialog.locator('input, select, textarea').evaluateAll(fields => fields.map(field => field.id))).toEqual([
+        'checkThumbnailsAtStartup', 'lazyLoadingToggle', 'defaultLimitSelect', 'gridColumnsSelect', 'infiniteScrollToggle',
+        'debugModeToggle', 'apiTimeoutInput']);
+    await page.locator('#defaultLimitSelect').selectOption('50');
+    await page.locator('#debugModeToggle').check();
+    await page.locator('#saveSettingsBtn').click();
+    await expect(dialog).toBeHidden();
+    const read = () => page.evaluate(() => JSON.parse(localStorage.getItem('gallerySettings')));
+    let saved = await read();
+    expect(saved).toMatchObject({ ...stored, defaultLimit: 50, debugMode: true });
+
+    // Reset puts back only the page options' defaults; the Appearance and startup-prompt keys stay.
+    await openPageOptions(page);
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#resetSettingsBtn').click();
+    await expect(page.getByText('Page options reset to defaults')).toBeVisible();
+    await expect(page.locator('#defaultLimitSelect')).toHaveValue('100');
+    saved = await read();
+    expect(saved).toMatchObject({ defaultViewMode: 'list', imageQuality: 'high', showImageInfo: false, videoMute: false,
+        autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
+        defaultLimit: 100, debugMode: false, checkThumbnailsAtStartup: true, lazyLoading: true, gridColumns: 8,
+        infiniteScroll: false, apiTimeout: 30 });
 });

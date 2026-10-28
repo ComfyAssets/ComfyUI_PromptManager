@@ -4138,6 +4138,15 @@ legacy page workflows), not by this check.
 | Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
 | Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
 | Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
+| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
+| Default view mode, image quality | gallery | `#imageQualitySelect`, `#defaultViewModeSelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
+| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
+| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
+| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
+| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
+| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
+| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
+| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -4156,17 +4165,15 @@ page writes a key that is neither a preference nor inventoried, writes one it ca
 CacheStorage or IndexedDB; `the storage scan reports every way of writing browser
 storage` pins those patterns. It skips `web/lib` (third-party builds) and the pinned
 Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
-its storage belongs to the Toolkit repository and a new pin is reviewed on its own). The
-gallery's server thumbnail clear stays its own request and runs first: refused or
-unreachable, it changes nothing and says so (the old code toasted success when the
-request failed); refused browser storage is reported, never hidden
-(`tests/js/legacy-refusals.test.js`; the browser case `the gallery cache clear keeps
-preferences and other tools caches` in `workflows.spec.mjs`).
+its storage belongs to the Toolkit repository and a new pin is reviewed on its own). Since
+System S13 (#330) the legacy gallery no longer offers Clear cache: System › Maintenance's
+Metadata cache and Thumbnail cache reviews own both parts (removal table above), and
+`cache-ownership.js` serves the native review.
 
-The legacy duplicates dialog's View Full now names its source (`?root=<index>`, with the
-path URL-encoded) when the gallery's output folder is a listed source; before, the serve
-route opened the first source holding a file at that path
-(`test_view_full_names_the_gallery_folder_source`).
+The duplicates dialog's View Full named its source (`?root=<index>`, with the path
+URL-encoded) when the gallery's output folder is a listed source
+(`test_view_full_names_the_gallery_folder_source`); S13 removed the legacy dialog, and the
+route keeps that behaviour for System › Maintenance's duplicate review.
 
 ### Library location contract (#249 System S6b)
 
