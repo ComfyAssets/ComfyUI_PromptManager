@@ -36,7 +36,13 @@ from watchdog.events import FileSystemEventHandler
 from .hashing import generate_prompt_hash
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .logging_config import get_logger
-from .prompt_graph import resolve_text, run_prompt_nodes
+from .prompt_graph import (
+    metadata_opted_out,
+    resolve_text,
+    run_prompt_nodes,
+    save_setting,
+    side_opted_out,
+)
 from .prompt_pair_resolver import resolve_prompt_pair
 from .run_keys import image_run_keys
 from .usage_tracking import survive_switch
@@ -440,6 +446,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # that produced this image, independent of node caching and of any
             # negative-prompt PromptManager nodes in the workflow.
             state, current_prompt = self._find_prompt_from_metadata(metadata)
+            if state == "opted_out":
+                self.logger.info(
+                    "Save to library is off for this run's prompt, skipping image: "
+                    f"{image_path}"
+                )
+                return
             if state == "foreign":
                 # Another workflow saved this image: it belongs to no prompt of
                 # ours, and must not consume a batch queue entry.
@@ -705,16 +717,27 @@ class ImageGenerationHandler(FileSystemEventHandler):
             ``("linked", prompt)`` with a context dict holding 'id' and 'text';
             ``("foreign", None)`` when the workflow has no positive PromptManager
             node, so the image belongs to no prompt of ours;
+            ``("opted_out", None)`` when a PromptManager node that would be the
+            run's prompt has its ``save_to_library`` switch off (#90): the image
+            is linked to no prompt, by no fallback;
             ``("unknown", None)`` when metadata can't decide (missing, a batch
             item whose text came from another node, or a lookup failure) and the
             caller's queue and tracker fallbacks apply.
         """
         if not metadata:
             return "unknown", None
+        if metadata_opted_out(metadata):
+            return "opted_out", None
+        graph = metadata.get("prompt")
+        if isinstance(graph, dict) and any(
+            save_setting(graph, node_id) is None for node_id in run_prompt_nodes(graph)
+        ):
+            # A switch wired from a node the graph cannot read: only the node's
+            # own run (it saw the real value) can link the image (#90)
+            return "unknown", None
 
         prompt_text = None
         resolution = resolve_prompt_pair(metadata)
-        graph = metadata.get("prompt")
         if resolution["state"] == "resolved" and isinstance(graph, dict):
             positive = resolution["positive"]
             path = positive["provenance"].get("path", [])
@@ -855,13 +878,23 @@ class ImageGenerationHandler(FileSystemEventHandler):
             metadata: Extracted metadata from the image file (workflow, parameters,
                 etc.)
         """
+        if metadata_opted_out(metadata):
+            # Reached from a run or history: the file's own graph says no (#90)
+            self.logger.info(
+                f"Save to library is off for {os.path.basename(image_path)}; "
+                "left unlinked"
+            )
+            return
         try:
             resolution = resolve_prompt_pair(metadata)
+            graph = metadata.get("prompt") if isinstance(metadata, dict) else None
+            # An opted-out negative is never stored: link the positive alone
+            pair_allowed = not side_opted_out(graph, resolution.get("negative"))
 
             def link():
                 # One write; run again on the moved library when a Move
                 # library switched while it waited (#249 S6b).
-                if resolution["state"] == "resolved":
+                if resolution["state"] == "resolved" and pair_allowed:
                     positive = resolution["positive"]
                     expected = self.db_manager.get_prompt_by_hash(
                         generate_prompt_hash(

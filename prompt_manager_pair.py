@@ -14,7 +14,11 @@ try:
     from .prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from .utils.hashing import generate_prompt_hash
     from .utils.pair_execution import record_pair_execution
-    from .utils.prompt_graph import intrinsic_pair_nodes, run_prompt_components
+    from .utils.prompt_graph import (
+        intrinsic_pair_nodes,
+        run_prompt_components,
+        save_setting,
+    )
     from .utils.prompt_pair_resolver import resolve_text_input
     from .utils.usage_tracking import (
         PENDING_FIRST_USE,
@@ -25,7 +29,11 @@ except ImportError:
     from prompt_manager import IO, InputTypeDict, PromptManagerFocused
     from utils.hashing import generate_prompt_hash
     from utils.pair_execution import record_pair_execution
-    from utils.prompt_graph import intrinsic_pair_nodes, run_prompt_components
+    from utils.prompt_graph import (
+        intrinsic_pair_nodes,
+        run_prompt_components,
+        save_setting,
+    )
     from utils.prompt_pair_resolver import resolve_text_input
     from utils.usage_tracking import (
         PENDING_FIRST_USE,
@@ -74,8 +82,13 @@ class PromptManagerPair(PromptManagerFocused):
         prompt: Optional[Dict[str, Any]] = None,
         unique_id: Optional[str] = None,
         extra_pnginfo: Optional[Dict[str, Any]] = None,
+        save_to_library: bool = True,
     ) -> Tuple[Any, Any, str, str]:
-        """Encode both sides once; database and tracking failures never block CLIP."""
+        """Encode both sides once; database and tracking failures never block CLIP.
+
+        With ``save_to_library`` off nothing is saved, counted, tracked or
+        recorded (#90); the four outputs are the same.
+        """
         if clip is None:
             raise RuntimeError("ERROR: clip input is invalid: None")
         if not isinstance(text, str) or not isinstance(negative_text, str):
@@ -93,6 +106,10 @@ class PromptManagerPair(PromptManagerFocused):
         negative_conditioning = clip.encode_from_tokens_scheduled(
             clip.tokenize(negative_text)
         )
+        result = positive_conditioning, negative_conditioning, positive, negative_text
+        if not save_to_library:
+            self._skip_not_saved()
+            return result
         record_pair_execution(
             extra_pnginfo,
             unique_id,
@@ -153,7 +170,6 @@ class PromptManagerPair(PromptManagerFocused):
             )
         except Exception as error:
             self.logger.warning(f"Could not register paired metadata: {error}")
-        result = positive_conditioning, negative_conditioning, positive, negative_text
         record_runtime_context(
             type(self).__name__,
             text,
@@ -200,6 +216,9 @@ class PromptManagerPair(PromptManagerFocused):
         resolved_negative = (
             resolve_text_input(prompt, node_id, "negative_text") if known else None
         )
+        if known and save_setting(prompt, node_id) is not True:
+            # The hook skips a switch it cannot read (#90): the node counts
+            resolved_positive = resolved_negative = None
         positive_seen = resolved_positive is not None and generate_prompt_hash(
             resolved_positive
         ) == generate_prompt_hash(text)

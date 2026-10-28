@@ -2,6 +2,7 @@ import {createScope, createButton, createField, mountTheme} from './shared/toolk
 import {createPromptLibrary} from './prompt-library.js';
 import {attachMetadataAutocomplete} from './metadata-autocomplete.js';
 import {exposeTextSockets, linkNoteText, preferTextInputs, textInputAtPoint} from './text-links.js';
+import {SAVE_WIDGET, normalizeSaveWidget, placeSaveWidgetLast, saveWidget, savesToLibrary, setSaveToLibrary} from './save-to-library.js';
 
 const names = ['text', 'category', 'tags', 'search_text', 'prepend_text', 'append_text'];
 let nextEditorId = 0;
@@ -47,6 +48,11 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             widgets.set(name, widget);
         }
         exposeTextSockets(this, textInputs);
+        // #90: the switch follows the hidden fallbacks above (one widget order on every frontend) and is drawn in the
+        // toolbar, like the other hidden widgets are drawn by the editor.
+        placeSaveWidgetLast(this);
+        const nativeSave = saveWidget(this);
+        if (nativeSave) { nativeSave.hidden = true; nativeSave.type = 'hidden'; nativeSave.computeSize = () => [0, -4]; }
         const element = document.createElement('div'); element.className = `ca-tools pm-focused${split ? ' pm-split' : ''}${pair ? ' pm-pair' : ''}`;
         element.setAttribute('aria-label',pair ? 'Paired prompt editor' : split ? 'Split prompt editor' : 'Focused prompt editor');
         loadStyles(); mountTheme(element, app.ui?.settings, scope);
@@ -58,6 +64,11 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         toolbar.append(web);
         const save = pair ? createButton('Save pair','ca-primary') : null;
         if (save) toolbar.append(save);
+        const saveSwitch = document.createElement('input'); saveSwitch.type = 'checkbox'; saveSwitch.dataset.saveToLibrary = '';
+        const saveLabel = document.createElement('label'); saveLabel.className = 'pm-editor-save';
+        saveLabel.title = 'Off: runs of this node are not saved, counted or linked to their images. The output is unchanged.';
+        saveLabel.append(saveSwitch, document.createTextNode('Save to library'));
+        if (nativeSave) toolbar.append(saveLabel);
         let saving = false;
         const workspace = document.createElement('div'); workspace.className = 'pm-editor-workspace';
         const editor = document.createElement('div'); editor.className = 'pm-editor-compose';
@@ -138,7 +149,10 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         }
         const composed = disclosure('preview','Composed text preview');
         const preview = document.createElement('p'); preview.className = 'pm-editor-preview'; preview.dataset.composedPreview = ''; composed.append(preview);
-        const footer = document.createElement('p'); footer.className = 'pm-editor-status'; footer.setAttribute('role','status'); footer.textContent = pair ? 'The prompt pair is saved when this node runs, or use Save pair.' : 'Main prompt is saved when this node runs.';
+        const footer = document.createElement('p'); footer.className = 'pm-editor-status'; footer.setAttribute('role','status');
+        const SAVE_OFF = 'Save to library is off: runs of this node are not added to the library.';
+        function runNote(saved) { return savesToLibrary(thisNode) ? saved : SAVE_OFF; }
+        footer.textContent = runNote(pair ? 'The prompt pair is saved when this node runs, or use Save pair.' : 'Main prompt is saved when this node runs.');
         const saveConnectionNotice = pair ? document.createElement('p') : null;
         if (saveConnectionNotice) {
             saveConnectionNotice.className = 'pm-editor-status'; saveConnectionNotice.setAttribute('role','status');
@@ -166,6 +180,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             mainField.hidden = Boolean(isConnected('text')); connected.hidden = !isConnected('text');
             if (negative) { negative.field.hidden = Boolean(isConnected('negative_text')); negative.note.hidden = !isConnected('negative_text'); }
             if (save) { save.disabled = saving || hasConnectedPairValues(); saveConnectionNotice.hidden = !hasConnectedPairValues(); }
+            saveSwitch.checked = savesToLibrary(thisNode); saveSwitch.disabled = isConnected(SAVE_WIDGET);
             controls.forEach((input,name) => {
                 input.value = value(name);
                 if (name !== 'text' && name !== 'negative_text') {
@@ -185,7 +200,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
                 write('category',prompt.category || '');
                 write('tags',Array.isArray(prompt.tags) ? prompt.tags.join(', ') : prompt.tags || '');
             }
-            render(); footer.setAttribute('role','status'); footer.textContent = pair ? 'Loaded pair. Saved when this node runs.' : 'Loaded prompt. Saved when this node runs.'; main.focus();
+            render(); footer.setAttribute('role','status'); footer.textContent = runNote(pair ? 'Loaded pair. Saved when this node runs.' : 'Loaded prompt. Saved when this node runs.'); main.focus();
         }});
         workspace.append(library.element); element.append(footer);
         function snapshot() {
@@ -197,7 +212,13 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             library.element.hidden = !split && !state.libraryOpen; browse.textContent = state.libraryOpen ? 'Hide library' : 'Browse library'; browse.setAttribute('aria-expanded', String(Boolean(state.libraryOpen)));
             library.setQuery(value('search_text')); library.restoreFilters(state.libraryFilters); render();
         }
-        controls.forEach((input,name) => scope.listen(input,'input',() => {write(name,input.value);render();footer.setAttribute('role','status');footer.textContent=pair?'The pair is saved when this node runs.':'Main prompt is saved when this node runs.';}));
+        controls.forEach((input,name) => scope.listen(input,'input',() => {write(name,input.value);render();footer.setAttribute('role','status');footer.textContent=runNote(pair?'The pair is saved when this node runs.':'Main prompt is saved when this node runs.');}));
+        scope.listen(saveSwitch,'change',() => {
+            if (isConnected(SAVE_WIDGET)) return;
+            setSaveToLibrary(thisNode, saveSwitch.checked); render();
+            footer.setAttribute('role','status'); footer.textContent = runNote(pair ? 'The pair is saved when this node runs.' : 'Main prompt is saved when this node runs.');
+            thisNode.setDirtyCanvas(true,true); app.graph?.setDirtyCanvas(true,true);
+        });
         scope.listen(browse,'click',() => {
             library.element.hidden = !library.element.hidden;
             library.closeCompletions();
@@ -248,6 +269,8 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         const result = configure?.apply(this,args);
         // A saved workflow restores its inputs with their widget bindings; keep the text inputs as sockets.
         exposeTextSockets(this, textInputs);
+        // #90: an older workflow loads with Save to library on
+        normalizeSaveWidget(this);
         this._focusedView?.restore();
         return result;
     };

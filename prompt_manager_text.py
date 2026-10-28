@@ -26,13 +26,13 @@ except ImportError:
     InputTypeDict = dict
 
 try:
-    from .prompt_manager_base import PromptManagerBase
+    from .prompt_manager_base import SAVE_TO_LIBRARY_INPUT, PromptManagerBase
 except ImportError:
     import os
     import sys
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from prompt_manager_base import PromptManagerBase
+    from prompt_manager_base import SAVE_TO_LIBRARY_INPUT, PromptManagerBase
 
 
 class PromptManagerText(PromptManagerBase, ComfyNodeABC):
@@ -115,6 +115,7 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
                         ),
                     },
                 ),
+                "save_to_library": SAVE_TO_LIBRARY_INPUT,
             },
             "hidden": {
                 # The queued graph and this node's id: used to tell the positive
@@ -149,6 +150,7 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         append_text: str = "",
         prompt: Optional[Dict[str, Any]] = None,
         unique_id: Optional[str] = None,
+        save_to_library: bool = True,
     ) -> Tuple[str]:
         """
         Process the text prompt and save it to the database.
@@ -160,6 +162,7 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
             search_text: Text to search for in past prompts
             prepend_text: Text to prepend to the main prompt
             append_text: Text to append to the main prompt
+            save_to_library: Off: nothing is saved, counted or tracked (#90)
 
         Returns:
             Tuple containing the final processed text string
@@ -184,7 +187,9 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         # Save prompt to database and set execution context for gallery tracking
         prompt_id = None
         extended_tags = []
-        if storage_text and storage_text.strip():
+        if not save_to_library:
+            self._skip_not_saved()
+        elif storage_text and storage_text.strip():
             self.logger.debug(f"Processing prompt text: {storage_text[:100]}...")
 
             # Add prepend/append info to tags if they exist
@@ -220,6 +225,11 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         else:
             self._skip_empty_prompt(prompt, unique_id)
 
+        self.logger.debug(f"Text processing completed: {final_text[:100]}...")
+        result = (final_text,)
+        if not save_to_library:
+            return result  # #90: no metadata registration, no history text
+
         # Register with ComfyUI integration for standard metadata compatibility
         node_id = f"promptmanagertext_{int(time.time() * 1000)}"
         self.comfyui_integration.register_prompt(
@@ -233,9 +243,6 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
                 "append_text": append_text.strip() if append_text else None,
             },
         )
-
-        self.logger.debug(f"Text processing completed: {final_text[:100]}...")
-        result = (final_text,)
         record_runtime_context(
             type(self).__name__, text, prepend_text, append_text, final_text
         )

@@ -23,7 +23,7 @@ try:
     from .utils.image_monitor import get_image_monitor
     from .utils.prompt_tracker import get_prompt_tracker
     from .utils.hashing import generate_prompt_hash
-    from .utils.prompt_graph import resolve_text, run_prompt_nodes
+    from .utils.prompt_graph import resolve_text, run_prompt_nodes, save_setting
     from .utils.run_keys import executing_run_id, prompt_node_key
     from .utils.usage_tracking import PENDING_FIRST_USE
 except ImportError:
@@ -35,9 +35,25 @@ except ImportError:
     from utils.image_monitor import get_image_monitor
     from utils.prompt_tracker import get_prompt_tracker
     from utils.hashing import generate_prompt_hash
-    from utils.prompt_graph import resolve_text, run_prompt_nodes
+    from utils.prompt_graph import resolve_text, run_prompt_nodes, save_setting
     from utils.run_keys import executing_run_id, prompt_node_key
     from utils.usage_tracking import PENDING_FIRST_USE
+
+
+# The optional input every PromptManager node declares last (#90): declared
+# last so no widget value of a workflow saved before it shifts.
+SAVE_TO_LIBRARY_INPUT = (
+    "BOOLEAN",
+    {
+        "default": True,
+        "label_on": "save",
+        "label_off": "skip",
+        "tooltip": (
+            "Save this node's prompt to the library, count its runs and link its "
+            "images. Off: PromptManager ignores the run; the output is unchanged."
+        ),
+    },
+)
 
 
 class PromptManagerBase:
@@ -140,7 +156,9 @@ class PromptManagerBase:
         resolved = resolve_text(prompt_graph, node_id)
         return {
             "is_run_prompt": node_id in run_prompt_nodes(prompt_graph),
+            # The hook skips a switch it cannot read (#90): the node counts
             "seen_at_queue": resolved is not None
+            and save_setting(prompt_graph, node_id) is True
             and generate_prompt_hash(resolved) == generate_prompt_hash(text),
             "known": True,
         }
@@ -189,6 +207,17 @@ class PromptManagerBase:
             "run_key": prompt_node_key(prompt_graph, unique_id),
             "run_id": executing_run_id(),
         }
+
+    def _skip_not_saved(self) -> None:
+        """``save_to_library`` is off: nothing is saved, counted or tracked (#90).
+
+        Nothing is marked on the tracker either: a node with its switch off is
+        no run prompt (``utils.prompt_graph``), so no image looks up its run key.
+        """
+        self.logger.info(
+            "Save to library is off for this node: its prompt is not saved, the "
+            "run is not counted and its images are not linked"
+        )
 
     def _skip_empty_prompt(self, prompt_graph: Any, unique_id: Any) -> None:
         """The ``text`` editor is empty: save and track nothing (#342).

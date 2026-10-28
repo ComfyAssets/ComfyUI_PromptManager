@@ -21,6 +21,11 @@ PROMPT_MANAGER_TYPES = frozenset(
     }
 )
 
+# A node's switch (#90): False means PromptManager ignores that node's runs
+SAVE_INPUT = "save_to_library"
+# Core nodes whose output is a known boolean: (class_type) -> input holding it
+_BOOLEAN_SOURCES = {"PrimitiveBoolean": "value"}
+
 # Upper bound on nodes expanded per graph; queued and embedded graphs are untrusted
 MAX_VISITS = 500
 # Longest text resolve_text will build; StringConcatenate chains can double
@@ -57,6 +62,105 @@ def _is_link(value: Any) -> bool:
 def _inputs(node: Any) -> Dict[str, Any]:
     inputs = node.get("inputs") if isinstance(node, dict) else None
     return inputs if isinstance(inputs, dict) else {}
+
+
+def _as_boolean(value: Any) -> bool:
+    """ComfyUI's coercion of a BOOLEAN input before the node runs."""
+    if isinstance(value, dict) and "__value__" in value:
+        value = value["__value__"]
+    return bool(value)
+
+
+def save_setting(graph: Any, node_id: Any) -> Optional[bool]:
+    """A PromptManager node's ``save_to_library`` as the node will receive it.
+
+    True when the input is missing (every workflow and image from before the
+    switch), the literal coerced like ComfyUI does, the value of a linked core
+    ``PrimitiveBoolean``, and None when the switch is wired from a node whose
+    output cannot be known from the graph.
+    """
+    node = graph.get(str(node_id)) if isinstance(graph, dict) else None
+    inputs = _inputs(node)
+    if SAVE_INPUT not in inputs:
+        return True
+    value = inputs[SAVE_INPUT]
+    if not _is_link(value):
+        return _as_boolean(value)
+    source = graph.get(str(value[0]))
+    if not isinstance(source, dict) or value[1] != 0:
+        return None
+    key = _BOOLEAN_SOURCES.get(str(source.get("class_type", "")))
+    source_inputs = _inputs(source)
+    if key is None or key not in source_inputs or _is_link(source_inputs[key]):
+        return None
+    return _as_boolean(source_inputs[key])
+
+
+def opted_out(graph: Any, node_id: Any) -> bool:
+    """Whether a PromptManager node's switch is off: PromptManager ignores it."""
+    return save_setting(graph, node_id) is False
+
+
+def side_opted_out(graph: Any, side: Any) -> bool:
+    """Whether a resolved side's path passes a PromptManager node that is off.
+
+    ``side`` is a resolver side (``positive`` or ``negative`` of a resolved
+    pair): its text must not be stored when any PromptManager node on its
+    provenance path has its switch off or wired from an unreadable node (#90).
+    """
+    if not isinstance(graph, dict) or not isinstance(side, dict):
+        return False
+    provenance = side.get("provenance")
+    path = provenance.get("path") if isinstance(provenance, dict) else None
+    for step in path if isinstance(path, list) else []:
+        node_id = step.get("node_id") if isinstance(step, dict) else None
+        node = graph.get(str(node_id)) if node_id is not None else None
+        if (
+            isinstance(node, dict)
+            and node.get("class_type") in PROMPT_MANAGER_TYPES
+            and save_setting(graph, node_id) is not True
+        ):
+            return True
+    return False
+
+
+def _workflow_node_opted_out(node: Any) -> bool:
+    """A saved-workflow PromptManager node whose widget values hold ``False``.
+
+    No other PromptManager widget holds a boolean, so the value is the switch.
+    """
+    if not isinstance(node, dict):
+        return False
+    if (node.get("type") or node.get("class_type")) not in PROMPT_MANAGER_TYPES:
+        return False
+    values = node.get("widgets_values")
+    return isinstance(values, list) and any(value is False for value in values)
+
+
+def metadata_opted_out(metadata: Any, *, unreadable: bool = False) -> bool:
+    """Whether a file's metadata says its run's prompt does not save (#90).
+
+    The executed graph (``prompt``) decides when present: a node of
+    ``positive_opt_outs``, or with ``unreadable`` also a run prompt whose
+    switch is wired from a node the graph cannot read. Without one, the
+    saved workflow (``workflow`` nodes or the extractor's
+    ``text_encoder_nodes``) is opted out when a PromptManager node stores
+    ``False``.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    graph = metadata.get("prompt")
+    if isinstance(graph, dict):
+        if positive_opt_outs(graph):
+            return True
+        return unreadable and any(
+            save_setting(graph, node_id) is None for node_id in run_prompt_nodes(graph)
+        )
+    workflow = metadata.get("workflow")
+    nodes = list(metadata.get("text_encoder_nodes") or [])
+    if isinstance(workflow, dict) and isinstance(workflow.get("nodes"), list):
+        nodes.extend(workflow["nodes"])
+    return any(_workflow_node_opted_out(node) for node in nodes)
 
 
 def _positive_roots(graph: Dict[str, Any]) -> List[Any]:
@@ -100,11 +204,21 @@ def has_sampler(graph: Any) -> bool:
 
 
 def positive_prompt_components(graph: Any) -> List[Tuple[str, str]]:
-    """Node/input identities reaching actual sampler positive wires."""
+    """Node/input identities reaching actual sampler positive wires.
+
+    A node whose switch is off is not one, and nothing upstream of it is
+    followed (#90): see ``positive_opt_outs``.
+    """
+    return _walk_positive(graph)[0]
+
+
+def _walk_positive(graph: Any) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """(components of enabled nodes, opted-out nodes) on sampler positive wires."""
     if not isinstance(graph, dict):
-        return []
+        return [], []
 
     found: List[Tuple[str, str]] = []
+    skipped: List[str] = []
     seen = set()
     stack = list(reversed(_positive_roots(graph)))
     while stack and len(seen) < MAX_VISITS:
@@ -117,6 +231,10 @@ def positive_prompt_components(graph: Any) -> List[Tuple[str, str]]:
         if not isinstance(node, dict):
             continue
         if node.get("class_type") in PROMPT_MANAGER_TYPES:
+            if opted_out(graph, node_id):
+                if node_id not in skipped:
+                    skipped.append(node_id)
+                continue
             field = "text"
             if node.get("class_type") == "PromptManagerPair":
                 field = {
@@ -132,7 +250,33 @@ def positive_prompt_components(graph: Any) -> List[Tuple[str, str]]:
                 found.append(identity)
             continue
         stack.extend(reversed(_upstream_links(_inputs(node))))
-    return found
+    return found, skipped
+
+
+def _sampler_less_nodes(graph: Dict[str, Any]) -> List[str]:
+    """Every PromptManager node of a graph without a recognisable sampler."""
+    return [
+        str(node_id)
+        for node_id, node in graph.items()
+        if isinstance(node, dict) and node.get("class_type") in PROMPT_MANAGER_TYPES
+    ]
+
+
+def positive_opt_outs(graph: Any) -> List[str]:
+    """PromptManager nodes with their switch off that would be a run's prompt.
+
+    Those on a sampler's positive wires, or, in a graph without a recognisable
+    sampler, any. A run with one of them links no file to any prompt (#90):
+    the file's graph cannot always say which sampler wrote it.
+    """
+    if not isinstance(graph, dict):
+        return []
+    found, skipped = _walk_positive(graph)
+    if found or skipped or has_sampler(graph):
+        return skipped
+    return [
+        node_id for node_id in _sampler_less_nodes(graph) if opted_out(graph, node_id)
+    ]
 
 
 def positive_prompt_nodes(graph: Any) -> List[str]:
@@ -148,13 +292,13 @@ def positive_prompt_nodes(graph: Any) -> List[str]:
 
 def run_prompt_components(graph: Any) -> List[Tuple[str, str]]:
     """Actual positive components, retaining standalone main-editor fallback."""
-    components = positive_prompt_components(graph)
-    if components or not isinstance(graph, dict) or has_sampler(graph):
+    components, skipped = _walk_positive(graph)
+    if components or skipped or not isinstance(graph, dict) or has_sampler(graph):
         return components
     return [
-        (str(node_id), "text")
-        for node_id, node in graph.items()
-        if isinstance(node, dict) and node.get("class_type") in PROMPT_MANAGER_TYPES
+        (node_id, "text")
+        for node_id in _sampler_less_nodes(graph)
+        if not opted_out(graph, node_id)
     ]
 
 
@@ -165,16 +309,16 @@ def run_prompt_nodes(graph: Any) -> List[str]:
     say), every PromptManager node counts, as before 3.2.4, so an exotic workflow
     never silently loses usage counting or image linking. When a sampler exists
     and no PromptManager node feeds its positive input, nothing counts: the only
-    PromptManager nodes are negative prompts.
+    PromptManager nodes are negative prompts. A node whose switch is off never
+    counts (#90).
     """
-    positive = positive_prompt_nodes(graph)
-    if positive or not isinstance(graph, dict) or has_sampler(graph):
-        return positive
-    return [
-        str(node_id)
-        for node_id, node in graph.items()
-        if isinstance(node, dict) and node.get("class_type") in PROMPT_MANAGER_TYPES
-    ]
+    return list(
+        dict.fromkeys(
+            node_id
+            for node_id, field in run_prompt_components(graph)
+            if field == "text"
+        )
+    )
 
 
 def _join_text_inputs(
@@ -270,7 +414,18 @@ def resolve_text(graph: Any, node_id: str) -> Optional[str]:
 
 
 def intrinsic_pair_nodes(graph: Any) -> List[str]:
-    """Paired nodes whose matching outputs feed the same sampler, or standalone."""
+    """Paired nodes whose matching outputs feed the same sampler, or standalone.
+
+    A pair whose switch is off is never one (#90).
+    """
+    return [
+        node_id
+        for node_id in _intrinsic_pair_nodes(graph)
+        if not opted_out(graph, node_id)
+    ]
+
+
+def _intrinsic_pair_nodes(graph: Any) -> List[str]:
     if not isinstance(graph, dict) or len(graph) > MAX_VISITS:
         return []
     if not has_sampler(graph):
