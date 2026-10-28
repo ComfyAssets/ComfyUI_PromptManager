@@ -124,8 +124,6 @@
                 document.getElementById("exportBtn").addEventListener("click", () => this.exportPrompts());
                 document.getElementById("pageOptionsBtn").addEventListener("click", () => this.showSettingsModal());
                 document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
-                document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
-                document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
                 document.getElementById("autoTagBtn").addEventListener("click", () => this.showAutoTagModal());
                 document.getElementById("addPromptBtn").addEventListener("click", () => this.showAddPromptModal());
@@ -202,9 +200,6 @@
                 document.getElementById("confirmBulkCategory").addEventListener("click", () => this.confirmBulkCategory());
                 document.getElementById("cancelBulkCategory").addEventListener("click", () => this.hideModal("bulkCategoryModal"));
 
-                // Restore modal
-                document.getElementById("confirmRestore").addEventListener("click", () => this.confirmRestore());
-                document.getElementById("cancelRestore").addEventListener("click", () => this.hideModal("restoreModal"));
 
                 // Scan modal
                 document.getElementById("startScan").addEventListener("click", () => this.startScan());
@@ -1485,116 +1480,6 @@
                 }
                 
                 return `${size.toFixed(1)} ${units[unitIndex]}`;
-            }
-
-            // Database backup and restore functionality
-            async backupDatabase() {
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/backup');
-                    
-                    if (response.ok) {
-                        // Get the filename from the Content-Disposition header
-                        const contentDisposition = response.headers.get('Content-Disposition');
-                        let filename = 'prompts_backup.db';
-                        
-                        if (contentDisposition) {
-                            const filenameMatch = contentDisposition.match(/filename="(.+)"/);
-                            if (filenameMatch) {
-                                filename = filenameMatch[1];
-                            }
-                        }
-                        
-                        // Create blob and download
-                        const blob = await response.blob();
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = filename;
-                        document.body.appendChild(a);
-                        a.click();
-                        window.URL.revokeObjectURL(url);
-                        document.body.removeChild(a);
-                        
-                        this.showNotification('💾 Database backup downloaded successfully!', 'success');
-                    } else {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error || 'Backup failed');
-                    }
-                } catch (error) {
-                    console.error('Backup error:', error);
-                    this.showNotification(`❌ Backup failed: ${error.message}`, 'error');
-                }
-            }
-
-            showRestoreModal() {
-                // Clear previous file selection
-                document.getElementById('restoreFileInput').value = '';
-                this.showModal('restoreModal');
-            }
-
-            async confirmRestore() {
-                const fileInput = document.getElementById('restoreFileInput');
-                const file = fileInput.files[0];
-                
-                if (!file) {
-                    this.showNotification('Please select a database file to restore', 'warning');
-                    return;
-                }
-                
-                if (!file.name.endsWith('.db')) {
-                    this.showNotification('Please select a valid .db file', 'warning');
-                    return;
-                }
-                
-                // Show confirmation
-                const confirmed = confirm(
-                    `Are you sure you want to restore from "${file.name}"?\n\n` +
-                    'This will replace your current database. A backup will be created automatically.\n\n' +
-                    'This action cannot be undone.'
-                );
-                
-                if (!confirmed) {
-                    return;
-                }
-                
-                try {
-                    // Disable the restore button and show loading
-                    const confirmBtn = document.getElementById('confirmRestore');
-                    confirmBtn.disabled = true;
-                    confirmBtn.innerHTML = '🔄 Restoring...';
-                    
-                    // Create FormData for file upload
-                    const formData = new FormData();
-                    formData.append('database_file', file);
-                    
-                    const response = await ApiClient.fetchUrl('/prompt_manager/restore', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (response.ok && data.success) {
-                        this.showNotification(
-                            `✅ Database restored successfully! Found ${data.prompt_count} prompts.`, 
-                            'success'
-                        );
-                        this.hideModal('restoreModal');
-                        
-                        // Refresh the interface to show the restored data
-                        await this.loadInitialData();
-                    } else {
-                        throw new Error(data.error || 'Restore failed');
-                    }
-                } catch (error) {
-                    console.error('Restore error:', error);
-                    this.showNotification(`❌ Restore failed: ${error.message}`, 'error');
-                } finally {
-                    // Re-enable the restore button
-                    const confirmBtn = document.getElementById('confirmRestore');
-                    confirmBtn.disabled = false;
-                    confirmBtn.innerHTML = 'Restore Database';
-                }
             }
 
             // Copy prompt to clipboard functionality

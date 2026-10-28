@@ -4136,6 +4136,8 @@ legacy page workflows), not by this check.
 | Maintenance check_hash_duplicates, check_consistency | admin | `#check_hash_duplicates`, `#check_consistency` | — | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
 | Maintenance statistics (database info) | admin | `#statistics` | — | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
 | Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
+| Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
+| Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
 
 ### Browser cache ownership (#222)
 

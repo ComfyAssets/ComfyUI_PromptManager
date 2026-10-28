@@ -20,6 +20,8 @@ const LABELS = Object.freeze({
 const LINKS = Object.freeze([
     { page: 'admin', label: 'Settings', locate: page => page.locator('#settingsBtn'), section: 'overview' },
     { page: 'admin', label: 'Maintenance', locate: page => page.locator('#maintenanceBtn'), section: 'maintenance' },
+    { page: 'admin', label: 'Backup DB', locate: page => page.locator('#backupBtn'), section: 'backups' },
+    { page: 'admin', label: 'Restore DB', locate: page => page.locator('#restoreBtn'), section: 'backups' },
     { page: 'admin', label: 'Diagnostics', locate: page => page.locator('#diagnosticsBtn'), section: 'diagnostics' },
     { page: 'admin', label: 'View Logs', locate: page => page.locator('#logsBtn'), section: 'diagnostics' },
 ]);

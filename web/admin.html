@@ -179,14 +179,16 @@
                            class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Maintenance
                         </a>
-                        <button id="backupBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="backupBtn" href="workspace#/system/backups" target="_blank" rel="noopener"
+                           title="Opens System › Backup &amp; export in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Backup DB
-                        </button>
-                        <button id="restoreBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        </a>
+                        <a id="restoreBtn" href="workspace#/system/backups" target="_blank" rel="noopener"
+                           title="Opens System › Backup &amp; export in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Restore DB
-                        </button>
+                        </a>
                         <button id="scanBtn"
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Scan Images
@@ -468,35 +470,6 @@
                 <button id="confirmBulkCategory"
                         class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Set Category
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Database Restore Modal -->
-    <div id="restoreModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-4">Restore Database</h3>
-
-            <div class="mb-3">
-                <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3 mb-3">
-                    <h4 class="text-pm-warning font-medium text-xs">Warning</h4>
-                    <p class="text-pm text-xs mt-1">This will replace your current database. A backup will be created automatically.</p>
-                </div>
-
-                <label class="block text-xs font-medium text-pm-secondary mb-1">Select Database File (.db)</label>
-                <input type="file" id="restoreFileInput" accept=".db"
-                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] file:mr-3 file:py-1 file:px-3 file:rounded-pm-sm file:border-0 file:text-xs file:font-medium file:bg-pm-accent file:text-pm-accent-fg">
-            </div>
-
-            <div class="flex justify-end gap-2 mt-4">
-                <button id="cancelRestore"
-                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                    Cancel
-                </button>
-                <button id="confirmRestore"
-                        class="px-3 py-1.5 bg-pm-warning hover:opacity-80 text-black text-xs font-medium rounded-pm-sm transition-colors">
-                    Restore Database
                 </button>
             </div>
         </div>
