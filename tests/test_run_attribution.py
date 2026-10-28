@@ -33,6 +33,7 @@ from utils.execution_outputs import (
     snapshot_output_roots,
 )
 from utils.hashing import generate_prompt_hash
+from py.config import GalleryConfig
 from utils.image_monitor import ImageGenerationHandler
 
 STYLE = "windows" if os.name == "nt" else "posix"
@@ -728,6 +729,291 @@ class TestMonitorHistoryRecheck(RecordedRuns, unittest.TestCase):
         del other
         gc.collect()
         run_attribution.notify_outputs_sealed("run", [])  # no dead callback raises
+
+
+class TestMonitorForeignRuns(RecordedRuns, unittest.TestCase):
+    """#247: outputs of workflows without a PromptManager node, in the monitor."""
+
+    def setUp(self):
+        history_tests.HistoryDatabaseTests.setUp(self)
+        self.db = history_tests.HistoryDatabaseTests.database(self)
+        self.output = str(Path(self.temp.name) / "output")
+        os.makedirs(os.path.join(self.output, "dataset"))
+        self.tracker = make_tracker(self.db)
+        self.handler = ImageGenerationHandler(self.db, self.tracker)
+        self.handler.processing_delay = 0
+        self.handler.settle_interval = 0.01
+        self.addCleanup(close_handler, self, self.handler)
+        self.metadata = {"prompt": shapes.shared_prefix()}
+        saved = GalleryConfig.SAVE_FOREIGN_RUNS
+        self.addCleanup(setattr, GalleryConfig, "SAVE_FOREIGN_RUNS", saved)
+        GalleryConfig.SAVE_FOREIGN_RUNS = True
+        patches = (
+            mock.patch(
+                "utils.image_monitor.host_output_directory", return_value=self.output
+            ),
+            mock.patch(
+                "database.run_attribution.host_output_directory",
+                return_value=self.output,
+            ),
+            mock.patch.object(
+                self.handler.metadata_extractor,
+                "extract_metadata",
+                side_effect=lambda path: self.metadata,
+            ),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    close_databases = history_tests.HistoryDatabaseTests.close_databases
+    wait_for = TestMonitorHistoryRecheck.wait_for
+
+    def image(self, name, subfolder="dataset"):
+        path = os.path.join(self.output, subfolder, name)
+        Path(path).write_bytes(b"png")
+        return path
+
+    def linked_text(self, path):
+        row = (
+            self.db.model.get_connection()
+            .execute(
+                "SELECT p.text FROM generated_images g "
+                "JOIN prompts p ON p.id = g.prompt_id WHERE g.image_path = ?",
+                (str(path),),
+            )
+            .fetchone()
+        )
+        return row[0] if row else None
+
+    def key(self, path):
+        return self.handler._awaiting_key(path)
+
+    def prompt_count(self):
+        connection = self.db.model.get_connection()
+        return connection.execute("SELECT COUNT(*) FROM prompts").fetchone()[0]
+
+    def settled(self):
+        return self.wait_for(lambda: self.handler.pending_count() == 0)
+
+    def test_each_dataset_file_links_to_its_branch_once_the_run_ends(self):
+        """CUJ 1: unlinked while the run is open, its own branch after the seal."""
+        paths = [self.image(f"IMG_GEN_0000{n}_.png") for n in (1, 2)]
+        for path in paths:
+            self.handler.process_new_image(path)
+        self.assertEqual([self.linked_text(path) for path in paths], [None, None])
+        self.assertEqual(
+            self.handler.awaiting_foreign(), [self.key(path) for path in paths]
+        )
+        self.assertEqual(self.handler.awaiting_history(), [])
+        self.record_run(
+            self.db,
+            self.output,
+            [("dataset", os.path.basename(path)) for path in paths],
+            [],
+            nodes=["13", "23"],
+        )
+        self.assertTrue(self.wait_for(lambda: all(map(self.linked_text, paths))))
+        self.assertTrue(self.settled())
+        self.assertEqual(
+            [self.linked_text(path) for path in paths], list(shapes.BRANCH_TEXTS[:2])
+        )
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+        prompt = self.db.get_prompt_by_hash(
+            generate_prompt_hash(shapes.BRANCH_TEXTS[0])
+        )
+        self.assertEqual(prompt["category"], "scanned")
+        self.assertIn("Saved from a workflow run: IMG_GEN_00001_.png", prompt["notes"])
+
+    def test_a_run_sealed_before_the_file_settles_links_it_at_once(self):
+        path = self.image("IMG_GEN_00003_.png")
+        self.record_run(
+            self.db, self.output, [("dataset", "IMG_GEN_00003_.png")], [], nodes=["33"]
+        )
+        self.handler.process_new_image(path)
+        self.assertEqual(self.linked_text(path), shapes.BRANCH_TEXTS[2])
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+
+    def test_a_name_two_runs_reported_stays_unlinked(self):
+        """CUJ 3: the file was overwritten; no run proves its saver."""
+        path = self.image("IMG_GEN_00004_.png")
+        reported = [("dataset", "IMG_GEN_00004_.png")]
+        self.record_run(self.db, self.output, reported, [], nodes=["13"])
+        self.record_run(self.db, self.output, reported, [], item=1, nodes=["23"])
+        self.handler.process_new_image(path)
+        self.assertIsNone(self.linked_text(path))
+        reference = {"folder_type": "output", "subfolder": "dataset"}
+        reference["filename"] = "IMG_GEN_00004_.png"
+        with self.assertLogs("prompt_manager.image_monitor", "INFO") as logs:
+            self.handler._recheck_foreign(path, reference)
+        self.assertIn(
+            "No certain prompt for IMG_GEN_00004_.png after its run ended; "
+            "left unlinked",
+            "\n".join(logs.output),
+        )
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_the_setting_off_stores_nothing_at_settle_or_after_the_run(self):
+        """CUJ 4: read for every file, so it applies without a restart."""
+        GalleryConfig.SAVE_FOREIGN_RUNS = False
+        skipped = self.image("IMG_GEN_00005_.png")
+        with self.assertLogs("prompt_manager.image_monitor", "INFO") as logs:
+            self.handler.process_new_image(skipped)
+        self.assertIn(
+            "No PromptManager prompt in workflow, skipping image",
+            "\n".join(logs.output),
+        )
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+        GalleryConfig.SAVE_FOREIGN_RUNS = True
+        waiting = self.image("IMG_GEN_00006_.png")
+        self.handler.process_new_image(waiting)
+        self.assertEqual(self.handler.awaiting_foreign(), [self.key(waiting)])
+        GalleryConfig.SAVE_FOREIGN_RUNS = False
+        self.record_run(
+            self.db, self.output, [("dataset", "IMG_GEN_00006_.png")], [], nodes=["13"]
+        )
+        self.assertTrue(self.wait_for(lambda: not self.handler.awaiting_foreign()))
+        self.assertTrue(self.settled())
+        self.assertEqual(
+            [self.linked_text(p) for p in (skipped, waiting)], [None, None]
+        )
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_a_plain_foreign_workflow_links_at_settle_and_counts_no_run(self):
+        """CUJ 2: the default profile decides; the tracker queue is untouched."""
+        text = "a lighthouse on a cliff at dusk"
+        self.metadata = {"prompt": sampled_graph(text, "blurry")}
+        queued = self.db.save_prompt(
+            text="queued item", prompt_hash=generate_prompt_hash("queued item")
+        )
+        self.tracker.set_current_prompt("queued item", {"prompt_id": queued})
+        first, second = self.image("plain_00001_.png"), self.image("plain_00002_.png")
+        self.handler.process_new_image(first)
+        self.handler.process_new_image(second)
+        self.assertEqual(
+            [self.linked_text(first), self.linked_text(second)], [text, text]
+        )
+        prompt = self.db.get_prompt_by_hash(generate_prompt_hash(text))
+        self.assertEqual(prompt["run_count"] or 0, 0)
+        self.assertIsNone(prompt.get("last_used_at"))
+        self.assertEqual(self.tracker.pop_next_prompt()["id"], queued)
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+
+    def test_the_sealed_reference_spells_the_file_as_history_recorded_it(self):
+        """Windows: the watcher's spelling differs in case from the run's report."""
+        Path(self.output, "Dataset").mkdir()
+        recorded = self.image("IMG_GEN_00007_.png", subfolder="Dataset")
+        seen = os.path.join(self.output, "dataset", "img_gen_00007_.png")
+        Path(seen).write_bytes(b"png")
+        folded = staticmethod(lambda path: os.path.realpath(path).lower())
+        with mock.patch.object(ImageGenerationHandler, "_awaiting_key", folded):
+            self.handler.process_new_image(seen)
+            self.assertIsNone(self.linked_text(seen))
+            self.record_run(
+                self.db,
+                self.output,
+                [("Dataset", os.path.basename(recorded))],
+                [],
+                nodes=["43"],
+            )
+            self.assertTrue(self.wait_for(lambda: self.linked_text(seen)))
+            self.assertTrue(self.settled())
+        self.assertEqual(self.linked_text(seen), shapes.BRANCH_TEXTS[3])
+
+    def test_a_full_foreign_set_never_evicts_a_waiting_keyless_file(self):
+        from utils import image_monitor
+
+        keyless = self.image("bare_00001_.png", subfolder="")
+        with mock.patch.object(
+            self.handler.metadata_extractor, "extract_metadata", return_value=None
+        ):
+            self.handler.process_new_image(keyless)
+        paths = [self.image(f"IMG_GEN_1000{n}_.png") for n in range(3)]
+        with (
+            mock.patch.object(image_monitor, "MAX_AWAITING_HISTORY", 2),
+            self.assertLogs("prompt_manager.image_monitor", "INFO") as logs,
+        ):
+            for path in paths:
+                self.handler.process_new_image(path)
+            self.assertEqual(
+                self.handler.awaiting_foreign(), [self.key(p) for p in paths[1:]]
+            )
+        self.assertEqual(self.handler.awaiting_history(), [self.key(keyless)])
+        self.assertIn(
+            "No recorded run for IMG_GEN_10000_.png; left unlinked",
+            "\n".join(logs.output),
+        )
+
+    def test_an_expired_foreign_entry_is_logged_and_left_unlinked(self):
+        from utils import image_monitor
+
+        path = self.image("IMG_GEN_00008_.png")
+        self.handler.process_new_image(path)
+        later = time.monotonic() + image_monitor.AWAIT_HISTORY_SECONDS + 1
+        with (
+            mock.patch.object(image_monitor.time, "monotonic", return_value=later),
+            self.assertLogs("prompt_manager.image_monitor", "INFO") as logs,
+        ):
+            self.assertEqual(self.handler.awaiting_foreign(), [])
+        self.assertIn(
+            "No recorded run for IMG_GEN_00008_.png; left unlinked",
+            "\n".join(logs.output),
+        )
+        self.assertIsNone(self.linked_text(path))
+
+    def test_a_seal_while_the_pending_set_is_full_is_rechecked_later(self):
+        from utils import image_monitor
+
+        path = self.image("IMG_GEN_00009_.png")
+        self.handler.process_new_image(path)
+        blocker = self.image("blocker.png", subfolder="")
+        release = threading.Event()
+        original = self.handler.process_new_image
+
+        def slow(image_path, prompt_snapshot=None):
+            if image_path == blocker:
+                release.wait(5)
+                return None
+            return original(image_path, prompt_snapshot=prompt_snapshot)
+
+        self.handler.process_new_image = slow
+        with mock.patch.object(image_monitor, "MAX_PENDING_IMAGES", 1):
+            self.assertTrue(self.handler.schedule(blocker))
+            self.assertTrue(self.wait_for(lambda: self.handler.pending_count() == 1))
+            self.record_run(
+                self.db,
+                self.output,
+                [("dataset", "IMG_GEN_00009_.png")],
+                [],
+                nodes=["13"],
+            )
+            self.assertEqual(list(self.handler._foreign_due), [path])
+            release.set()
+            self.assertTrue(self.wait_for(lambda: self.linked_text(path)))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.linked_text(path), shapes.BRANCH_TEXTS[0])
+
+    def test_shutdown_forgets_waiting_and_due_foreign_files(self):
+        path = self.image("IMG_GEN_00010_.png")
+        self.handler.process_new_image(path)
+        self.handler._foreign_due[path] = {"filename": "IMG_GEN_00010_.png"}
+        self.handler.shutdown()
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+        self.assertEqual(list(self.handler._foreign_due), [])
+
+    def test_a_failed_store_is_logged_and_leaves_the_file_unlinked(self):
+        self.metadata = {"prompt": sampled_graph("a quiet harbor", "blurry")}
+        path = self.image("plain_00003_.png")
+        with (
+            mock.patch(
+                "utils.foreign_runs.ingest_resolved_pair",
+                side_effect=sqlite3.OperationalError("locked"),
+            ),
+            self.assertLogs("prompt_manager.image_monitor", "ERROR"),
+        ):
+            self.handler.process_new_image(path)
+        self.assertIsNone(self.linked_text(path))
 
 
 class TestBoundedLookup(RecordedRuns, unittest.TestCase):

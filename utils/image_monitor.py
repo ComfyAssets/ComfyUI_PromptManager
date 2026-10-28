@@ -33,6 +33,15 @@ from typing import Callable, Optional, Dict, Any, List, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from .file_prompt import HISTORY
+from .foreign_runs import (
+    CERTAIN,
+    ForeignRecheck,
+    decide_foreign,
+    history_lookup,
+    save_foreign_runs,
+    store_foreign,
+)
 from .hashing import generate_prompt_hash
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .parallel import note_refusal, refused_at_shutdown
@@ -147,6 +156,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # Sealed re-checks ``schedule`` refused (the path still pending, or the
         # pending set full): retried each time a pending image finishes.
         self._history_due: "OrderedDict[str, None]" = OrderedDict()
+        # The same two sets for foreign outputs (#247), apart so a large
+        # foreign run never evicts a waiting keyless file; the due set keeps
+        # each file's sealed output reference.
+        self._awaiting_foreign: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
+        self._foreign_due: "OrderedDict[str, dict]" = OrderedDict()
         self._awaiting_lock = threading.Lock()
         self._sealed_subscribed = False
         # Set by ``close``: no new work, no new worker, ever (#302).
@@ -247,6 +261,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
         with self._awaiting_lock:
             self._awaiting.clear()
             self._history_due.clear()
+            self._awaiting_foreign.clear()
+            self._foreign_due.clear()
         with self._pending_lock:
             self._pending.clear()
             worker, self._worker = self._worker, None
@@ -432,6 +448,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
             if prompt_snapshot is HISTORY_ONLY:
                 self._recheck_history(image_path)
                 return
+            if isinstance(prompt_snapshot, ForeignRecheck):
+                self._recheck_foreign(image_path, prompt_snapshot.reference)
+                return
             self.logger.info(f"Processing image: {image_path}")
 
             if not os.path.exists(image_path):
@@ -451,11 +470,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # negative-prompt PromptManager nodes in the workflow.
             state, current_prompt = self._find_prompt_from_metadata(metadata)
             if state == "foreign":
-                # Another workflow saved this image: it belongs to no prompt of
-                # ours, and must not consume a batch queue entry.
-                self.logger.info(
-                    f"No PromptManager prompt in workflow, skipping image: {image_path}"
-                )
+                # Another workflow saved this image: never a batch queue entry
+                # of ours; its own graph may name its prompt (#247).
+                self._ingest_foreign(image_path, metadata)
                 return
             if current_prompt:
                 self.logger.info(
@@ -577,42 +594,59 @@ class ImageGenerationHandler(FileSystemEventHandler):
             resolved = os.path.abspath(image_path)
         return os.path.normcase(resolved)
 
-    def _prune_awaiting(self) -> None:
-        """Drop expired and surplus entries (``_awaiting_lock`` held)."""
+    def _prune_awaiting(self, store=None) -> None:
+        """Drop expired and surplus entries of ``store`` (the keyless set by
+        default; ``_awaiting_lock`` held). A dropped foreign file is logged."""
+        store = self._awaiting if store is None else store
         now = time.monotonic()
-        for key in [k for k, (_p, due) in self._awaiting.items() if due <= now]:
-            del self._awaiting[key]
-        while len(self._awaiting) > MAX_AWAITING_HISTORY:
-            self._awaiting.popitem(last=False)
+        dropped = [k for k, (_p, due) in store.items() if due <= now]
+        dropped = [store.pop(key)[0] for key in dropped]
+        while len(store) > MAX_AWAITING_HISTORY:
+            dropped.append(store.popitem(last=False)[1][0])
+        if store is self._awaiting_foreign:
+            for image_path in dropped:
+                self.logger.info(
+                    f"No recorded run for {os.path.basename(image_path)}; "
+                    "left unlinked"
+                )
 
-    def _await_history(self, image_path: str) -> None:
+    def _await_history(self, image_path: str, store=None) -> None:
         """Re-check ``image_path`` once, history only, when its run is sealed.
 
-        A closed handler re-checks nothing.
+        ``store`` is the waiting set (``_awaiting_foreign`` for a foreign
+        output). A closed handler re-checks nothing.
         """
         if self._closed:
             return
         if not self._sealed_subscribed:
             subscribe_outputs_sealed(self._on_outputs_sealed)
             self._sealed_subscribed = True
+        store = self._awaiting if store is None else store
         key = self._awaiting_key(image_path)
         with self._awaiting_lock:
-            self._awaiting.pop(key, None)
-            self._awaiting[key] = (
-                image_path,
-                time.monotonic() + AWAIT_HISTORY_SECONDS,
-            )
-            self._prune_awaiting()
+            store.pop(key, None)
+            store[key] = (image_path, time.monotonic() + AWAIT_HISTORY_SECONDS)
+            self._prune_awaiting(store)
 
-    def _stop_awaiting(self, image_path: str) -> None:
+    def _await_foreign(self, image_path: str) -> None:
+        self._await_history(image_path, self._awaiting_foreign)
+
+    def _stop_awaiting(self, image_path: str, store=None) -> None:
+        store = self._awaiting if store is None else store
         with self._awaiting_lock:
-            self._awaiting.pop(self._awaiting_key(image_path), None)
+            store.pop(self._awaiting_key(image_path), None)
 
     def awaiting_history(self) -> List[str]:
         """Normalized paths still waiting for their run's recorded outputs."""
         with self._awaiting_lock:
             self._prune_awaiting()
             return list(self._awaiting)
+
+    def awaiting_foreign(self) -> List[str]:
+        """Normalized paths of foreign outputs waiting for their run (#247)."""
+        with self._awaiting_lock:
+            self._prune_awaiting(self._awaiting_foreign)
+            return list(self._awaiting_foreign)
 
     def _on_outputs_sealed(self, run_id: str, references: List[dict]) -> None:
         """A run's outputs were recorded: re-check its waiting images once.
@@ -625,6 +659,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         due = []
         with self._awaiting_lock:
             self._prune_awaiting()
+            self._prune_awaiting(self._awaiting_foreign)
             for reference in references:
                 if reference.get("folder_type") != "output":
                     continue
@@ -635,39 +670,47 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 )
                 waiting = self._awaiting.pop(key, None)
                 if waiting is not None:
-                    due.append(waiting[0])
-        for image_path in due:
-            self._schedule_recheck(image_path)
+                    due.append((waiting[0], None))
+                waiting = self._awaiting_foreign.pop(key, None)
+                if waiting is not None:
+                    due.append((waiting[0], dict(reference)))
+        for image_path, reference in due:
+            self._schedule_recheck(image_path, reference)
 
-    def _schedule_recheck(self, image_path: str) -> None:
-        """Schedule the history-only re-check, or keep it due for later.
+    @staticmethod
+    def _recheck_snapshot(reference):
+        return HISTORY_ONLY if reference is None else ForeignRecheck(reference)
+
+    def _schedule_recheck(self, image_path: str, reference=None) -> None:
+        """Schedule the history-only re-check (with the sealed ``reference``:
+        a foreign output's), or keep it due for later.
 
         A closed handler drops it.
         """
         if self._closed:
             return
-        if self.schedule(image_path, HISTORY_ONLY):
+        if self.schedule(image_path, self._recheck_snapshot(reference)):
             return
         with self._awaiting_lock:
             # ``close`` sets the flag before ``shutdown`` clears this set, so
             # a close that raced the refusal above is seen here.
             if self._closed:
                 return
-            self._history_due.pop(image_path, None)
-            self._history_due[image_path] = None
-            while len(self._history_due) > MAX_AWAITING_HISTORY:
-                self._history_due.popitem(last=False)
+            due = self._history_due if reference is None else self._foreign_due
+            due.pop(image_path, None)
+            due[image_path] = reference
+            while len(due) > MAX_AWAITING_HISTORY:
+                due.popitem(last=False)
 
     def _drain_history_due(self) -> None:
         """Schedule due re-checks now that a pending slot or path is free."""
         with self._awaiting_lock:
-            if not self._history_due:
-                return
-            due = list(self._history_due)
-        for image_path in due:
-            if self.schedule(image_path, HISTORY_ONLY):
+            due = [(self._history_due, p, None) for p in self._history_due]
+            due += [(self._foreign_due, *item) for item in self._foreign_due.items()]
+        for store, image_path, reference in due:
+            if self.schedule(image_path, self._recheck_snapshot(reference)):
                 with self._awaiting_lock:
-                    self._history_due.pop(image_path, None)
+                    store.pop(image_path, None)
 
     def _recheck_history(self, image_path: str) -> None:
         """The one history-only re-check of a keyless image (#342)."""
@@ -689,6 +732,70 @@ class ImageGenerationHandler(FileSystemEventHandler):
             image_path,
             {"id": prompt_id, "from_history": True},
             metadata or {"file_info": self.get_basic_file_info(image_path)},
+        )
+
+    def _ingest_foreign(self, image_path: str, metadata) -> None:
+        """A foreign output at settle: store its certain prompt, or wait for
+        its run's recorded outputs when only history can decide (#247)."""
+        name = os.path.basename(image_path)
+        if not save_foreign_runs():
+            self.logger.info(
+                f"No PromptManager prompt in workflow, skipping image: {image_path}"
+            )
+            return
+        in_output = in_output_folder(image_path, host_output_directory())
+        decision = decide_foreign(
+            image_path, metadata, in_output=in_output, lookup=None
+        )
+        if decision.kind == HISTORY:
+            # Registered first, so a run sealed before this lookup is not missed
+            self._await_foreign(image_path)
+            decision = decide_foreign(
+                image_path,
+                metadata,
+                in_output=True,
+                lookup=history_lookup(self.db_manager, image_path),
+            )
+            if decision.kind not in CERTAIN:
+                self.logger.debug(f"{name} waits for its run to end")
+                return
+            self._stop_awaiting(image_path, self._awaiting_foreign)
+        if decision.kind in CERTAIN:
+            self._store_foreign(image_path, decision)
+        else:
+            self.logger.info(f"No certain prompt for {name}; left unlinked")
+
+    def _recheck_foreign(self, image_path: str, reference) -> None:
+        """The one re-check of a foreign output after its run ended (#247)."""
+        name = os.path.basename(image_path)
+        if not os.path.exists(image_path):
+            return
+        if not save_foreign_runs():
+            self.logger.info(f"Saving prompts from other workflows is off: {name}")
+            return
+        try:
+            metadata = self.metadata_extractor.extract_metadata(image_path)
+        except Exception as error:
+            self.logger.warning(f"Metadata of {name} could not be read: {error}")
+            return
+        lookup = history_lookup(self.db_manager, image_path, reference)
+        decision = decide_foreign(image_path, metadata, in_output=True, lookup=lookup)
+        if decision.kind in CERTAIN:
+            self._store_foreign(image_path, decision)
+            return
+        self.logger.info(
+            f"No certain prompt for {name} after its run ended; left unlinked"
+        )
+
+    def _store_foreign(self, image_path: str, decision) -> None:
+        name = os.path.basename(image_path)
+        try:
+            status, prompt_id = store_foreign(self.db_manager, image_path, decision)
+        except Exception as error:
+            self.logger.error(f"Failed to store the prompt of {name}: {error}")
+            return
+        self.logger.info(
+            f"Foreign run: {status} prompt {prompt_id} for {name} ({decision.source})"
         )
 
     def _history_prompt(self, image_path: str) -> Optional[int]:

@@ -172,17 +172,40 @@ class TestForeignWorkflows(LinkingTestCase):
         self.tracker.set_current_prompt(text, {"prompt_id": prompt_id})
         return prompt_id
 
+    def _linked_text(self):
+        row = (
+            self.db.model.get_connection()
+            .execute(
+                "SELECT p.text FROM generated_images g "
+                "JOIN prompts p ON p.id = g.prompt_id WHERE g.image_path = ?",
+                (self.image,),
+            )
+            .fetchone()
+        )
+        return row[0] if row else None
+
     def test_foreign_image_leaves_the_batch_queue_aligned(self):
+        """#247: it links to its own prompt and never takes a queue entry."""
         first = self._queue_batch_item("item one")
         self.assertIsNone(self._process({"prompt": foreign_graph()}))
         self.assertEqual(self.linked, [])
         self.assertEqual(self.tracker.pop_next_prompt()["id"], first)
         self.assertIsNone(self.tracker.pop_next_prompt())
+        self.assertEqual(self._linked_text(), "a cat")
+        prompt = self.db.get_prompt_by_hash(generate_prompt_hash("a cat"))
+        self.assertEqual(prompt["run_count"] or 0, 0)
 
-    def test_foreign_image_is_not_linked_by_the_later_fallbacks_either(self):
+    def test_a_foreign_image_is_linked_only_by_the_ladder(self):
         self._queue_batch_item("item one")  # live tracker and recent prompt exist
+        untraceable = foreign_graph()
+        untraceable["9"]["inputs"]["text"] = ["30", 0]
+        untraceable["30"] = {"class_type": "VendorPromptMaker", "inputs": {}}
+        self.assertIsNone(self._process({"prompt": untraceable}))
+        self.assertEqual(self.linked, [])
+        self.assertIsNone(self._linked_text())
         self.assertIsNone(self._process({"prompt": foreign_graph()}))
         self.assertEqual(self.linked, [])
+        self.assertEqual(self._linked_text(), "a cat")
 
     def test_negative_only_workflow_is_foreign(self):
         self._save("blurry")

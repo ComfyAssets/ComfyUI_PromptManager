@@ -597,6 +597,11 @@ class TestHandlerScheduling(unittest.TestCase):
             self.handler._schedule_recheck(path)
         self.assertIsNone(self.handler._worker)
         self.assertEqual(list(self.handler._history_due), [])
+        # #247: a foreign file's sealed re-check is dropped the same way
+        self.handler._await_foreign(path)
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+        self.handler._schedule_recheck(path, {"filename": "late.png"})
+        self.assertEqual(list(self.handler._foreign_due), [])
         self.assertEqual(self._live_workers() - before, set())
 
     def test_a_sealed_run_starts_a_worker_on_an_open_handler(self):
