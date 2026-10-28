@@ -567,6 +567,43 @@ test('an input dialog with a fallback applies it for an empty value', async () =
     }
 });
 
+// #332: Set category's field suggests the categories under its own datalist id, and "Use prompt category" sits
+// between Cancel and Apply, closing the dialog before it runs.
+test('an input dialog offers suggestions and a secondary action', async () => {
+    const { openInputDialog, closeWorkspaceDialog, INPUT_SUGGESTIONS_ID } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        const calls = [];
+        openInputDialog({ scope, title: 'Categorize selected images', label: 'Category', action: 'Apply', maxLength: 100,
+            suggestions: ['Landscapes', 'Scans'], secondary: { label: 'Use prompt category', onClick: () => calls.push('secondary') },
+            onApply: value => calls.push(value) });
+        assert.equal(INPUT_SUGGESTIONS_ID, 'workspace-input-suggestions');
+        const body = byId(dom, 'modal-body');
+        const [field, list, actions] = body.children;
+        const input = field.children[1];
+        assert.equal(input.getAttribute('list'), 'workspace-input-suggestions');
+        assert.equal(list.tagName.toLowerCase(), 'datalist');
+        assert.equal(list.id, 'workspace-input-suggestions');
+        assert.deepEqual(list.children.map(option => option.value), ['Landscapes', 'Scans']);
+        assert.deepEqual(actions.children.map(node => node.textContent), ['Cancel', 'Use prompt category', 'Apply']);
+        actions.children[1].click();
+        assert.deepEqual(calls, ['secondary']);
+        // No suggestions: no datalist and no list attribute.
+        openInputDialog({ scope, title: 'T', label: 'L', action: 'A', onApply() {} });
+        const [plainField, plainActions] = byId(dom, 'modal-body').children;
+        assert.equal(plainField.children[1].getAttribute('list'), null);
+        assert.deepEqual(plainActions.children.map(node => node.textContent), ['Cancel', 'A']);
+        assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', suggestions: [1], onApply() {} }), TypeError);
+        assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', secondary: { label: '' }, onApply() {} }), TypeError);
+        assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', secondary: { label: 'X' }, onApply() {} }), TypeError);
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
 test('dialogs restore focus to the trigger on Escape', async () => {
     const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();

@@ -364,7 +364,7 @@ test('the D117 wrap rule targets only the settings summary button', async () => 
     assert.doesNotMatch(css, /#viewer-details > div > button/);
 });
 
-test('category chip names its origin and shows an own category for any link status (#332)', async () => {
+test('category chip names its origin visibly and shows an own category for any link status (#332 D146)', async () => {
     const base = await localRecord(localPng('a.png'));
     const chipTexts = record => {
         const {f, done} = renderFull(record);
@@ -373,11 +373,11 @@ test('category chip names its origin and shows an own category for any link stat
         } finally { done(); }
     };
     const cases = [
-        [{status:'none', category:'Scans', category_scope:'image'}, 'Image category: Scans'],
-        [{status:'ambiguous', category:'Scans', category_scope:'image'}, 'Image category: Scans'],
-        [{status:'linked', category:'Portraits', category_scope:'image'}, 'Image category: Portraits'],
-        [{status:'linked', category:'Landscapes', category_scope:'positive'}, 'Positive prompt category: Landscapes'],
-        [{status:'linked', category:'Recipes', category_scope:'pair'}, 'Recipe category: Recipes'],
+        [{status:'none', category:'Scans', category_scope:'image'}, 'Image category: Scans · this image'],
+        [{status:'ambiguous', category:'Scans', category_scope:'image'}, 'Image category: Scans · this image'],
+        [{status:'linked', category:'Portraits', category_scope:'image'}, 'Image category: Portraits · this image'],
+        [{status:'linked', category:'Landscapes', category_scope:'positive'}, 'Positive prompt category: Landscapes · prompt'],
+        [{status:'linked', category:'Recipes', category_scope:'pair'}, 'Recipe category: Recipes · recipe'],
     ];
     for (const [library, text] of cases) {
         const chips = chipTexts({...base, library:{...base.library, tags:[], tags_scope:null, ...library}});
