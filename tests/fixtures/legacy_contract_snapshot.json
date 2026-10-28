@@ -182,6 +182,7 @@
     "settings.monitoring_enabled",
     "settings.result_timeout",
     "settings.safety_backup",
+    "settings.save_foreign_runs",
     "settings.thumbnail_edge",
     "settings.thumbnail_format",
     "settings.thumbnail_quality",
