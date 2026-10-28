@@ -123,6 +123,34 @@ def _touch(path: Path, size: int, moment: datetime.datetime) -> None:
     os.utime(path, (stamp, stamp))
 
 
+def _append_active(manager, log_dir: Path, size: int) -> None:
+    """Grow the active log as this process's handler does (#389).
+
+    A second handle appending to the file the handler writes is what Clear
+    all logs refuses as another program writing to it, so the bytes go
+    through the handler's own stream; with file logging off, to the file.
+    """
+
+    def same(path) -> bool:
+        return os.path.normcase(os.path.realpath(path)) == os.path.normcase(
+            os.path.realpath(log_dir / ACTIVE)
+        )
+
+    for handler in manager._file_handlers():
+        stream = getattr(handler, "stream", None)
+        if stream is None or not same(handler.baseFilename):
+            continue
+        handler.acquire()
+        try:
+            stream.write("x" * size)
+            stream.flush()
+        finally:
+            handler.release()
+        return
+    with open(log_dir / ACTIVE, "ab") as handle:
+        handle.write(b"x" * size)
+
+
 def _bounded(value, name, top=MAX_SEED_BYTES):
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= top:
         raise web.HTTPBadRequest(text=f"{name} must be an integer 0..{top}")
@@ -169,8 +197,7 @@ def register_diagnostics_commands(app, routes, api, root: Path):
         for index, (time_text, level, message) in enumerate(CONCEPT_RECORDS):
             record = _record(time_text, level, message, index)
             manager.add_to_buffer(record, record.getMessage())
-        with open(log_dir / ACTIVE, "ab") as handle:
-            handle.write(b"x" * CONCEPT_ACTIVE)
+        _append_active(manager, log_dir, CONCEPT_ACTIVE)
         for number, size in enumerate(CONCEPT_ROTATED, start=1):
             moment = ROTATED_TIME - datetime.timedelta(hours=number)
             _touch(log_dir / f"{ACTIVE}.{number}", size, moment)
@@ -194,8 +221,7 @@ def register_diagnostics_commands(app, routes, api, root: Path):
             manager.add_to_buffer(record, record.getMessage())
         active = _bounded(data.get("active", 0), "active")
         if active:
-            with open(log_dir / ACTIVE, "ab") as handle:
-                handle.write(b"x" * active)
+            _append_active(manager, log_dir, active)
         rotated = data.get("rotated", [])
         if not isinstance(rotated, list) or len(rotated) > 20:
             raise web.HTTPBadRequest(text="rotated must be a list of sizes")

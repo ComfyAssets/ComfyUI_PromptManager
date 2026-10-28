@@ -1,0 +1,55 @@
+name: Windows and macOS
+
+permissions:
+  contents: read
+
+# Non-blocking portability runs (#420): never on pull requests or in the merge queue, and no context
+# here is a required check. A red run is fixed at its cause before the workspace cutover (#334).
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# Every run gets its own group (run_id), so no main commit's run is ever cancelled or dropped as pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  PYTHONFAULTHANDLER: "1"
+
+# Time limit rule as in test.yml: ceil(1.5 x the slowest of three recent green runs on main) + 3
+# minutes, never under 5. Measured 2026-10-26 in test.yml on runs 40257217681 (3be0ada),
+# 40240706568 (fb9134f), 40228167328 (f9835aa), before these legs moved here in #420:
+#   slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
+#     (macos 6m14s-8m30s, windows 11m42s-15m54s)
+jobs:
+  test:
+    name: py${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 27
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m tests.run_suite -v

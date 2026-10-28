@@ -85,6 +85,23 @@ class TestPairUsageTracking(unittest.TestCase):
             self.db.get_prompt_by_id(pair["negative_prompt_id"])["run_count"], 0
         )
 
+    def test_execution_records_a_cached_run_receipt_for_both_editors(self):
+        from utils.cached_runs import Facts
+
+        node = self.node()
+        node.cached_runs = Mock()
+        node.cached_runs.replayed.return_value = False
+        node.encode_prompt(
+            Mock(),
+            "cat",
+            negative_text="",
+            prompt=pair_graph(negative=""),
+            unique_id="1",
+        )
+        node.cached_runs.record_item.assert_called_once_with(
+            "1", ("cat", ""), Facts(usage_tracking.generate_prompt_hash("cat"), None)
+        )
+
     def test_validation_rejection_never_counts_or_saves(self):
         self.submit(pair_graph())
         self.assertEqual(self.db.list_prompt_pairs()["total"], 0)

@@ -183,6 +183,7 @@ _TABLES = (
     "media_image_tags",
     "media_annotation_bytes",
     "media_annotation_files",
+    "image_categories",
     "image_prompt_pairs",
     "prompt_pair_tags",
     "prompt_pairs",

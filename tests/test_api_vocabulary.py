@@ -62,12 +62,16 @@ class TestVocabularyAPI(ImageAPITestCase):
             },
         )
         self.assertEqual(
-            categories["categories"], [{"value": "Animal", "prompt_count": 1}]
+            categories["categories"],
+            [{"value": "Animal", "prompt_count": 1, "image_count": 0}],
         )
         _, rest = await self.get(
             "categories", limit=1, cursor=categories["next_cursor"]
         )
-        self.assertEqual(rest["categories"], [{"value": "Pet", "prompt_count": 1}])
+        self.assertEqual(
+            rest["categories"],
+            [{"value": "Pet", "prompt_count": 1, "image_count": 0}],
+        )
         self.assertFalse(rest["has_more"])
 
     async def test_vocabulary_cursor_is_signed_epoch_scoped(self):
@@ -488,6 +492,7 @@ class TestVocabularyAPI(ImageAPITestCase):
             "other_prompts": 0,
             "negative_variants": 1,
             "archived_negative_variants": 0,
+            "images": 0,
         }
         self.assertEqual(
             preview,
@@ -527,6 +532,73 @@ class TestVocabularyAPI(ImageAPITestCase):
         )
         self.assertEqual(response.status, 409)
         self.assertEqual(replay["code"], "vocabulary-conflict")
+
+    async def test_category_rows_report_images_and_image_only_values(self):
+        self._save_prompt("Owner", category="Prompt value")
+        _, options_before = await self.get_options()
+        self.api.db.set_image_categories(
+            [("root", "a.png"), ("root", "b.png")], "Prompt value"
+        )
+        self.api.db.set_image_categories([("root", "c.png")], "Image value")
+        response, first = await self.get("categories", limit=1)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            first["categories"],
+            [{"value": "Prompt value", "prompt_count": 1, "image_count": 2}],
+        )
+        self.assertEqual(first["total"], 2)
+        _, rest = await self.get("categories", limit=1, cursor=first["next_cursor"])
+        self.assertEqual(
+            rest["categories"],
+            [{"value": "Image value", "prompt_count": 0, "image_count": 1}],
+        )
+        self.assertFalse(rest["has_more"])
+        # The Prompt library's category list does not gain image values.
+        _, options_after = await self.get_options()
+        self.assertEqual(options_after, options_before)
+        self.assertEqual(options_after["categories"], ["Prompt value"])
+
+    async def get_options(self):
+        response = await self.client.get("/prompt_manager/library/options")
+        return response, await response.json()
+
+    async def test_category_routes_rename_image_only_value(self):
+        epoch = self.api.db.get_execution_epoch()
+        self._save_prompt("Bystander", category="Kept")
+        self.api.db.set_image_categories(
+            [("root", "a.png"), ("second", "b.png")], "Image value"
+        )
+        prompts_before = self.category_rows()
+        body = {"expected_epoch": epoch, "source": "Image value", "target": "Moved"}
+        response, preview = await self.send("POST", "categories/preview", body)
+        self.assertEqual(response.status, 200, preview)
+        impact = {
+            "positive_prompts": 0,
+            "other_prompts": 0,
+            "negative_variants": 0,
+            "archived_negative_variants": 0,
+            "images": 2,
+        }
+        self.assertEqual(preview["impact"], impact)
+        stale = preview["impact_token"]
+        self.api.db.set_image_categories([("root", "late.png")], "Image value")
+        response, refused = await self.send(
+            "POST", "categories/apply", {**body, "impact_token": stale}
+        )
+        self.assertEqual(response.status, 409)
+        self.assertEqual(refused["code"], "vocabulary-conflict")
+        self.assertEqual(self.api.db.image_category("root", "a.png"), "Image value")
+        _, preview = await self.send("POST", "categories/preview", body)
+        response, applied = await self.send(
+            "POST",
+            "categories/apply",
+            {**body, "impact_token": preview["impact_token"]},
+        )
+        self.assertEqual(response.status, 200, applied)
+        self.assertEqual(applied["impact"], {**impact, "images": 3})
+        for key in (("root", "a.png"), ("second", "b.png"), ("root", "late.png")):
+            self.assertEqual(self.api.db.image_category(*key), "Moved")
+        self.assertEqual(self.category_rows(), prompts_before)
 
     async def test_preview_validation(self):
         epoch = self.api.db.get_execution_epoch()

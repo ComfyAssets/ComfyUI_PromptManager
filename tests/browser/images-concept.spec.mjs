@@ -289,7 +289,8 @@ const continuationText=page=>page.locator('.infinite-continuation > p').first().
 async function searchOf(page,term) {
     const before=await countText(page);
     await page.locator('#search').fill(term);
-    await expect.poll(()=>countText(page)).not.toBe(before);
+    // Production's caption reads "Loading images…" until the search's listing answers (#391); the concept's is instant.
+    await expect.poll(async()=>{const text=await countText(page);return text!==before&&text!=='Loading images…';}).toBe(true);
     await expect.poll(()=>page.locator(CARDS).count()).toBeLessThan(FIXTURE_IMAGES);
     await settle(page);
     const result={count:await countText(page),continuation:await continuationText(page),cards:await page.locator(`${CARDS} .image-open`).evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')))};

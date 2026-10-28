@@ -185,6 +185,26 @@ test('legacy fill applies to local records', async () => {
     assert.notEqual(zeroed.prompts.positive.text, '');
 });
 
+test('a branch named by recorded run history shows the Recorded run badge', async () => {
+    // #386: the server labels sides whose save node recorded history named; Execution recorded stays stronger.
+    const base = await localRecord(new File([fs.readFileSync(new URL('f09.png', PARITY))], 'f09.png'));
+    const recorded = {...base, prompts:{positive:{...base.prompts.positive, source:'recorded-run'}, negative:{...base.prompts.negative, source:'recorded-run'}}};
+    let view = renderFull(recorded);
+    try {
+        assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Recorded run']);
+        assert.ok(view.texts(n => n.tagName === 'p').includes('Prompt evidence: recorded run'));
+    } finally { view.done(); }
+    view = renderFull({...recorded, prompts:{...recorded.prompts, negative:{...recorded.prompts.negative, source:'execution'}}});
+    try {
+        assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Execution recorded']);
+    } finally { view.done(); }
+    // A recorded branch whose negative left out a run-time part is still inferred from the workflow.
+    view = renderFull({...recorded, prompts:{...recorded.prompts, negative:{...recorded.prompts.negative, source:'runtime-parts-omitted'}}});
+    try {
+        assert.deepEqual(view.texts(n => n.className === 'chip blue'), ['Workflow inferred']);
+    } finally { view.done(); }
+});
+
 // #249 PR C Task C3 (D88): one chip row, the file's current image tags first, then D21's linked tags not already shown.
 function tagged(imageTags, library = {status:'linked', tags:['Minimal', 'warm_light', 'editorial'], tags_scope:'positive'}) {
     return {...record(), imageTags, library};
@@ -641,4 +661,33 @@ test('focus starts on the field, moves to the first checkbox once listed, and fa
         await none.settle();
         assert.equal(none.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0].focused, true);
     } finally { none.done(); }
+});
+
+test('category chip names its origin and shows an own category for any link status (#332)', async () => {
+    const base = await localRecord(localPng('a.png'));
+    const chipTexts = record => {
+        const {f, done} = renderFull(record);
+        try {
+            return f.walk(f.container, n => /(^| )chip( |$)/.test(n.className ?? '')).map(n => n.textContent);
+        } finally { done(); }
+    };
+    const cases = [
+        [{status:'none', category:'Scans', category_scope:'image'}, 'Image category: Scans'],
+        [{status:'ambiguous', category:'Scans', category_scope:'image'}, 'Image category: Scans'],
+        [{status:'linked', category:'Portraits', category_scope:'image'}, 'Image category: Portraits'],
+        [{status:'linked', category:'Landscapes', category_scope:'positive'}, 'Positive prompt category: Landscapes'],
+        [{status:'linked', category:'Recipes', category_scope:'pair'}, 'Recipe category: Recipes'],
+    ];
+    for (const [library, text] of cases) {
+        const chips = chipTexts({...base, library:{...base.library, tags:[], tags_scope:null, ...library}});
+        assert.ok(chips.includes(text), `${JSON.stringify(library)} -> ${chips}`);
+    }
+    for (const library of [
+        {status:'none', category:'Inherited', category_scope:'positive'},
+        {status:'linked', category:null, category_scope:null},
+        {status:'none', category:null, category_scope:null},
+    ]) {
+        const chips = chipTexts({...base, library:{...base.library, tags:[], tags_scope:null, ...library}});
+        assert.equal(chips.some(chip => /category: /.test(chip)), false, JSON.stringify(library));
+    }
 });

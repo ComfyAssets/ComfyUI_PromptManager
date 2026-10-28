@@ -53,6 +53,7 @@ _TABLES = (
     "media_image_tags",
     "media_annotation_bytes",
     "media_annotation_files",
+    "image_categories",
     "image_prompt_pairs",
     "prompt_pair_tags",
     "prompt_pairs",
@@ -247,6 +248,22 @@ def register_tagging_commands(
         ):
             raise web.HTTPBadRequest()
         model.unavailable = set(data["unavailable"])
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/tagging/loaded")
+    async def loaded(request: web.Request) -> web.Response:
+        """Mark one fake model loaded (``{"model": "<key>"}``), as a batch that
+        kept it in memory leaves it; ``/autotag/models`` then reports
+        ``model_loaded``. Reset unloads it."""
+        data = await request.json() if request.can_read_body else None
+        if (
+            request.query
+            or not isinstance(data, dict)
+            or set(data) != {"model"}
+            or data["model"] not in MODELS
+        ):
+            raise web.HTTPBadRequest()
+        model.loaded = data["model"]
         return web.json_response({"success": True})
 
     @routes.post("/__test__/tagging/download")

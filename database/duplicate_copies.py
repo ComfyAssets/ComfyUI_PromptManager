@@ -13,6 +13,8 @@ IMMEDIATE`` transaction, so no row ever names a deleted file:
   union under the same keys a favorite moves by;
 - its image tags (``media_image_tags`` of its byte record), joined onto the
   kept copy's byte record as their union, in order;
+- its own image category (#332), copied to the kept copy when that copy has
+  none; the removed copy's row is kept, so a give-back loses nothing;
 - its pending Needs review items, settled: only an item still ``pending`` at
   revision 0 with no decision row is removed (``review._SETTLE_ITEM``), so a
   decided item is never touched.
@@ -24,6 +26,8 @@ import os
 
 from .annotation_schema import BYTES_TABLE, FILES_TABLE
 from .annotations import _BUMP_INDEX
+from .image_categories import COPY_SQL as COPY_CATEGORY_SQL
+from .image_categories import copy_image_category
 from .models import normalize_image_path, utc_now_iso
 from .review import _BUMP_REVIEW_INDEX, _PENDING_OF_LOCATOR, _SETTLE_ITEM
 from .review_changes import notify_review_change
@@ -89,6 +93,7 @@ FILE_LINK_SQL = (
     COPY_BYTE_SQL,
     COPY_TAG_COUNT_SQL,
     PENDING_COUNT_SQL,
+    COPY_CATEGORY_SQL,
 )
 
 
@@ -150,9 +155,11 @@ class DuplicateCopyOperations:
         removed key, kept root key, kept key)`` per listed root holding the
         file; they move its favorite and its collection memberships),
         ``removed_locator``, ``kept_locator``, ``sha256`` and the kept copy's
-        ``kept_size`` and ``kept_mtime_ns``. Returns ``{moved, merged,
-        favorites, tags, review, collections}`` (``collections``: the
-        memberships inserted on the kept copy).
+        ``kept_size`` and ``kept_mtime_ns``; ``categories``: ``(removed file
+        key, kept file key)`` pairs of the image categories (#332). Returns
+        ``{moved, merged, favorites, tags, review, collections, categories}``
+        (``collections``: the memberships inserted on the kept copy;
+        ``categories``: the image categories copied to the kept copy).
         """
         counts = dict.fromkeys(
             ("moved", "merged", "favorites", "tags", "review", "collections"), 0
@@ -191,6 +198,10 @@ class DuplicateCopyOperations:
                 counts["favorites"] += _move_favorite(conn, *favorite)
                 counts["collections"] += _move_memberships(conn, *favorite)
             counts["tags"] = self._move_copy_tags(conn, move)
+            counts["categories"] = sum(
+                copy_image_category(conn, removed, kept)
+                for removed, kept in move.get("categories", ())
+            )
             for (item_id,) in conn.execute(
                 _PENDING_OF_LOCATOR, (move["removed_locator"],)
             ).fetchall():

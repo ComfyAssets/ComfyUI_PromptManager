@@ -8,7 +8,6 @@ without requiring a full ComfyUI server.
 import json
 import os
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,6 +17,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
+from tests.private_temp import private_temp_db
 from utils.hashing import generate_prompt_hash
 
 
@@ -25,8 +25,7 @@ class APITestCase(AioHTTPTestCase):
     """Base class that stands up a test aiohttp app with PromptManager routes."""
 
     async def get_application(self):
-        self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self._temp_db.close()
+        self._temp_db = private_temp_db(self)
 
         app = web.Application()
         routes = web.RouteTableDef()

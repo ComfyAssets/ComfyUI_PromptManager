@@ -75,6 +75,82 @@ def subscribe_executor_messages(key: str, callback: Callable) -> Callable[[], No
         return state.subscribe(key, callback)
 
 
+# STRING output slots of each PromptManager-family node, in output order
+STRING_SLOTS = {
+    "PromptManager": (1,),
+    "PromptManagerFocused": (1,),
+    "PromptManagerSplit": (1,),
+    "PromptManagerText": (0,),
+    "PromptManagerPair": (2, 3),
+}
+MAX_CACHED_VALUES = 64
+
+
+def _local_cache_reader(executor: object) -> Callable | None:
+    """``node_id -> outputs`` of the executor's local output cache, or None.
+
+    Only the supported cache classes, only ``get_local`` (never a provider or
+    an async lookup), only a real ``CacheEntry`` with at most four outputs.
+    """
+    from comfy_execution import caching
+    from execution import CacheEntry
+
+    cache = executor.caches.outputs
+    supported = tuple(
+        cls
+        for name in ("HierarchicalCache", "LRUCache", "RAMPressureCache")
+        if isinstance(cls := getattr(caching, name, None), type)
+    )
+    if type(cache) not in supported:
+        return None
+    local = getattr(cache, "get_local", None)
+    if not callable(local):
+        return None
+
+    def read(node_id: str) -> list | tuple | None:
+        entry = local(node_id)
+        if type(entry) is not CacheEntry:
+            return None
+        outputs = entry.outputs
+        if type(outputs) not in (list, tuple) or not 0 < len(outputs) <= 4:
+            return None
+        return outputs
+
+    return read
+
+
+def cached_string_outputs(
+    executor: object, node_id: str, node_type: str
+) -> tuple[tuple[str, ...], ...] | None:
+    """One tuple per STRING slot of a cached node's local entry, or None (#347).
+
+    None when the cache or entry is not supported, a slot is missing or holds
+    more than 64 values, any value is not a ``str``, or the slots differ in
+    length. Never runs a provider or an async lookup.
+    """
+    try:
+        slots = STRING_SLOTS.get(node_type)
+        if slots is None or type(node_id) is not str:
+            return None
+        local = _local_cache_reader(executor)
+        outputs = local(node_id) if local is not None else None
+        if outputs is None or not max(slots) < len(outputs):
+            return None
+        found = []
+        for slot in slots:
+            values = outputs[slot]
+            if type(values) not in (list, tuple) or len(values) > MAX_CACHED_VALUES:
+                return None
+            if any(type(value) is not str for value in values):
+                return None
+            found.append(tuple(values))
+        if len({len(values) for values in found}) != 1:
+            return None
+        return tuple(found)
+    except Exception:
+        return None
+
+
 def observe_cached_context(
     executor: object, message_type: object, message_data: object
 ) -> None:
@@ -101,19 +177,8 @@ def observe_cached_context(
         nodes = message_data.get("nodes")
         if type(nodes) not in (list, tuple) or len(nodes) > 500:
             return
-        from comfy_execution import caching
-        from execution import CacheEntry
-
-        cache = executor.caches.outputs
-        supported = tuple(
-            cls
-            for name in ("HierarchicalCache", "LRUCache", "RAMPressureCache")
-            if isinstance(cls := getattr(caching, name, None), type)
-        )
-        if type(cache) not in supported:
-            return
-        local = getattr(cache, "get_local", None)
-        if not callable(local):
+        local = _local_cache_reader(executor)
+        if local is None:
             return
         # Only source IDs retained by the bounded submitted graph are queried.
         for source in cap.sources:
@@ -124,11 +189,8 @@ def observe_cached_context(
                 if source.node_type == "PromptManagerPair"
                 else 0 if source.node_type == "PromptManagerText" else 1
             )
-            entry = local(source.node_id)
-            if type(entry) is not CacheEntry:
-                continue
-            outputs = entry.outputs
-            if type(outputs) not in (list, tuple) or not slot < len(outputs) <= 4:
+            outputs = local(source.node_id)
+            if outputs is None or not slot < len(outputs):
                 continue
             values = outputs[slot]
             if type(values) not in (list, tuple) or len(values) > 64:

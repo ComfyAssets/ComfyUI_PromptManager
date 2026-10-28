@@ -283,8 +283,13 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
     };
 }
 
-/** The concept's count line (app.js a446): "N of M images · K positive prompts", without the count while unknown. */
-export function countLine({ loaded, total, positiveCount }) {
+/**
+ * The concept's count line (app.js a446): "N of M images · K positive prompts", without the count while unknown, and
+ * the page's first "Loading images…" while a first page loads.
+ */
+export function countLine({ loaded, total, positiveCount, loading = false, error = null }) {
+    // A first page in flight has no count yet: "0 of 0 images" would claim the filter matched nothing (#391).
+    if (loading && !loaded && !error) return 'Loading images…';
     const images = `${loaded.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${noun(total, 'image')}`;
     return isCount(positiveCount) ? `${images} · ${positiveCount.toLocaleString('en-US')} ${noun(positiveCount, 'positive prompt')}` : images;
 }
