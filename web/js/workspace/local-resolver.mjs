@@ -4,7 +4,7 @@
 // tests/test_local_inspect_parity.py compares every answer with the server's on the same records. Values follow
 // Python's model (py-json.mjs): dict order, int versus float, code-point lengths, `str.strip()`.
 //
-// Task 8 ported execution evidence and graph tracing for one sampler; Task 9 adds candidate selection among several
+// Task 8 ported execution evidence and graph tracing for one sampler; Task 9 added candidate selection among several
 // samplers and detailer stages (local-resolver-stages.mjs) and A1111 `parameters` (local-parameters.mjs). No DOM.
 import { PyValueError, isDict, isList, isInt, pyJsonLoads, pyLen, pySlice, pyStrip, pyStr, pyGet } from './py-json.mjs';
 import {
