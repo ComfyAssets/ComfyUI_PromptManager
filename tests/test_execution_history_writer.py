@@ -31,16 +31,20 @@ from utils.execution_history_writer import HistoryWriter
 # 0.19 s on macOS py3.13 (PR #351).
 NON_BLOCKING_CEILING = 1.0
 
+# Saturation tests block the worker while they queue 1023 more items. The
+# block must hold until the test releases it (#346/#352): a 3 s timer let a
+# loaded runner unblock the worker mid-fill and drain it. This is only a hang
+# guard; the test, or cleanup, always sets the release.
+SATURATION_HOLD_SECONDS = 60
+
 
 class ManualClock:
     def __init__(self):
         self.value = 0.0
-        self.reads = 0
         self.lock = threading.Lock()
 
     def __call__(self):
         with self.lock:
-            self.reads += 1
             return self.value
 
     def advance(self, seconds):
@@ -86,16 +90,25 @@ class HistoryWriterTests(unittest.TestCase):
             threading.Event().wait(0.005)
         self.fail("finite deadline expired waiting for worker behavior")
 
-    def wait_for_worker_pass(self):
-        """Wait until the idle worker has run one whole loop pass on the clock.
+    def wait_for_worker_pass(self, writer):
+        """Wait until the idle worker has run one whole loop pass from now.
 
-        An idle pass reads the clock for the probe decision and again before
-        it parks, so three reads from now include one complete pass: whatever
-        the worker decides at the current clock value has happened (state,
-        not a wall-clock pause that a loaded runner can outlast).
+        A worker with no accepted work ends every pass by parking on its wake
+        event. The first park counted may end a pass already under way; the
+        second ends a pass that began after this call, so whatever the worker
+        decides at the current clock value has happened (state, not a
+        wall-clock pause that a loaded runner can outlast).
         """
-        reads = self.clock.reads
-        self.wait_for(lambda: self.clock.reads >= reads + 3)
+        wake = writer._wake
+        park = wake.wait
+        parks = []
+
+        def counted(timeout=None):
+            parks.append(timeout)
+            return park(timeout)
+
+        with patch.object(wake, "wait", counted):
+            self.wait_for(lambda: len(parks) >= 2)
 
     def writer(self, factory=None, ready=True):
         writer = HistoryWriter(factory or (lambda: self.db), clock=self.clock)
@@ -314,7 +327,7 @@ class HistoryWriterTests(unittest.TestCase):
 
         def write(command):
             entered.set()
-            release.wait(3)
+            release.wait(SATURATION_HOLD_SECONDS)
             return original(command)
 
         with patch.object(self.db, "write_execution_start", write):
@@ -419,6 +432,10 @@ class HistoryWriterTests(unittest.TestCase):
                 # Manual clock: only the patched join/sleep advance it, so this
                 # exact bound proves early joins do not spin forever.
                 self.assertLess(elapsed, 0.2)
+            else:
+                # Real clock: a loaded runner may run late, but close() must
+                # not wait anywhere near the 3 s the blocked write holds.
+                self.assertLess(elapsed, 0.02 + NON_BLOCKING_CEILING)
             # Bounded on the real clock too: close() gave up while the
             # in-flight write was still blocked, instead of waiting it out.
             self.assertFalse(left.is_set())
@@ -796,7 +813,7 @@ class HistoryWriterTests(unittest.TestCase):
             self.wait_for(lambda: not writer.status().accepting)
             self.assertFalse(writer.submit(fresh))
             self.clock.advance(4.99)
-            self.wait_for_worker_pass()
+            self.wait_for_worker_pass(writer)
             self.assertEqual(probes, [0])
             self.clock.advance(0.01)
             self.wait_for(lambda: writer.status().accepting)
@@ -819,12 +836,12 @@ class HistoryWriterTests(unittest.TestCase):
         writer = self.writer(factory, ready=False)
         self.wait_for(lambda: len(calls) == 1)
         self.clock.advance(4.99)
-        self.wait_for_worker_pass()
+        self.wait_for_worker_pass(writer)
         self.assertEqual(calls, [0])
         self.clock.advance(0.01)
         self.wait_for(lambda: len(calls) == 2)
         self.clock.advance(4.99)
-        self.wait_for_worker_pass()
+        self.wait_for_worker_pass(writer)
         self.assertEqual(calls, [0, 5])
         self.clock.advance(0.01)
         self.wait_for(lambda: writer.status().accepting)
@@ -878,7 +895,7 @@ class HistoryWriterTests(unittest.TestCase):
                 )
             writer.invalidate()
             release.set()
-            self.wait_for_worker_pass()
+            self.wait_for_worker_pass(writer)
             self.assertFalse(writer.status().accepting)
             self.assertIsNone(writer.status().epoch)
             self.assertFalse(writer.submit(self.start_command(epoch=stale_epoch)))
