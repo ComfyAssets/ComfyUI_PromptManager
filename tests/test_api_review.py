@@ -1040,8 +1040,8 @@ class TestApplyRefusals(ReviewRoutesTestCase):
         _path, item, detail, observed, cat = await self._opened()
         real = review_capture_module.resolve_prompt_pair
 
-        def reworded(metadata):
-            resolution = real(metadata)
+        def reworded(metadata, **kwargs):
+            resolution = real(metadata, **kwargs)
             return {
                 **resolution,
                 "reason": "a reworded reason from a newer resolver",
@@ -1065,8 +1065,8 @@ class TestApplyRefusals(ReviewRoutesTestCase):
         _path, item, detail, observed, cat = await self._opened()
         real = review_capture_module.resolve_prompt_pair
 
-        def without_cat(metadata):
-            resolution = real(metadata)
+        def without_cat(metadata, **kwargs):
+            resolution = real(metadata, **kwargs)
             kept = [
                 c
                 for c in resolution["candidates"]

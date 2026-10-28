@@ -36,6 +36,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
+from tests.private_temp import private_temp_db
 from py import config_store, lora_import, lora_utils
 from py.config import IntegrationConfig, PromptManagerConfig
 from py.api import settings_routes as settings_module
@@ -57,8 +58,7 @@ class LoraAPITestCase(AioHTTPTestCase):
     """Stands up the PromptManager routes with a temp DB and neutral LoRA config."""
 
     async def get_application(self):
-        self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self._temp_db.close()
+        self._temp_db = private_temp_db(self)
         self.tmp_root = Path(tempfile.mkdtemp())
         self.custom_nodes = self.tmp_root / "custom_nodes"
         self.custom_nodes.mkdir()
