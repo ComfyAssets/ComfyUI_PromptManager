@@ -146,28 +146,12 @@ test('gallery cache clear says so when browser storage is denied', async () => {
         'Thumbnails cleared; original images untouched. This browser refused access to its storage, so nothing there was cleared.']]);
 });
 
-test('admin LoRA import shows a refusal frame and closes its modal', async () => {
-    const { page, dom, timers, notifications } = load('admin.js', 'PromptAdmin',
-        async () => sseResponse([{ type: 'error', status: BUSY, progress: 0, message: BUSY }]));
-    page.saveLoraSettings = async () => true;
-    page.loadStatistics = () => assert.fail('a refused import must not reload statistics');
-
-    await page.runLoraImport();
-
-    assert.equal(dom.nodes.loraImportStatus.textContent, `Error: ${BUSY}`);
-    assert.deepEqual(notifications.filter(([type]) => type === 'error'), [['error', `LoRA import failed: ${BUSY}`]]);
-    assert.equal(timers.length, 1);
-    timers[0]();
-    assert.deepEqual(notifications.at(-1), ['hide', 'loraImportModal']);
-});
-
 test('admin settings save shows why config.json refused it', async () => {
     const message = 'config.json cannot be read, so nothing was saved. Fix or remove the file, then save again.';
     const { page, notifications } = load('admin.js', 'PromptAdmin',
         async () => jsonResponse(409, { success: false, persisted: false, code: 'config-unreadable', error: message }));
     page.settings = {};
-    page._collectScanPaths = () => [];
-    page.saveLoraSettings = async () => assert.fail('nothing else is saved after a refusal');
+    page.setInfiniteScroll = () => assert.fail('nothing changes after a refusal');
 
     await page.saveSettings();
 
@@ -178,27 +162,30 @@ test('admin settings save keeps its plain message when the reply has no reason',
     const { page, notifications } = load('admin.js', 'PromptAdmin', async () => ({ ok: false, status: 500,
         json: async () => { throw new SyntaxError('not json'); } }));
     page.settings = {};
-    page._collectScanPaths = () => [];
 
     await page.saveSettings();
 
     assert.deepEqual(notifications, [['error', 'Failed to save settings']]);
 });
 
-test('admin maintenance names the job that refused it', async () => {
-    const { page, dom, notifications } = load('admin.js', 'PromptAdmin',
-        async () => jsonResponse(409, { success: false, error: BUSY }), {
-            escapeHtml: text => String(text),
-            document: { readyState: 'loading', addEventListener() {}, getElementById: id => dom.getElementById(id),
-                querySelectorAll: selector => (selector === '.maintenance-option:checked' ? [{ id: 'vacuum' }] : []) },
-        });
+// #330 S13-9: the admin page's reduced Page options save sends only the list's scroll default, so a stale legacy form
+// can no longer overwrite scan folders or other settings edited in System.
+test('admin Page options save posts only infinite_scroll', async () => {
+    const sent = [];
+    const { page, dom, notifications } = load('admin.js', 'PromptAdmin', async (url, init) => {
+        sent.push([url, init.method, JSON.parse(init.body)]);
+        return jsonResponse(200, { success: true, restart_required: true });
+    });
+    page.settings = { infiniteScroll: false };
+    const scrolled = [];
+    page.setInfiniteScroll = (on, options) => scrolled.push([on, { ...options }]);
+    dom.getElementById('infiniteScrollDefault').checked = true;
 
-    await page.runMaintenance();
+    await page.saveSettings();
 
-    const results = dom.nodes.maintenanceResults.innerHTML;
-    assert.match(results, /Maintenance Failed/);
-    assert.match(results, new RegExp(BUSY));
-    assert.doesNotMatch(results, /HTTP 409/);
-    assert.deepEqual(notifications, [['error', '❌ Maintenance failed']]);
-    assert.equal(dom.nodes.runMaintenanceBtn.disabled, false);
+    assert.deepEqual(sent, [['/prompt_manager/settings', 'POST', { infinite_scroll: true }]]);
+    assert.deepEqual(scrolled, [[true, { session: false }]]);
+    assert.equal(page.settings.infiniteScroll, true);
+    assert.deepEqual(notifications, [['success', 'Page options saved'], ['hide', 'settingsModal']]);
 });
+
