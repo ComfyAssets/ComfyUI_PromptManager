@@ -4429,9 +4429,10 @@ Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
   stepped once per linked row took seconds. The result keeps only the listed
   paths; peak memory grows with the database's matching linked rows (about
   530 bytes each, freed on return). When the JSON step fails (a SQLite without
-  JSON functions, a BLOB value) the read streams the rows as before and logs
-  one warning per process; a missing JSON function stops the attempt for the
-  rest of the process. `tests/test_database_link_matches.py` proves both reads
+  JSON functions, a BLOB value, a JSON text over SQLite's length limit) the read
+  streams the rows as before and logs one warning per process; a missing JSON
+  function stops the attempt for the rest of the process. An interrupted read
+  (Move library) raises as before. `tests/test_database_link_matches.py` proves both reads
   equal on every filter and on odd values.
 
 `positive_count` is the number of distinct linked positives over the full matching
