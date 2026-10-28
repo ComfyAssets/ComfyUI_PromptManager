@@ -326,6 +326,43 @@ export function onRestoreFinished(activity, onFinished) {
     });
 }
 
+const OPEN_DIALOG = 'dialog[open]';
+const DIALOG_MUTATIONS = Object.freeze({ subtree: true, childList: true, attributes: true, attributeFilter: ['open'] });
+
+/**
+ * #415: the S9 reload after a finished restore never runs under an open dialog, which it would close with whatever
+ * was typed in it. `request()` runs `reload()` at once when no dialog is open; otherwise it runs once the last open
+ * dialog has closed (repeated requests meanwhile run it once). The dialog keeps its entries, and its next write is
+ * refused by the restored storage with its own note and Reload, as when this page never saw the restore. A
+ * MutationObserver sees every dialog close: removing `open` and removing the node are synchronous, while the dialog
+ * `close` event is a later task that never bubbles, and every dialog here is removed in the task that closes it.
+ * `dispose()` drops a waiting reload. Returns `{request, dispose}`.
+ */
+export function createRestoreReload(reload, { doc = globalThis.document, Observer = globalThis.MutationObserver } = {}) {
+    let observer = null;
+    const dialogOpen = () => doc.querySelector(OPEN_DIALOG) !== null;
+    const stop = () => {
+        observer?.disconnect();
+        observer = null;
+    };
+    return {
+        request() {
+            if (observer) return;
+            if (!dialogOpen()) {
+                reload();
+                return;
+            }
+            observer = new Observer(() => {
+                if (dialogOpen()) return;
+                stop();
+                reload();
+            });
+            observer.observe(doc.documentElement, DIALOG_MUTATIONS);
+        },
+        dispose: stop,
+    };
+}
+
 function surface(heading, ...nodes) {
     const section = el('section', undefined, 'surface');
     section.append(heading, ...nodes);
