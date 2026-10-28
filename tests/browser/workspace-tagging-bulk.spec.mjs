@@ -186,6 +186,26 @@ test('a model that is not downloaded keeps Start disabled and says why', async (
     expect(posted).toBe(0);
 });
 
+const NEEDS_LLAMA = 'GGUF JoyCaption needs llama-cpp-python. Install it into ComfyUI\'s Python: pip install llama-cpp-python. '
+    + 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python';
+
+test('a model missing its backend package keeps Start disabled and names the install command (#424)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/models', { data: { unavailable: [],
+        missing_packages: { gguf: ['llama-cpp-python'] } } })).toBeOK();
+    await select(page, FIRST);
+    await barButton(page, 'Auto-tag selected').click();
+    const status = modal(page).locator('#tag-generation-status');
+    const start = actionButtons(page).last();
+    await modal(page).getByRole('combobox', { name: 'Tagging model', exact: true }).selectOption('gguf');
+    await expect(status).toHaveText(NEEDS_LLAMA);
+    await expect(start).toHaveAttribute('aria-disabled', 'true');
+    await modal(page).getByRole('combobox', { name: 'Tagging model', exact: true }).selectOption('wd14-vit');
+    await expect(status).toHaveText('');
+    await expect(start).not.toHaveAttribute('aria-disabled', 'true');
+    await actionButtons(page).first().click();
+    await expect(modal(page)).toHaveCount(0);
+});
+
 test('Suggestions field prefills from the setting and caps chips at the entered count', async ({ page, request }) => {
     await expect(await request.post('/__test__/tagging/defaults', { data: { general: 0.5, character: 0.9, limit: 7 } })).toBeOK();
     await select(page, FIRST);

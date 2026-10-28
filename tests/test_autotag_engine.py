@@ -800,8 +800,12 @@ class TestDefaultLoaders(EngineTestCase):
         transformers, model, processor, inputs = self._fake_transformers()
         pixel = inputs["pixel_values"]
         service = AutoTagService(models_dir=self.models_dir)
+        # The 8-bit load also needs these two (#424); stand-ins satisfy the check.
+        stubs = {
+            name: types.ModuleType(name) for name in ("accelerate", "bitsandbytes")
+        }
 
-        with _patch_modules({"torch": torch, "transformers": transformers}):
+        with _patch_modules({"torch": torch, "transformers": transformers, **stubs}):
             service.load_model("hf")
             tags = service.generate_tags(str(self.image_path))
 

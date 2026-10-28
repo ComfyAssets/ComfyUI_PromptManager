@@ -1,7 +1,14 @@
-"""Atomic metadata enrichment for a single known generation context."""
+"""Atomic metadata enrichment for a single known generation context.
+
+Also the helpers both ingestion store paths share (#247): the file's link
+rows and the one-prompt-per-file rule (``file_link_rows``,
+``link_conflict``) and the marks a prompt created by ingestion carries
+(``Marks``, ``mark_created``).
+"""
 
 import os
-from typing import Any, Dict
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import normalize_image_path
 from .operations import _coerce_file_info
@@ -37,16 +44,85 @@ def blank_positive(resolution: Dict[str, Any]) -> bool:
     return not (isinstance(text, str) and text.strip())
 
 
+@dataclass(frozen=True)
+class Marks:
+    """What a prompt ingestion creates carries, so it can be found and removed.
+
+    ``note`` is formatted with ``name``, the file's name.
+    """
+
+    category: str
+    tags: Tuple[str, ...]
+    note: str
+
+
+SCAN_MARKS = Marks("scanned", ("auto-scanned",), "Auto-scanned from {name}")
+RUN_MARKS = Marks("scanned", ("auto-scanned",), "Saved from a workflow run: {name}")
+
+
+def mark_created(conn: Any, db: Any, prompt_id: int, marks: Marks, name: str) -> None:
+    """Apply ``marks`` to a prompt row the caller just created on ``conn``."""
+    conn.execute(
+        "UPDATE prompts SET category = ?, notes = ? WHERE id = ?",
+        (marks.category, marks.note.format(name=name), prompt_id),
+    )
+    db._sync_prompt_tags(conn, prompt_id, list(marks.tags))
+
+
+def file_link_rows(conn: Any, image_path: str) -> List[Any]:
+    """The file's link rows, each with its prompt's hash.
+
+    Matched under the path and its resolved spelling (an output folder
+    reached through a symlink or junction), each normalized and raw;
+    deduplicated by row id.
+    """
+    rows: Dict[Any, Any] = {}
+    for spelling in dict.fromkeys((image_path, _resolved(image_path))):
+        for row in conn.execute(
+            "SELECT gi.*,p.hash AS positive_hash FROM generated_images gi "
+            "JOIN prompts p ON p.id=gi.prompt_id "
+            "WHERE gi.file_path=? OR gi.image_path=?",
+            (normalize_image_path(spelling), spelling),
+        ).fetchall():
+            rows.setdefault(row["id"], row)
+    return list(rows.values())
+
+
+def _resolved(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return path
+
+
+def link_conflict(rows: List[Any], prompt_hash: str) -> bool:
+    """One prompt per file: more than one row, or a row of another prompt."""
+    return len(rows) > 1 or bool(rows and rows[0]["positive_hash"] != prompt_hash)
+
+
 def ingest_resolved_pair(
-    db: Any, image_path: str, metadata: Dict[str, Any], resolution: Dict[str, Any]
+    db: Any,
+    image_path: str,
+    metadata: Dict[str, Any],
+    resolution: Dict[str, Any],
+    *,
+    marks: Optional[Marks] = None,
 ) -> Dict[str, Any]:
+    """Store a resolved pair and link the file to it in one transaction.
+
+    With ``marks`` (ingestion from files), each pair component this call
+    creates carries them; without (the PromptManager node path) components
+    are created bare, as always.
+    """
     state = resolution.get("state", "unresolved")
     if state == "resolved" and blank_positive(resolution):
         state = "unresolved"
     if state != "resolved":
         return {"status": state, "pairs_added": 0, "links_added": 0}
     with db._pair_transaction() as conn:
-        return _ingest_resolved_pair_in(conn, db, image_path, metadata, resolution)
+        return _ingest_resolved_pair_in(
+            conn, db, image_path, metadata, resolution, marks=marks
+        )
 
 
 def _conflict() -> Dict[str, Any]:
@@ -61,6 +137,7 @@ def _ingest_resolved_pair_in(
     resolution: Dict[str, Any],
     *,
     provenance: Dict[str, Any] | None = None,
+    marks: Optional[Marks] = None,
 ) -> Dict[str, Any]:
     """``ingest_resolved_pair`` inside the caller's open ``_pair_transaction``.
 
@@ -69,7 +146,8 @@ def _ingest_resolved_pair_in(
     negative is a ``conflict`` and nothing is written. The caller owns the
     transaction, so its own later failure rolls the link back too.
     ``provenance`` replaces the link's default resolver provenance (Needs
-    review records the user's selection there).
+    review records the user's selection there). ``marks`` as in
+    ``ingest_resolved_pair``.
     """
     positive, negative = resolution["positive"], resolution["negative"]
     positive_text = positive.get("storage_text", positive["text"])
@@ -82,15 +160,8 @@ def _ingest_resolved_pair_in(
             "negative": negative,
         }
     encoded = dumps_strict(provenance, sort_keys=True, separators=(",", ":"))
-    images = conn.execute(
-        "SELECT gi.*,p.hash AS positive_hash FROM generated_images gi "
-        "JOIN prompts p ON p.id=gi.prompt_id "
-        "WHERE gi.file_path=? OR gi.image_path=?",
-        (normalized, image_path),
-    ).fetchall()
-    if len(images) > 1 or (
-        images and images[0]["positive_hash"] != generate_prompt_hash(positive_text)
-    ):
+    images = file_link_rows(conn, image_path)
+    if link_conflict(images, generate_prompt_hash(positive_text)):
         return _conflict()
     existing = images[0] if images else None
     if existing:
@@ -115,7 +186,12 @@ def _ingest_resolved_pair_in(
             generate_prompt_hash(negative_text) if negative_text.strip() else None,
         ),
     ).fetchone()
-    pair_id = db._save_pair(conn, positive_text, negative_text)
+    if marks is None:
+        pair_id = db._save_pair(conn, positive_text, negative_text)
+    else:
+        pair_id = _save_marked_pair(
+            conn, db, positive_text, negative_text, marks, os.path.basename(image_path)
+        )
     pair = conn.execute("SELECT * FROM prompt_pairs WHERE id=?", (pair_id,)).fetchone()
     pairs_added = int(prior_pair is None)
     file_size, width, height, image_format = _coerce_file_info(metadata)
@@ -195,6 +271,26 @@ def _ingest_resolved_pair_in(
         "pair_id": pair_id,
         "image_id": image_id,
     }
+
+
+def _save_marked_pair(
+    conn: Any,
+    db: Any,
+    positive_text: str,
+    negative_text: str,
+    marks: Marks,
+    name: str,
+) -> int:
+    """``_save_pair`` that marks each component it creates."""
+    texts = [positive_text] + ([negative_text] if negative_text.strip() else [])
+    ids = []
+    for text in texts:
+        prompt_id, created = db._pair_component_outcome(conn, text)
+        if created:
+            mark_created(conn, db, prompt_id, marks, name)
+        ids.append(prompt_id)
+    negative_id = ids[1] if len(ids) > 1 else None
+    return db._save_pair_components(conn, ids[0], negative_id)[0]
 
 
 def _document_form(conn: Any, values: Dict[str, Any]) -> Dict[str, Any]:
