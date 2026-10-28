@@ -59,6 +59,7 @@ SUMMARY_KEYS = (
     "image_links",
     "runs",
     "saved_views",
+    "collections",
 )
 
 
@@ -144,7 +145,8 @@ def library_summary(conn: sqlite3.Connection) -> Dict[str, int]:
     ``positives`` are the Library's prompts (``library_counts``'s
     ``positive_prompts``); ``pairs`` the active saved pairs and
     ``archived_pairs`` the archived ones; ``image_links`` the indexed image
-    rows; ``runs`` the recorded executions.
+    rows; ``runs`` the recorded executions; ``collections`` the image
+    collections (#331).
     """
     from .library import _ELIGIBLE
 
@@ -169,6 +171,7 @@ def library_summary(conn: sqlite3.Connection) -> Dict[str, int]:
         "image_links": _count(conn, "generated_images"),
         "runs": _count(conn, "execution_runs"),
         "saved_views": _count(conn, "saved_views"),
+        "collections": _count(conn, "image_collections"),
     }
 
 
@@ -180,6 +183,7 @@ _FINGERPRINT_SQL = (
     ("prompt_pairs", "SELECT MAX(id), MAX(updated_at) FROM prompt_pairs"),
     ("execution_runs", "SELECT COUNT(*), MAX(rowid) FROM execution_runs"),
     ("saved_views", "SELECT MAX(rowid) FROM saved_views"),
+    ("image_collections", "SELECT MAX(rowid) FROM image_collections"),
 )
 
 
@@ -190,9 +194,9 @@ def live_fingerprint(conn: sqlite3.Connection):
     tables a restore replaces, or when a prompt, pair, run or saved view is
     the newest edited (counts plus the newest row and edit of each table);
     the apply refuses with ``plan-changed`` then. It does not see every
-    edit (a tag or favorite change on an older row); those are kept in the
-    restore's safety backup. A read transaction the caller already has is
-    used and left open; one opened here is ended here.
+    edit (a tag, favorite or collection membership change on an older row);
+    those are kept in the restore's safety backup. A read transaction the
+    caller already has is used and left open; one opened here is ended here.
     """
     import json
 

@@ -49,6 +49,7 @@ SUMMARY_KEYS = {
     "image_links",
     "runs",
     "saved_views",
+    "collections",
 }
 
 
