@@ -75,6 +75,8 @@ class TestModel:
     loaded = None
     # Models the Tag image dialog workflows mark as not downloaded.
     unavailable: set = set()
+    # Pip names per model whose backend packages "cannot be imported" (#424).
+    missing_packages: dict = {}
     # Scored names the concept comparisons answer instead of the fixed list
     # (``/__test__/tagging/suggestions``); None keeps the fixed list.
     suggestions: list | None = None
@@ -82,10 +84,13 @@ class TestModel:
     models_config: dict = {}
 
     def get_models_status(self) -> dict:
+        from py.autotag import package_fields
+
         return {
             name: {
                 "downloaded": name not in self.unavailable,
                 "loaded": self.loaded == name,
+                **package_fields(name, self.missing_packages.get(name, [])),
             }
             for name in self.models_config
         }

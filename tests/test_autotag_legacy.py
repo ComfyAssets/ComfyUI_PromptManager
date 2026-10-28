@@ -161,6 +161,39 @@ class TestLegacyBatch(LegacyTestCase):
         self.assertEqual(self.tagger.calls[-1]["prompt"], AutotagConfig.TEMPLATE)
         self.assertEqual(self.tagger.custom_prompt, "legacy prompt")
 
+    async def test_a_missing_backend_package_is_one_error_frame(self):
+        self.tagger.missing["gguf"] = ["llama-cpp-python"]
+        _, frames = await self.legacy("model_type=gguf")
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0]["type"], "error")
+        self.assertTrue(
+            frames[0]["message"].startswith("GGUF JoyCaption needs llama-cpp-python.")
+        )
+        self.assertEqual(self.tagger.load_calls, [])
+
+    async def test_legacy_single_refuses_a_missing_backend_package(self):
+        from py.autotag import MissingBackendPackages
+
+        self.image("a.png", (1, 1, 1))
+        await self.relist()
+        self.tagger.missing["gguf"] = ["llama-cpp-python"]
+        status, data = await self.single(
+            {"path": "a.png", "root_index": 0, "model_type": "gguf"}
+        )
+        self.assertEqual((status, data["code"]), (409, "model-unavailable"))
+        self.assertIn("pip install llama-cpp-python", data["error"])
+        self.assertEqual(self.tagger.load_calls, [])
+        # Lost after the check: the same 409, no ERROR record, nothing held.
+        self.tagger.missing["gguf"] = []
+        self.tagger.load_error = MissingBackendPackages("gguf", ["llama-cpp-python"])
+        with self.assertNoLogs(self.api.logger, level="ERROR"):
+            status, data = await self.single(
+                {"path": "a.png", "root_index": 0, "model_type": "gguf"}
+            )
+        self.assertEqual((status, data["code"]), (409, "model-unavailable"))
+        self.assertIn("pip install llama-cpp-python", data["error"])
+        self.assertIsNone(model_gate.holder())
+
     async def test_each_refusal_is_one_error_frame(self):
         self.tagger.downloaded["wd14-vit"] = False
         _, frames = await self.legacy()

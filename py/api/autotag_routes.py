@@ -102,6 +102,17 @@ def size_label(size: str) -> str:
     return f"{match.group(1)} {match.group(2)}" if match else str(size or "")
 
 
+def package_entry(flags: dict) -> dict:
+    """The public package fields of one status entry (#424): the pip names
+    that cannot be imported, the install command and note (strings or null)."""
+    missing = flags.get("missing_packages") or []
+    text = {
+        key: flags[key] if isinstance(flags.get(key), str) else None
+        for key in ("install_command", "install_note")
+    }
+    return {"missing_packages": [str(name) for name in missing], **text}
+
+
 def public_models(status: dict, loaded_type: Optional[str]) -> dict:
     """Each engine model's public entry: names and sizes from ``MODELS``, the
     flags from ``status``; never a path (``model_path`` is dropped)."""
@@ -122,6 +133,7 @@ def public_models(status: dict, loaded_type: Optional[str]) -> dict:
         for key in ("model_exists", "mmproj_exists"):
             if key in flags:
                 entry[key] = bool(flags[key])
+        entry.update(package_entry(flags))
         models[model_type] = entry
     return models
 
@@ -750,6 +762,7 @@ class AutotagRoutesMixin:
                     "downloaded": bool(
                         (status.get(model_type) or {}).get("downloaded")
                     ),
+                    **package_entry(status.get(model_type) or {}),
                 },
                 "existing": existing,
                 "review_required": existing == "replace_after_review",
@@ -1073,8 +1086,8 @@ class AutotagRoutesMixin:
         return self.db.current_image_tags({locator: fingerprint}).get(locator, [])
 
     async def _suggest_single(self, target, model_type, options, base):
-        from ..autotag import MODELS, get_autotag_service
-        from .annotation_suggest import unavailable_message
+        from ..autotag import MODELS, MissingBackendPackages, get_autotag_service
+        from .annotation_suggest import model_refusal
         from .annotations import _pinned_suggestions, _settled, _submit
 
         try:
@@ -1084,8 +1097,8 @@ class AutotagRoutesMixin:
 
         service = get_autotag_service()
         status = await self._run_in_executor(service.get_models_status)
-        if not (status.get(model_type) or {}).get("downloaded"):
-            message = unavailable_message(MODELS[model_type]["name"])
+        message = model_refusal(status, model_type, MODELS[model_type]["name"])
+        if message is not None:
             return self._coded_error(409, "model-unavailable", message)
         owner = model_gate.new_owner("legacy-single")
         if not model_gate.try_acquire(owner):
@@ -1131,6 +1144,9 @@ class AutotagRoutesMixin:
                     options,
                     on_skipped=functools.partial(store.release_use, capture.token),
                 )
+            except MissingBackendPackages as exc:
+                # A package gone since the status read (load_model logged it).
+                return self._coded_error(409, "model-unavailable", str(exc))
             finally:
                 store.release(capture.token)
         finally:
