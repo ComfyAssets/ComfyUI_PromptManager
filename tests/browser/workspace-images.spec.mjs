@@ -569,6 +569,10 @@ test('source and folder discovery failure stays visible and Import Rescan restor
 async function staleSourceRecovery(page, request, roots) {
     await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
     await page.setViewportSize({ width: 1600, height: 1100 });
+    // #430: the page first asks the server where a stale file is now. These tests cover the manual Refresh, so the
+    // file is never found; workspace-stale-source.spec.mjs covers a renumbered file that is found again.
+    await page.route('**/prompt_manager/images/rescope', route => route.fulfill({ status: 409,
+        json: { success: false, code: 'source-changed', error: 'The source of this image changed or was removed.' } }));
     await page.goto(workspace);
     const source = refineDialog(page).getByLabel('Source', { exact: true });
     const folder = refineDialog(page).getByLabel('Folder', { exact: true });

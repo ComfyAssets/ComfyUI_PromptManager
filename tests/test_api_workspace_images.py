@@ -1882,9 +1882,13 @@ class TestWorkspaceCursorEncoding(unittest.TestCase):
         for order in ("newest", "oldest", "name", "name-desc"):
             with self.subTest(sort=order):
                 key = _workspace_key(entry, order)
-                token = _workspace_cursor(key, "scope")
+                token = _workspace_cursor(key, "scope", b"k" * 32)
                 self.assertLessEqual(len(token), 4096)
-                self.assertEqual(_workspace_cursor_key(token, "scope", order), key)
+                self.assertEqual(
+                    _workspace_cursor_key(token, "scope", order, b"k" * 32), key
+                )
+                with self.assertRaises(ValueError):
+                    _workspace_cursor_key(token, "scope", order, b"o" * 32)
 
 
 # The pre-#379 candidate read, kept as the differential reference for the

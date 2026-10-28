@@ -14,9 +14,9 @@ export const REFRESH_FAILED = 'Images could not be refreshed after the tag save.
 
 /** Open Tag image for `image` when `action` is its card's Tag button (without selecting the card, as the concept's
  * `image-tag` does); false for any other control. */
-export function openCardTagging({api, scope, image, action, embedded}) {
+export function openCardTagging({api, scope, image, action, embedded, onSourceChanged = null, onRefresh = null}) {
     if (!isTagButton(action)) return false;
-    openImageTagging({api, scope, image, source: embedded ? 'library' : 'images', trigger: action});
+    openImageTagging({api, scope, image, source: embedded ? 'library' : 'images', trigger: action, onSourceChanged, onRefresh});
     return true;
 }
 
