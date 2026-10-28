@@ -42,23 +42,28 @@ function cells(line) {
     return out;
 }
 
-/** The table's rows as objects keyed by COLUMNS, from the section that starts at HEADING. */
-export function parseCoverageTable(markdown) {
+/** The rows, keyed by `columns`, of the first Markdown table under `heading` (`label` names it in errors). */
+function parseTable(markdown, heading, columns, label) {
     const lines = markdown.split('\n');
-    const start = lines.findIndex(line => line.trim() === HEADING);
-    if (start === -1) throw new Error(`TESTING.md has no "${HEADING}" section`);
+    const start = lines.findIndex(line => line.trim() === heading);
+    if (start === -1) throw new Error(`TESTING.md has no "${heading}" section`);
     const header = lines.findIndex((line, index) => index > start && line.trim().startsWith('|'));
     if (header === -1 || lines.slice(start + 1, header).some(line => /^#{1,3} /.test(line))) {
-        throw new Error('The coverage section has no table');
+        throw new Error(`The ${label} section has no table`);
     }
-    const columns = cells(lines[header]);
-    if (columns.join('|') !== COLUMNS.join('|')) throw new Error(`The coverage table's columns are ${columns.join(', ')}`);
+    const found = cells(lines[header]);
+    if (found.join('|') !== columns.join('|')) throw new Error(`The ${label} table's columns are ${found.join(', ')}`);
     const rows = [];
     for (let index = header + 2; index < lines.length && lines[index].trim().startsWith('|'); index += 1) {
         const values = cells(lines[index]);
-        rows.push({ line: index + 1, ...Object.fromEntries(COLUMNS.map((column, at) => [column, values[at] ?? ''])) });
+        rows.push({ line: index + 1, ...Object.fromEntries(columns.map((column, at) => [column, values[at] ?? ''])) });
     }
     return rows;
+}
+
+/** The table's rows as objects keyed by COLUMNS, from the section that starts at HEADING. */
+export function parseCoverageTable(markdown) {
+    return parseTable(markdown, HEADING, COLUMNS, 'coverage');
 }
 
 /**
@@ -212,4 +217,125 @@ export function rowProblems(row, { root = ROOT, locate = file => testFile(file, 
 /** The table read from TESTING.md. */
 export function readCoverageTable(root = ROOT) {
     return parseCoverageTable(readFileSync(join(root, 'TESTING.md'), 'utf8'));
+}
+
+// ── Legacy System UI removed by S13 (#330) ──────────────────────────────────────────────────────────────────────────
+// TESTING.md "Legacy System UI removed by S13": one row per covered capability whose legacy UI S13 removed, with the
+// element ids and methods that went. A row must cite a `covered` coverage row and copy its Test cell, and none of its
+// ids or methods may still be on its page.
+export const REMOVAL_HEADING = '### Legacy System UI removed by S13';
+export const REMOVAL_COLUMNS = Object.freeze(['Capability', 'Page', 'Removed ids', 'Removed methods', 'Native test']);
+/** Each legacy page's markup and script. */
+export const PAGES = Object.freeze({
+    admin: Object.freeze({ html: 'web/admin.html', script: 'web/js/admin.js' }),
+    gallery: Object.freeze({ html: 'web/gallery.html', script: 'web/js/gallery.js' }),
+});
+
+/** The removal table's rows, from the section that starts at REMOVAL_HEADING. */
+export function parseRemovalTable(markdown) {
+    return parseTable(markdown, REMOVAL_HEADING, REMOVAL_COLUMNS, 'removal');
+}
+
+/** The removal table read from TESTING.md. */
+export function readRemovalTable(root = ROOT) {
+    return parseRemovalTable(readFileSync(join(root, 'TESTING.md'), 'utf8'));
+}
+
+/** A Removed ids or Removed methods cell → its entries without backticks (`—` → none). */
+export function listCell(cell) {
+    if (cell.trim() === NONE) return [];
+    return cell.split(',').map(entry => entry.trim().replace(/^`|`$/g, '')).filter(Boolean);
+}
+
+/** The removed ids of a row (without `#`) and its malformed entries. */
+function removedIds(row) {
+    const entries = listCell(row['Removed ids']);
+    return { ids: entries.filter(entry => /^#[\w-]+$/.test(entry)).map(entry => entry.slice(1)),
+        bad: entries.filter(entry => !/^#[\w-]+$/.test(entry)) };
+}
+
+/** The removed methods of a row (without `()`) and its malformed entries. */
+function removedMethods(row) {
+    const entries = listCell(row['Removed methods']);
+    return { names: entries.filter(entry => /^[A-Za-z_$][\w$]*\(\)$/.test(entry)).map(entry => entry.slice(0, -2)),
+        bad: entries.filter(entry => !/^[A-Za-z_$][\w$]*\(\)$/.test(entry)) };
+}
+
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Where `id` is still on a page: `id="<id>"` in its markup or script, a lookup or a modal-list entry in its script. */
+export function idUses(id, { html, script }) {
+    const name = escapeRegExp(id);
+    const code = stripJsComments(script);
+    const uses = [];
+    if (new RegExp(`\\bid=["']${name}["']`).test(html)) uses.push(`id="${id}" in the markup`);
+    if (new RegExp(`\\bid=["']${name}["']`).test(code)) uses.push(`id="${id}" in the script`);
+    if (new RegExp(`getElementById\\(\\s*["'\`]${name}["'\`]\\s*\\)`).test(code)) uses.push(`getElementById('${id}')`);
+    if (new RegExp(`querySelector(?:All)?\\(\\s*["'\`]#${name}\\b`).test(code)) uses.push(`querySelector('#${id}')`);
+    // A string list of modal ids (the gallery's backdrop list): the entry next to another `…Modal` entry.
+    for (const list of code.matchAll(/\[[^\[\]]*\]/g)) {
+        const entry = new RegExp(`["']${name}["']`);
+        if (entry.test(list[0]) && /["'][\w-]*Modal["']/.test(list[0].replace(entry, ''))) {
+            uses.push(`'${id}' in a modal list`);
+            break;
+        }
+    }
+    return uses;
+}
+
+/**
+ * Where method `name` is still on a page: a definition in its script, or a `.<name>(` call (`this.`, `window.admin.`)
+ * in its script or markup.
+ */
+export function methodUses(name, { html, script }) {
+    const method = escapeRegExp(name);
+    const code = stripJsComments(script);
+    const uses = [];
+    if (new RegExp(`(?:^|[\\s;}])(?:async\\s+)?${method}\\s*\\([^)]*\\)\\s*\\{`, 'm').test(code)) uses.push(`${name}() defined`);
+    if (new RegExp(`\\.${method}\\s*\\(`).test(code)) uses.push(`.${name}( called`);
+    if (new RegExp(`\\.${method}\\s*\\(`).test(html)) uses.push(`.${name}( called in the markup`);
+    return uses;
+}
+
+/**
+ * Every problem of one removal row (empty: sound). `coverage` is the coverage table's rows; `readPage(page)` returns
+ * that page's `{html, script}`.
+ */
+export function removalProblems(row, coverage, readPage) {
+    const problems = [];
+    const cited = coverage.filter(item => item.Capability === row.Capability);
+    if (cited.length !== 1) problems.push(`cites no single coverage row "${row.Capability}"`);
+    else if (cited[0].Status !== 'covered') problems.push(`cites a ${cited[0].Status} capability`);
+    else if (cited[0].Test !== row['Native test']) problems.push(`its native test differs from the coverage row's "${cited[0].Test}"`);
+    if (!Object.hasOwn(PAGES, row.Page)) {
+        problems.push(`unknown page "${row.Page}"`);
+        return problems;
+    }
+    const { ids, bad: badIds } = removedIds(row);
+    const { names, bad: badNames } = removedMethods(row);
+    for (const entry of [...badIds, ...badNames]) problems.push(`malformed entry "${entry}"`);
+    const page = readPage(row.Page);
+    for (const id of ids) for (const use of idUses(id, page)) problems.push(`#${id} is still on the ${row.Page} page: ${use}`);
+    for (const name of names) for (const use of methodUses(name, page)) problems.push(`${name}() is still on the ${row.Page} page: ${use}`);
+    return problems;
+}
+
+/** Ids and methods listed on more than one row of the same page. */
+export function duplicateRemovals(rows) {
+    const seen = new Map();
+    const duplicates = [];
+    for (const row of rows) {
+        for (const entry of [...listCell(row['Removed ids']), ...listCell(row['Removed methods'])]) {
+            const key = `${row.Page} ${entry}`;
+            if (seen.has(key)) duplicates.push(`${key} is listed on rows ${seen.get(key)} and ${row.line}`);
+            else seen.set(key, row.line);
+        }
+    }
+    return duplicates;
+}
+
+/** A page's markup and script from the repository. */
+export function readPage(page, root = ROOT) {
+    const files = PAGES[page];
+    return { html: readFileSync(join(root, files.html), 'utf8'), script: readFileSync(join(root, files.script), 'utf8') };
 }

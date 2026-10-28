@@ -4099,6 +4099,26 @@ list stay unscoped: any row's control proves them.
 | API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
 
+### Legacy System UI removed by S13
+
+System S13 (#330) points the legacy pages' System buttons at native System (a link that
+opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
+only when its row above is `covered`. One row per removed capability: Capability is the
+exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
+Removed methods list what went (`—` for none), and Native test copies that row's Test
+cell. An id that stays on a System link is not listed, only its handler.
+
+`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
+`covered` or copies another test, when an id or method is listed twice for one page, or
+when a listed id is still on its page (`id="…"` in the markup or the script, a
+`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
+method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
+kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
+legacy page workflows), not by this check.
+
+| Capability | Page | Removed ids | Removed methods | Native test |
+| --- | --- | --- | --- | --- |
+
 ### Browser cache ownership (#222)
 
 The legacy gallery's Clear cache used to delete every localStorage key starting `pm_` or
