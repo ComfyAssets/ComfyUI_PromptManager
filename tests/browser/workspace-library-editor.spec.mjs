@@ -1,6 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
+import {unseenRestore} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {inventoryOf,mapConcept,diffInventory} from './library-editor-canonical-comparison.mjs';
 
@@ -260,7 +261,8 @@ test('recovery states render inline and never replay a write',async({page,reques
     page.writes.length=0;
     dialog=await openEditor(page,{mode:'new'});await ready(dialog);
     const snapshot=await request.get('/__test__/library-editor/snapshot');await expect(snapshot).toBeOK();
-    const restore=await request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:await snapshot.body()}}});
+    const buffer=await snapshot.body();
+    const restore=await unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer}}}));
     await expect(restore).toBeOK();page.writes.length=0;
     await field(dialog,'Title').fill('After restore');await field(dialog,'Positive prompt').fill('Restored storage prompt');await button(dialog,'Save').click();
     await expect(note(dialog)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was saved.');
@@ -588,7 +590,7 @@ test('saved refresh failure retries only reads',async({page})=>{
 
 test('restored storage after a confirmed save or before an archive offers an explicit Library reload',async({page,request})=>{
     const f=page.fixture;const snapshot=await(await request.get('/__test__/library-editor/snapshot')).body();
-    const restore=()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}});
+    const restore=()=>unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}}));
     await openHistory(page,f.positive_id);
     await page.route(`**/prompt_manager/library/${f.positive_id}`,async route=>{
         if(route.request().method()!=='PATCH')return route.continue();
@@ -615,7 +617,7 @@ test('restored storage after a confirmed save or before an archive offers an exp
 const DISCARDS='Leaving this dialog discards your entries.';
 test('restored storage before an Edit or Add negative save offers only the Library reload exit',async({page,request})=>{
     const f=page.fixture;const snapshot=await(await request.get('/__test__/library-editor/snapshot')).body();
-    const restore=()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}});
+    const restore=()=>unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer:snapshot}}}));
     await openHistory(page,f.positive_id);
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
     await expect(await restore()).toBeOK();
