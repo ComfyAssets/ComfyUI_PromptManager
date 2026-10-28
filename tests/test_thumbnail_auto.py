@@ -978,6 +978,27 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
                 (self.output_dir / "thumbnails" / f"{name}_thumb.webp").is_file()
             )
 
+    async def test_a_worker_refused_at_interpreter_exit_skips_quietly(self):
+        """#375: refused once the interpreter exits; nothing stays queued."""
+
+        class Refused(threading.Thread):
+            def start(self):
+                raise RuntimeError("can't create new thread at interpreter shutdown")
+
+        namespace = type(sys)("threading_copy")
+        namespace.__dict__.update(vars(threading))
+        namespace.Thread = Refused
+        thumbnailer = self.api._auto_thumbnails()
+        path = make_png(self.output_dir / "late.png", size=(32, 32))
+        with (
+            patch.object(auto, "threading", namespace),
+            self.assertNoLogs("prompt_manager.api", "INFO"),
+        ):
+            self.assertEqual(self.api.queue_capture_thumbnail(str(path)), "skipped")
+        self.assertFalse(thumbnailer._worker_running)
+        self.assertEqual(len(thumbnailer._queue), 0)
+        self.assertTrue(thumbnailer.wait_idle(0))
+
     def test_queue_is_bounded(self):
         thumbnailer = auto.AutoThumbnailer(
             lambda *a: {"action": "generated"},
