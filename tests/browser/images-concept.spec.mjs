@@ -88,15 +88,17 @@ function listInfo(card,actionsWidth) {
 /** Recorded Images deviations only (spec §8); everything else in the concept inventory must equal production. */
 const nocase=(a,b)=>{const x=a.toLowerCase(),y=b.toLowerCase();return x<y?-1:x>y?1:a<b?-1:a>b?1:0;};
 
-export function mapImagesConcept(reference,{manifest,now=new Date(manifest.now*1000)}) {
+export function mapImagesConcept(reference,{manifest,now=new Date(manifest.now*1000),imageCategories=[]}) {
     const paths=new Map(manifest.images.map(image=>[image.filename,image.path]));
     // D14: the sort appends production's two sorts. Save view is the concept's own (saved views, #249 D16 retired).
     const toolbar={...reference.toolbar};
     toolbar.items=toolbar.items.map(item=>item.id==='sort'?{...item,options:[...item.options,'Oldest first','Name Z–A']}:item);
     // D36: the category list is the Library's real list, sorted alphabetically (database/library.py `ORDER BY category
     // COLLATE NOCASE, category`); the concept lists its samples in prompt order (app.js 348). Only the order is mapped.
+    // D141 (#332): the list also holds the listed images' own categories (`GET /prompt_manager/images/categories`),
+    // sorted in with the Library's.
     toolbar.items=toolbar.items.map(item=>item.id==='category-filter'
-        ?{...item,options:[item.options[0],...item.options.slice(1).sort(nocase)]}:item);
+        ?{...item,options:[item.options[0],...[...item.options.slice(1),...imageCategories].sort(nocase)]}:item);
     // D29: no "Illustrative previews" sample tag.
     const filterRow=withoutItems(reference.filterRow,item=>String(item.className).includes('sample-tag'));
     filterRow.items=filterRow.items.map(item=>{
@@ -166,9 +168,9 @@ const pick=inventory=>stripExact(inventory);
 // The concept's own sample categories, in its first-appearance order (app.js 348): what D36 reorders.
 const CONCEPT_CATEGORIES=['All categories','Landscapes','Architecture','Environments','Illustration'];
 
-function compare(reference,actual,manifest,sections=SECTIONS) {
+function compare(reference,actual,manifest,sections=SECTIONS,imageCategories=[]) {
     const only=inventory=>Object.fromEntries(sections.map(key=>[key,inventory[key]]));
-    return diffInventory(pick(only(mapImagesConcept(reference,{manifest}))),pick(only(actual)));
+    return diffInventory(pick(only(mapImagesConcept(reference,{manifest,imageCategories}))),pick(only(actual)));
 }
 
 /** The comparison as a gate: throws, naming every differing path, unless production equals the mapped concept. */
@@ -513,6 +515,117 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`collection pag
     // The comparison notices a lost Edit.
     await mutate(page,{remove:['#workspace-main .heading-actions > button:first-child']});
     expect(compare(reference,await inventoryOf(page,'#workspace-main'),manifest,['heading']).length).toBeGreaterThan(0);
+});
+
+/** #332: an own category on one listed image, set through the real route (PUT /prompt_manager/images/category). */
+const IMAGE_CATEGORY='Portraits';
+async function setImageCategory(request,path,category) {
+    const listing=await (await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();
+    const root_scope=listing.images.find(item=>item.root_index===0).root_scope;
+    const response=await request.put('/prompt_manager/images/category',{data:{items:[{root_index:0,root_scope,path}],category}});
+    await expect(response).toBeOK();
+    expect(await response.json()).toMatchObject({success:true,category,updated:1});
+}
+
+/**
+ * Runs in the page: the open Set category dialog (the concept's `simpleInput`, app.js 1384-1390 and 1138): its title,
+ * the body's tree, the field, the input and its suggestions (`datalist`), and the actions with every button's box,
+ * all relative to the dialog, with the concept's geometry and tokens.
+ */
+function measureCategoryDialog() {
+    const dialog=document.querySelector('dialog#modal[open]');
+    const css=(node,...keys)=>node?Object.fromEntries(keys.map(key=>[key,getComputedStyle(node)[key]])):null;
+    const name=node=>[node.localName,...[...node.classList].sort()].join('.');
+    const text=node=>node?.textContent.trim()??null;
+    const origin=dialog.getBoundingClientRect();
+    const box=node=>{const rect=node.getBoundingClientRect();return {left:Math.round(rect.left-origin.left),top:Math.round(rect.top-origin.top),
+        width:Math.round(rect.width),height:Math.round(rect.height)};};
+    const body=dialog.querySelector('#modal-body');
+    const field=body.querySelector(':scope > .field');
+    const label=field?.querySelector(':scope > label'),input=field?.querySelector(':scope > input');
+    const list=body.querySelector(':scope > datalist');
+    const actions=body.querySelector(':scope > .dialog-actions');
+    return {
+        title:text(dialog.querySelector('#modal-title')),
+        tree:[...body.children].map(name),
+        field:field&&{tree:[...field.children].map(name),...css(field,'display','flexDirection','rowGap','marginBottom'),...box(field)},
+        label:label&&{text:text(label),for:label.htmlFor,...css(label,'fontSize','fontWeight','color')},
+        input:input&&{id:input.id,type:input.type,value:input.value,list:input.getAttribute('list'),
+            ...css(input,'height','paddingLeft','fontSize','color','backgroundColor','borderTopColor','borderTopLeftRadius'),...box(input)},
+        suggestions:list&&{id:list.id,shown:list.getClientRects().length>0,options:[...list.options].map(option=>option.value)},
+        actions:{tree:[...actions.children].map(name),...css(actions,'display','justifyContent','columnGap','rowGap','flexWrap','marginTop'),...box(actions),
+            buttons:[...actions.children].map(button=>({text:text(button),className:button.className,
+                ...css(button,'backgroundColor','color','fontSize','paddingTop','paddingLeft','borderTopColor','minHeight'),...box(button)}))},
+        width:Math.round(origin.width),height:Math.round(origin.height),
+    };
+}
+
+/**
+ * The concept's own open dialog as production records it, changed at runtime so the browser lays it out: D140 (#332)
+ * empties the field (the concept pre-fills its demo "Landscapes"), lists the toolbar's categories as the field's
+ * suggestions (`datalist#workspace-input-suggestions`) and adds "Use prompt category", a plain button of the concept's
+ * own Cancel, between Cancel and the primary action; D8 names the primary action "Apply" ("Apply in prototype").
+ */
+async function categoryDialogAsRecorded(page,suggestions) {
+    await mutate(page,{clone:[{selector:'dialog#modal[open] .dialog-actions > button:first-child',text:'Use prompt category'}]});
+    await page.evaluate(suggestions=>{
+        const body=document.querySelector('dialog#modal[open] #modal-body');
+        const input=body.querySelector('#action-input');input.value='';input.setAttribute('list','workspace-input-suggestions');
+        const list=document.createElement('datalist');list.id='workspace-input-suggestions';
+        for(const value of suggestions){const option=document.createElement('option');option.value=value;list.append(option);}
+        body.querySelector(':scope > .field').after(list);
+        body.querySelector('.dialog-actions > .ca-primary').textContent='Apply';
+    },suggestions);
+    await settle(page);
+    return page.evaluate(measureCategoryDialog);
+}
+
+async function openCategoryDialog(page,scope) {
+    await page.locator(scope).locator(CARDS).first().locator('.image-overlays > label > input[type="checkbox"]').check();
+    await expect(page.locator('#bulkbar > .bulkbar > strong')).toHaveText('1 selected');
+    await page.locator('#bulkbar').getByRole('button',{name:'Set category',exact:true}).click();
+    await expect(page.locator('dialog#modal[open] #modal-title')).toHaveText('Categorize selected images');
+    await page.mouse.move(0,0);await settle(page);
+    return page.evaluate(measureCategoryDialog);
+}
+
+// D140 and D141 (#332): with one image's own category set, the toolbar's category options and the Set category dialog
+// against the concept's (app.js 348 and 1384-1390). The dialog is compared with the concept page itself changed at
+// runtime as recorded (`categoryDialogAsRecorded`); unmapped, it differs only in the recorded parts.
+for(const [width,height] of SIZES)for(const theme of THEMES)test(`images category options and Set category dialog match the concept ${width}x${height} ${theme}`,async({page,request},testInfo)=>{
+    await page.setViewportSize({width,height});
+    const manifest=testInfo.manifest;
+    await setImageCategory(request,manifest.images.at(-1).path,IMAGE_CATEGORY);
+    await openConceptLoaded(page,theme,'no-preference');
+    const reference=await inventoryOf(page,'#main');
+    const referenceDialog=await openCategoryDialog(page,'#main');
+    await captureCanonicalState(page,testInfo,`concept-images-category-${width}-${theme}`,'dialog#modal');
+    const suggestions=[...CONCEPT_CATEGORIES.slice(1),IMAGE_CATEGORY].sort(nocase);
+    const oracle=await categoryDialogAsRecorded(page,suggestions);
+    await page.keyboard.press('Escape');await expect(page.locator('dialog#modal[open]')).toHaveCount(0);
+
+    await openProductionLoaded(page,theme,'no-preference');
+    await expect(page.locator('#category-filter option')).toHaveText(['All categories',...suggestions]);
+    const actual=await inventoryOf(page,'#workspace-main');
+    const actualDialog=await openCategoryDialog(page,'#workspace-main');
+    await captureCanonicalState(page,testInfo,`production-images-category-${width}-${theme}`,'dialog#modal');
+    const path=testInfo.outputPath('images-category-geometry.json');
+    await writeFile(path,JSON.stringify({referenceDialog,oracle,actualDialog,reference:reference.toolbar,actual:actual.toolbar},null,2));
+    await testInfo.attach('images-category-geometry',{path,contentType:'application/json'});
+
+    // The concept itself: its sample categories and its pre-filled simpleInput with Cancel / Apply in prototype.
+    expect.soft(reference.toolbar.items.find(item=>item.id==='category-filter').options,'concept categories').toEqual(CONCEPT_CATEGORIES);
+    expect.soft(referenceDialog,'concept dialog').toMatchObject({title:'Categorize selected images',label:{text:'Category'},
+        input:{id:'action-input',value:'Landscapes',list:null},suggestions:null});
+    expect.soft(referenceDialog.actions.buttons.map(button=>button.text),'concept actions').toEqual(['Cancel','Apply in prototype']);
+    // D141: the toolbar options add the image's own category, sorted in (D36).
+    expect.soft(compare(reference,actual,manifest,['toolbar'],[IMAGE_CATEGORY]),'toolbar differences after D14, D36, D141').toEqual([]);
+    // D140 and D8: the dialog equals the concept page laid out as recorded.
+    expect.soft(diffInventory(oracle,actualDialog),'dialog differences after D8, D140').toEqual([]);
+    // Unmapped, the concept differs only in the field's value and suggestions, the body's datalist and the actions.
+    const recorded=/^(input\.(value|list)|tree\.|suggestions|actions\.)/;
+    expect.soft(diffInventory(referenceDialog,actualDialog).map(item=>item.path).filter(item=>!recorded.test(item)),'unrecorded dialog differences').toEqual([]);
+    expect.soft(actualDialog.suggestions,'suggestions').toEqual({id:'workspace-input-suggestions',shown:false,options:suggestions});
 });
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): one CSS mutation (the

@@ -1,11 +1,14 @@
+import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
+import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog,compareVocabularyPage} from './vocabulary-canonical-comparison.mjs';
 
 // Artifact-only captures of Tags & categories states that have no concept counterpart: the Manage categories
 // preview, loading and 1,000-category cap notes, tag conflict and restore notes, the Delete tag confirmation (D14),
 // empty lists (D12), a failed read with Retry, and Load more (D5). The page and the three concept dialogs are captured
 // as concept/production pairs by workspace-vocabulary.spec.mjs. There are deliberately no pixel assertions or
-// baselines: the maintainer accepts these captures visually before any baseline is added.
+// baselines: the maintainer accepts these captures visually before any baseline is added. The last test (#332 D143,
+// D144) compares the category rows with image counts and the Manage category preview against the concept.
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 const route='/prompt_manager/workspace#/tags';
 const main=page=>page.locator('#workspace-main');
@@ -100,4 +103,88 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
     await page.screenshot({path,fullPage:true,animations:'disabled',clip:{x:0,y:Math.max(0,end-420),width,height:440}});
     await testInfo.attach(`production-load-more-${width}-${theme}`,{path,contentType:'image/png'});
     await expect(rows(page)).toHaveCount(100);
+});
+
+// D143 and D144 (#332): with own image categories seeded (`image_categories`: "Landscapes" on two images, "Portraits"
+// on one image only), the Categories panel and the Manage category preview against the concept (renderTags, app.js
+// 719-729; the Manage dialog is its simpleInput, 1138-1143). The page is compared with D143 mapped, a model checked
+// against the concept page with those rows added at runtime; the preview with D9's sentence and D144's images.
+const concept='/__test__/canonical/workspace';
+const IMAGE_CATEGORIES=Object.freeze({images:{Landscapes:2,Portraits:1},only:['Portraits']});
+// D9's sentence; D144 adds the images holding the value ("and 2 images").
+const PREVIEW='“Landscapes” is used by 3 positive prompts and 2 images. Apply renames it to “Scenery”.';
+const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf);
+async function openConceptRoute(page,route,theme) {
+    await page.goto('about:blank');await page.goto(`${concept}#${route}`);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+}
+/** The concept page as D143 records it: image counts after the prompt counts, image-only rows before Manage category. */
+function conceptWithImageCounts(page) {
+    return page.evaluate(({images,only})=>{
+        const surface=document.querySelectorAll('#main .two-col > section.surface')[1];
+        const rows=[...surface.querySelectorAll('.operation')];
+        const count=value=>`${images[value]} image${images[value]===1?'':'s'}`;
+        for(const row of rows) {
+            const value=row.querySelector('h3').textContent;
+            if(images[value]&&!only.includes(value))row.querySelector('p').textContent+=` · ${count(value)}`;
+        }
+        const manage=rows.at(-1),last=rows.at(-2);
+        for(const value of only) {
+            const row=last.cloneNode(true);row.querySelector('h3').textContent=value;row.querySelector('p').textContent=count(value);manage.before(row);
+        }
+    },IMAGE_CATEGORIES);
+}
+/** Concept controls the Manage dialog adds (as in workspace-vocabulary.spec.mjs): the Filters field select and p.small. */
+async function conceptDonors(page,theme,categories) {
+    await openConceptRoute(page,'images',theme);
+    await page.locator('#main').getByRole('button',{name:'Filters',exact:true}).click();await expect(page.locator('#modal')).toBeVisible();
+    const filters=await page.locator('#modal').evaluate(inventoryOf);
+    await openConceptRoute(page,'prompt/alpine',theme);
+    await page.getByRole('button',{name:'Edit metadata',exact:true}).click();await expect(page.locator('#modal')).toBeVisible();
+    const editor=await page.locator('#modal').evaluate(inventoryOf);
+    return {filters,editor,categories};
+}
+
+for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','light'])test(`category rows and the Manage category preview match the concept with image categories ${width}x${height} ${theme} (D143, D144)`,async({page,request},testInfo)=>{
+    await page.setViewportSize({width,height});
+    const manifest=await seed(request,{image_categories:true});
+    expect(manifest.image_categories).toEqual(IMAGE_CATEGORIES.images);
+    await openConceptRoute(page,'tags',theme);await expect(page.locator('#main h1')).toHaveText('Tags & categories');
+    await page.mouse.move(0,0);
+    const reference=await pageOf(page,false);
+    await conceptWithImageCounts(page);
+    const oracle=await pageOf(page,false);
+    await captureCanonicalState(page,testInfo,`concept-image-categories-${width}-${theme}`,'#main');
+    const donors=await conceptDonors(page,theme,['Landscapes','Architecture','Environments','Illustration','Portraits']);
+    await openConceptRoute(page,'tags',theme);
+    await page.locator('#main').getByRole('button',{name:'Review',exact:true}).click();await expect(page.locator('#modal')).toBeVisible();
+    const referenceDialog=await page.locator('#modal').evaluate(inventoryOf);
+
+    await open(page,theme,manifest.tags.length);
+    await expect(categoryOperation(page,'Portraits')).toHaveCount(1);
+    // The pointer still rests where the concept's Review was pressed: park it so no row is hovered.
+    await page.mouse.move(0,0);
+    const actual=await pageOf(page,true);
+    await captureCanonicalState(page,testInfo,`production-image-categories-${width}-${theme}`,'#workspace-main');
+    const box=await openDialog(page,categoryOperation(page,'Manage category').getByRole('button',{name:'Review',exact:true}));
+    await expect(box.getByLabel('Category',{exact:true})).toHaveValue('Landscapes');
+    await box.getByLabel('Proposed new category name',{exact:true}).fill('Scenery');await button(box,'Preview').click();
+    await expect(box.locator('p.small')).toHaveText(PREVIEW);
+    // The pressed primary keeps the pointer and focus; the concept is measured as it opens (focus on ×, no hover),
+    // which workspace-vocabulary.spec.mjs compares, so this state is restored before measuring the preview.
+    await page.mouse.move(0,0);await box.locator('.dialog-header button').focus();
+    const actualDialog=await box.evaluate(inventoryOf);
+    await captureCanonicalState(page,testInfo,`production-image-categories-preview-${width}-${theme}`);
+    const path=testInfo.outputPath('vocabulary-image-categories.json');
+    await writeFile(path,JSON.stringify({reference,oracle,actual,referenceDialog,actualDialog},null,2));
+    await testInfo.attach('vocabulary-image-categories',{path,contentType:'application/json'});
+
+    // The D143 model reproduces the concept page with the rows added at runtime.
+    expect.soft(diffInventory(mapVocabularyConcept(reference,IMAGE_CATEGORIES).operations,mapVocabularyConcept(oracle).operations),'D143 model').toEqual([]);
+    const {diff,extra}=compareVocabularyPage(reference,actual,IMAGE_CATEGORIES);
+    expect.soft(actual.operations.map(row=>[row.h3.text,row.p.text]).slice(0,-1),'category rows').toEqual([['Landscapes','3 positive prompts · 2 images'],
+        ['Architecture','1 positive prompt'],['Environments','1 positive prompt'],['Illustration','1 positive prompt'],['Portraits','1 image']]);
+    expect.soft(diff,'page differences after the recorded deviations and D143').toEqual([]);
+    expect.soft(extra,'fixture-only rows').toEqual([manifest.pair_only_tag,manifest.archived_only_tag,manifest.negative_only_tag,manifest.unused_tag]);
+    expect.soft(diffInventory(mapVocabularyDialog('manage',referenceDialog,{...donors,preview:PREVIEW}),actualDialog),'preview differences after D9 and D144').toEqual([]);
 });

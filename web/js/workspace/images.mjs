@@ -17,6 +17,7 @@ import { openMetadataScan } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imagesFilters, imagesViewState } from './saved-views.mjs';
 import { VIEW_COLLECTION_DELETED, isCollectionGone } from './collections.mjs';
+import { IMAGE_CATEGORIES_URL, mergeCategories } from './images-category.mjs';
 import { displayPreferences } from './preferences.mjs';
 import { onImageTagsSaved } from './image-tagging.mjs';
 import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
@@ -84,6 +85,17 @@ setFavoriteVisitTarget((key, favorite) => {
 
 // A tag save made while Images is left (Tags › Auto-tag images) may change what a filtered visit lists: it reloads (M6).
 onImageTagsSaved(() => { if (lastVisit?.filters.tags.length || lastVisit?.filters.q) lastVisit = {...lastVisit, stale: true}; });
+// The filter state a Tags & categories Browse hands to the next Images mount (#332 MC10).
+let browseState = null;
+/**
+ * Open Images filtered by `category` only (every other filter at its default), as Browse opens the Library: Tags &
+ * categories' Browse of a category only images use (#332 MC10, D143).
+ */
+export function browseImages({category} = {}) {
+    if (typeof category !== 'string' || !category) throw new TypeError('browseImages needs a category');
+    browseState = {category};
+    window.location.hash = '#/images';
+}
 /** Forget the last Images visit (its listing, scroll and selection): the next visit reads everything again (S9). */
 export function forgetImagesVisit() {
     lastVisit = null;
@@ -121,10 +133,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
+    // A Tags & categories Browse (browseImages) is handed to this mount once: a fresh Images visit filtered by its
+    // category, which becomes the Images return state like any plain visit (as Browse does for the Library).
+    const imagesPage = !embedded && !favorites && collectionId === null;
+    const handed = imagesPage && !savedState ? browseState : null;
+    if (imagesPage) browseState = null;
     const saved = embedded || !savedState ? null : imagesFilters(savedState);
     // The open collection: the route's, else a saved view's (D140); '' on every other page.
     const openCollection = embedded ? '' : collectionId !== null ? String(collectionId) : saved?.collection || '';
-    const prior = embedded || saved || favorites || openCollection ? null : lastVisit;
+    const prior = embedded || saved || favorites || openCollection || handed ? null : lastVisit;
     // A stale visit keeps its filters, layout and size, and lists again instead of restoring (M6).
     const visit = prior?.stale ? null : prior;
     // The layout and size defaults are the Images page's: an embedded gallery (a prompt history's, its dialogs) has no
@@ -136,11 +153,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     let state, geometry = { positions: [], columns: 1, height: 0, maxHeight: 0 }, galleryWidth = 0, optionsRequest, categoryRequest, recovering = false, rescanning = false;
     // Discovered sources (each with its own folders) and every folder, for "Refine this view" and the scope chip.
     let roots = [], folders = [];
+    // The toolbar's current category list (loadCategories), also the Set category suggestions.
+    let categoryNames = [];
     // The open "Refine this view", so a discovery that settles after it opened still lists its sources and folders.
     let refine = null;
     const rendered = new Map();
     const itemIndexes = new Map();
     const filters = { root: 'all', q: '', category: '', tags: [], subfolder: '', media: 'all', sort: 'newest', ...prior?.filters, ...saved,
+        ...(handed ? {category: handed.category} : {}),
         // A collection and favorites are never both the filter (DC10).
         favorites: !openCollection && (favorites || saved?.favorites === true), collection: openCollection };
     filters.tags = [...filters.tags];
@@ -267,6 +287,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
     const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state?.items ?? [], focusFallback,
         checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys),
+        // The Set category field suggests the toolbar's categories (#332 MC13).
+        getCategories:() => categoryNames,
         // #392 "Select all N matching": the listing's total and its filter, as the server lists them.
         getListing:() => ({total:state?.total ?? 0, hasMore:Boolean(state?.hasMore), positiveCount:state?.positiveCount ?? null}),
         // A Source filter carries its root's scope, so a renumbered source is refused (source-changed), not acted on.
@@ -763,24 +785,27 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             return false;
         }
     }
-    /** The toolbar's categories are the Library's (the linked positive's category, D13). */
+    /**
+     * The toolbar's categories: the Library's (prompts and recipes) and the listed images' own ones (D141, #332), read
+     * in parallel. If only the image list fails, the prompt categories show and the categories alert is raised.
+     */
     async function loadCategories() {
         if (!toolbar) return;
         categoryRequest?.abort();
         const request = new AbortController(); categoryRequest = request;
-        try {
-            const data = await api.get('/prompt_manager/library/options', {signal:request.signal});
-            if (scope.signal.aborted || request !== categoryRequest) return;
-            if (!Array.isArray(data?.categories)) throw new TypeError('Invalid categories');
-            // D36: alphabetical (case-insensitive) whatever order the server sends, a restored category among them.
-            const names = new Set([...data.categories.filter(value => typeof value === 'string' && value), filters.category]);
-            names.delete('');
-            toolbar.setCategories([...names].sort((a, b) => a.localeCompare(b, 'en-US', {sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0)));
-            categoriesFailed = false;
-        } catch {
-            if (scope.signal.aborted || request !== categoryRequest) return;
-            categoriesFailed = true;
-        }
+        const [library, images] = await Promise.allSettled([
+            api.get('/prompt_manager/library/options', {signal:request.signal}),
+            api.get(IMAGE_CATEGORIES_URL, {signal:request.signal}),
+        ]);
+        if (scope.signal.aborted || request !== categoryRequest) return;
+        const valid = result => result.status === 'fulfilled' && Array.isArray(result.value?.categories);
+        if (!valid(library)) { categoriesFailed = true; return; }
+        // D36: alphabetical (case-insensitive) whatever order the server sends, a restored category among them.
+        const names = new Set(mergeCategories(library.value.categories, valid(images) ? images.value.categories : []));
+        if (filters.category) names.add(filters.category);
+        categoryNames = [...names].sort((a, b) => a.localeCompare(b, 'en-US', {sensitivity:'base'}) || (a < b ? -1 : a > b ? 1 : 0));
+        toolbar.setCategories(categoryNames);
+        categoriesFailed = !valid(images);
     }
     scope.cleanup(() => { optionsRequest?.abort(); categoryRequest?.abort(); });
     updateScope();

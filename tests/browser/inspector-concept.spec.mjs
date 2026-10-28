@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInventory,mutate,countCopy,saveImageTags} from './concept-inventory.mjs';
+import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInventory,mutate,countCopy,saveImageTags,withChipSource} from './concept-inventory.mjs';
 
 // Task D4 of #249: the Images side panel (app.js imageDetails a400–414) and the viewer's full details (imageDetails(i,
 // true)) against the immutable concept, on the concept-shaped real fixture, at 1600x1100 and 390x844 in both themes.
@@ -13,6 +13,8 @@ test.use({locale:'en-US',timezoneId:'UTC'});
 
 const CARDS='.gallery-body > .image-grid > .media-card';
 const TITLE='Alpine observatory';
+// D146 (#332): alpine_00001.png's recipe has no category, so its chip shows the positive's, " · prompt" (D39).
+const ORIGIN='prompt';
 const FIXTURE_IMAGES=24;
 // The concept's sticky panel never scrolls; production's scrolls inside the window above 700px (D20/D21 side panel).
 const PANEL_INSET=40;
@@ -38,14 +40,18 @@ function withFocusablePrompts(inventory) {
     return {...inventory,controls,sections:inventory.sections.map(section=>({...section,text:{...section.text,tabIndex:0}}))};
 }
 
-/** D21: the category chip names its scope in a visually hidden prefix; here the linked positive's (D39 fallback). */
+/**
+ * D21: the category chip names its scope in a visually hidden prefix; here the linked positive's (D39 fallback). Its
+ * visible origin (D146, #332: " · prompt") is the concept page's own chip with `span.chip-source` added at runtime
+ * (`withChipSource`), so `reference.panel` and `viewerPlain` already carry it.
+ */
 function withCategoryScope(inventory) {
     const [badge,category,...rest]=inventory.badges.chips;
     return {...inventory,badges:{...inventory.badges,chips:[badge,{...category,hidden:'Positive prompt category: '},...rest]}};
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117 and D139); everything else must
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117, D139 and D146); everything else must
  * equal production. `reference.viewerPlain` is the concept's own full details
  * with its tag chips made plain (D20), D117's summary button added and, under a coarse pointer, D34's targets, all at
  * runtime: the browser lays out what follows them, as the Images spec's removed toolbar items do. D139's
@@ -129,6 +135,7 @@ async function withCollectionsButton(page,selector) {
  */
 async function plainViewerChips(page) {
     const restoreTargets=await mutate(page,{css:D34_COARSE_TARGETS});
+    const restoreSource=await withChipSource(page,'#viewer-details',ORIGIN);
     await page.evaluate(()=>{
         window.__plainChips=[...document.querySelectorAll('#viewer-details .tags > button.chip')].map(button=>{
             const span=document.createElement('span');span.className='chip';span.textContent=button.textContent;
@@ -144,7 +151,7 @@ async function plainViewerChips(page) {
         await restoreCollections();
         await page.evaluate(()=>{for(const [span,button] of window.__plainChips)span.replaceWith(button);delete window.__plainChips;
             window.__summaryButton.remove();delete window.__summaryButton;});
-        await restoreTargets();
+        await restoreSource();await restoreTargets();
     };
 }
 
@@ -180,9 +187,13 @@ async function viewerOf(page,concept,mutation=null) {
     return {viewerDetails,viewerPlain,fileControls};
 }
 async function inventory(page,concept=false) {
+    // D146: the concept panel's category chip with its visible origin; D139: Collections… after Prompt history.
+    const restoreSource=concept?await withChipSource(page,'#image-inspector',ORIGIN):null;
     const restoreCollections=concept?await withCollectionsButton(page,'#image-inspector > .detail-footer'):null;
+    if(concept)await settle(page);
     const {panel}=await inspectorOf(page);
     await restoreCollections?.();
+    await restoreSource?.();
     const {viewerDetails,viewerPlain,fileControls}=await viewerOf(page,concept);
     return concept?{panel,viewerDetails,viewerPlain,fileControls}:{panel,viewerDetails,fileControls};
 }
@@ -308,7 +319,8 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector pane
     expect.soft(panel.sections.map(section=>section.label.color)[0],'concept role colors').not.toBe(panel.sections[1].label.color);
     expect.soft(panel.facts,'concept facts').toMatchObject({columns:2,columnGap:'12px',rowGap:'12px',fontSize:width>700?'11px':'12px'});
     expect.soft(panel.footer,'concept footer').toMatchObject({paddingTop:'13px',paddingRight:'17px',paddingBottom:'13px',paddingLeft:'17px'});
-    expect.soft(panel.badges.chips.map(chip=>chip.text),'concept badges').toEqual(['Execution recorded','Landscapes']);
+    // The concept's bare "Landscapes" with the D146 origin added at runtime (`withChipSource`).
+    expect.soft(panel.badges.chips.map(chip=>chip.text),'concept badges').toEqual(['Execution recorded','Landscapes · prompt']);
     expect.soft(reference.viewerDetails.structure.inner.slice(-2),'concept full details').toEqual(['details','details']);
 
     expect.soft(diff,'differences after the recorded deviations').toEqual([]);
@@ -342,8 +354,10 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(panelOf(page).locator('.panel-heading h2')).toHaveText('Quiet geometry');
     const rows=panelOf(page).locator('.detail-inner > .tags');
     await expect(rows).toHaveCount(2);
-    await expect(rows.first().locator('.chip')).toHaveText(['Execution recorded','Positive prompt category: Architecture']);
+    await expect(rows.first().locator('.chip')).toHaveText(['Execution recorded','Positive prompt category: Architecture · prompt']);
     await expect(rows.first().locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
+    // D146 (#332): the visible origin names where the value came from.
+    await expect(rows.first().locator('.chip .chip-source')).toHaveText(' · prompt');
     await expect(rows.nth(1).locator('button.chip')).toHaveText(['minimal','warm_light','editorial']);
     await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
@@ -425,6 +439,12 @@ test('inspector comparison detects mutations',async({page})=>{
     const withoutCollections=await measure();
     expect(()=>assertInspectorMatch(reference,withoutCollections,viewport)).toThrow(/panel\.footer/);
     await restoreButton();await settle(page);
+
+    // D146: the visible origin is part of the mapped concept, so losing it is a difference.
+    const restoreSource=await mutate(page,{remove:['#image-inspector .chip-source']});
+    const sourceMutated=await measure();
+    expect(()=>assertInspectorMatch(reference,sourceMutated,viewport)).toThrow(/panel\.badges\.chips\.1\.source/);
+    await restoreSource();await settle(page);
     assertInspectorMatch(reference,await measure(),viewport);
 
     await mutate(page,{remove:['#image-inspector > .detail-footer']});

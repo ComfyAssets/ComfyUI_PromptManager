@@ -21,8 +21,9 @@ const REPRESENTATIONS = {
     limited: 'Record exceeds inspection limits; text is unavailable',
 };
 const TEXTLESS = new Set(['invalid', 'limited']);
-// #332: the hidden prefix that names where a category chip's value came from.
+// #332: the hidden prefix and the visible origin word that name where a category chip's value came from (D146).
 const CATEGORY_PREFIX = {image: 'Image category: ', positive: 'Positive prompt category: ', pair: 'Recipe category: '};
+const CATEGORY_ORIGIN = {image: 'this image', positive: 'prompt', pair: 'recipe'};
 const REVEAL_URL = '/prompt_manager/images/reveal';
 // D38 Show in folder: the route's answers, in the maintainer's words.
 const REVEAL_OPENED = 'Opened the folder on this computer.';
@@ -194,6 +195,17 @@ export function inspectorTagChips(record, {filterable}) {
     return chips;
 }
 /** A concept chip whose visible text carries a visually hidden prefix naming what it is. */
+/**
+ * The category chip (#332 D146): the hidden prefix, the category, then `span.chip-source` " · this image", " · prompt"
+ * or " · recipe" (visible, never split), so the chip names where its value came from.
+ */
+export function categoryChip(library) {
+    const scope = CATEGORY_ORIGIN[library.category_scope] ? library.category_scope : 'positive';
+    const chip = prefixedChip(CATEGORY_PREFIX[scope], library.category);
+    chip.append(el('span', ` · ${CATEGORY_ORIGIN[scope]}`, 'chip-source'));
+    return chip;
+}
+
 function prefixedChip(prefix, text) {
     const chip = el('span', undefined, 'chip');
     chip.append(el('span', prefix, 'ca-visually-hidden'), text);
@@ -274,9 +286,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         const badges = el('div', undefined, 'tags'), badge = evidenceBadge(record.prompts);
         if (badge) badges.append(el('span', badge, 'chip blue'));
         // #332: an image's own category shows for any link status; an inherited one only when linked.
-        if (library?.category && (library.category_scope === 'image' || linked)) {
-            badges.append(prefixedChip(CATEGORY_PREFIX[library.category_scope] ?? CATEGORY_PREFIX.positive, library.category));
-        }
+        if (library?.category && (library.category_scope === 'image' || linked)) badges.append(categoryChip(library));
         if (badges.childNodes.length) inner.append(badges);
         const prompts = el('div'); inner.append(prompts);
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext, title});

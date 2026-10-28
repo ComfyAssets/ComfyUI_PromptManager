@@ -47,8 +47,8 @@ function measureAddDialog() {
 function mapAddDialogConcept(reference) {
     const [cancel,apply]=reference.actions.buttons;
     return {...reference,field:{...reference.field,tree:[...reference.field.tree,'datalist']},
-        input:{...reference.input,value:'',maxLength:100,list:'action-input-suggestions'},
-        suggestions:{id:'action-input-suggestions',display:'none',options:['Experiments','Landscapes']},
+        input:{...reference.input,value:'',maxLength:100,list:'workspace-input-suggestions'},
+        suggestions:{id:'workspace-input-suggestions',display:'none',options:['Experiments','Landscapes']},
         actions:{...reference.actions,buttons:[cancel,{...apply,text:'Add'}]}};
 }
 
@@ -101,6 +101,6 @@ test('add to collection comparison detects mutations',async({page})=>{
     const undoStyle=await mutate(page,{css:'dialog#modal #action-input { border-color: rgb(255, 0, 0); } dialog#modal .dialog-actions { gap: 31px; }'});
     expect(await paths()).toEqual(expect.arrayContaining(['input.borderTopColor','actions.columnGap']));
     await undoStyle();
-    await page.evaluate(()=>document.querySelector('#action-input-suggestions').remove());
+    await page.evaluate(()=>document.querySelector('#workspace-input-suggestions').remove());
     expect(await paths()).toEqual(expect.arrayContaining(['suggestions']));
 });
