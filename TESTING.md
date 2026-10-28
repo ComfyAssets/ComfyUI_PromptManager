@@ -5525,7 +5525,7 @@ decide through the same `own_counts`.
   stays). No new evidence vocabulary, so older builds still open the database.
 - Still different: jobs before the restart (no backfill); list batches (per item in the
   Library, once per job in history); text with leading or trailing whitespace (the
-  Library stores it stripped, history matches the exact raw text); a job in which the
+  Library stores it stripped, history matches the exact raw text, #438); a job in which the
   node executes after its replay (RAM-pressure freed the entry: two samples, an
   ambiguous capture); jobs while the history writer is fenced (restore, library move).
 - Tests: `tests/test_cached_runs.py` (whole jobs with the real nodes, a real database,
