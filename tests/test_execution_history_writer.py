@@ -35,10 +35,12 @@ NON_BLOCKING_CEILING = 1.0
 class ManualClock:
     def __init__(self):
         self.value = 0.0
+        self.reads = 0
         self.lock = threading.Lock()
 
     def __call__(self):
         with self.lock:
+            self.reads += 1
             return self.value
 
     def advance(self, seconds):
@@ -83,6 +85,17 @@ class HistoryWriterTests(unittest.TestCase):
                 return
             threading.Event().wait(0.005)
         self.fail("finite deadline expired waiting for worker behavior")
+
+    def wait_for_worker_pass(self):
+        """Wait until the idle worker has run one whole loop pass on the clock.
+
+        An idle pass reads the clock for the probe decision and again before
+        it parks, so three reads from now include one complete pass: whatever
+        the worker decides at the current clock value has happened (state,
+        not a wall-clock pause that a loaded runner can outlast).
+        """
+        reads = self.clock.reads
+        self.wait_for(lambda: self.clock.reads >= reads + 3)
 
     def writer(self, factory=None, ready=True):
         writer = HistoryWriter(factory or (lambda: self.db), clock=self.clock)
@@ -348,9 +361,12 @@ class HistoryWriterTests(unittest.TestCase):
         first = self.sealed(writer)
         charge = first.lease.byte_count
 
+        left = threading.Event()
+
         def write(*args, **kwargs):
             entered.set()
             release.wait(3)
+            left.set()
             return original(*args, **kwargs)
 
         with patch.object(self.db, "write_execution_contexts_for_finish", write):
@@ -396,8 +412,17 @@ class HistoryWriterTests(unittest.TestCase):
                 before = monotonic()
                 self.assertFalse(writer.close(0.02))
                 elapsed = monotonic() - before
+            # close() waits until its own monotonic deadline, so the lower
+            # bound holds on any runner.
             self.assertGreaterEqual(elapsed, 0.02)
-            self.assertLess(elapsed, 0.2)
+            if early_join:
+                # Manual clock: only the patched join/sleep advance it, so this
+                # exact bound proves early joins do not spin forever.
+                self.assertLess(elapsed, 0.2)
+            # Bounded on the real clock too: close() gave up while the
+            # in-flight write was still blocked, instead of waiting it out.
+            self.assertFalse(left.is_set())
+            self.assertTrue(writer.status().alive)
             self.assertEqual(pool.charged_bytes, charge)
             replacement = HistoryWriter(lambda: self.db, context_budget=pool)
             self.writers.append(replacement)
@@ -771,7 +796,7 @@ class HistoryWriterTests(unittest.TestCase):
             self.wait_for(lambda: not writer.status().accepting)
             self.assertFalse(writer.submit(fresh))
             self.clock.advance(4.99)
-            threading.Event().wait(0.08)
+            self.wait_for_worker_pass()
             self.assertEqual(probes, [0])
             self.clock.advance(0.01)
             self.wait_for(lambda: writer.status().accepting)
@@ -794,12 +819,12 @@ class HistoryWriterTests(unittest.TestCase):
         writer = self.writer(factory, ready=False)
         self.wait_for(lambda: len(calls) == 1)
         self.clock.advance(4.99)
-        threading.Event().wait(0.08)
+        self.wait_for_worker_pass()
         self.assertEqual(calls, [0])
         self.clock.advance(0.01)
         self.wait_for(lambda: len(calls) == 2)
         self.clock.advance(4.99)
-        threading.Event().wait(0.08)
+        self.wait_for_worker_pass()
         self.assertEqual(calls, [0, 5])
         self.clock.advance(0.01)
         self.wait_for(lambda: writer.status().accepting)
@@ -853,7 +878,7 @@ class HistoryWriterTests(unittest.TestCase):
                 )
             writer.invalidate()
             release.set()
-            threading.Event().wait(0.08)
+            self.wait_for_worker_pass()
             self.assertFalse(writer.status().accepting)
             self.assertIsNone(writer.status().epoch)
             self.assertFalse(writer.submit(self.start_command(epoch=stale_epoch)))
@@ -871,7 +896,7 @@ class HistoryWriterTests(unittest.TestCase):
         lock.execute("BEGIN IMMEDIATE")
         before = time.monotonic()
         self.assertTrue(writer.submit(command))
-        self.assertLess(time.monotonic() - before, 0.1)
+        self.assertLess(time.monotonic() - before, NON_BLOCKING_CEILING)
         self.wait_for(lambda: not writer.status().accepting)
         lock.rollback()
         self.clock.advance(5)
