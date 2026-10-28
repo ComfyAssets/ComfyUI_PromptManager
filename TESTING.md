@@ -5474,6 +5474,20 @@ rotates the epoch, so a pre-restore `expected_epoch` is refused with `storage-ch
 Owner rows and their timestamps never change on a tag command; a category apply only
 touches rows carrying the exact source.
 
+Image categories (#332 §7, MC9, MC10, DC7): each `GET categories` row also carries
+`image_count`, the stored `image_categories` rows holding that exact value (files
+missing on disk included). A value prompts and images share appears once, ordered by
+its oldest positive; a value only images hold appears once after every prompt-backed
+value (`first_pid` 9223372036854775807 in the keyset cursor), ordered by value, with
+`prompt_count` 0. `/library/options` keeps its own query and never lists image-only
+values. Category preview and apply report `impact.images` (rows holding the source),
+the target exists when an image row holds it, an image-only value can be renamed, the
+apply renames the image rows in the same transaction (file keys and rowids kept, so a
+merge cannot collide), and the impact token hashes the sorted image rowids, so an image
+row gaining or losing the value between preview and apply is 409
+`vocabulary-conflict` with nothing written. Every image-category statement reads
+`idx_image_categories_category` (`test_category_reads_use_the_image_category_index`).
+
 Two legacy routes change additively: `GET /tags` now lists unused registry tags, and
 `/tags/suggest` without context appends unused names at count 0. Unused tags become
 deletable only through the native Delete tag (vocabulary UI PR), not on the legacy
