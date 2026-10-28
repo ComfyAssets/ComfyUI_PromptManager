@@ -65,7 +65,9 @@ def _compact(sql: str) -> str:
     return re.sub(r"\s+", "", sql or "").lower()
 
 
-def _structure_error(conn: sqlite3.Connection, allow_missing: bool) -> str | None:
+def _structure_error(
+    conn: sqlite3.Connection, allow_missing: bool, allow_missing_index: bool = False
+) -> str | None:
     objects = conn.execute(
         "SELECT type,name,sql FROM sqlite_master WHERE name=? "
         "OR (type IN ('index','trigger') AND tbl_name=?)",
@@ -75,12 +77,17 @@ def _structure_error(conn: sqlite3.Connection, allow_missing: bool) -> str | Non
         return None if allow_missing else "Missing image categories schema"
     tables = [sql for kind, _name, sql in objects if kind == "table"]
     others = {(kind, name) for kind, name, _sql in objects if kind != "table"}
-    if len(tables) != 1 or others != {("index", _AUTOINDEX), ("index", INDEX)}:
+    expected = {("index", _AUTOINDEX), ("index", INDEX)}
+    # Before its install, a table without the category index is repaired by
+    # CREATE INDEX IF NOT EXISTS rather than refused.
+    if allow_missing_index and others == {("index", _AUTOINDEX)}:
+        expected = others
+    if len(tables) != 1 or others != expected:
         return "Image categories name is reserved by an unsupported schema object"
     if _compact(tables[0]) != _compact(_DDL):
         return "Image categories has an invalid table definition"
-    index_sql = next(sql for kind, name, sql in objects if name == INDEX)
-    if _compact(index_sql) != _compact(_INDEX_DDL):
+    index_sql = next((sql for kind, name, sql in objects if name == INDEX), None)
+    if ("index", INDEX) in expected and _compact(index_sql) != _compact(_INDEX_DDL):
         return "Image categories has an invalid index"
     autoindex_sql = next(sql for kind, name, sql in objects if name == _AUTOINDEX)
     if autoindex_sql is not None:
@@ -148,7 +155,7 @@ def migrate_image_categories(conn: sqlite3.Connection) -> None:
     and writes only its own two objects (no backfill)."""
     conn.execute("SAVEPOINT image_categories_schema")
     try:
-        error = image_categories_schema_error(conn, check_values=False)
+        error = _structure_error(conn, True, allow_missing_index=True)
         if error:
             raise sqlite3.DatabaseError(error)
         conn.execute(_DDL.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))
