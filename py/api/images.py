@@ -1228,7 +1228,7 @@ def _admitted_entries(
     PromptDatabase.get_image_link_matches); a tag filter admits only those,
     and ``q`` admits a filename match or a linked-positive hit. A category
     admits a file whose effective category equals it (#332 MC5): its own
-    category (*own_categories*, ``{listed path: category}``) when it has one,
+    category (*own_categories*, ``{normalized path: category}``) when it has one,
     else the inherited one, so an unlinked file with its own category is
     admitted. *favorites*, when given, admits only those listed
     paths (``favorites=1``). *image_tags* maps normalized paths to their
@@ -1259,7 +1259,7 @@ def _admitted_entries(
         if members_only and match is None and not (image and image.tags):
             continue
         if category is not None:
-            effective = own.get(entry.path)
+            effective = own.get(entry.normalized) if own else None
             if effective is None and match is not None:
                 effective = match[3]
             if effective != category:
@@ -2276,10 +2276,14 @@ class ImageRoutesMixin:
     ) -> tuple:
         """The ordered entries and what admits them (blocking; run in executor).
 
-        Returns ``(entries, key, links, image_tags, favorites)``: the listing in
-        the filters' order, its keyset key, and the link, image-tag and favorite
-        maps _admitted_entries reads. One SELECT (get_image_link_matches) reads
-        every linked positive when *read_links*. A failed read raises when the
+        Returns ``(entries, key, links, image_tags, favorites, own)``: the
+        listing in the filters' order, its keyset key, and the link, image-tag,
+        favorite and own-category maps _admitted_entries reads. One SELECT
+        (get_image_link_matches) reads every linked positive when *read_links*;
+        under a category it keeps only links whose raw recipe or positive
+        category is that value (the inherited one is decided in Python), and
+        the links of files whose own category is that value are read by path,
+        so their rating and positive still count (#332). A failed read raises when the
         filters need it (category, tags, the rating sort) or *strict*; else the
         listing stays usable without links (a search then matches filenames
         only). A failed image-tag read raises under a Tags filter; a search then
@@ -2294,6 +2298,7 @@ class ImageRoutesMixin:
                     tags,
                     every_link=True,
                     wanted=self._workspace_wanted(listings),
+                    category=category,
                 )
             except Exception:
                 if strict or category is not None or tags or order == "rating":
@@ -2307,6 +2312,13 @@ class ImageRoutesMixin:
                     ),
                     exc_info=True,
                 )
+        own = None
+        if category is not None:
+            # A failed read raises: an unfiltered page must never pass for the
+            # category (DC6).
+            own = self._own_category_map(self._get_all_output_dirs(), listings)
+            if links is not None:
+                links = self._own_category_links(links, own, filters)
         image_tags = None
         if filters["query"] or tags:
             try:
@@ -2353,19 +2365,30 @@ class ImageRoutesMixin:
         favorites = (
             self._workspace_favorite_paths(listings) if filters["favorites"] else None
         )
-        return entries, key, links, image_tags, favorites
+        return entries, key, links, image_tags, favorites, own
 
-    def _workspace_own_categories(self, listings: list[tuple], filters: dict):
-        """``{listed path: own category}`` under a category filter, else None.
+    def _own_category_links(self, links: dict, own: dict, filters: dict) -> dict:
+        """*links* plus the links of files whose own category is the filter's.
 
-        Needs only the database and the configured source paths (a nested
-        source keys its files even when only the outer one is selected). A
-        failed read raises: an unfiltered page must never pass for the
-        category (DC6).
+        Their inherited category differs, so the category's link read left
+        them out; read by path (get_image_link_facts), kept only when their
+        positive has every filter tag, as the link read would.
         """
-        if filters["category"] is None:
-            return None
-        return self._own_category_map(self._get_all_output_dirs(), listings)
+        category, wanted = filters["category"], set(filters["tags"])
+        missing = [
+            path
+            for path, value in own.items()
+            if value == category and path not in links
+        ]
+        if not missing:
+            return links
+        facts = self.db.get_image_link_facts(missing, filters["text"])
+        extra = {
+            path: tuple(fact[:4])
+            for path, fact in facts.items()
+            if wanted <= set(fact[4])
+        }
+        return {**links, **extra} if extra else links
 
     def _select_workspace_page(
         self,
@@ -2394,7 +2417,7 @@ class ImageRoutesMixin:
             or bool(filters["tags"])
             or order == "rating"
         )
-        entries, key, links, image_tags, favorites = self._workspace_admission(
+        entries, key, links, image_tags, favorites, own = self._workspace_admission(
             listings, filters, read_links=needed or after is None
         )
         start = 0
@@ -2404,7 +2427,6 @@ class ImageRoutesMixin:
                 start = len(entries) - bisect_left(ascending, after, key=key)
             else:
                 start = bisect_right(entries, after, key=key)
-        own = self._workspace_own_categories(listings, filters)
         total, page, positive_count = _filtered_page(
             entries, start, limit + 1, filters, links, favorites, image_tags, own
         )
@@ -2428,10 +2450,9 @@ class ImageRoutesMixin:
 
         The links are read strictly: the positives must be the listing's own.
         """
-        entries, _key, links, image_tags, favorites = self._workspace_admission(
+        entries, _key, links, image_tags, favorites, own = self._workspace_admission(
             listings, filters, read_links=True, strict=True
         )
-        own = self._workspace_own_categories(listings, filters)
         targets, positives, unlinked, scopes = [], {}, 0, {}
         for _position, entry, match in _admitted_entries(
             entries, filters, links, favorites, image_tags, own

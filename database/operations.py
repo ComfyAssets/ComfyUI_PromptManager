@@ -7,7 +7,7 @@ import json
 import math
 import datetime
 import os
-from typing import Optional, List, Dict, Any, NamedTuple, Set, Tuple
+from typing import Optional, List, Dict, Any, Set, Tuple
 
 try:
     from ..utils.inspection_response import inherited_category
@@ -295,26 +295,24 @@ _LINK_FILTER_TAG = (
 )
 
 
-class LinkMatch(NamedTuple):
-    """One unambiguously linked image's facts for the Images filters.
-
-    ``category`` is its inherited category (#332 MC4: the recipe's when set,
-    else the positive's), never its own image category.
-    """
-
-    hit: bool
-    rating: Optional[int]
-    positive: int
-    category: Any
+# One unambiguously linked image's facts for the Images filters, a plain tuple
+# (hit, rating, positive id, inherited category): built per linked row, so no
+# NamedTuple. The category is the inherited one (#332 MC4: the recipe's when
+# set, else the positive's), never the image's own category.
+LinkMatch = Tuple[bool, Optional[int], int, Any]
 
 
 def _link_match(rating, matched, positive, has_pair, pair_category, category):
     inherited, _scope = inherited_category(category, pair_category, bool(has_pair))
-    return LinkMatch(bool(matched), rating, positive, inherited)
+    return (bool(matched), rating, positive, inherited)
 
 
 def link_filter_query(
-    q: str, tags: List[str], *, every_link: bool = False
+    q: str,
+    tags: List[str],
+    *,
+    every_link: bool = False,
+    category: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """The workspace filter SELECT and its named parameters (all bound).
 
@@ -327,6 +325,11 @@ def link_filter_query(
         hit = _LINK_FILTER_HIT
         params["pattern"] = f"%{escape_like(q)}%"
     admitted = []
+    if category is not None:
+        # Only narrows: an inherited category is one of the two raw values;
+        # which one is decided in Python (inherited_category, #332 MC4).
+        admitted.append("(p.category = :category OR pp.category = :category)")
+        params["category"] = category
     for index, tag in enumerate(tags):
         admitted.append(_LINK_FILTER_TAG.format(index=index))
         params[f"tag{index}"] = tag
@@ -2573,6 +2576,7 @@ class PromptDatabase(
         *,
         every_link: bool = False,
         wanted: Optional[Set[str]] = None,
+        category: Optional[str] = None,
     ) -> Dict[str, LinkMatch]:
         """Map normalized paths of unambiguously linked images to a LinkMatch
         (hit, rating, positive id, inherited category).
@@ -2587,13 +2591,26 @@ class PromptDatabase(
         The positive id is the card's linked positive. One SELECT whose rows
         are streamed; with *wanted* (the listing's normalized paths) only those
         paths are kept, so memory is bounded by the listing, not the database.
+        With *category* only links whose raw recipe or positive category is
+        that value are read (a superset of the links that inherit it; the
+        caller compares the inherited value) and the inherited category is
+        decided per row; otherwise it is None, which keeps the plain reads
+        cheap.
         """
-        sql, params = link_filter_query(q, tags, every_link=every_link)
+        sql, params = link_filter_query(
+            q, tags, every_link=every_link, category=category
+        )
         matches: Dict[str, LinkMatch] = {}
         with self.model.get_connection() as conn:
-            for path, *row in conn.execute(sql, params):
-                if wanted is None or path in wanted:
-                    matches[path] = _link_match(*row)
+            rows = conn.execute(sql, params)
+            if category is not None:
+                for path, *row in rows:
+                    if wanted is None or path in wanted:
+                        matches[path] = _link_match(*row)
+            else:
+                for path, rating, matched, positive, *_categories in rows:
+                    if wanted is None or path in wanted:
+                        matches[path] = (bool(matched), rating, positive, None)
         return matches
 
     def get_image_link_facts(
@@ -2643,7 +2660,7 @@ class PromptDatabase(
         return {
             path
             for path, match in self.get_image_link_matches(q, tags).items()
-            if match.hit or not q
+            if match[0] or not q
         }
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:

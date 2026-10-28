@@ -27,9 +27,11 @@ from .prompts import bad_request
 
 try:
     from ...database.image_categories import MAX_CATEGORY_LENGTH, MAX_KEY_LENGTH
+    from ...database.models import normalize_image_path
     from ...utils.validators import validate_category
 except ImportError:
     from database.image_categories import MAX_CATEGORY_LENGTH, MAX_KEY_LENGTH
+    from database.models import normalize_image_path
     from utils.validators import validate_category
 
 CATEGORY_MEDIA_MESSAGE = "Only media files can have a category"
@@ -117,7 +119,7 @@ class ImageCategoryRoutesMixin:
     # -- reading ---------------------------------------------------------------
 
     def _own_category_map(self, sources, listings) -> dict:
-        """``{root / listed path: own category}`` for the listed files (blocking).
+        """``{normalized listed path: own category}`` for the listed files (blocking).
 
         One primary-key range read per source; each stored row is matched to
         the listing of every selected root that holds its source, so the work
@@ -136,19 +138,26 @@ class ImageCategoryRoutesMixin:
         for _index, root, files in listings:
             listing = self._favorite_listing(root, files)
             root_key = _favorite_root_key(root)
+            # normalize_image_path(root / listed) without a call per file: the
+            # listed spellings are clean relative POSIX paths.
+            base = os.path.join(normalize_image_path(str(root)), "")
+
+            def normalized(listed, base=base):
+                return base + os.path.normcase(listed.replace("/", os.sep))
+
             nested = [
                 item for item in _nested_sources(root, sources) if item[1] != root_key
             ]
             for relative, category in by_source.get(root_key, {}).items():
                 listed = listing.get(relative)
                 if listed is not None and _source_prefix(relative, nested) is None:
-                    found[root / listed] = category
+                    found[normalized(listed)] = category
             for prefix, source_key in nested:
                 for relative, category in by_source.get(source_key, {}).items():
                     full = f"{prefix}/{relative}"
                     listed = listing.get(full)
                     if listed is not None and _source_prefix(full, nested) == prefix:
-                        found[root / listed] = category
+                        found[normalized(listed)] = category
         return found
 
     async def _source_listings(self, roots) -> list[tuple]:

@@ -1529,7 +1529,9 @@ class TestWorkspaceImages(ImageAPITestCase):
         wanted = {normalize_image_path(str(files["night_ab"])), "/elsewhere/7.png"}
         elsewhere = self.api.db.get_prompt_id_for_image("/elsewhere/7.png")
         self.assertEqual(
-            self.api.db.get_image_link_matches("", [], every_link=True, wanted=wanted),
+            self.api.db.get_image_link_matches(
+                "", [], every_link=True, wanted=wanted, category="Night"
+            ),
             {
                 normalize_image_path(str(files["night_ab"])): (
                     True,
@@ -1587,6 +1589,24 @@ class TestWorkspaceImages(ImageAPITestCase):
                         normalize_image_path(str(listed[i * 2][0])),
                     )
                     for i in range(links)
+                ],
+            )
+        # 2,000 images (one in 25 at 50,000 files) carry their own category
+        # (#332), so a category filter also reads and matches those.
+        from py.api.images import _favorite_root_key
+
+        root_key = _favorite_root_key(self.output_dir)
+        with self.api.db.model.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO image_categories VALUES(?,?,?,?)",
+                [
+                    (
+                        root_key,
+                        listed[i][0].relative_to(self.output_dir).as_posix(),
+                        f"cat-{i % 10}",
+                        "2026-10-27T00:00:00+00:00",
+                    )
+                    for i in range(1, files, 25)[:2_000]
                 ],
             )
         return listed
