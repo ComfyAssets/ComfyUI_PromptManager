@@ -10,13 +10,6 @@ choice (never linked automatically). No match, several matches or an
 unfinished walk anchor nothing, so such a file is queued as before. Apply
 re-resolves with the file's name, so a choice the anchor contradicts is
 refused as stale evidence.
-
-#247 (D-Q1) lets the scan's ladder store what the inspector's resolve names,
-the saver anchor included, so the scan now links such a file instead of
-queuing it (``TestScanLinksTheFileItsSaverNames``). The queue and apply
-classes below pin the ladder to the file name ignored (``_name_blind``), the
-rule items in existing libraries were queued under, so their Needs review
-behavior stays covered.
 """
 
 import json
@@ -39,7 +32,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
         qwen_edit_graph,
     )
 
-from utils import file_prompt, review_capture
+from utils import review_capture
 
 
 def branch_graph(*prompts, prefixes=None):
@@ -89,23 +82,6 @@ def _without_name(real):
     return unnamed
 
 
-class _NameBlind:
-    """Run the scan's ladder with the file name ignored, as before #247."""
-
-    def setUp(self):
-        super().setUp()
-        real = file_prompt.inspection_resolution
-
-        def name_blind(metadata, file_name, recorded_saver_id, **options):
-            return real(metadata, None, recorded_saver_id, **options)
-
-        patcher = patch.object(
-            file_prompt, "inspection_resolution", side_effect=name_blind
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-
 def _only_candidate(test, item):
     """The positive text of an anchored item's one candidate."""
     evidence = json.loads(item["evidence"])
@@ -115,7 +91,7 @@ def _only_candidate(test, item):
     return candidate["positive"]["text"]
 
 
-class TestInspectionItemsAnchor(_NameBlind, InspectionTestCase):
+class TestInspectionItemsAnchor(InspectionTestCase):
     async def test_file_its_saver_names_is_queued_with_the_anchor_choice(self):
         self._roots()
         path = self._write("branch_1_00001_.png", graph=branch_graph(*PROMPTS))
@@ -223,7 +199,7 @@ class TestInspectionItemsAnchor(_NameBlind, InspectionTestCase):
         self.assertIsNone(self._linked_text(path))
 
 
-class TestDefaultItemsAnchor(_NameBlind, InspectionTestCase):
+class TestDefaultItemsAnchor(InspectionTestCase):
     async def test_anchor_resolves_and_nothing_links_so_it_is_queued(self):
         """Maintainer ruling: never unlinked and unqueued. The anchor resolves
         the file, the default profile and the parser floor link nothing, so
@@ -343,29 +319,6 @@ class TestDefaultItemsAnchor(_NameBlind, InspectionTestCase):
         _item, (status, data) = await self._apply("cat")
 
         self.assertEqual(status, 200, data)
-        self.assertEqual(self._linked_text(path), "cat")
-
-
-class TestScanLinksTheFileItsSaverNames(InspectionTestCase):
-    """#247: the saver anchor names one prompt, so the scan links it."""
-
-    async def test_an_inspection_item_file_is_linked_not_queued(self):
-        self._roots()
-        path = self._write("branch_1_00001_.png", graph=branch_graph(*PROMPTS))
-
-        await self._scan()
-
-        self.assertEqual(self._items(), [])
-        self.assertEqual(self._linked_text(path), "add a red hat")
-
-    async def test_a_default_item_file_is_linked_not_queued(self):
-        self._roots()
-        path = self.output_dir / "side_0_00001_.png"
-        write_png(path, prompt=saved_unlinkable_graph("cat", "dog"))
-
-        await self._scan()
-
-        self.assertEqual(self._items(), [])
         self.assertEqual(self._linked_text(path), "cat")
 
 

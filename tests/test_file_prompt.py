@@ -180,9 +180,32 @@ class TestUndecidedGraph(unittest.TestCase):
         decision = _decide(
             _graph(graph), lookup=_Lookup("43"), file_name="s45_branch_2_00001_.png"
         )
-        # The file name alone names branch 2; history's branch 4 is not used.
-        self.assertEqual(decision.source, "inspector")
-        self.assertEqual(decision.text, shapes.BRANCH_TEXTS[1])
+        # The name contradicts history's branch 4: no recorded anchor.
+        self.assertEqual(decision.source, "legacy-parser")
+
+    def test_step_8_1_the_file_name_anchor_alone_never_decides(self):
+        """#390 ruling: a file only its saver's file name resolves is queued
+        for Needs review by the scan, never linked; the monitor leaves it."""
+        name = "s45_branch_2_00001_.png"
+        scan = _decide(_graph(shapes.branch_bench()), lookup=_Lookup(), file_name=name)
+        self.assertEqual((scan.kind, scan.source), ("positive", "legacy-parser"))
+        self.assertEqual(scan.review, "ambiguous")
+        monitor = _decide(
+            _graph(shapes.branch_bench()),
+            policy=Policy.MONITOR,
+            lookup=_Lookup(),
+            file_name=name,
+        )
+        self.assertEqual(monitor.kind, "never")
+        recorded = _decide(
+            _graph(shapes.branch_bench()), lookup=_Lookup("43"), file_name=name
+        )
+        # The recorded saver still decides: history says branch 4, but the
+        # file name names branch 2, which contradicts it.
+        self.assertNotEqual(recorded.source, "recorded-run")
+        recorded = _decide(_graph(shapes.branch_bench()), lookup=_Lookup("43"))
+        self.assertEqual(recorded.source, "recorded-run")
+        self.assertEqual(recorded.text, shapes.BRANCH_TEXTS[3])
 
     def test_step_8_2_the_monitor_waits_for_history_inside_the_output_folder(self):
         decision = _decide(_graph(shapes.shared_prefix()), policy=Policy.MONITOR)

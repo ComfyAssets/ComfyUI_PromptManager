@@ -616,6 +616,7 @@ def inspection_resolution(
     recorded_saver_id: str | None,
     *,
     profile: ResolverProfile = INSPECTION_PROFILE,
+    name_anchor: bool = True,
 ) -> InspectionResult:
     """Resolve raw file metadata as the inspector does.
 
@@ -624,6 +625,12 @@ def inspection_resolution(
     Resolves with ``profile``; when that leaves the prompt open and
     ``recorded_saver_id`` is given, resolves again anchored on that saver
     and keeps the anchored result only when it names the positive.
+
+    ``name_anchor=False`` (ingestion, #247) resolves the unanchored pass
+    without ``file_name``, so the saver its file name names anchors nothing:
+    such a file goes to Needs review, never linked (#390 ruling). The
+    recorded-saver pass still gets ``file_name``, only to refuse a saver the
+    name contradicts.
     """
     workflow = metadata.get("workflow")
     canonical = {
@@ -645,7 +652,9 @@ def inspection_resolution(
     if workflow is not None and "prompt" in canonical:
         # Only to recognize overwritten PromptManager text (R1); never a role.
         canonical["workflow"] = workflow
-    resolved = resolve_prompt_pair(canonical, profile=profile, file_name=file_name)
+    resolved = resolve_prompt_pair(
+        canonical, profile=profile, file_name=file_name if name_anchor else None
+    )
     if resolved["state"] not in _UNDECIDED or recorded_saver_id is None:
         return InspectionResult(resolved)
     anchored = resolve_prompt_pair(

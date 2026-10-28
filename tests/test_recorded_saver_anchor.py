@@ -434,6 +434,30 @@ class TestInspectionResolution(unittest.TestCase):
         self.assertFalse(result.malformed)
         self.assertEqual(result.resolution["state"], "absent")
 
+    def test_without_the_name_anchor_a_file_name_names_no_branch(self):
+        from utils.prompt_inspector import inspection_resolution
+
+        graph = {"prompt": json.dumps(shapes.branch_bench())}
+        name = "s45_branch_2_00001_.png"
+        named = inspection_resolution(graph, name, None)
+        self.assertEqual(_positive(named.resolution), shapes.BRANCH_TEXTS[1])
+        blind = inspection_resolution(graph, name, None, name_anchor=False)
+        self.assertEqual(blind.resolution["state"], "ambiguous")
+        # The recorded saver still decides, and the name still contradicts it.
+        recorded = inspection_resolution(graph, name, _saver(2), name_anchor=False)
+        self.assertTrue(recorded.by_record)
+        shared = {"prompt": json.dumps(shapes.shared_prefix())}
+        bench = shapes.branch_bench()
+        for index in (1, 3, 4):
+            bench[_saver(index)]["inputs"]["filename_prefix"] = "bench/shared"
+        contradicted = inspection_resolution(
+            {"prompt": json.dumps(bench)}, name, _saver(4), name_anchor=False
+        )
+        self.assertFalse(contradicted.by_record)
+        self.assertTrue(
+            inspection_resolution(shared, name, _saver(4), name_anchor=False).by_record
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

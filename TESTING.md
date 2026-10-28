@@ -5050,7 +5050,9 @@ workflows without a PromptManager node. It does no file or database I/O.
   pair, A1111, sampler-less). Only a graph it leaves ambiguous or unresolved
   reaches the inspector's resolve (`inspection_resolution` in
   `utils/prompt_inspector.py`, the inspection profile, then the recorded saver
-  anchor of #386), and only that positive's `storage_text` is stored (never
+  anchor of #386; never the file-name saver anchor: a file only its saver's
+  file name resolves is queued for Needs review, never linked, the #390 ruling,
+  `name_anchor=False`), and only that positive's `storage_text` is stored (never
   prepend or append text, never `recorded_texts`). Then the #170 browser parser
   (`graph_prompt_text`), the legacy floor, then the recorded run's stored
   prompt. History is asked once per file and only at that step; the scan's

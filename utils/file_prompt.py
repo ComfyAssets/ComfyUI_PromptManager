@@ -9,7 +9,8 @@ stores the ``Decision``.
 The default resolver profile decides first, as ingestion always has. Only
 for a file it leaves ambiguous or unresolved does the ladder ask the
 inspector's resolve (``inspection_resolution``: the inspection profile, then
-the recorded saver anchor), then the #170 browser parser (the legacy floor).
+the recorded saver anchor; never the file-name saver anchor, whose files go
+to Needs review by the #390 ruling), then the #170 browser parser (the legacy floor).
 The policies differ in one place: for a file the inspector calls ambiguous,
 the scan keeps the legacy floor and the monitor stores nothing. Junk text
 (``junk_text``) is never stored, whichever step found it.
@@ -153,7 +154,9 @@ def _decide(found: _File) -> Decision:
 def _undecided_graph(found: _File) -> Decision:
     recorded = found.lookup() if found.lookup is not None else None
     saver = recorded.saver_id if recorded is not None else None
-    inspected = inspection_resolution(found.metadata, found.file_name, saver)
+    inspected = inspection_resolution(
+        found.metadata, found.file_name, saver, name_anchor=False
+    )
     text = _inspected_text(inspected.resolution)
     if text is not None:
         source = "recorded-run" if inspected.by_record else "inspector"
