@@ -140,3 +140,26 @@ test('an output saved without metadata links once its recorded run names a store
         expect((await request.post('/pm_execution_fixture/metadata', { data: { disabled: false } })).ok()).toBe(true);
     }
 });
+
+// #332 on the real host: the migration ran at startup and the image category routes
+// set, list and remove an own category on a generated output.
+test('an output gets its own image category and loses it again', async ({ execution }, testInfo) => {
+    const request = execution.request;
+    const filename = await saved(request, graph({ text: `category host ${randomUUID()}`, prefix: 'pm332/category' }));
+    let image;
+    await expect.poll(async () => {
+        const listing = await (await request.get('/prompt_manager/images/output?mode=workspace&q=pm332&rescan=1')).json();
+        image = (listing.images || []).find(entry => entry.filename === filename || entry.path?.endsWith(`/${filename}`));
+        return Boolean(image);
+    }, { timeout: 20000, message: `${filename} is listed by Images` }).toBe(true);
+    const items = [{ root_index: image.root_index, root_scope: image.root_scope, path: image.path }];
+    const value = `PM332 host ${testInfo.project.name}`;
+    const set = await request.put('/prompt_manager/images/category', { data: { items, category: value } });
+    expect(set.status()).toBe(200);
+    expect(await set.json()).toEqual({ success: true, category: value, updated: 1, unchanged: 0, not_found: 0 });
+    expect((await (await request.get('/prompt_manager/images/categories')).json()).categories).toContain(value);
+    const cleared = await request.delete('/prompt_manager/images/category', { data: { items } });
+    expect(cleared.status()).toBe(200);
+    expect(await cleared.json()).toEqual({ success: true, cleared: 1 });
+    expect((await (await request.get('/prompt_manager/images/categories')).json()).categories).not.toContain(value);
+});
