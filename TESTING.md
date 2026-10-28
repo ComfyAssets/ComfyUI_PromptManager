@@ -3208,12 +3208,16 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   again"; an Unload that found nothing loaded only reads the status again. At phone width
   the concept's 120px select cap cuts every engine label, so `#tag-model` alone keeps its
   natural width there and its row wraps the select under the text (`workspace.css`
-  `/* D132 */`); Existing tags stays as the concept draws it, cut at 390 as there. The
-  comparison maps `selectsFit` only for the engine select and measures each row's
-  `flexWrap` and whether its control sits under the text. Pinned by `auto-tagging matches
-  the concept` (both themes and sizes), `auto-tagging at 390 wraps only the engine row`,
-  `auto-tagging engine select fits at 320 wide` and the mutation check (it includes a
-  wrapped row) (system-tagging-concept.spec), and the model, Download, Unload and Preview
+  `/* D132 */`). The concept's cap cuts Existing tags too ("Replace after review"); by the
+  maintainer's decision (#398) that parity is not kept: `#tag-existing` never shrinks for
+  its row text and at phone width keeps its natural width beside the text (its row does
+  not wrap; the text column narrows). 1600 is as the concept draws it. The comparison
+  expects `selectsFit` true for every select and measures each row's `flexWrap` and
+  whether its control sits under the text. Pinned by `auto-tagging matches the concept`
+  (both themes and sizes), `auto-tagging at 390 wraps only the engine row`, `auto-tagging
+  selects fit every option at 390/320 wide` (every option of both selects, both themes, no
+  page scroll) and the mutation check (a wrapped row, a squeezed engine and Existing tags
+  select) (system-tagging-concept.spec), and the model, Download, Unload and Preview
   tests of workspace-system-tagging.spec.
 - **D133** (Auto-tagging, S11): a "Suggestions per image" row (`#tag-suggestions`,
   number 1–100, host key `autotag_suggestion_limit`) follows the two confidence rows:
