@@ -39,6 +39,35 @@ class RotatedChanged(Exception):
         self.name = name
 
 
+# Clear all logs (#389): why it changed nothing, as the API and the pages say it.
+CLEAR_CHANGED = (
+    "The log files changed since you confirmed; nothing was cleared."
+    " Read the list again and clear again."
+)
+CLEAR_FOREIGN_WRITER = (
+    "Another program is writing to prompt_manager.log, such as a second ComfyUI"
+    " sharing this log folder; nothing was cleared. Stop it and clear again."
+)
+CLEAR_HARD_LINK = (
+    "prompt_manager.log has another name (a hard link); emptying it would empty"
+    " that file too, so nothing was cleared. Remove the other name, then clear"
+    " again."
+)
+# A confirmed row's identity: "<size>:<mtime_ns>:<ino>", a string because
+# mtime_ns and many inodes are larger than a browser's exact integers.
+# mtime_ns is negative for a time before 1970 (a restored archive, say).
+_IDENTITY = re.compile(r"([0-9]{1,20}):(-?[0-9]{1,20}):([0-9]{1,40})")
+MAX_CONFIRMED_ROWS = 10000
+
+
+class ClearRefused(Exception):
+    """Clear all logs changed nothing; ``code`` names why, the message says it."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 def _name_key(name: str) -> str:
     """How a name compares: case-folded where the filesystem folds it (Windows)."""
     return os.path.normcase(name)
@@ -87,35 +116,37 @@ def scan_log_folder(log_dir) -> List[Dict[str, Any]]:
     be read is left out. Never logs: the cleanup calls it while it holds the
     file handler's lock.
     """
-    rows = []
     try:
         names = [entry.name for entry in os.scandir(log_dir)]
     except OSError:
-        return rows
-    for name in names:
-        path = os.path.join(log_dir, name)
-        try:
-            st = os.lstat(path)
-            kind = _kind(name, path, st)
-        except OSError:
-            continue
-        try:
-            modified = datetime.fromtimestamp(st.st_mtime).isoformat()
-        except (OSError, OverflowError, ValueError):  # a time before 1970 on Windows
-            modified = ""
-        rows.append(
-            {
-                "name": name,
-                "kind": kind,
-                "size": st.st_size,
-                "mtime_ns": st.st_mtime_ns,
-                "ino": st.st_ino,
-                "modified": modified,
-                "_dir": stat.S_ISDIR(st.st_mode) and kind != "link",
-                "_regular": stat.S_ISREG(st.st_mode) and kind != "link",
-            }
-        )
-    return rows
+        return []
+    rows = (scan_log_entry(log_dir, name) for name in names)
+    return [row for row in rows if row is not None]
+
+
+def scan_log_entry(log_dir, name) -> Optional[Dict[str, Any]]:
+    """One entry's scan row (``lstat``), or None when it cannot be read."""
+    path = os.path.join(log_dir, name)
+    try:
+        st = os.lstat(path)
+        kind = _kind(name, path, st)
+    except OSError:
+        return None
+    try:
+        modified = datetime.fromtimestamp(st.st_mtime).isoformat()
+    except (OSError, OverflowError, ValueError):  # a time before 1970 on Windows
+        modified = ""
+    return {
+        "name": name,
+        "kind": kind,
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "ino": st.st_ino,
+        "modified": modified,
+        "_dir": stat.S_ISDIR(st.st_mode) and kind != "link",
+        "_regular": stat.S_ISREG(st.st_mode) and kind != "link",
+        "_nlink": st.st_nlink,
+    }
 
 
 def public_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -125,6 +156,37 @@ def public_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 def rotated_sort_key(row: Dict[str, Any]) -> int:
     return _rotated_number(row["name"]) or 0
+
+
+def file_identity(row: Dict[str, Any]) -> str:
+    """A listed file's identity as the client sends it back: size, mtime_ns, ino."""
+    return f"{row['size']}:{row['mtime_ns']}:{row['ino']}"
+
+
+def parse_confirmed(expected) -> List[Dict[str, Any]]:
+    """The rows a Clear all logs confirmation showed, as review rows.
+
+    ``expected`` is a list of ``{name, identity}`` objects from
+    ``/logs/files``; anything else raises ValueError.
+    """
+    if not isinstance(expected, list) or len(expected) > MAX_CONFIRMED_ROWS:
+        raise ValueError("expected must be a list of listed log files")
+    rows, seen = [], set()
+    for item in expected:
+        if not isinstance(item, dict):
+            raise ValueError("each expected file must be an object")
+        name, identity = item.get("name"), item.get("identity")
+        if not isinstance(name, str) or not isinstance(identity, str):
+            raise ValueError("each expected file needs a name and an identity")
+        match = _IDENTITY.fullmatch(identity)
+        if match is None:
+            raise ValueError("an expected file's identity is not size:mtime_ns:ino")
+        size, mtime_ns, ino = (int(part) for part in match.groups())
+        if _name_key(name) in seen:
+            raise ValueError("an expected file is listed twice")
+        seen.add(_name_key(name))
+        rows.append({"name": name, "size": size, "mtime_ns": mtime_ns, "ino": ino})
+    return rows
 
 
 def log_file_entry(log_dir, name) -> Path:
@@ -155,6 +217,11 @@ def _stream_is(stream, ino: int) -> bool:
     except (OSError, ValueError, AttributeError):
         return False
     return not (ino and open_ino and open_ino != ino)
+
+
+def _stream_ino_is(opened: os.stat_result, ino: int) -> bool:
+    """Whether a stream's ``fstat`` is the file with inode ``ino`` (0: unknown)."""
+    return not (ino and opened.st_ino and opened.st_ino != ino)
 
 
 def _error_text(error: BaseException) -> str:
@@ -432,6 +499,7 @@ class PromptManagerLogger:
                     "modified": row["modified"],
                     "is_main": row["kind"] == "active",
                     "kind": row["kind"],
+                    "identity": file_identity(row),
                 }
             )
 
@@ -530,8 +598,14 @@ class PromptManagerLogger:
             finally:
                 handler.release()
         if not handled:
-            flags = os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-            os.close(os.open(str(log_file), flags))
+            flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(str(log_file), flags)
+            try:
+                if os.fstat(fd).st_nlink > 1:  # emptying it would empty the other
+                    raise ClearRefused("logs-hard-link", CLEAR_HARD_LINK)
+                os.ftruncate(fd, 0)
+            finally:
+                os.close(fd)
 
     def delete_rotated(self, expected: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Delete exactly the reviewed rotated copies, or none of them (blocking).
@@ -582,53 +656,165 @@ class PromptManagerLogger:
         )
         return {"removed": removed, "failed": failed}
 
-    def truncate_logs(self) -> Dict[str, Any]:
-        """Empty the active log and delete its rotated copies (Rule R).
+    def _active_streams(self, active: Optional[Dict[str, Any]]):
+        """``fstat`` and offset of every handler stream writing the active name."""
+        target = os.path.normcase(
+            os.path.realpath(os.path.join(self.log_dir, ACTIVE_LOG_NAME))
+        )
+        for handler in self._file_handlers():
+            stream = getattr(handler, "stream", None)
+            base = getattr(handler, "baseFilename", None)
+            if stream is None or base is None:
+                continue
+            if os.path.normcase(os.path.realpath(base)) != target:
+                continue
+            try:
+                stream.flush()
+                fd = stream.fileno()
+                yield os.fstat(fd), os.lseek(fd, 0, os.SEEK_CUR)
+            except (OSError, ValueError, AttributeError):
+                continue
 
-        Every other file in the log folder, and every link, is kept. Also
-        clears the memory buffer. Runs under ``_files_lock`` and the file
-        handlers' locks, so no rollover recreates a just-deleted copy, and
-        logs only once they are released.
+    def _check_clear_is_safe(self, rows, active) -> None:
+        """Refuse a clear that would empty or delete what nobody confirmed.
+
+        Called under the files lock and every handler lock, so nothing of this
+        process writes or rolls over meanwhile; what changes is another
+        program's doing. Our handler's stream is flushed: a file larger than
+        the stream's own offset was appended to by someone else, and a stream
+        whose file is now a rotated copy was rolled over by someone else.
+        Either is a second writer (another ComfyUI sharing the folder). This
+        is best effort, not a lock: writes before our own last write, or any
+        write while this process has file logging off, go unseen. An
+        active log with more than one name (a hard link) is never emptied: the
+        other name would be emptied too.
+        """
+        rotated = {row["ino"] for row in rows if row["kind"] == "rotated"}
+        rotated.discard(0)
+        nlink = active["_nlink"] if active is not None else 1
+        for opened, offset in self._active_streams(active):
+            if (opened.st_ino and opened.st_ino in rotated) or opened.st_size > offset:
+                raise ClearRefused("logs-foreign-writer", CLEAR_FOREIGN_WRITER)
+            if active is not None and _stream_ino_is(opened, active["ino"]):
+                nlink = max(nlink, opened.st_nlink)
+        if nlink > 1:
+            raise ClearRefused("logs-hard-link", CLEAR_HARD_LINK)
+
+    @staticmethod
+    def _confirmed_targets(confirmed, current, active) -> List[Dict[str, Any]]:
+        """The rotated copies a confirmation listed, each as it was listed.
+
+        Refuses (``logs-changed``) when any listed copy is missing or differs
+        in kind, size, ``mtime_ns`` or inode, or when the listed active log is
+        now another file (it was rolled over). A copy nobody listed is kept.
+        """
+        targets = []
+        for reviewed in confirmed:
+            key = _name_key(reviewed["name"])
+            row = current.get(key)
+            if key == _name_key(ACTIVE_LOG_NAME):
+                ino = reviewed["ino"]
+                if active is None or (ino and active["ino"] and active["ino"] != ino):
+                    raise ClearRefused("logs-changed", CLEAR_CHANGED)
+                continue
+            if _rotated_number(reviewed["name"]) is None:
+                continue  # never deleted, listed or not
+            if not _matches_review(row, reviewed):
+                raise ClearRefused("logs-changed", CLEAR_CHANGED)
+            targets.append(row)
+        return targets
+
+    def truncate_logs(self, expected=None) -> Dict[str, Any]:
+        """Empty the active log and delete its rotated copies (Rule R, #389).
+
+        ``expected`` is what the confirmation showed: ``{name, identity}``
+        rows of ``/logs/files`` (``parse_confirmed``; ValueError when
+        malformed). Then only the listed rotated copies are deleted, and only
+        when each still has the listed size, ``mtime_ns`` and inode and the
+        active log is still the listed file; otherwise ClearRefused
+        (``logs-changed``) with nothing changed. Without it (the legacy admin
+        page, whose confirmation lists nothing) every rotated copy present now
+        is deleted.
+
+        Either way, a second writer of the active log (``logs-foreign-writer``)
+        or an active log with a hard link (``logs-hard-link``) refuses the
+        whole clear first. Each copy's identity is checked again just before
+        its unlink; one that changed (another process rolling over meanwhile)
+        stops the clear there, keeping it, the rest and the active log, which
+        is emptied last. Every other file in the log folder, and every link,
+        is kept. Also clears the memory buffer. Runs under ``_files_lock`` and
+        the file handlers' locks and logs only once they are released.
 
         Returns:
             Dictionary with:
             - truncated: List of successfully truncated files
             - errors: List of error messages for failed operations
         """
+        confirmed = None if expected is None else parse_confirmed(expected)
         results = {"truncated": [], "errors": []}
+        refused = None
 
         with self._files_lock:
             held = self._acquire_file_handlers()
             try:
                 rows = scan_log_folder(self.log_dir)
-                active = [row for row in rows if row["kind"] == "active"]
-                rotated = sorted(
-                    (row for row in rows if row["kind"] == "rotated"),
-                    key=rotated_sort_key,
-                )
-                for row in active + rotated:
-                    path = os.path.join(self.log_dir, row["name"])
-                    try:
-                        if row["kind"] == "active":
-                            self._truncate_main_log(Path(path), row["ino"])
-                        else:
-                            os.unlink(path)
-                        results["truncated"].append(row["name"])
-                    except OSError as error:
-                        results["errors"].append(
-                            f"Failed to truncate {row['name']}: {_error_text(error)}"
-                        )
-                with self._buffer_lock:
-                    self._log_buffer.clear()
+                current = {_name_key(row["name"]): row for row in rows}
+                active = next((row for row in rows if row["kind"] == "active"), None)
+                try:
+                    if confirmed is None:
+                        targets = [row for row in rows if row["kind"] == "rotated"]
+                    else:
+                        targets = self._confirmed_targets(confirmed, current, active)
+                    self._check_clear_is_safe(rows, active)
+                except ClearRefused as error:
+                    refused = error
+                else:
+                    self._clear(sorted(targets, key=rotated_sort_key), active, results)
             finally:
                 self._release_handlers(held)
 
+        if refused is not None:
+            self.logger.warning("Clear all logs refused (%s)", refused.code)
+            raise refused
         if results["truncated"]:
             self.logger.info("Truncated log files: %s", ", ".join(results["truncated"]))
         for error_msg in results["errors"]:
             self.logger.error(error_msg)
 
         return results
+
+    def _clear(self, targets, active, results) -> None:
+        """Delete ``targets`` (each re-checked) then empty ``active`` (locks held)."""
+        for reviewed in targets:
+            name = reviewed["name"]
+            if not _matches_review(scan_log_entry(self.log_dir, name), reviewed):
+                results["errors"].append(
+                    f"{name} changed while clearing (another program may be writing"
+                    " to this log folder); it, the copies after it and the active"
+                    " log were kept"
+                )
+                return
+            try:
+                os.unlink(os.path.join(self.log_dir, name))
+                results["truncated"].append(name)
+            except OSError as error:
+                results["errors"].append(
+                    f"Failed to truncate {name}: {_error_text(error)}"
+                )
+        if active is not None:
+            try:
+                self._truncate_main_log(
+                    Path(self.log_dir, active["name"]), active["ino"]
+                )
+                results["truncated"].append(active["name"])
+            except ClearRefused as error:
+                results["errors"].append(str(error))
+            except OSError as error:
+                results["errors"].append(
+                    f"Failed to truncate {active['name']}: {_error_text(error)}"
+                )
+        with self._buffer_lock:
+            self._log_buffer.clear()
 
     def update_config(self, new_config: Dict[str, Any]):
         """Update logging configuration.
