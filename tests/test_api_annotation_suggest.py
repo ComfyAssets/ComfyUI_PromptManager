@@ -29,6 +29,7 @@ except ImportError:
     model_gate = None
 
 from py import config as config_module
+from py.autotag import MissingBackendPackages, package_fields
 
 AutotagConfig = getattr(config_module, "AutotagConfig", None)
 
@@ -37,6 +38,11 @@ WAIT = 30.0
 WD14 = {"general_threshold": 0.35, "character_threshold": 0.85}
 LLM = {"instructions": "Generate tags."}
 UNAVAILABLE = "Download it in System › Auto-tagging."
+NEEDS_LLAMA = (
+    "GGUF JoyCaption needs llama-cpp-python. Install it into ComfyUI's Python: "
+    'pip install llama-cpp-python. For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" '
+    "pip install llama-cpp-python"
+)
 
 SCORED = [("sandstone", 0.98), ("desert", 0.96)] + [
     (f"tag_{i:03d}", round(0.9 - i * 0.005, 4)) for i in range(150)
@@ -59,6 +65,8 @@ class FakeTagger:
             "hf": {},
         }
         self.downloaded = {name: True for name in self.models_config}
+        # pip names of the backend packages that cannot be imported (#424)
+        self.missing = {name: [] for name in self.models_config}
         self.loaded = None
         self.load_calls = []
         self.unload_calls = 0
@@ -71,7 +79,11 @@ class FakeTagger:
 
     def get_models_status(self):
         return {
-            name: {"downloaded": self.downloaded[name], "model_path": None}
+            name: {
+                "downloaded": self.downloaded[name],
+                "model_path": None,
+                **package_fields(name, self.missing[name]),
+            }
             for name in self.models_config
         }
 
@@ -314,6 +326,37 @@ class TestModelAvailability(SuggestTestCase):
         self.assertEqual(self.tagger.load_calls, [])
         self.assertEqual(self.tagger.calls, [])
         self.assertIsNone(model_gate.holder())
+
+    async def test_missing_backend_package_is_refused_before_the_model(self):
+        observed = await self.observed()
+        self.tagger.missing["gguf"] = ["llama-cpp-python"]
+
+        status, body = await self.suggest(self.suggest_body(observed, "gguf"))
+
+        self.assertEqual((status, body["code"]), (409, "model-unavailable"))
+        self.assertEqual(body["success"], False)
+        self.assertEqual(body["error"], NEEDS_LLAMA)
+        self.assertEqual(self.tagger.load_calls, [])
+        self.assertIsNone(model_gate.holder())
+        # Not downloaded still reads as before, whatever the packages.
+        self.tagger.downloaded["gguf"] = False
+        status, body = await self.suggest(self.suggest_body(observed, "gguf"))
+        self.assertIn("is not downloaded", body["error"])
+
+    async def test_a_package_lost_after_the_check_is_the_same_409_without_a_traceback(
+        self,
+    ):
+        observed = await self.observed()
+        self.tagger.load_error = MissingBackendPackages("gguf", ["llama-cpp-python"])
+
+        with self.assertNoLogs(self.api.logger, level="ERROR"):
+            status, body = await self.suggest(self.suggest_body(observed, "gguf"))
+
+        self.assertEqual((status, body["code"]), (409, "model-unavailable"))
+        self.assertEqual(body["error"], NEEDS_LLAMA)
+        self.assertIsNone(model_gate.holder())
+        entry = self.api._captures._entries[observed["capture"]["token"]]
+        self.assertEqual(entry.uses, 0)
 
     async def test_load_failure_is_a_generic_error_and_frees_everything(self):
         observed = await self.observed()

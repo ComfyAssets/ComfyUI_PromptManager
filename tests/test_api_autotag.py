@@ -73,6 +73,7 @@ class FakeAutotagService:
         self.status_calls = 0
         self.status_threads = []
         self.status_paths = {}
+        self.status_extra = {}
         self.suggest_calls = 0
 
     def get_models_status(self):
@@ -82,6 +83,7 @@ class FakeAutotagService:
             name: {
                 "downloaded": self.downloaded,
                 "model_path": self.status_paths.get(name),
+                **self.status_extra.get(name, {}),
             }
             for name in self.models_config
         }
@@ -1111,6 +1113,24 @@ class TestModelStatus(AutotagAPITestCase):
         leaked = [text for text in _strings(data) if _absolute(text)]
         self.assertEqual(leaked, [])
 
+    async def test_models_status_names_missing_backend_packages(self):
+        fields = {
+            "missing_packages": ["llama-cpp-python"],
+            "install_command": "pip install llama-cpp-python",
+            "install_note": "For a CUDA build: ...",
+        }
+        self.service.status_extra = {"gguf": fields}
+        models = (await self._models())["models"]
+        self.assertTrue(models["gguf"]["downloaded"])
+        self.assertEqual(
+            {key: models["gguf"][key] for key in fields},
+            fields,
+        )
+        self.assertEqual(
+            {key: models["wd14-vit"][key] for key in fields},
+            {"missing_packages": [], "install_command": None, "install_note": None},
+        )
+
     async def test_models_status_adds_label_size_label_and_loaded(self):
         self.service._loaded_type = "wd14-vit"
         data = await self._models()
@@ -1669,6 +1689,10 @@ class TestTagOutputImagesPreview(BatchJobTestCase):
                 "label": "WD14 ViT",
                 "size_label": "~400 MB",
                 "downloaded": True,
+                # #424: the backend packages it cannot import, none here.
+                "missing_packages": [],
+                "install_command": None,
+                "install_note": None,
             },
         )
         self.assertEqual(skip["existing"], "skip")

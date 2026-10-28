@@ -41,6 +41,18 @@ FILES = (
     ("loose/unlinked.png", "unlinked"),
 )
 MODELS = ("wd14-swinv2", "wd14-vit", "gguf", "hf")
+
+
+def _valid_missing(value) -> bool:
+    """``{"<model>": ["<pip name>", ...]}`` with known models and string names."""
+    return isinstance(value, dict) and all(
+        name in MODELS
+        and isinstance(names, list)
+        and all(isinstance(pip, str) and pip for pip in names)
+        for name, names in value.items()
+    )
+
+
 # Unlinked copies enough to virtualize the Images grid (it renders all up to 120).
 MAX_EXTRA_IMAGES = 160
 _TABLES = (
@@ -217,6 +229,7 @@ def register_tagging_commands(
         if not 0 <= extra <= MAX_EXTRA_IMAGES:
             raise web.HTTPBadRequest()
         model.unavailable = set()
+        model.missing_packages = {}
         model.suggestions = None
         model.loaded = None
         restore_download()
@@ -235,17 +248,25 @@ def register_tagging_commands(
 
     @routes.post("/__test__/tagging/models")
     async def models(request: web.Request) -> web.Response:
-        """Mark fake models as not downloaded (``{"unavailable": [...]}``)."""
+        """Mark fake models as not downloaded (``{"unavailable": [...]}``) and,
+        optionally, as missing backend packages (``"missing_packages":
+        {"<model>": ["<pip name>", ...]}``, #424)."""
         data = await request.json() if request.can_read_body else None
         if (
             request.query
             or not isinstance(data, dict)
-            or set(data) != {"unavailable"}
+            or "unavailable" not in data
+            or set(data) - {"unavailable", "missing_packages"}
             or not isinstance(data["unavailable"], list)
             or any(name not in MODELS for name in data["unavailable"])
+            or not _valid_missing(data.get("missing_packages", {}))
         ):
             raise web.HTTPBadRequest()
         model.unavailable = set(data["unavailable"])
+        model.missing_packages = {
+            name: list(names)
+            for name, names in data.get("missing_packages", {}).items()
+        }
         return web.json_response({"success": True})
 
     @routes.post("/__test__/tagging/loaded")
