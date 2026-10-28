@@ -10,6 +10,7 @@ import threading
 import zlib
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from PIL import Image
@@ -461,6 +462,14 @@ def read_inspection_metadata(path: Path) -> dict[str, str]:
     return read_inspection_file(path).metadata
 
 
+# A side whose branch recorded run history named (#386): the save node that
+# wrote the file picked the sampler; the text is still that branch's graph walk.
+RECORDED_RUN_SOURCE = "recorded-run"
+RECORDED_TEXT_REASON = "PromptManager recorded this text when the run executed"
+# Outcomes the file alone leaves open; only these ask recorded history.
+_UNDECIDED = frozenset({"ambiguous", "unresolved"})
+
+
 def _side(status: str, text: str | None = None, source: str | None = None) -> dict:
     return {"status": status, "text": text, "source": source}
 
@@ -529,14 +538,59 @@ def _parsed_workflow(value: Any) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _recorded_execution(resolved: dict, texts: Mapping) -> dict | None:
+    """Evidence from the texts recorded at one sampler of the file's run (#386).
+
+    Only for an outcome that names one sampler (a single stage stopped at a
+    run-time value, such as a language model's output feeding PromptManager)
+    and only when that sampler's positive text was recorded and is not empty.
+    """
+    sampler = resolved.get("sampler_id")
+    roles = texts.get(sampler) if isinstance(sampler, str) else None
+    if not isinstance(roles, Mapping):
+        return None
+    positive = roles.get("positive")
+    if not isinstance(positive, str) or not positive.strip():
+        return None
+    negative = roles.get("negative")
+    prompts = {
+        "positive": _side("resolved", positive, "execution"),
+        "negative": (
+            _side("resolved", negative, "execution")
+            if isinstance(negative, str)
+            else _side("unresolved")
+        ),
+    }
+    resolution = {
+        "state": "resolved",
+        "sampler_id": sampler,
+        "reason": RECORDED_TEXT_REASON,
+        "reason_code": None,
+        "node": None,
+    }
+    return {"prompts": prompts, "resolution": resolution}
+
+
 def inspect_prompt_evidence(
     metadata: dict,
     saved: dict | None = None,
     *,
     profile: ResolverProfile = INSPECTION_PROFILE,
     file_name: str | None = None,
+    recorded_saver_id: str | None = None,
+    recorded_texts: Mapping[str, Mapping[str, str | None]] | None = None,
 ) -> dict:
     """Keep uncertainty visible; a saved association never replaces file evidence.
+
+    ``recorded_saver_id`` is the save node recorded run history says wrote the
+    file (#386). It is asked only when the file alone leaves the prompt open
+    (ambiguous or unresolved), and the anchored result is kept only when it
+    names the positive (resolved, or a guider with no negative); its
+    graph-inferred sides are then labelled ``recorded-run``. ``recorded_texts``
+    (sampler id to the effective texts PromptManager recorded at execution in
+    that run) is used last: when the prompt is still open at one named sampler
+    whose positive text was recorded, the recorded texts are shown as
+    ``execution``.
 
     Inspection routes resolve with ``INSPECTION_PROFILE``: bounded work, not
     graph size. Ingestion (scan, live monitor, admin import) calls the resolver
@@ -599,6 +653,24 @@ def inspect_prompt_evidence(
         # Only to recognize overwritten PromptManager text (R1); never a role.
         canonical["workflow"] = workflow
     resolved = resolve_prompt_pair(canonical, profile=profile, file_name=file_name)
+    recorded = False
+    if resolved["state"] in _UNDECIDED and recorded_saver_id is not None:
+        anchored = resolve_prompt_pair(
+            canonical,
+            profile=profile,
+            file_name=file_name,
+            recorded_saver_id=recorded_saver_id,
+        )
+        # Only a result whose samplers history's saver chose is about this file.
+        if anchored.get("recorded_anchor") is True:
+            if anchored["state"] not in _UNDECIDED and isinstance(
+                anchored["positive"], dict
+            ):
+                resolved, recorded = anchored, True
+            elif recorded_texts:
+                executed = _recorded_execution(anchored, recorded_texts)
+                if executed is not None:
+                    return executed
     state = resolved["state"]
     result = {}
     for role in ("positive", "negative"):
@@ -608,9 +680,10 @@ def inspect_prompt_evidence(
             and isinstance(side, dict)
             and (role == "negative" or side["text"].strip())
         ):
-            result[role] = _side(
-                "resolved", side["text"], side["provenance"]["text_source"]
-            )
+            source = side["provenance"]["text_source"]
+            if recorded and source == "graph-inferred":
+                source = RECORDED_RUN_SOURCE
+            result[role] = _side("resolved", side["text"], source)
         elif state == "resolved" and isinstance(side, dict):
             # A resolved pair withholds only an empty positive.
             result[role] = {**_side("unresolved"), "message": _EMPTY_POSITIVE}

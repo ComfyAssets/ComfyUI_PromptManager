@@ -62,6 +62,7 @@ try:
     from ...database.image_favorites import MAX_KEY_LENGTH
     from ...database.library import display_title
     from ...database.models import normalize_image_path
+    from ...database.run_attribution import recorded_output_lookup
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.parallel import map_parallel
     from ...utils.json_strict import dumps_strict
@@ -83,6 +84,7 @@ except ImportError:
     from database.image_favorites import MAX_KEY_LENGTH
     from database.library import display_title
     from database.models import normalize_image_path
+    from database.run_attribution import recorded_output_lookup
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.parallel import map_parallel
     from utils.json_strict import dumps_strict
@@ -3803,6 +3805,7 @@ class ImageRoutesMixin:
                         image_tags=self._inspection_image_tags(
                             roots[index], Path(relative).parts
                         ),
+                        recorded=recorded_output_lookup(self.db),
                     )
                 except CurrentFileChanged:
                     return None
