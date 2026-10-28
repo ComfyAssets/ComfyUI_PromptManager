@@ -18,7 +18,7 @@ import urllib.parse
 from bisect import bisect_left, bisect_right, insort
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Callable, Iterable, NamedTuple
 
 from aiohttp import web
 from PIL import Image, UnidentifiedImageError
@@ -58,6 +58,7 @@ from .inspection_service import (
 )
 
 try:
+    from ...database.image_collections import CollectionMissing
     from ...database.image_favorites import MAX_KEY_LENGTH
     from ...database.library import display_title
     from ...database.models import normalize_image_path
@@ -78,6 +79,7 @@ try:
         reveal_in_file_manager,
     )
 except ImportError:
+    from database.image_collections import CollectionMissing
     from database.image_favorites import MAX_KEY_LENGTH
     from database.library import display_title
     from database.models import normalize_image_path
@@ -104,6 +106,21 @@ IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
 _CARD_RECORDS = ("prompt", "workflow")
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _LISTING_FAILED = "The image list could not be filtered. Check server logs for details."
+_COLLECTION_ID = re.compile(r"[1-9][0-9]{0,8}")
+COLLECTION_NOT_FOUND = "That collection no longer exists."
+
+
+def collection_not_found() -> web.Response:
+    """The 404 a write or a listing answers for an unknown collection (#331)."""
+    return web.json_response(
+        {
+            "success": False,
+            "code": "collection-not-found",
+            "error": COLLECTION_NOT_FOUND,
+        },
+        status=404,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _card_header(path: Path) -> tuple:
@@ -1056,8 +1073,9 @@ def _workspace_filters(query: Mapping) -> dict:
     the linked positive's text, title and tag names. ``category`` is exact,
     ``tags`` is a comma list that must all be present, ``sort=rating`` ranks by
     the linked positive, and ``favorites=1`` keeps only favorites (the
-    Favorites page, #249 D51). Raises ValueError for any unknown or oversized
-    value.
+    Favorites page, #249 D51). ``collection=<id>`` (1 to 9 digits) keeps only
+    that collection's members (#331); it wins over ``favorites`` (a page never
+    sets both). Raises ValueError for any unknown or oversized value.
     """
     text = query.get("q", "").strip()
     folded = text.casefold()
@@ -1071,8 +1089,10 @@ def _workspace_filters(query: Mapping) -> dict:
         {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}
     )
     favorites = query.get("favorites", "0")
+    collection = query.get("collection", "")
     if (
         favorites not in ("0", "1")
+        or (collection != "" and _COLLECTION_ID.fullmatch(collection) is None)
         or len(text) > 500
         or len(folded) > 500
         or media not in ("all", "image", "video")
@@ -1095,7 +1115,8 @@ def _workspace_filters(query: Mapping) -> dict:
         "path": exact.casefold(),
         "category": category,
         "tags": tags,
-        "favorites": favorites == "1",
+        "favorites": favorites == "1" and not collection,
+        "collection": int(collection) if collection else None,
     }
 
 
@@ -1113,6 +1134,8 @@ LISTING_FILTER_KEYS = frozenset(
         "media",
         "sort",
         "favorites",
+        # A collection page's filter (#331): bulk actions act on its members.
+        "collection",
     }
 )
 MAX_LISTING_FILTER_VALUE = 2048
@@ -1169,7 +1192,7 @@ def _admitted_entries(
     entries: list,
     filters: dict,
     links: dict | None,
-    favorites: frozenset | None = None,
+    members: frozenset | None = None,
     image_tags: dict | None = None,
 ):
     """Yield ``(position, entry, link match)`` for each entry the filters admit.
@@ -1177,11 +1200,11 @@ def _admitted_entries(
     *links* maps normalized paths to (hit, rating, positive id) for every
     unambiguously linked image (see PromptDatabase.get_image_link_matches); a
     category or tag filter admits only those, and ``q`` admits a filename match
-    or a linked-positive hit. *favorites*, when given, admits only those listed
-    paths (``favorites=1``). *image_tags* maps normalized paths to their
-    _ImageTagMatch: a tag filter also admits a file whose current image tags
-    (with its linked positive's tags) carry every tag, and ``q`` also admits an
-    image tag name hit.
+    or a linked-positive hit. *members*, when given, admits only those listed
+    paths (the favorites of ``favorites=1`` or a ``collection``'s members).
+    *image_tags* maps normalized paths to their _ImageTagMatch: a tag filter
+    also admits a file whose current image tags (with its linked positive's
+    tags) carry every tag, and ``q`` also admits an image tag name hit.
     """
     query, media, folder = filters["query"], filters["media"], filters["folder"]
     members_only = filters["category"] is not None or bool(filters["tags"])
@@ -1197,7 +1220,7 @@ def _admitted_entries(
             continue
         if media != "all" and (media == "video") != entry.video:
             continue
-        if favorites is not None and entry.path not in favorites:
+        if members is not None and entry.path not in members:
             continue
         match = None if links is None else links.get(entry.normalized)
         image = None if image_tags is None else image_tags.get(entry.normalized)
@@ -1219,7 +1242,7 @@ def _filtered_page(
     size: int,
     filters: dict,
     links: dict | None,
-    favorites: frozenset | None = None,
+    members: frozenset | None = None,
     image_tags: dict | None = None,
 ) -> tuple[int, list, int | None]:
     """Count the *entries* the filters admit and take *size* from *start* on.
@@ -1230,7 +1253,7 @@ def _filtered_page(
     """
     total, page, positives = 0, [], set()
     for position, entry, match in _admitted_entries(
-        entries, filters, links, favorites, image_tags
+        entries, filters, links, members, image_tags
     ):
         total += 1
         if match is not None:
@@ -1934,6 +1957,7 @@ class ImageRoutesMixin:
                         filters["category"],
                         filters["tags"],
                         filters["favorites"],
+                        filters["collection"],
                     ]
                 ).encode()
             ).hexdigest()
@@ -1944,17 +1968,19 @@ class ImageRoutesMixin:
         except ValueError as exc:
             return bad_request(str(exc))
 
-        listings = [
-            (index, root, await self._get_gallery_files(root))
-            for index, root in enumerate(output_dirs)
-            if root_index is None or index == root_index
-        ]
         try:
+            if filters["collection"] is not None and not await self._run_in_executor(
+                self.db.collection_exists, filters["collection"]
+            ):
+                raise CollectionMissing("No such collection")
+            listings = await self._workspace_listings(output_dirs, root_index)
             page, total, has_more, next_cursor, positive_count = (
                 await self._run_in_executor(
                     self._select_workspace_page, listings, filters, after, limit, scope
                 )
             )
+        except CollectionMissing:
+            return collection_not_found()
         except Exception:
             # A filter that needs the prompt links or the image tags cannot be
             # served without them. Never echo the exception: it can carry SQL
@@ -2215,9 +2241,11 @@ class ImageRoutesMixin:
     ) -> tuple:
         """The ordered entries and what admits them (blocking; run in executor).
 
-        Returns ``(entries, key, links, image_tags, favorites)``: the listing in
-        the filters' order, its keyset key, and the link, image-tag and favorite
-        maps _admitted_entries reads. One SELECT (get_image_link_matches) reads
+        Returns ``(entries, key, links, image_tags, members)``: the listing in
+        the filters' order, its keyset key, and the link, image-tag and member
+        maps _admitted_entries reads (members: a collection's, else the
+        favorites, else None). A collection deleted since the route checked it
+        raises CollectionMissing. One SELECT (get_image_link_matches) reads
         every linked positive when *read_links*. A failed read raises when the
         filters need it (category, tags, the rating sort) or *strict*; else the
         listing stays usable without links (a search then matches filenames
@@ -2290,10 +2318,13 @@ class ImageRoutesMixin:
             def key(entry):
                 return _workspace_key(entry, order)
 
-        favorites = (
-            self._workspace_favorite_paths(listings) if filters["favorites"] else None
+        return (
+            entries,
+            key,
+            links,
+            image_tags,
+            self._workspace_members(listings, filters),
         )
-        return entries, key, links, image_tags, favorites
 
     def _select_workspace_page(
         self,
@@ -2322,7 +2353,7 @@ class ImageRoutesMixin:
             or bool(filters["tags"])
             or order == "rating"
         )
-        entries, key, links, image_tags, favorites = self._workspace_admission(
+        entries, key, links, image_tags, members = self._workspace_admission(
             listings, filters, read_links=needed or after is None
         )
         start = 0
@@ -2333,7 +2364,7 @@ class ImageRoutesMixin:
             else:
                 start = bisect_right(entries, after, key=key)
         total, page, positive_count = _filtered_page(
-            entries, start, limit + 1, filters, links, favorites, image_tags
+            entries, start, limit + 1, filters, links, members, image_tags
         )
         if not needed and after is not None:
             positive_count = _COUNT_OMITTED
@@ -2355,12 +2386,12 @@ class ImageRoutesMixin:
 
         The links are read strictly: the positives must be the listing's own.
         """
-        entries, _key, links, image_tags, favorites = self._workspace_admission(
+        entries, _key, links, image_tags, members = self._workspace_admission(
             listings, filters, read_links=True, strict=True
         )
         targets, positives, unlinked, scopes = [], {}, 0, {}
         for _position, entry, match in _admitted_entries(
-            entries, filters, links, favorites, image_tags
+            entries, filters, links, members, image_tags
         ):
             if len(targets) == cap:
                 return ListingSelection(targets, list(positives), unlinked, True)
@@ -2382,9 +2413,11 @@ class ImageRoutesMixin:
     ) -> ListingSelection:
         """The images a parse_listing_filter result admits right now (#392).
 
-        Raises ValueError for a root outside the current roots, and
+        Raises ValueError for a root outside the current roots,
         ListingSourceChanged when the filter's ``root_scope`` no longer names
-        its root (the sources were renumbered since the listing).
+        its root (the sources were renumbered since the listing), and
+        CollectionMissing when its ``collection`` no longer exists (checked
+        before any scan and again after the members are read).
         """
         output_dirs = list(self._get_all_output_dirs())
         root_index = _workspace_root(params, output_dirs)
@@ -2394,11 +2427,11 @@ class ImageRoutesMixin:
                 raise ListingSourceChanged()
             raise ValueError("Invalid gallery root scope")
         filters = _workspace_filters(params)
-        listings = [
-            (index, root, await self._get_gallery_files(root))
-            for index, root in enumerate(output_dirs)
-            if root_index is None or index == root_index
-        ]
+        if filters["collection"] is not None and not await self._run_in_executor(
+            self.db.collection_exists, filters["collection"]
+        ):
+            raise CollectionMissing("No such collection")
+        listings = await self._workspace_listings(output_dirs, root_index)
         return await self._run_in_executor(
             self._select_workspace_matches, listings, filters, cap
         )
@@ -3583,24 +3616,57 @@ class ImageRoutesMixin:
         self._favorite_listing_cache[cache_key] = (files, listing)
         return listing
 
-    def _workspace_favorite_paths(self, listings: list[tuple]) -> frozenset:
-        """The listed paths of every favorite in the selected roots (blocking).
+    def _workspace_members(self, listings: list[tuple], filters: dict):
+        """The member set the filters ask for, or None (blocking)."""
+        collection = filters.get("collection")
+        if collection is not None:
+            members = self._workspace_member_paths(
+                listings,
+                lambda root_key: self.db.collection_members(collection, root_key),
+            )
+            # Checked after the reads: a collection deleted before or while
+            # they ran is a 404, never an empty page passing for it.
+            if not self.db.collection_exists(collection):
+                raise CollectionMissing("No such collection")
+            return members
+        if filters["favorites"]:
+            return self._workspace_favorite_paths(listings)
+        return None
 
-        One primary-key read per root (get_root_favorites), matched against the
-        root's cached ``{relative key: listing spelling}``, so the work follows
-        the favorites rather than the files, and a key folds case exactly as
-        the toggle stored it (Windows). A favorite whose file is gone matches
-        nothing. A failed read raises: an unfiltered page must never pass for
-        the favorites.
+    def _workspace_favorite_paths(self, listings: list[tuple]) -> frozenset:
+        """The listed paths of every favorite in the selected roots (blocking)."""
+        return self._workspace_member_paths(listings, self.db.get_root_favorites)
+
+    def _workspace_member_paths(
+        self, listings: list[tuple], keys_for_source: Callable[[str], Iterable[str]]
+    ) -> frozenset:
+        """The listed paths of the stored keys of each selected root (blocking).
+
+        One read per root (``keys_for_source(root key)``: the favorites' or a
+        collection's primary-key range), matched against the root's cached
+        ``{relative key: listing spelling}``, so the work follows the members
+        rather than the files, and a key folds case exactly as it was stored
+        (Windows). A member whose file is gone matches nothing. A failed read
+        raises: an unfiltered page must never pass for the members.
         """
         paths = set()
         for _index, root, files in listings:
             listing = self._favorite_listing(root, files)
-            for key in self.db.get_root_favorites(_favorite_root_key(root)):
+            for key in keys_for_source(_favorite_root_key(root)):
                 listed = listing.get(key)
                 if listed is not None:
                     paths.add(root / listed)
         return frozenset(paths)
+
+    async def _workspace_listings(
+        self, output_dirs: list[Path], root_index: int | None
+    ) -> list[tuple]:
+        """``(index, root, scan)`` of every selected root (cached scans)."""
+        return [
+            (index, root, await self._get_gallery_files(root))
+            for index, root in enumerate(output_dirs)
+            if root_index is None or index == root_index
+        ]
 
     def _workspace_favorites(self, page: list[tuple]) -> set[tuple[int, str]]:
         """``(root index, listing path)`` of the favorites among *page* entries."""
