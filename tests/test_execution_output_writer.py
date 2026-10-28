@@ -18,6 +18,7 @@ from utils.execution_output_capture import seal_outputs
 from utils.execution_outputs import snapshot_output_roots
 from utils.execution_history_writer import HistoryWriter
 from tests.history_waits import drain_writer
+from tests.disk_waits import DISK_BOUND_SECONDS
 
 try:
     from tests import test_execution_history_writer as fixtures
@@ -37,9 +38,8 @@ SATURATION_HOLD_SECONDS = 60
 
 # A restore is a full verify/migrate/backup/replace cycle and is bound by the
 # disk: a busy Windows runner took over 10 s (merge queue, #382). Waits that
-# span a restore use this ceiling, which stays under the runner's 120 s hang
-# watchdog, so a real hang still fails with the thread dump.
-RESTORE_SECONDS = 90
+# span a restore use the shared disk-bound hang guard (tests/disk_waits.py).
+RESTORE_SECONDS = DISK_BOUND_SECONDS
 
 
 class OutputWriterTests(fixtures.unittest.TestCase):
