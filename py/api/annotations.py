@@ -27,7 +27,12 @@ from .annotation_suggest import (
     validate_options,
 )
 from .autotag_routes import model_busy_response
-from .images import _forbidden, _has_traversal, _unavailable_link, _verified_title
+
+# The target check is shared with the collection routes (#331); both names
+# stay importable from here.
+from .media_target import MAX_TARGET_PATH  # noqa: F401
+from .media_target import media_target as _target
+from .images import _unavailable_link, _verified_title
 from .prompts import bad_request
 from .. import model_gate
 
@@ -40,7 +45,7 @@ try:
     )
     from ...database.execution_history import subscribe_history_restore
     from ...database.library_commands import LibraryCommandError
-    from ...utils.media_capture import CAPTURE_EXTENSIONS, CaptureError, CaptureStore
+    from ...utils.media_capture import CaptureError, CaptureStore
 except ImportError:
     from database.annotations import (
         MAX_IMAGE_TAGS,
@@ -50,15 +55,13 @@ except ImportError:
     )
     from database.execution_history import subscribe_history_restore
     from database.library_commands import LibraryCommandError
-    from utils.media_capture import CAPTURE_EXTENSIONS, CaptureError, CaptureStore
+    from utils.media_capture import CaptureError, CaptureStore
 
 # Request bodies of the annotation routes are small (a target plus a tag set).
 MAX_BODY_BYTES = 64 * 1024
-MAX_TARGET_PATH = 1024
 CAPTURE_URL = "/prompt_manager/image-annotations/capture/"
 _PREVIEW_CHUNK = 64 * 1024
 
-_TARGET_FIELDS = frozenset({"root_index", "root_scope", "path"})
 _OBSERVE_FIELDS = frozenset({"target"})
 _SAVE_FIELDS = frozenset(
     {
@@ -186,37 +189,6 @@ def _capture_error(exc: CaptureError) -> web.Response:
     if exc.code not in _STATUS:
         return _error(500, exc.code, "The file could not be captured.")
     return _coded(exc.code, _MESSAGES.get(exc.code) or str(exc))
-
-
-def _target(data: object):
-    """``((index, scope, relative), None)`` for a target, else ``(None, error)``.
-
-    Only the listing identity is accepted: an int root index, the root's
-    64-hex scope and a bounded root-relative POSIX media path, never an
-    absolute, drive-qualified, backslash or ``..`` path. Nothing here touches
-    the filesystem or the database.
-    """
-    if not isinstance(data, dict) or set(data) != _TARGET_FIELDS:
-        return None, bad_request("target must name root_index, root_scope and path")
-    index, scope, relative = data["root_index"], data["root_scope"], data["path"]
-    if type(index) is not int or index < 0:
-        return None, bad_request("Invalid gallery root")
-    if not isinstance(scope, str) or _HEX64.fullmatch(scope) is None:
-        return None, bad_request("Invalid gallery root scope")
-    if not isinstance(relative, str) or not relative or len(relative) > MAX_TARGET_PATH:
-        return None, bad_request("path must be a relative media path")
-    parts = relative.split("/")
-    if (
-        "\0" in relative
-        or "\\" in relative
-        or relative.startswith("/")
-        or _has_traversal(relative)
-        or any(part in ("", ".", "..") or ":" in part for part in parts)
-    ):
-        return None, _forbidden()
-    if os.path.splitext(parts[-1])[1].lower() not in CAPTURE_EXTENSIONS:
-        return None, _forbidden("Only media files can be tagged")
-    return (index, scope, relative), None
 
 
 def _expires_at(seconds: float | None) -> str:

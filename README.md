@@ -56,7 +56,7 @@ Both nodes include the complete PromptManager feature set:
 - **📊 Analytics**: Track prompt usage patterns and effectiveness over time
 - **🔬 Workflow Analysis**: Extract and analyze ComfyUI workflow data from PNG images
 - **📋 Metadata Viewer**: Standalone tool for analyzing ComfyUI-generated images
-- **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools
+- **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools in System
 - **🏷️ AI AutoTag**: Automatically tag your image collection using WD14 or JoyCaption vision models
 - **🔗 LoRA Manager Integration**: Import LoRA metadata and preview images from [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager)
 
@@ -206,14 +206,11 @@ match Classic and Focused.
 - **Responsive Design**: Works on desktop, tablet, and mobile devices
 - **Real-time Search**: Instant search results as you type
 - **Bulk Operations**: Edit multiple prompts simultaneously with batch tools
-- **Settings Panel**: Configure behavior and display options
-- **System Management**: Complete toolset for database operations:
+- **Settings and System tools live in System**: the dashboard's **Settings** opens System › Overview, **Maintenance** opens System › Maintenance, **Backup DB** and **Restore DB** open System › Backup & export, and **Diagnostics** and **View Logs** open System › Diagnostics & logs, each in a new tab. System reviews every destructive operation before it runs it as an Activity job.
+- **Page options**: the list header's **Page options** keeps the prompt list's Infinite Scrolling default
+- **Dashboard tools**:
   - **🔍 Metadata Viewer**: Launch standalone PNG analysis tool
-  - **📸 Scan Images**: Bulk scan output directories for ComfyUI images
-  - **💾 Backup/Restore**: Database backup and recovery operations
-  - **🔧 Maintenance**: Database optimization and cleanup tools including orphaned prompt removal
-  - **📋 Logs**: Comprehensive logging system with download capability
-  - **🔍 Diagnostics**: System health checks and troubleshooting
+  - **📸 Scan Images**: Bulk scan output directories for ComfyUI images (with a quick backup first)
 - **Export Tools**: Download prompts and metadata in various formats
 - **Progress Tracking**: Real-time progress indicators for long operations
 - **Error Handling**: Graceful error display with recovery suggestions
@@ -315,6 +312,12 @@ Both nodes support the same metadata fields:
 
 Both nodes will automatically save prompts to the database and link any generated images to the prompt.
 
+- **Save to library** (`save_to_library`, on by default; "Save to library" in the Focused, Split and Pair editors):
+  turn it off while iterating and PromptManager ignores that node's runs. The prompt is not saved, the run is not
+  counted and its images are not linked (a scan skips them too), while the node's output is unchanged. Workflows
+  saved before this switch existed load with it on. If any PromptManager node feeding a sampler's positive input
+  has it off, none of that run's images are linked, because the image cannot show which sampler produced it.
+
 ### 🖼️ Using the Output-Wide Gallery
 
 The comprehensive gallery system provides complete access to all your ComfyUI output:
@@ -333,14 +336,11 @@ The comprehensive gallery system provides complete access to all your ComfyUI ou
 
 #### **⚙️ Gallery Settings**
 
-Configure your viewing experience in the settings panel:
+The gallery's **Settings** opens System › Appearance in a new tab: image quality, details on cards, collapsed viewer details, video autoplay/mute/loop, metadata loading and file paths are set there and apply to this page too.
 
-- **Display Settings**: Default view, items per page, grid columns, media info, infinite scrolling
-- **Performance Settings**: Image quality, lazy loading
-- **Video Settings**: Autoplay, mute by default, loop videos
-- **Thumbnail Management**: Generate optimized thumbnails for faster loading (runs on the configured worker threads; a run that stops at the per-run cap tells you how many remain)
-- **Find Duplicate Images**: Hashes every file on the worker threads with a progress bar; close the window and it keeps running, results wait in a pill
-- **Rescan Output Folder**: Drops the server-side listing cache and rewalks the folders
+The gallery's **Page options** keep the page's own settings: the thumbnail check at startup, lazy loading, items per page, grid columns, infinite scrolling, debug mode and API timeout. Reset puts back only these.
+
+Thumbnail generation, the server thumbnail and browser cache clears, refreshing the file listing and finding duplicate images are in System › Sources & scans and System › Maintenance (Page options links both); each runs as an Activity job you can follow after closing the page.
 
 #### **🖼️ Image Viewing Experience**
 
@@ -398,7 +398,7 @@ Import existing ComfyUI images into your database:
    - Any errors or issues encountered
 5. **Access imported data** through the normal gallery interface
 
-The scan reads PNG text chunks and A1111-style parameters, and, when `ffprobe` is installed, the prompt ComfyUI's video savers embed in MP4/MOV/WebM files. Files are read on the number of **worker threads** set in Settings → Performance (default: half your cores), which makes a large library several times faster.
+The scan reads PNG text chunks and A1111-style parameters, and, when `ffprobe` is installed, the prompt ComfyUI's video savers embed in MP4/MOV/WebM files. Files are read on the number of **worker threads** set in System › Sources & scans (default: half your cores), which makes a large library several times faster.
 
 ### 🏷️ AI AutoTag
 
@@ -414,7 +414,7 @@ Automatically tag your entire image collection using AI vision models:
 
 1. **AutoTag (Batch Mode)**: Tag your entire collection automatically
    - Click **"🏷️ AutoTag"** in the admin dashboard
-   - Choose your model type (FP16 or GGUF)
+   - Choose your model type (FP16 or GGUF). A model that is not downloaded yet shows **Manage in System**: download (or unload) it in System › Auto-tagging, then reopen the dialog
    - Select how to handle already-tagged images:
      - **Skip images with existing tags**: Preserve your meticulous manual tagging work
      - **Re-tag all images**: Overwrite existing tags with fresh AI analysis
@@ -445,7 +445,7 @@ Adjust the system prompt to match your tagging style:
 #### **Requirements**
 
 - Sufficient VRAM for the chosen model (FP16 requires more, GGUF is lighter)
-- Models are downloaded automatically on first use
+- Models are downloaded in System › Auto-tagging
 - Feature requests and improvements are welcome!
 
 ### 📁 Folder Filter
@@ -470,18 +470,18 @@ If you use [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manag
 
 #### **Enabling the Integration**
 
-1. Open the admin dashboard and click **Settings**
-2. Scroll to the **Integrations** section — PromptManager will auto-detect if LoRA Manager is installed
+1. Open System › Integrations (the admin dashboard's **Settings** opens System)
+2. PromptManager auto-detects whether LoRA Manager is installed
 
 ![LoRA Enabled](images/pm-lora-enabled.png)
 
 3. Toggle the **LoraManager** switch to enable
 4. Optionally enable **Auto-inject trigger words** to automatically append LoRA trigger words when `<lora:name:weight>` is detected in your prompts
-5. Click **Save Settings** (requires a ComfyUI restart to take effect)
+5. Click **Save preferences** (requires a ComfyUI restart to take effect)
 
 #### **Importing LoRA Data**
 
-Click **Import LoRA Data** in the settings panel to start the import. A progress popup shows real-time status as each LoRA is processed:
+Click **Review import** in System › Integrations; Start runs the import as an Activity job:
 
 - Reads LoRA Manager's own settings the way LoRA Manager does: from the folder in `LORA_MANAGER_SETTINGS_DIR`, from the plugin's `settings.json` in portable mode, or from your user config folder, and only the keys that say where its files are
 - Finds each LoRA's metadata in both storage modes: beside the model (the default) or in the central sidecar folder, and imports only LoRAs whose model file still exists in a LoRA folder (the review says how many metadata files it skipped)
@@ -502,7 +502,7 @@ A CivitAI API key is **required if your library contains NSFW LoRAs** — CivitA
 
 To add your key:
 1. Get your API key from [civitai.com/user/account](https://civitai.com/user/account)
-2. Paste it into the **CivitAI API Key** field in the Integrations settings
+2. Paste it into the **CivitAI API key** field in System › Integrations
 3. Save and re-import to download any previously skipped images
 
 The key is sent only over HTTPS to CivitAI's own hosts. CivitAI serves images through a redirect to its storage host; PromptManager follows such a redirect only over HTTPS to a host on CivitAI's own `civitai.com`, `civitai.red` or `civitai.green` domains, at most three hops, and never sends the key with it. When downloads fail, the import's status line says how many; when none could be downloaded, it starts with a warning. The server log has one warning per failed image with the reason (HTTP status, refused redirect, size cap, unreadable image, timeout or network error).
@@ -517,23 +517,20 @@ The comprehensive web interface provides:
 - **Filter Options**: Filter by category, tags, rating, and date
 - **Bulk Operations**: Select multiple prompts for batch editing
 - **Export Tools**: Download your prompt collection
-- **Settings Panel**: Configure auto-save and display options
-- **Diagnostics**: System health checks and troubleshooting
+- **Settings**: System (new tab) for settings, maintenance, backups and diagnostics; **Page options** for the page's own display settings
 
 ### 🔧 Database Maintenance
 
-Keep your database optimized with built-in maintenance tools:
+Keep your database optimized in System › Maintenance (the admin dashboard's **Maintenance** opens it in a new tab):
 
-1. **Open the admin dashboard** and click **"🔧 Maintenance"**
-2. **Select maintenance operations**:
-   - **Remove Duplicates**: Find and merge duplicate prompts while preserving images
-   - **Vacuum Database**: Optimize database file size and performance
-   - **Clean Orphaned Images**: Remove image records for missing files
-   - **🚮 Prune Orphaned Prompts**: Remove prompts that have no linked images
-   - **Check Consistency**: Verify database integrity and relationships
-   - **Database Statistics**: Generate detailed database reports
-3. **Run selected operations** and monitor progress in real-time
-4. **Review results** showing detailed information about each operation
+- **Duplicate prompt text**: merge duplicate prompts while preserving images
+- **Optimize database**: reclaim unused SQLite space
+- **Missing-file links**: remove image records for missing files
+- **Unused prompt components**: remove prompts nothing uses
+- **Run health checks**: verify database integrity and relationships (the Health report)
+- **Database size and prompt counts**: System › Diagnostics & logs (Database) and the Overview's Statistics
+
+Each operation opens a review that shows what it will change and the safety backup it takes, then runs as an Activity job.
 
 ### Database Location
 
@@ -835,8 +832,8 @@ Before upgrading or changing this setting:
 1. Identify the database your current installation actually uses and confirm its
    library contents. Check both the configured path and the prior fallback
    `<extension>/prompts.db`; keep track of which existing file you intend to use.
-2. Preserve a consistent backup of the active database with the dashboard's
-   Backup/Restore backup action or SQLite's online backup API. Do not copy only
+2. Preserve a consistent backup of the active database with
+   System › Backup & export's Back up or SQLite's online backup API. Do not copy only
    the main file of a live SQLite database: committed data may still be in its
    `-wal` file. For a filesystem copy, stop ComfyUI cleanly first and preserve any
    remaining `-wal` file together with the main database.

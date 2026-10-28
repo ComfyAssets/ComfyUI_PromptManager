@@ -67,6 +67,45 @@ const browserJobIds = [...allJobs].filter(([, body]) => /npm run --prefix tools\
 const mergeJob = () => allJobs.get('frontend-coverage-merge');
 const verifyStep = () => steps(mergeJob()).find(step => /name: Verify every shard's raw coverage arrived/.test(step));
 
+// Jobs that run only in the merge queue, on main and on demand (#420): skipped on pull_request.
+const QUEUE_ONLY_IF = /^ {4}if: github\.event_name != 'pull_request'$/m;
+const EVENTS = ['pull_request', 'merge_group', 'push', 'workflow_dispatch'];
+
+function gateVariables(jobText) {
+    return new Map([...jobText.matchAll(/^ {10}([A-Z_]+): \$\{\{ needs\.([\w-]+)\.result \}\}$/gm)]
+        .map(match => [match[2], match[1]]));
+}
+
+function runGate(jobText, env) {
+    const script = runScript(steps(jobText).find(step => /run: \|/.test(step)));
+    try {
+        execFileSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { env: { PATH: process.env.PATH, ...env }, stdio: 'pipe' });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// A gate passes only when every always-on job succeeded and every queue-only job is skipped on a
+// pull request and succeeded on every other event. Anything else fails it.
+function assertGateBehaviour(jobText, queueOnly) {
+    assert.match(jobText, /^ {10}EVENT_NAME: \$\{\{ github\.event_name \}\}$/m, 'the gate knows the event');
+    const variables = gateVariables(jobText);
+    for (const id of queueOnly) assert.ok(variables.has(id), `${id} reaches the gate`);
+    for (const event of EVENTS) {
+        const expected = id => (queueOnly.includes(id) && event === 'pull_request' ? 'skipped' : 'success');
+        const green = Object.fromEntries([...variables].map(([id, name]) => [name, expected(id)]));
+        assert.equal(runGate(jobText, { ...green, EVENT_NAME: event }), true, `${event}: the expected results pass`);
+        for (const [id, name] of variables) {
+            for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
+                if (result === expected(id)) continue;
+                assert.equal(runGate(jobText, { ...green, EVENT_NAME: event, [name]: result }), false,
+                    `${event}: ${id}=${result} must fail the gate`);
+            }
+        }
+    }
+}
+
 test('viewerjs keeps its name and needs every frontend job', () => {
     const viewerjs = allJobs.get('viewerjs');
     assert.ok(viewerjs, 'the required context is the job id viewerjs');
@@ -76,32 +115,17 @@ test('viewerjs keeps its name and needs every frontend job', () => {
     assert.deepEqual([...needs].sort(), [...others].sort(), 'viewerjs needs every other job in the workflow');
     assert.deepEqual([...needs].sort(), ['browser-workflows', 'frontend-coverage', 'frontend-coverage-merge']);
     assert.match(viewerjs, /^ {4}if: always\(\)$/m, 'viewerjs runs (and fails) when a needed job failed or was skipped');
-    const script = runScript(steps(viewerjs).find(step => /run: \|/.test(step)));
-    for (const id of needs) {
-        const variable = new RegExp(`^ {10}([A-Z_]+): \\$\\{\\{ needs\\.${id}\\.result \\}\\}$`, 'm').exec(viewerjs);
-        assert.ok(variable, `${id}'s result reaches the check`);
-        assert.match(script, new RegExp(`test "\\$${variable[1]}" = success`), `${id} must be exactly success`);
-    }
+    assert.deepEqual([...gateVariables(viewerjs).keys()].sort(), [...needs].sort(), 'every needed result reaches the check');
 });
 
-test('viewerjs fails unless every needed job succeeded', () => {
-    const viewerjs = allJobs.get('viewerjs');
-    const script = runScript(steps(viewerjs).find(step => /run: \|/.test(step)));
-    const variables = [...viewerjs.matchAll(/^ {10}([A-Z_]+): \$\{\{ needs\.[\w-]+\.result \}\}$/gm)].map(match => match[1]);
-    const run = env => {
-        try {
-            execFileSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], { env: { PATH: process.env.PATH, ...env }, stdio: 'pipe' });
-            return true;
-        } catch {
-            return false;
-        }
-    };
-    const allSuccess = Object.fromEntries(variables.map(name => [name, 'success']));
-    assert.equal(run(allSuccess), true);
-    for (const name of variables) {
-        for (const result of ['failure', 'cancelled', 'skipped']) {
-            assert.equal(run({ ...allSuccess, [name]: result }), false, `${name}=${result} must fail viewerjs`);
-        }
+test('viewerjs requires the browser shards everywhere but on a pull request', () => {
+    assertGateBehaviour(allJobs.get('viewerjs'), ['browser-workflows']);
+});
+
+test('Firefox/WebKit page workflows run only outside pull requests; coverage runs on every event', () => {
+    assert.match(allJobs.get('browser-workflows'), QUEUE_ONLY_IF);
+    for (const id of ['frontend-coverage', 'frontend-coverage-merge']) {
+        assert.doesNotMatch(allJobs.get(id), /^ {4}if:/m, `${id} runs on every event`);
     }
 });
 
@@ -223,8 +247,29 @@ test('browser job timeouts keep a real margin over measured runs', () => {
     }
 });
 
+// A hang (#425) must end inside the test step, before the job limit, so the log and the always()
+// uploads survive: the step's timeout-minutes < the job's.
+const BROWSER_TEST_STEP = /npm run --prefix tools\/vendor test:(workflows|coverage)/;
+
+test('each browser test step stops itself before its job limit and its traces upload anyway', () => {
+    for (const id of browserJobIds) {
+        const body = allJobs.get(id);
+        const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(body)[1]);
+        const jobSteps = steps(body);
+        const testAt = jobSteps.findIndex(step => BROWSER_TEST_STEP.test(step));
+        const testStep = jobSteps[testAt];
+        const stepMinutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(testStep)?.[1]);
+        assert.ok(stepMinutes > 0, `${id}: the test step sets its own timeout-minutes`);
+        assert.ok(jobMinutes - stepMinutes >= 2, `${id}: the step limit leaves time for setup and the uploads`);
+        const upload = jobSteps.slice(testAt + 1).find(step => /^ {10}path: tools\/vendor\/test-results\/$/m.test(step));
+        assert.ok(upload, `${id} uploads tools/vendor/test-results/ (traces and blob report) after the tests`);
+        assert.match(upload, /^ {8}if: always\(\)$/m, `${id} uploads them when the step failed or timed out`);
+    }
+});
+
 // Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
-const BOUNDED_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
+const GATING_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
+const BOUNDED_WORKFLOWS = [...GATING_WORKFLOWS, 'portability.yml'];
 const readWorkflow = name => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
 
 test('every job in the CI workflows has a numeric timeout-minutes', () => {
@@ -275,4 +320,74 @@ test('the bandit pre-commit hook fails at the severity CI enforces and passes ev
     assert.match(hook, /^ {8}entry: bandit -lll -q$/m, 'the hook enforces the same -lll level as CI');
     assert.doesNotMatch(hook, /true|exit-zero|bash -c/, 'nothing masks the exit code or drops a file');
     assert.doesNotMatch(hook, /pass_filenames: false/, 'the hook scans the staged files');
+});
+
+// Event split (#420): pull requests run a fast subset, the merge queue and main run everything.
+const testJobs = () => jobs(readWorkflow('test.yml'));
+
+test('the Python matrix is Linux 3.12 on a pull request and Linux 3.12-3.14 on every other event', () => {
+    const body = testJobs().get('test');
+    assert.deepEqual(matrixList(body, 'os'), ['ubuntu-latest'], 'Windows and macOS never gate a merge');
+    const match = /^ {8}python-version: \$\{\{ github\.event_name == 'pull_request' && fromJSON\('(\[[^\]]*\])'\) \|\| fromJSON\('(\[[^\]]*\])'\) \}\}$/m.exec(body);
+    assert.ok(match, 'python-version is chosen by event');
+    assert.deepEqual({ pr: JSON.parse(match[1]), other: JSON.parse(match[2]) }, { pr: ['3.12'], other: ['3.12', '3.13', '3.14'] });
+    assert.match(body, /^ {6}fail-fast: false$/m);
+    assert.match(body, /^ {4}name: py\$\{\{ matrix\.python-version \}\} on \$\{\{ matrix\.os \}\}$/m);
+});
+
+test('Windows and macOS run 3.12-3.14 on main, nightly and on demand, never on a PR or in the queue', () => {
+    const text = readWorkflow('portability.yml');
+    const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\nconcurrency:'));
+    for (const event of ['push', 'schedule', 'workflow_dispatch']) assert.match(triggers, new RegExp(`^ {2}${event}:`, 'm'));
+    for (const event of ['pull_request', 'merge_group']) assert.doesNotMatch(triggers, new RegExp(`^ {2}${event}`, 'm'));
+    assert.match(triggers, /^ {4}branches: \[main\]$/m, 'push runs only for main');
+    const body = jobs(text).get('test');
+    assert.deepEqual(matrixList(body, 'os'), ['windows-latest', 'macos-latest']);
+    assert.deepEqual(matrixList(body, 'python-version'), ['"3.12"', '"3.13"', '"3.14"']);
+    assert.match(body, /^ {6}fail-fast: false$/m);
+    assert.match(body, /^ {8}run: python -m tests\.run_suite -v$/m);
+    assert.doesNotMatch(text, /cancel-in-progress: true|cancel-in-progress: \$/, 'no portability run is cancelled');
+});
+
+test('real ComfyUI runs only outside pull requests; the other test.yml checks run on every event', () => {
+    const found = testJobs();
+    assert.match(found.get('comfyui'), QUEUE_ONLY_IF);
+    for (const id of ['test', 'coverage', 'lint', 'js-test']) {
+        assert.doesNotMatch(found.get(id), /^ {4}if:/m, `${id} runs on every event`);
+    }
+});
+
+test('all tests needs every gating test.yml job and requires the full set outside pull requests', () => {
+    const found = testJobs();
+    const gate = found.get('all-tests');
+    assert.ok(gate, 'the aggregate gate exists');
+    assert.match(gate, /^ {4}name: all tests$/m, 'the required context is "all tests"');
+    assert.match(gate, /^ {4}if: always\(\)$/m);
+    const gating = [...found.keys()].filter(id => !['all-tests', 'perf-budget'].includes(id));
+    assert.deepEqual([...needsOf(gate)].sort(), gating.sort(), 'the gate needs every job but the non-gating perf budget');
+    assert.deepEqual([...gateVariables(gate).keys()].sort(), gating.sort(), 'every needed result reaches the gate');
+    assertGateBehaviour(gate, ['comfyui']);
+});
+
+test('the CI workflows run on pull_request, merge_group and push without path filters', () => {
+    for (const name of GATING_WORKFLOWS) {
+        const text = readWorkflow(name);
+        const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\n', text.indexOf('\non:') + 1) + 400);
+        for (const event of ['merge_group', 'pull_request', 'push']) {
+            assert.match(triggers, new RegExp(`^ {2}${event}:`, 'm'), `${name} runs on ${event}`);
+        }
+        assert.doesNotMatch(text, /^ {4}paths(-ignore)?:/m, `${name} has no path filter that would leave a required check pending`);
+    }
+    assert.doesNotMatch(jobs(readWorkflow('code-quality.yml')).get('security'), /^ {4}if:/m, 'bandit runs on every event');
+});
+
+test('every required check reports on a pull request and the gates carry the full matrix', () => {
+    const contexts = JSON.parse(readRepoFile('.github/branch-protection.json')).required_status_checks.contexts;
+    assert.deepEqual([...contexts].sort(), [
+        'all tests', 'bandit (high severity)', 'black and flake8', 'coverage gate (85%)', 'frontend modules',
+        'py3.12 on ubuntu-latest', 'real ComfyUI compatibility', 'viewerjs',
+    ].sort());
+    assert.equal(contexts.filter(context => /^py/.test(context)).length, 1,
+        'a dropped matrix leg never reports on a pull request, so it cannot be required');
+    assert.ok(!contexts.some(context => /windows|macos/.test(context)), 'Windows and macOS never gate a merge');
 });

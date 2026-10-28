@@ -112,11 +112,12 @@ test('saving gallery settings retains the remembered thumbnail dismissal', () =>
 });
 
 // #249 System S5: the stream's work is now an Activity job that outlives the page's connection, so the gallery's
-// Cancel asks the server to stop the job. The stream's first frame, `job {id, started}`, names the job; the gallery
+// Cancel asks the server to stop the job. Since #330 the startup dialog is the gallery's only thumbnail stream (System
+// › Sources & scans generates the rest). The stream's first frame, `job {id, started}`, names the job; the gallery
 // cancels by that id, only a job this stream started, and a Cancel before the id waits for it (review I1).
 const JOB = 'b'.repeat(32);
 
-function streamFixture({ modal = false, postFails = false } = {}) {
+function streamFixture({ postFails = false } = {}) {
     const posts = [];
     const warnings = [];
     const gets = [];
@@ -146,18 +147,20 @@ function streamFixture({ modal = false, postFails = false } = {}) {
                 return { success: true };
             } } });
     const emit = (type, data) => (listeners[type] || []).forEach(handler => handler({ data: JSON.stringify(data) }));
+    // The dialog's Cancel runs the handler and from then on reads as cancelled, as the startup dialog does.
+    let cancelled = false;
     const ui = { addStatusMessage() {}, progressText: element(), progressPercent: element(), progressBar: element(),
-        progressDetails: element(), progressETA: element(), isCancelled: () => false,
-        onCancel: handler => { ui.cancel = handler; } };
-    const result = modal ? manager.generateThumbnailsWithProgressInModal(ui)
-        : manager.generateThumbnailsWithProgress({ quality: 'medium' });
+        progressDetails: element(), progressETA: element(), isCancelled: () => cancelled,
+        onCancel: handler => { ui.cancel = () => { cancelled = true; handler(); }; } };
+    const result = manager.generateThumbnailsWithProgressInModal(ui);
     const outcome = result.then(value => ({ value }), error => ({ error: error.message }));
-    const cancel = () => (modal ? ui.cancel() : elements.cancelThumbnailsBtn.click());
+    const cancel = () => ui.cancel();
     const settle = () => new Promise(resolve => setImmediate(resolve));
     return { emit, source, posts, gets, warnings, outcome, cancel, settle };
 }
 
 const cancelUrl = id => `/prompt_manager/jobs/${id}/cancel`;
+const CANCELLED = 'Thumbnail generation cancelled; previews already written are kept';
 
 test('Cancel before the job id arrives cancels that job once it does', async () => {
     const f = streamFixture();
@@ -165,8 +168,8 @@ test('Cancel before the job id arrives cancels that job once it does', async () 
     await f.settle();
     assert.deepEqual(f.posts, []);
     assert.equal(f.source.closed, 0); // kept open until the stream names its job
-    assert.deepEqual(await f.outcome, { error: 'Thumbnail generation cancelled by user' });
-    f.emit('status', { phase: 'scanning', message: 'Scanning…' });
+    assert.deepEqual(await f.outcome, { error: CANCELLED });
+    // The job frame is the stream's first (the dialog closes the stream on any later frame once cancelled).
     f.emit('job', { id: JOB, started: true });
     await f.settle();
     assert.equal(JSON.stringify(f.posts), JSON.stringify([[cancelUrl(JOB), {}]]));
@@ -185,7 +188,7 @@ test('Cancel after the id cancels it at once, and a double Cancel posts once', a
     await f.settle();
     assert.equal(JSON.stringify(f.posts), JSON.stringify([[cancelUrl(JOB), {}]]));
     assert.equal(f.source.closed, 1);
-    assert.deepEqual(await f.outcome, { error: 'Thumbnail generation cancelled by user' });
+    assert.deepEqual(await f.outcome, { error: CANCELLED });
     assert.deepEqual(f.gets, []);
 });
 
@@ -216,11 +219,11 @@ test('a cancel post that fails is reported, not thrown', async () => {
     await f.settle();
     assert.equal(f.posts.length, 1);
     assert.equal(f.warnings.length, 1);
-    assert.deepEqual(await f.outcome, { error: 'Thumbnail generation cancelled by user' });
+    assert.deepEqual(await f.outcome, { error: CANCELLED });
 });
 
 test('the startup dialog cancels its own job by id too', async () => {
-    const f = streamFixture({ modal: true });
+    const f = streamFixture();
     f.cancel();
     await f.settle();
     assert.deepEqual(f.posts, []);

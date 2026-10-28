@@ -2,6 +2,8 @@
 .pm-focused [hidden] { display: none !important; }
 .pm-editor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pm-editor-toolbar > strong { margin-inline-end: auto; font-weight: 500; }
+.pm-editor-save { display: inline-flex; align-items: center; gap: 6px; color: var(--ca-muted); cursor: pointer; }
+.pm-editor-save:has(input:checked) { color: inherit; }
 .pm-focused .ca-field-label { align-self: flex-start; margin-inline: 0; text-align: start; }
 .pm-editor-workspace, .pm-editor-compose { display: contents; }
 .pm-focused .pm-editor-main { display: flex; flex: 1; min-block-size: 180px; flex-direction: column; align-items: stretch; gap: 5px; text-align: start; }
