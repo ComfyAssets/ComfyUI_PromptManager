@@ -195,6 +195,26 @@ except Exception as e:
             f"Failed to register usage hook: {e}"
         )
 
+# A cached node counts what its last execution of the same text counted (#347).
+try:
+    from .py.config import server_instance
+    from .utils.cached_runs import register_cached_runs
+
+    register_cached_runs(server_instance, _db_factory)
+except Exception as e:
+    try:
+        from .utils.logging_config import get_logger
+
+        get_logger("prompt_manager.init").error(
+            f"Failed to register cached-run counting: {e}"
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger("prompt_manager.init").error(
+            f"Failed to register cached-run counting: {e}"
+        )
+
 
 def _history_db_factory() -> "PromptDatabase":
     """Initialize history on its worker even if monitoring initialization failed."""
