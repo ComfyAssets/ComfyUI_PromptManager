@@ -262,6 +262,31 @@ watchdog dump, is a failure like any other: read the dump, find the blocking
 call, fix it. Never raise a limit or rerun to get green; a limit changes only
 with new measurements written next to it.
 
+Browser jobs (#425): GitHub keeps no log of a job killed at its limit and skips
+its upload steps, so the test step in each browser job in `viewerjs-check.yml`
+has its own `timeout-minutes` (18, below the job's 20). At the step limit
+GitHub sends SIGTERM, which would end Playwright without any report; under `CI`
+`tools/vendor/running-tests-reporter.mjs` catches the first one, prints
+`Still running when the run ended (SIGTERM): N` and one line per unfinished
+test (path relative to the suite's `rootDir`), then sends Playwright its own
+SIGINT, so the workers stop, the run ends interrupted and the blob report is
+written to `tools/vendor/test-results/blob/`. In the coverage job npm signals
+only `frontend-coverage.mjs`, which forwards SIGTERM and SIGINT to the child it
+is running (started in its own process group, so a group-wide signal still
+arrives once). Delivery is proven locally in the pinned image for a SIGTERM to
+the whole process group (`timeout -s TERM`). A SIGTERM to npm alone
+(`timeout --foreground`) reaches nothing: npm forwards it to the `sh -c` that
+runs the script, and that shell exits without passing it on. Delivery in CI,
+where the step runs through `docker exec`, is not yet observed; the next real
+step timeout will show it. That directory and the traces
+upload with `if: always()`; `npx playwright merge-reports` opens the blob.
+Each test keeps the 30 s default and there is no `globalTimeout`. Two limits
+of this: it assumes the npm cache hits (a cold cache adds up to 5 minutes to
+`npm ci`, and the job limit can then still win), and coverage shard 1 (12m53s
+measured) is the tight one in its 18-minute step. Local runs keep the `list`
+reporter only; reproduce with `CI=1 timeout -s TERM 40 npm run --prefix
+tools/vendor test:workflows -- --project=firefox`.
+
 ### After a push
 
 Follow the run for the commit you pushed, never an older one:

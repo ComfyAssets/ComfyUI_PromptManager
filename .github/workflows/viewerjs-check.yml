@@ -27,6 +27,15 @@ concurrency:
 # coverage shards 7m34s/6m04s/5m22s (tests 6m38s/4m53s/4m04s), merge 54s, firefox 7m57s/5m21s (tests
 # 7m08s/4m34s), webkit 8m16s/5m03s (tests 7m26s/3m58s); a cache miss adds up to 5m to npm ci, which
 # the 20-minute limits absorb.
+# Hangs (#425): a job killed at its limit keeps no log and skips its upload steps, so each browser
+# test step has its own timeout-minutes (18) below the job's 20. At the step limit, SIGTERM makes
+# tools/vendor/running-tests-reporter.mjs print the tests still running and hand over to Playwright's
+# interrupt, which writes the blob report; the always() uploads then run.
+# Measured on main (runs 40725289094, 40719375442, 40700439399): setup before the test step <= 52s,
+# uploads <= 35s; test steps up to 14m42s (webkit shard 1/2) and 13m05s for coverage (shard 1/3:
+# 12m53s, node units and the viewer suite before 11.8m of workflows), so coverage is the tight one
+# in its 18 minutes. This holds only when the npm cache hits: a cold cache adds up to 5m to npm ci,
+# and then the job limit can still end the job before the step limit does.
 jobs:
   frontend-coverage:
     name: frontend coverage (shard ${{ matrix.shard }}/3)
@@ -79,6 +88,7 @@ jobs:
       - if: matrix.shard == 3
         run: npm run --prefix tools/vendor test
       - name: Page workflows with coverage, shard ${{ matrix.shard }}/3
+        timeout-minutes: 18
         run: npm run --prefix tools/vendor test:coverage:shard -- ${{ matrix.shard }}/3
       - name: Upload raw coverage
         uses: actions/upload-artifact@v7
@@ -87,6 +97,7 @@ jobs:
           path: coverage/js/raw/
           if-no-files-found: error
           retention-days: 3
+      # Traces and the blob report (test-results/blob/) of a failed, timed-out or cancelled step.
       - name: Upload Chromium and touch traces
         if: always()
         uses: actions/upload-artifact@v7
@@ -211,7 +222,9 @@ jobs:
           key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
       - name: Page workflows in ${{ matrix.browser }}, shard ${{ matrix.shard }}/2
+        timeout-minutes: 18
         run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }} --shard ${{ matrix.shard }}/2
+      # Traces and the blob report (test-results/blob/) of a failed, timed-out or cancelled step.
       - name: Upload browser traces
         if: always()
         uses: actions/upload-artifact@v7
