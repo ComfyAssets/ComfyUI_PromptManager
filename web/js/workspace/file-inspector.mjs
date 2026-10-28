@@ -20,6 +20,8 @@ const REPRESENTATIONS = {
     limited: 'Record exceeds inspection limits; text is unavailable',
 };
 const TEXTLESS = new Set(['invalid', 'limited']);
+// #332: the hidden prefix that names where a category chip's value came from.
+const CATEGORY_PREFIX = {image: 'Image category: ', positive: 'Positive prompt category: ', pair: 'Recipe category: '};
 const REVEAL_URL = '/prompt_manager/images/reveal';
 // D38 Show in folder: the route's answers, in the maintainer's words.
 const REVEAL_OPENED = 'Opened the folder on this computer.';
@@ -265,7 +267,10 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         inner.append(heading, el('p', filename, 'small'));
         const badges = el('div', undefined, 'tags'), badge = evidenceBadge(record.prompts);
         if (badge) badges.append(el('span', badge, 'chip blue'));
-        if (linked && library.category) badges.append(prefixedChip(library.category_scope === 'pair' ? 'Recipe category: ' : 'Positive prompt category: ', library.category));
+        // #332: an image's own category shows for any link status; an inherited one only when linked.
+        if (library?.category && (library.category_scope === 'image' || linked)) {
+            badges.append(prefixedChip(CATEGORY_PREFIX[library.category_scope] ?? CATEGORY_PREFIX.positive, library.category));
+        }
         if (badges.childNodes.length) inner.append(badges);
         const prompts = el('div'); inner.append(prompts);
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext, title});

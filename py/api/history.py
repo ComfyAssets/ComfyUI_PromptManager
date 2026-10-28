@@ -5,6 +5,7 @@ import base64
 import binascii
 from functools import wraps
 import json
+import os
 import re
 import sqlite3
 from typing import Callable
@@ -27,6 +28,7 @@ from .history_current import (
     snapshot_current_output_scope,
 )
 from .inspection_service import CurrentFileChanged, inspect_current_file
+from .images import image_category_key
 
 try:
     from ...database.execution_history import HistoryEpochChanged
@@ -39,7 +41,11 @@ try:
         WindowPosition,
     )
     from ...utils.history_read_fence import HistoryReadFence
-    from ...utils.inspection_response import encode_history_inspection_response
+    from ...utils.inspection_response import (
+        OWN_CATEGORY_UNREAD,
+        apply_own_category,
+        encode_history_inspection_response,
+    )
 except ImportError:
     from database.execution_history import HistoryEpochChanged
     from database.history_gallery import read_history_gallery
@@ -51,7 +57,11 @@ except ImportError:
         WindowPosition,
     )
     from utils.history_read_fence import HistoryReadFence
-    from utils.inspection_response import encode_history_inspection_response
+    from utils.inspection_response import (
+        OWN_CATEGORY_UNREAD,
+        apply_own_category,
+        encode_history_inspection_response,
+    )
 
 
 _RUN_MAX_BYTES = 8 * 1024 * 1024
@@ -677,6 +687,32 @@ class HistoryRoutesMixin:
     ) -> web.Response:
         return await self._history_current(request, "inspection")
 
+    def _history_own_category(self, reference: dict, scope):
+        """The recorded output's own category (#332), inside the snapshot.
+
+        The path is the symlink-resolved output folder plus the receipt's
+        subfolder and filename, keyed by ``image_category_key`` over the
+        configured output sources as Images keys it. A temp output or a path
+        no source holds has none. A failed read is OWN_CATEGORY_UNREAD.
+        """
+        if (
+            reference.get("folder_type") != "output"
+            or scope.canonical_output is None
+            or candidate_locator(reference, scope) is None
+        ):
+            return None
+        path = os.path.join(
+            str(scope.canonical_output), reference["subfolder"], reference["filename"]
+        )
+        try:
+            key = image_category_key(self._get_all_output_dirs(), path)
+            return None if key is None else self.db.image_category(*key)
+        except Exception:
+            self.logger.warning(
+                "History image category could not be read", exc_info=True
+            )
+            return OWN_CATEGORY_UNREAD
+
     async def _history_current(
         self, request: web.Request, kind: str
     ) -> web.StreamResponse:
@@ -701,6 +737,7 @@ class HistoryRoutesMixin:
                     if scope.current_scope != current_scope:
                         raise _current_stale()
                     result = db.get_history_occurrence(run_id, node, ordinal)
+                    own = None
                     if result is not None:
                         receipt = result["receipt"]
                         path = candidate_locator(receipt["reference"], scope)
@@ -708,6 +745,10 @@ class HistoryRoutesMixin:
                             db.model.get_connection(),
                             (path,) if path is not None else (),
                         )
+                        if kind == "inspection":
+                            own = self._history_own_category(
+                                receipt["reference"], scope
+                            )
             finally:
                 db.model.close()
             if result is None:
@@ -726,9 +767,16 @@ class HistoryRoutesMixin:
                         resolved.canonical_target,
                         source_label=resolved.public["source_label"],
                         saved=saved.get("saved"),
-                        library=saved.get(
-                            "library",
-                            {"status": "unavailable" if saved_unavailable else "none"},
+                        library=apply_own_category(
+                            saved.get(
+                                "library",
+                                {
+                                    "status": (
+                                        "unavailable" if saved_unavailable else "none"
+                                    )
+                                },
+                            ),
+                            own,
                         ),
                         recorded=recorded_output_lookup(
                             db, close=True, reference=receipt["reference"]
