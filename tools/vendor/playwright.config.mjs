@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { reporters } from './test-workers.mjs';
 
 export default defineConfig({
     testDir: './tests',
@@ -8,7 +9,7 @@ export default defineConfig({
     workers: 2,
     forbidOnly: Boolean(process.env.CI),
     retries: process.env.CI ? 1 : 0,
-    reporter: 'list',
+    reporter: reporters({ name: 'viewer' }),
     use: { browserName: 'chromium', headless: true, trace: 'retain-on-failure' },
     projects: [
         { name: 'desktop', use: { viewport: { width: 1280, height: 800 } } },

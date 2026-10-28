@@ -26,7 +26,7 @@ test.beforeEach(async({page,browserName})=>{
         window.fixtureApp={registerExtension(extension){this.extension=extension;},ui:{settings:new EventTarget()},graph:{setDirtyCanvas(){}},canvas:{}};
         await import('/extensions/promptmanager/prompt_manager.js');
         class Node {
-            constructor(){this.widgets=['text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')}));this.inputs=[...['clip','prepend_text','append_text'].map(name=>({name,type:name==='clip'?'CLIP':'STRING',link:null})),...['text','category','tags','search_text'].map(name=>({name,type:'STRING',link:null,widget:{name}}))];this.properties={};this.size=[550,700];}
+            constructor(){this.widgets=[...['text','category','tags','search_text'].map(name=>({name,type:'text',value:'',options:{},inputEl:document.createElement('textarea')})),{name:'save_to_library',type:'toggle',value:true,options:{}}];this.inputs=[...['clip','prepend_text','append_text'].map(name=>({name,type:name==='clip'?'CLIP':'STRING',link:null})),...['text','category','tags','search_text'].map(name=>({name,type:'STRING',link:null,widget:{name}})),{name:'save_to_library',type:'BOOLEAN',link:null,widget:{name:'save_to_library'}}];this.properties={};this.size=[550,700];}
             findInputByType(type){const index=this.inputs.findIndex(input=>input.type===type&&input.link==null);return index<0?undefined:{index,slot:this.inputs[index]};}
             addWidget(type,name,value,callback,options){const widget={type,name,value,callback,options};this.widgets.push(widget);return widget;}
             addDOMWidget(name,type,element){const host=document.createElement('div');host.style.height='650px';host.className='fixture-dom-widget';host.append(element);document.body.append(host);return {element};}
@@ -40,6 +40,32 @@ test.beforeEach(async({page,browserName})=>{
     await expect(page.locator('.pm-focused')).toBeVisible();
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.focusedErrors).toEqual([]);});
+
+test(`${variant} Save to library switch saves its value and loads older workflows on (#90)`, async ({page}) => {
+    const toggle=page.getByRole('checkbox',{name:'Save to library',exact:true});
+    await expect(toggle).toBeChecked();
+    expect(await page.evaluate(()=>node.widgets.map(widget=>widget.name))).toEqual(['text','category','tags','search_text','prepend_text','append_text','save_to_library']);
+    // The native switch is drawn in the toolbar only: the host keeps it hidden and zero-height, like the text fallbacks
+    expect(await page.evaluate(()=>{const widget=node.widgets.find(item=>item.name==='save_to_library');return {type:widget.type,hidden:widget.hidden,size:widget.computeSize()};})).toEqual({type:'hidden',hidden:true,size:[0,-4]});
+    expect(await page.evaluate(()=>node.widgets.find(item=>item.name==='text').computeSize())).toEqual([0,-4]);
+    await toggle.uncheck();
+    await expect(page.locator('.pm-focused > .pm-editor-status[role=status]')).toHaveText('Save to library is off: runs of this node are not added to the library.');
+    const saved=await page.evaluate(()=>node.serialize());
+    expect(saved.widgets_values[6]).toBe(false);
+    await page.evaluate(saved=>node.configure(saved),saved);
+    await expect(toggle).not.toBeChecked();
+    await page.getByLabel('Main prompt',{exact:true}).fill('Typed while off');
+    await expect(page.locator('.pm-focused > .pm-editor-status[role=status]')).toHaveText('Save to library is off: runs of this node are not added to the library.');
+    // A workflow saved before the switch held the editor's own slot ('') at its index
+    await page.evaluate(()=>node.configure({widgets_values:['Old text','','','','','',''],properties:{}}));
+    await expect(toggle).toBeChecked();
+    expect(await page.evaluate(()=>node.widgets.find(widget=>widget.name==='save_to_library').value)).toBe(true);
+    await toggle.check();
+    await page.getByLabel('Main prompt',{exact:true}).fill('Typed while on');
+    await expect(page.locator('.pm-focused > .pm-editor-status[role=status]')).toHaveText('Main prompt is saved when this node runs.');
+    await page.evaluate(()=>{node.inputs.find(input=>input.name==='save_to_library').link=9;node.onConnectionsChange?.();});
+    await expect(toggle).toBeDisabled();
+});
 
 test(`${variant} library autocompletes filters and searches without changing editor metadata`, async ({page}) => {
     const requests=[];
@@ -257,7 +283,7 @@ test(`${variant} restores workflow values and disclosures and protects connected
 test(`${variant} offers text as a link socket, keeps typed text while linked and through a reload (#343)`,async({page})=>{
     const sockets=()=>page.evaluate(()=>Object.fromEntries(node.inputs.map(input=>[input.name,input.widget?.name??null])));
     // The hidden text widget no longer owns the input, so the host draws it as a socket; the other widget inputs are unchanged.
-    expect(await sockets()).toEqual({clip:null,prepend_text:null,append_text:null,text:null,category:'category',tags:'tags',search_text:'search_text'});
+    expect(await sockets()).toEqual({clip:null,prepend_text:null,append_text:null,text:null,category:'category',tags:'tags',search_text:'search_text',save_to_library:'save_to_library'});
     expect(await page.evaluate(()=>node.findInputByType('STRING').slot.name)).toBe('text');
     expect(await page.evaluate(()=>node.findInputByType('CLIP').slot.name)).toBe('clip');
     const main=page.getByRole('textbox',{name:'Main prompt',exact:true});

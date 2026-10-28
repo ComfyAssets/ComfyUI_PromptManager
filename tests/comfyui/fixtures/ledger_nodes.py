@@ -201,6 +201,39 @@ NODE_CLASS_MAPPINGS.update(
     {"PMHistoryImages": PMHistoryImages, "PMHistoryImageOutput": PMHistoryImageOutput}
 )
 
+# #347: text whose value (and cache signature) follows a value the test sets, so
+# one queued graph can serve A, then B, then A again (each cached under LRU).
+_CYCLED = {"value": "cycled"}
+
+
+class PMCycledText:
+    @classmethod
+    def INPUT_TYPES(cls) -> dict:
+        return {"required": {}}
+
+    RETURN_TYPES = ("STRING",)
+    FUNCTION = "execute"
+    CATEGORY = "testing/execution-history"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs: object) -> str:
+        return _CYCLED["value"]
+
+    def execute(self) -> tuple:
+        return (_CYCLED["value"],)
+
+
+NODE_CLASS_MAPPINGS["PMCycledText"] = PMCycledText
+
+
+@PromptServer.instance.routes.post("/pm_execution_fixture/cycled")
+async def cycled_text(request: web.Request) -> web.Response:
+    value = (await request.json())["value"]
+    if type(value) is not str:
+        raise web.HTTPBadRequest()
+    _CYCLED["value"] = value
+    return web.json_response({"value": value})
+
 
 @PromptServer.instance.routes.post("/pm_execution_fixture/metadata")
 async def metadata(request: web.Request) -> web.Response:

@@ -51,6 +51,53 @@ def _links(inputs: Any) -> List[str]:
     return [value[0] for value in inputs.values() if is_link(value)]
 
 
+def upstream_closure(
+    graph: Dict[str, Any], starts: List[str], limit: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """``{node_id: [class_type, inputs]}`` of ``starts`` and everything upstream.
+
+    None when a node or an upstream link's node is missing, or the closure
+    exceeds ``limit`` nodes.
+    """
+    closure: Dict[str, Any] = {}
+    stack = list(starts)
+    while stack:
+        current = stack.pop()
+        if current in closure:
+            continue
+        node = graph.get(current)
+        if not isinstance(node, dict):
+            return None
+        if limit is not None and len(closure) >= limit:
+            return None
+        inputs = node.get("inputs")
+        closure[current] = [node.get("class_type"), inputs]
+        stack.extend(_links(inputs))
+    return closure
+
+
+def upstream_nodes(graph: Any, starts: List[str]) -> List[str]:
+    """Ids of ``starts`` and every node upstream of them that exists in ``graph``.
+
+    Used to tell which nodes a job's outputs to execute need ("run selected
+    output" jobs leave the rest of the graph out). Missing nodes are skipped.
+    """
+    if not isinstance(graph, dict):
+        return []
+    found: Dict[str, None] = {}
+    stack = [str(node) for node in starts]
+    while stack:
+        current = stack.pop()
+        if current in found:
+            continue
+        node = graph.get(current)
+        if not isinstance(node, dict):
+            continue
+        found[current] = None
+        stack.extend(_links(node.get("inputs")))
+    return list(found)
+
+
 def prompt_node_key(graph: Any, node_id: Any) -> Optional[str]:
     """Digest of ``node_id`` and its whole upstream closure, or None.
 
@@ -62,20 +109,9 @@ def prompt_node_key(graph: Any, node_id: Any) -> Optional[str]:
     if not isinstance(graph, dict) or node_id is None:
         return None
     start = str(node_id)
-    closure: Dict[str, Any] = {}
-    stack = [start]
-    while stack:
-        current = stack.pop()
-        if current in closure:
-            continue
-        node = graph.get(current)
-        if not isinstance(node, dict):
-            return None
-        if len(closure) >= MAX_VISITS:
-            return None
-        inputs = node.get("inputs")
-        closure[current] = [node.get("class_type"), inputs]
-        stack.extend(_links(inputs))
+    closure = upstream_closure(graph, [start], MAX_VISITS)
+    if closure is None:
+        return None
     try:
         encoded = json.dumps(
             [RUN_KEY_VERSION, start, closure],

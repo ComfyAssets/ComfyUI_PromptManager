@@ -2,6 +2,7 @@
   "routes": [
     "DELETE /prompt_manager/delete/{prompt_id}",
     "DELETE /prompt_manager/image-annotations/capture/{token}",
+    "DELETE /prompt_manager/images/category",
     "DELETE /prompt_manager/images/favorite",
     "DELETE /prompt_manager/images/{image_id}",
     "DELETE /prompt_manager/pairs/{pair_id}",
@@ -26,6 +27,7 @@
     "GET /prompt_manager/history/runs/{run_id}/outputs",
     "GET /prompt_manager/image-annotations/capture/{token}",
     "GET /prompt_manager/images/all",
+    "GET /prompt_manager/images/categories",
     "GET /prompt_manager/images/inspect/{image_path}",
     "GET /prompt_manager/images/output",
     "GET /prompt_manager/images/prompt/{image_path}",
@@ -156,6 +158,7 @@
     "POST /prompt_manager/vocabulary/tags",
     "POST /prompt_manager/vocabulary/tags/{tag_id}/delete",
     "PUT /prompt_manager/image-annotations/tags",
+    "PUT /prompt_manager/images/category",
     "PUT /prompt_manager/images/favorite",
     "PUT /prompt_manager/prompts/{prompt_id}",
     "PUT /prompt_manager/prompts/{prompt_id}/rating",

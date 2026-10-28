@@ -28,6 +28,15 @@ from .generation_params import (
     extract_generation_params,
     parse_page_json,
 )
+from .prompt_graph import (
+    PROMPT_MANAGER_TYPES,
+    _positive_roots,
+    is_negative_input,
+    metadata_opted_out,
+    resolve_text,
+    save_setting,
+    side_opted_out,
+)
 from .prompt_inspector import inspection_resolution
 from .prompt_pair_resolver import _numeric, resolve_prompt_pair, sampler_less_prompt
 from .review_capture import reviewable
@@ -46,8 +55,10 @@ class Policy(Enum):
 PAIR = "pair"
 POSITIVE = "positive"
 HISTORY = "history"
+NOT_SAVED = "not_saved"
+NOT_SAVED_WIRED = "not_saved_wired"
 NEVER = "never"
-KINDS = (PAIR, POSITIVE, HISTORY, NEVER)
+KINDS = (PAIR, POSITIVE, HISTORY, NOT_SAVED, NOT_SAVED_WIRED, NEVER)
 
 _UNDECIDED = ("ambiguous", "unresolved")
 
@@ -112,10 +123,48 @@ def decide_file_prompt(
     if not metadata:
         return Decision(NEVER, try_recorded_run=True)
     canonical = _parsed(metadata)
+    if metadata_opted_out(canonical):
+        # Save to library was off for the run's prompt: nothing is stored,
+        # no recorded-run fallback, no Needs review item (#90)
+        return Decision(NOT_SAVED, canonical=canonical)
+    if metadata_opted_out(canonical, unreadable=True):
+        # The switch is wired from a node the file cannot show: only the
+        # live run (the node saw the value) can link it
+        return Decision(NOT_SAVED_WIRED, canonical=canonical)
+    switched = _switched_off_upstream(canonical.get("prompt"))
+    if switched is not None:
+        # The #90 walk follows only prompt-like inputs; any input name
+        # upstream of a positive can carry a switched-off node's text
+        return Decision(switched, canonical=canonical)
     if not canonical.get("prompt") and not canonical.get("parameters"):
         return Decision(NEVER, canonical=canonical, try_recorded_run=True)
     _with_size(canonical, file_size)
     resolution = resolve_prompt_pair(canonical)
+    switched = (
+        _side_switch(canonical.get("prompt"), resolution["positive"])
+        if resolution["state"] == "resolved"
+        else None
+    )
+    if switched is not None:
+        # The positive passes a node that is off, though the #90 graph walk
+        # did not reach it (steps 5 and 7)
+        return Decision(switched, canonical=canonical)
+    if resolution["state"] == "resolved" and side_opted_out(
+        canonical.get("prompt"), resolution["negative"]
+    ):
+        # Only the negative's node is off: the positive alone, never a pair
+        positive = resolution["positive"]
+        text = positive.get("storage_text", positive["text"]).strip()
+        return _gated(
+            Decision(
+                POSITIVE,
+                text=text,
+                canonical=canonical,
+                resolution=resolution,
+                source="opted-out-negative",
+            ),
+            None,
+        )
     if blank_positive(resolution):
         # Only prepend/append text: no stored prompt can own it (#342)
         resolution = {**resolution, "state": "unresolved"}
@@ -160,6 +209,14 @@ def _undecided_graph(found: _File) -> Decision:
         found.metadata, found.file_name, saver, name_anchor=False
     )
     text = _inspected_text(inspected.resolution)
+    switched = (
+        _side_switch(found.canonical["prompt"], inspected.resolution["positive"])
+        if text is not None
+        else None
+    )
+    if switched is not None:
+        # The inspector follows pass-throughs the #90 graph walk does not
+        return Decision(switched, canonical=found.canonical)
     if text is not None:
         source = "recorded-run" if inspected.by_record else "inspector"
         return _decision(found, POSITIVE, text, source)
@@ -169,6 +226,10 @@ def _undecided_graph(found: _File) -> Decision:
         if not inspected.malformed and inspected.resolution["state"] == "ambiguous":
             return _never(found, _unlinked(found))
     text = graph_prompt_text(found.metadata)
+    switched = _off_text(found.canonical["prompt"], text) if text else None
+    if switched is not None:
+        # The legacy answer is a switched-off node's own text (#90)
+        return Decision(switched, canonical=found.canonical)
     if text is not None and _joined_text(found.canonical["prompt"], text):
         # The legacy parser joins prepend + text + append: the text a
         # PromptManager node stores cannot be told from it (#343).
@@ -194,6 +255,119 @@ def _sampler_less(found: _File, graph: Any) -> Decision:
 
 
 _UNDECIDED_SOURCES = ("inspector", "recorded-run", "legacy-parser")
+
+
+def _switch_kind(settings: Any) -> Optional[str]:
+    """``not_saved`` when a setting is off, ``not_saved_wired`` when one is
+    unknowable (wired from a node the graph cannot read), else None."""
+    settings = list(settings)
+    if False in settings:
+        return NOT_SAVED
+    if None in settings:
+        return NOT_SAVED_WIRED
+    return None
+
+
+def _prompt_manager_ids(graph: Any) -> list:
+    if not isinstance(graph, dict):
+        return []
+    return [
+        str(node_id)
+        for node_id, node in graph.items()
+        if isinstance(node, dict) and node.get("class_type") in PROMPT_MANAGER_TYPES
+    ]
+
+
+def _side_switch(graph: Any, side: Any) -> Optional[str]:
+    """The switch outcome of the PromptManager nodes on a side's path."""
+    if not isinstance(graph, dict) or not side_opted_out(graph, side):
+        return None
+    provenance = side.get("provenance")
+    path = provenance.get("path") if isinstance(provenance, dict) else None
+    path = path if isinstance(path, list) else []
+    nodes = {str(step.get("node_id")) for step in path if isinstance(step, dict)} & set(
+        _prompt_manager_ids(graph)
+    )
+    return _switch_kind(save_setting(graph, node_id) for node_id in nodes)
+
+
+# Inputs that never carry prompt text or positive conditioning.
+_NOT_TEXT_INPUTS = frozenset(
+    {
+        "model",
+        "clip",
+        "vae",
+        "latent_image",
+        "samples",
+        "pixels",
+        "image",
+        "images",
+        "mask",
+        "noise",
+        "sigmas",
+        "sampler",
+        "control_net",
+        "upscale_model",
+    }
+)
+_MAX_SWITCH_VISITS = 5000
+
+
+def _negative_name(key: Any) -> bool:
+    """#90's negative rule, plus any name containing "negative"
+    (``negative2``, ``NegativePrompt``)."""
+    return is_negative_input(key) or "negative" in str(key).lower()
+
+
+def _switched_off_upstream(graph: Any) -> Optional[str]:
+    """The switch outcome of every PromptManager node upstream of a positive.
+
+    Follows every input except negative and non-text ones (#90's walk follows
+    only prompt-like names). A graph without a recognisable sampler checks
+    every PromptManager node, as #90 does.
+    """
+    if not isinstance(graph, dict):
+        return None
+    roots = _positive_roots(graph)
+    if not roots:
+        ids = _prompt_manager_ids(graph)
+        return _switch_kind(save_setting(graph, node_id) for node_id in ids)
+    seen, found = set(), set()
+    stack = [str(link[0]) for link in roots]
+    while stack and len(seen) < _MAX_SWITCH_VISITS:
+        node_id = stack.pop()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        node = graph.get(node_id)
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") in PROMPT_MANAGER_TYPES:
+            found.add(node_id)
+        inputs = node.get("inputs")
+        for key, value in (inputs.items() if isinstance(inputs, dict) else ()):
+            if key in _NOT_TEXT_INPUTS or _negative_name(key):
+                continue
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                if isinstance(value[0], (str, int)) and isinstance(value[1], int):
+                    stack.append(str(value[0]))
+    return _switch_kind(save_setting(graph, node_id) for node_id in found)
+
+
+def _off_text(graph: Any, text: str) -> Optional[str]:
+    """The switch outcome when ``text`` is the text (resolved, else literal)
+    of a PromptManager-family node whose Save to library is not on."""
+    wanted = text.strip()
+    matched = []
+    for node_id in _prompt_manager_ids(graph):
+        node_text = resolve_text(graph, node_id)
+        if node_text is None:
+            inputs = graph[node_id].get("inputs")
+            literal = inputs.get("text") if isinstance(inputs, dict) else None
+            node_text = literal if isinstance(literal, str) else None
+        if node_text is not None and node_text.strip() == wanted:
+            matched.append(save_setting(graph, node_id))
+    return _switch_kind(matched)
 
 
 def _joined_text(graph: Any, text: str) -> bool:
@@ -235,7 +409,7 @@ def _has_part(inputs: dict) -> bool:
     return False
 
 
-def _gated(decision: Decision, found: _File) -> Decision:
+def _gated(decision: Decision, found: Optional[_File]) -> Decision:
     """Junk text is never stored (step 13).
 
     A junk answer of the undecided-graph step keeps that step's unlinked
@@ -255,7 +429,9 @@ def _gated(decision: Decision, found: _File) -> Decision:
         review=decision.review,
         try_recorded_run=True,
         unlinked_status=(
-            _unlinked(found) if decision.source in _UNDECIDED_SOURCES else "found"
+            _unlinked(found)
+            if found is not None and decision.source in _UNDECIDED_SOURCES
+            else "found"
         ),
     )
 

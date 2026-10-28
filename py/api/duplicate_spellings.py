@@ -18,7 +18,7 @@ Blocking: each lookup stats the file's folders once (cached).
 import os
 from pathlib import Path
 
-from .images import _favorite_relative_key, _favorite_root_key
+from .images import _favorite_relative_key, _favorite_root_key, image_category_key
 
 
 def _identity(path):
@@ -78,6 +78,15 @@ class Spellings:
                 )
         return spelled
 
+    @property
+    def listed_roots(self):
+        """The listed roots (the output sources), in order."""
+        return [root for root, _identity in self._listed]
+
+    def category_key(self, path):
+        """*path*'s image category file key (#332), or None outside every source."""
+        return image_category_key(self.listed_roots, path)
+
     def favorites(self, path):
         """``{listed root: path below it (POSIX)}`` for each listed root holding it."""
         path = os.path.abspath(str(path))
@@ -125,9 +134,23 @@ def copy_move(target, kept_stat, spellings):
         "targets": targets,
         "kept_path": target["keeper_abs"],
         "favorites": favorites,
+        "categories": _category_pairs(target, spellings),
         "removed_locator": target["locator"],
         "kept_locator": target["keeper_locator"],
         "sha256": target["hash"],
         "kept_size": kept_stat.st_size,
         "kept_mtime_ns": kept_stat.st_mtime_ns,
     }
+
+
+def _category_pairs(target, spellings):
+    """``[(removed file key, kept file key)]`` for the image category (#332).
+
+    From the two absolute paths, not the favorites tuples: those follow the
+    listed root, which differs from the file key when sources nest.
+    """
+    removed = spellings.category_key(target["abs"])
+    kept = spellings.category_key(target["keeper_abs"])
+    if removed is None or kept is None:
+        return []
+    return [(removed, kept)]

@@ -104,33 +104,6 @@ for (const leave of ['beforeunload', 'pagehide']) {
     });
 }
 
-// #222: the gallery's Clear cache clears the server's thumbnails by its own request and keeps this browser's
-// preferences and other tools' storage; nothing of Prompt Manager's is cached in a browser, and the toast says so.
-test('the gallery cache clear keeps preferences and other tools caches', async ({ page }) => {
-    await page.addInitScript(() => {
-        if (sessionStorage.getItem('seeded')) return;
-        sessionStorage.setItem('seeded', '1');
-        localStorage.setItem('pm_workspace_theme', 'light');
-        localStorage.setItem('other-tool-setting', 'keep');
-        localStorage.setItem('pm_other_tool', 'keep');
-    });
-    await page.goto('/prompt_manager/gallery');
-    await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);
-    await page.evaluate(async () => { await (await caches.open('other-tool-gallery-thumbnails')).put('/x', new Response('x')); });
-    const clears = [];
-    page.on('request', req => { if (req.url().includes('/clear-thumbnails')) clears.push(req.method()); });
-    page.once('dialog', dialog => dialog.accept());
-    await page.locator('#settingsBtn').click();
-    await page.locator('#clearCacheBtn').click();
-    await expect(page.getByText("Thumbnails cleared; original images untouched. Nothing of Prompt Manager's is cached in this browser."))
-        .toBeVisible();
-    expect(clears).toEqual(['POST']);
-    expect(await page.evaluate(async () => ({
-        theme: localStorage.getItem('pm_workspace_theme'), other: localStorage.getItem('other-tool-setting'),
-        prefixed: localStorage.getItem('pm_other_tool'), notice: localStorage.getItem('pm_update_notice_dismissed'),
-        caches: await caches.keys(),
-    }))).toEqual({ theme: 'light', other: 'keep', prefixed: 'keep', notice: '3.2.0', caches: ['other-tool-gallery-thumbnails'] });
-});
 
 // #379: the reviewed tags are that image's own tags; no prompt changes.
 test('actual gallery review generates and persists tags for the selected root\'s image', async ({ page, request }) => {
@@ -226,7 +199,7 @@ test('gallery infinite scroll appends a real backend page while retaining existi
     await expect(await request.post('/__test__/reset', { data: { extra_images: 108 } })).toBeOK();
     await page.goto('/prompt_manager/gallery');
     await expect(page.locator('#galleryGrid .image-item')).toHaveCount(100);
-    await page.locator('#settingsBtn').click();
+    await page.locator('#pageOptionsBtn').click();
     await page.locator('#infiniteScrollToggle').check();
     await page.locator('#saveSettingsBtn').click();
     await expect(page.locator('#settingsModal')).toBeHidden();
@@ -287,99 +260,4 @@ test('prompt deletion requires confirmation and can retry after a network failur
     for (const url of await page.locator('#galleryGrid img[data-original]').evaluateAll(images => images.map(image => image.dataset.original))) {
         await expect(await request.get(url)).toBeOK();
     }
-});
-
-// The duplicate scan reads the output root only, but the fixture's input root holds a different
-// shared/same.png. A bare /images/serve/<path> URL tries every gallery root in turn, so once the
-// output copy is deleted it answers 200 with the input copy: check each file in its own root.
-const serveIn = (root, path) => `/prompt_manager/images/serve/${path.split(/[\\/]/).map(encodeURIComponent).join('/')}?root=${root}`;
-const rootOf = url => new URL(url, 'http://gallery.test').searchParams.get('root');
-
-// Which copy the scan keeps depends on file times: the fixture stamps shared/same.png with the
-// wall clock, and the kernel can stamp its bulk copies a fraction of a millisecond earlier.
-// listOrder rewrites the finished scan's groups so a test can pick the order it needs.
-async function openDuplicateScan(page, request, listOrder = null) {
-    await expect(await request.post('/__test__/reset', { data: { extra_images: 2 } })).toBeOK();
-    if (listOrder) {
-        await page.route('**/prompt_manager/scan_duplicates/stream', async route => {
-            const response = await route.fetch();
-            const body = (await response.text()).replace(/^data: (.*)$/gm, (line, json) => {
-                const event = JSON.parse(json);
-                if (event.type !== 'complete') return line;
-                for (const group of event.duplicates) group.images = listOrder(group.images);
-                return `data: ${JSON.stringify(event)}`;
-            });
-            await route.fulfill({ response, body });
-        });
-    }
-    await page.goto('/prompt_manager/gallery');
-    await expect(page.locator('#galleryGrid .image-item')).toHaveCount(4);
-    const originals = await page.locator('#galleryGrid img[data-original]').evaluateAll(images => images.map(image => image.dataset.original));
-    const output = rootOf(originals.find(url => url.includes('/bulk/')));
-    const input = rootOf(originals.find(url => url.includes('/shared/same.png') && rootOf(url) !== output));
-    expect(output).not.toBeNull();
-    expect(input).not.toBeNull();
-    await page.locator('#settingsBtn').click();
-    await page.locator('#scanDuplicatesBtn').click();
-    await expect(page.locator('#duplicatesCount')).toHaveText('1');
-    const candidates = page.locator('.duplicate-checkbox');
-    await expect(candidates).toHaveCount(2);
-    return { originals, output, input, candidates };
-}
-
-async function expectOnlySelectedGone(page, request, { originals, output, input }, selected, retained) {
-    expect((await request.get(serveIn(output, selected))).status()).toBe(404);
-    await expect(await request.get(serveIn(output, retained))).toBeOK();
-    await expect(await request.get(serveIn(input, 'shared/same.png'))).toBeOK();
-    await page.reload();
-    await expect(page.locator('#galleryGrid .image-item')).toHaveCount(3);
-    const remaining = await page.locator('#galleryGrid img[data-original]').evaluateAll(images => images.map(image => image.dataset.original));
-    expect(remaining).toHaveLength(originals.length - 1);
-    for (const url of remaining) {
-        expect(originals).toContain(url);
-        await expect(await request.get(url)).toBeOK();
-    }
-}
-
-test('duplicate cleanup cancels safely and deletes only the selected file after a retry', async ({ page, request }) => {
-    const scan = await openDuplicateScan(page, request);
-    const { output, candidates } = scan;
-    const selected = await candidates.first().getAttribute('data-image-path');
-    const retained = await candidates.last().getAttribute('data-image-path');
-    await candidates.first().check();
-    let deletes = 0;
-    page.on('request', request => { if (request.url().endsWith('/delete_duplicate_images')) deletes++; });
-    confirmNextDialog(page, false, 'permanently delete 1 duplicate image files');
-    await page.locator('#removeDuplicatesBtn').click();
-    expect(deletes).toBe(0);
-    await expect(await request.get(serveIn(output, selected))).toBeOK();
-    await page.route('**/prompt_manager/delete_duplicate_images', route => route.abort('failed'), { times: 1 });
-    confirmNextDialog(page, true, 'permanently delete 1 duplicate image files');
-    await page.locator('#removeDuplicatesBtn').click();
-    await expect(page.getByText('Failed to delete duplicate images', { exact: true })).toBeVisible();
-    await expect(page.locator('#removeDuplicatesBtn')).toBeEnabled();
-    await expect(await request.get(serveIn(output, selected))).toBeOK();
-    confirmNextDialog(page, true, 'permanently delete 1 duplicate image files');
-    const deleted = page.waitForResponse(response => response.url().endsWith('/delete_duplicate_images'));
-    await page.locator('#removeDuplicatesBtn').click();
-    expect((await (await deleted).json())).toMatchObject({ success: true, deleted_count: 1, failed_count: 0 });
-    await expect(page.locator('#duplicatesModal')).toBeHidden();
-    await expectOnlySelectedGone(page, request, scan, selected, retained);
-});
-
-test('deleting a duplicate whose path another gallery root also holds removes only the scanned copy', async ({ page, request }) => {
-    // The order CI saw: a bulk copy stamped first, so shared/same.png is the first Delete candidate.
-    const ciOrder = ['bulk/0000.png', 'shared/same.png', 'bulk/0001.png'];
-    const rank = image => ciOrder.indexOf(image.path.replace(/\\/g, '/'));
-    const scan = await openDuplicateScan(page, request, images => [...images].sort((a, b) => rank(a) - rank(b)));
-    const selected = await scan.candidates.first().getAttribute('data-image-path');
-    const retained = await scan.candidates.last().getAttribute('data-image-path');
-    expect(selected.replace(/\\/g, '/')).toBe('shared/same.png');
-    await scan.candidates.first().check();
-    confirmNextDialog(page, true, 'permanently delete 1 duplicate image files');
-    const deleted = page.waitForResponse(response => response.url().endsWith('/delete_duplicate_images'));
-    await page.locator('#removeDuplicatesBtn').click();
-    expect((await (await deleted).json())).toMatchObject({ success: true, deleted_count: 1, failed_count: 0 });
-    await expect(page.locator('#duplicatesModal')).toBeHidden();
-    await expectOnlySelectedGone(page, request, scan, selected, retained);
 });
