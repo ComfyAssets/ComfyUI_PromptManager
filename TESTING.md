@@ -1967,14 +1967,17 @@ Recorded deviations:
   “X”." plus " N was/were already in it." and " N could not be found.", "All selected
   images were already in “X”.", "None of the selected images could be found. Refresh
   the images and try again." (404 `files-not-found`), "The sources changed. Refresh
-  the images and try again." (409, then the listing reloads), "That collection no
-  longer exists." and "The images could not be added. Try again.". The selection stays
-  and the listing is not reloaded. **Remove from collection** (beyond the concept)
-  follows Add while a collection filter is active (a collection page or a saved view
-  on one), with no confirmation: "Removed N image(s) from “X”.", then the loaded range
-  is read again in place, keeping the checked files still listed; "The images could
-  not be removed. Try again." keeps everything. A second press while it runs is
-  ignored.
+  the images and try again." (409; the sources and the listing are read again, which
+  clears the selection), "That collection no longer exists." and "The images could not
+  be added. Try again.". Otherwise the selection stays and the listing is not reloaded.
+  **Remove from collection** (beyond the concept) follows Add while a collection filter
+  is active (a collection page or a saved view on one), with no confirmation: "Removed
+  N image(s) from “X”.", then the loaded range is read again in place, keeping the
+  checked files still listed. "That collection no longer exists." (404, a collection
+  deleted meanwhile) reads the listing again, which then shows the deleted-collection
+  page; "The sources changed. Refresh the images and try again." (409) reads the
+  sources and listing again and clears the selection; "The images could not be removed.
+  Try again." keeps everything. A second press while it runs is ignored.
 - **D139** (beyond the concept): the shared inspector's footer ends with
   **Collections…** (the folder icon) after Prompt history, for a listed file only
   (`rooted-file` with its scope), in the Images side panel and the viewer's details;
@@ -1984,13 +1987,22 @@ Recorded deviations:
   concept checkbox row (`label.tag-suggestion`) per collection in sidebar order,
   checked where the file is a member ("No collections yet. Name one below." without
   any), a "New collection" field (at most 100 characters; a name matching an existing
-  collection adds to it), then Cancel and Save. Save sends one request per change: the
-  new name, each newly checked collection, each unchecked one; nothing changed sends
-  nothing and closes. All sent: the dialog closes with "Collections updated.". A
-  failure keeps it open with "The collections could not be updated. Try again." and
-  the membership read again; × and Escape wait while it saves. On a collection page a
-  change to the open collection reloads the listing at once from the side panel, and
-  from the viewer only when the viewer closes, so the viewer keeps its place. The
+  collection adds to it), then Cancel and Save. Focus starts on the field and moves to
+  the first checkbox once they are listed. A typed name equal to a listed collection
+  ignoring case is that collection's checkbox, checked (never an add then a remove); a
+  name that cannot be a collection name is refused on the field with "The collections
+  could not be updated. Try again.", nothing is sent and the checkbox edits stay. Save
+  sends one request per change: the new name, each newly checked collection, each
+  unchecked one; nothing changed sends nothing and closes. All sent: the dialog closes
+  with "Collections updated.". A failure keeps it open with "The collections could not
+  be updated. Try again." and the membership read again, Save waiting until that read
+  lands; × and Escape wait while it saves. The page hears of the changes that went
+  through only when the dialog closes (a failure included), so a reload cannot remove
+  the dialog before its message is read. On a collection page a change to the open
+  collection then reloads the listing at once from the side panel, and from the viewer
+  only when the viewer closes, so the viewer keeps its place (no listing request while
+  it is open). Closing returns focus to the trigger, or, when a re-render replaced it,
+  to the inspector's current Collections… button or its heading. The
   inspector comparison draws the button into the concept's panel footer and full
   details after Prompt history (a copy of its Prompt history button with the concept's
   folder icon), so the browser lays out what follows.

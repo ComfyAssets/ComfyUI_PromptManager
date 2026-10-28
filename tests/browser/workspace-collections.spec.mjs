@@ -744,8 +744,14 @@ test('Collections… in the viewer keeps the viewer until it closes (CUJ 7)', as
     await page.getByRole('button', { name: 'Open landscape_01.png', exact: true }).click();
     const viewer = page.locator('#viewer-dialog[open]');
     await expect(viewer.locator('#viewer-title')).toContainText('landscape_01.png');
+    // Review L7: no listing request while the viewer is open.
+    let listings = 0;
+    const countListing = request => { if (new URL(request.url()).pathname === '/prompt_manager/images/output') listings++; };
+    page.on('request', countListing);
     await viewer.locator('#viewer-details').getByRole('button', { name: 'Collections…', exact: true }).click();
     await expect(choice(page, 'Landscapes')).toBeChecked();
+    // Review L6: focus moves to the first checkbox once listed.
+    await expect(choice(page, 'Experiments')).toBeFocused();
     await choice(page, 'Landscapes').uncheck();
     await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
     await expect(toast(page)).toHaveText('Collections updated.');
@@ -754,6 +760,8 @@ test('Collections… in the viewer keeps the viewer until it closes (CUJ 7)', as
     await expect(viewer.locator('#viewer-title')).toContainText('landscape_01.png');
     await expect(row(page, 'Landscapes').locator('.nav-count')).toHaveText('11');
     await expect(imageCards(page)).toHaveCount(12);
+    expect(listings, 'no listing request while the viewer is open').toBe(0);
+    page.off('request', countListing);
     await viewer.getByRole('button', { name: 'Close image viewer', exact: true }).click();
     await expect(viewer).toHaveCount(0);
     await expect(imageCards(page)).toHaveCount(11);
@@ -812,3 +820,37 @@ for (const theme of ['dark', 'light']) {
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     });
 }
+
+// Review M2: on a collection page, a Save that removed the file from the open collection and then failed keeps its
+// dialog and message; the listing is read again only once the dialog closes.
+test('a partly failed Save from the side panel keeps its dialog until it closes', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const { Experiments, Landscapes } = manifest.collections;
+    // experiment_01 is in both collections; Experiments sorts first, so its remove is sent before Landscapes'.
+    const [image] = (await (await request.get('/prompt_manager/images/output?mode=workspace&q=experiment_01')).json()).images;
+    const item = { root_index: image.root_index, root_scope: image.root_scope, path: image.path };
+    await expect(await request.post(`${API}/items`, { data: { collection_id: Landscapes.id, items: [item] } })).toBeOK();
+    await page.route(`**${API}/items`, route => {
+        const body = route.request().postDataJSON();
+        return route.request().method() === 'DELETE' && body.collection_id === Landscapes.id
+            ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"x"}' })
+            : route.fallback();
+    });
+    await page.goto(`${workspace}#/collection/${Experiments.id}`);
+    await expect(imageCards(page)).toHaveCount(8);
+    await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('experiment_01.png');
+    await panel(page).getByRole('button', { name: 'Collections…', exact: true }).click();
+    await expect(choice(page, 'Landscapes')).toBeChecked();
+    await choice(page, 'Experiments').uncheck();
+    await choice(page, 'Landscapes').uncheck();
+    await collectionsDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(collectionsDialog(page).getByRole('alert')).toHaveText('The collections could not be updated. Try again.');
+    // The remove from Experiments went through; the dialog shows it and the page has not reloaded under it.
+    await expect(choice(page, 'Experiments')).not.toBeChecked();
+    await expect(choice(page, 'Landscapes')).toBeChecked();
+    await expect(imageCards(page)).toHaveCount(8);
+    await collectionsDialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(collectionsDialog(page)).toHaveCount(0);
+    await expect(imageCards(page)).toHaveCount(7);
+    await expect(card(page, 'collections/experiment_01.png')).toHaveCount(0);
+});

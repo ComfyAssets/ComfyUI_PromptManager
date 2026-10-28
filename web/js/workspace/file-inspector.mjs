@@ -309,9 +309,12 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         const member = collections ? revealTarget(record.identity) : null;
         if (member) {
             const button = createButton('');
+            button.dataset.collections = '';
             button.append(createWorkspaceIcon('folder'), ' Collections…');
+            // A re-render replaces the button: closing focuses the current one, else the inspector's heading.
+            const fallback = () => container.querySelector('button[data-collections]') ?? container.querySelector('h2');
             contentScope.listen(button, 'click', () => openCollectionsDialog({scope, collections, target:member, trigger:button,
-                onChanged:onCollectionsChanged}));
+                onChanged:onCollectionsChanged, focusFallback:fallback}));
             footer.append(button);
         }
         if (!full && footer.childNodes.length) container.append(footer);

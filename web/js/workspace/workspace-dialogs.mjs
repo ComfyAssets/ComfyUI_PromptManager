@@ -376,13 +376,13 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
  * another dialog replaces its body, so the page can dispose what it mounted there. While `canClose()` answers false,
  * × and Escape leave the dialog open (the page, a route change or a replacing dialog still close it).
  */
-export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null, canClose = null }) {
+export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null, canClose = null, focusTarget = null }) {
     requireScope(scope);
     if (typeof title !== 'string' || !title) throw new TypeError('The dialog needs a title');
     if (!Array.isArray(nodes) || nodes.some(node => !node || typeof node !== 'object')) throw new TypeError('The dialog needs its nodes');
     if (onClose !== null && typeof onClose !== 'function') throw new TypeError('The dialog onClose must be a function');
     if (canClose !== null && typeof canClose !== 'function') throw new TypeError('The dialog canClose must be a function');
-    show(title, nodes, { scope, trigger, onClose, canClose });
+    show(title, nodes, { scope, trigger, onClose, canClose, focusTarget });
 }
 
 export const SCAN_REVIEW_SENTENCE = 'Enrich positive / negative associations, reuse canonical text and report unchanged files. ' +
