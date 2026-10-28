@@ -181,10 +181,12 @@ check, so run it before pushing a new or deleted frontend file instead of
 waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job that passes only when every frontend job succeeds: the three
-`frontend coverage (shard N/3)` jobs, `frontend coverage (merge)`, and the four
-`page workflows (firefox|webkit, shard N/2)` jobs. A failed, cancelled or skipped
-job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+aggregate job. It requires the three `frontend coverage (shard N/3)` jobs and
+`frontend coverage (merge)` to succeed on every event. The four
+`page workflows (firefox|webkit, shard N/2)` jobs run only in the merge queue,
+on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
+`viewerjs` requires them to be skipped on a pull request and to succeed
+everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
 runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/3`
 (shard 1 also runs the node units and the viewer suite, shard 3 the vendor pins
 and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
@@ -519,28 +521,60 @@ Before changing paths, SQLite, streams, restore or cleanup:
   open with `FirstWriterHold`) and give peers that must all succeed the
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
-- Run native Windows CI early for these changes and include a Windows impact and
-  evidence note in the PR. All twelve OS/Python combinations and every applicable
+- Run native Windows CI early for these changes: pull requests run only Linux, so
+  start the full matrix on the branch with `gh workflow run test.yml --ref <branch>`.
+  Include a Windows impact and evidence note in the PR. All nine OS/Python
+  combinations (they run again in the merge queue) and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
+## Pull requests and the merge queue
+
+Each PR runs the full matrix once, in the merge queue (#420). The event decides
+what runs:
+
+| Job | `pull_request` | `merge_group`, push to `main`, `workflow_dispatch` |
+| --- | --- | --- |
+| `py3.12 on ubuntu-latest` | runs | runs |
+| other Python/OS legs (3.12-3.14 x Linux/Windows/macOS) | not created | run |
+| `real ComfyUI compatibility` | skipped | runs |
+| `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
+| `frontend coverage (shard N/3)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 3) | run | run |
+| `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
+| `all tests`, `viewerjs` (gates) | run | run |
+| `perf budget` | skipped | push and dispatch only (not in the queue) |
+
+GitHub has one required set for pull requests and the queue. A job skipped by
+its `if:` reports Success. A dropped matrix leg never reports, so it would stay
+pending. That is why `all tests` (in `test.yml`) and `viewerjs` carry the
+guarantee:
+- On a pull request they require the subset to succeed and the queue-only jobs
+  to be skipped.
+- On every other event they require every job to succeed.
+
+So a merge group cannot turn green unless all nine Python/OS legs, real ComfyUI
+and the four browser shards passed. `tests/vendor/ci-workflow.test.mjs` pins the
+event split and runs both gate scripts for each event.
+
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks: all twelve Python/OS
-combinations, Python coverage, formatting, frontend modules, `viewerjs`, `real ComfyUI compatibility`,
-and `bandit (high severity)`.
-The branch must be current with main, and administrators follow the same checks.
+`.github/branch-protection.json` records the required checks:
+`py3.12 on ubuntu-latest`, `coverage gate (85%)`, `black and flake8`,
+`frontend modules`, `all tests`, `viewerjs`, `real ComfyUI compatibility` and
+`bandit (high severity)`. Each one reports on a pull request.
+The live set is in the `main` ruleset (25960526), together with the merge queue.
 It does not require an additional human approval.
 
 A repository administrator applies the configuration after the new workflow is
 passing, then verifies it:
 
 ```sh
-gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection \
-  --input .github/branch-protection.json
-gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required_status_checks
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 \
+  | jq '.rules[] | select(.type == "required_status_checks") | [.parameters.required_status_checks[].context]'
 ```
 
+To change the set, PUT the ruleset's `rules` back with the edited
+`required_status_checks` (`gh api --method PUT .../rulesets/25960526 --input <file>`).
 Update the manifest whenever required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
 
