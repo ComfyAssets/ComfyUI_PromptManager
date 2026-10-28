@@ -483,13 +483,42 @@ class BackupRestoreRoutesMixin:
             self.logger.info(f"Removed {len(removed)} old safety backups")
 
     async def _publish(self, model, staged):
-        """Publish ``staged``; on a page-copy failure prune and re-raise."""
+        """Publish ``staged``; on a page-copy failure prune and re-raise.
+
+        A cancel (server stop) waits for the publishing thread (#360): the
+        caller's cleanup and its registry admission must outlive it. When the
+        copy then succeeded the library was replaced, so it is adopted
+        (``_after_publish``) before the cancel goes on.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, model.publish_staged, staged)
+        cancelled = await _outlive_cancel(future)
         try:
-            return await self._run_in_executor(model.publish_staged, staged)
+            backup_path = future.result()
         except sqlite3.OperationalError as exc:
             if getattr(exc, "_prompt_manager_restore_backup_created", False) is True:
                 await self._prune_after(model.db_path, failed=True)
             raise
+        if cancelled:
+            self.logger.info("The restore finished while the server was stopping")
+            await self._after_publish(model.db_path)
+            raise asyncio.CancelledError
+        return backup_path
+
+    async def _stage_to_end(self, model, temp_path):
+        """Stage ``temp_path``; a cancel waits for the worker (#360).
+
+        The upload stays until the staging thread is done with it, and a
+        stage it finished after the cancel is removed before the cancel goes
+        on.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, model.stage_restore, temp_path)
+        if await _outlive_cancel(future):
+            if not future.cancelled() and future.exception() is None:
+                await self._discard_held([_Orphan(future.result())])
+            raise asyncio.CancelledError
+        return future.result()
 
     async def _after_publish(self, db_path):
         """Everything after the copy replaced the library: best effort, logged.
@@ -609,7 +638,7 @@ class BackupRestoreRoutesMixin:
                     {"success": False, "error": REQUESTS_BUSY}, status=409
                 )
             model = self.db.model
-            staged = await self._run_in_executor(model.stage_restore, temp_path)
+            staged = await self._stage_to_end(model, temp_path)
             try:
                 backup_path = await self._publish(model, staged)
             finally:
@@ -925,6 +954,29 @@ class BackupRestoreRoutesMixin:
         line = restored_line(staged.summary)
         job.log_line(line)
         job.update(progress=100, status_line=line)
+
+
+async def _outlive_cancel(future):
+    """Await an executor ``future`` to its end, even through cancels (#360).
+
+    A cancelled task cannot stop the worker thread, so the files it uses and
+    the registry admission it runs under must outlive it: the cancel is held
+    until the worker returned. Returns whether the task was cancelled
+    meanwhile; the caller reads the outcome from ``future`` and re-raises
+    ``CancelledError``. A future cancelled itself (an executor shut down) is
+    not a cancel of the task: ``future.result()`` raises it. Never catches
+    ``GeneratorExit``: a closed loop still closes the coroutine.
+    """
+    cancelled = False
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if not future.cancelled():
+                cancelled = True
+        except Exception:
+            pass  # the caller reads it from the future
+    return cancelled
 
 
 class _Orphan:
