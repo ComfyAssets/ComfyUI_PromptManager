@@ -311,3 +311,29 @@ test('Needs review is a native SAVED VIEWS route titled Review, with its own cou
     assert.deepEqual(calls, ['/prompt_manager/review/items?limit=1']);
     assert.deepEqual([...counts], [['review', 4]]);
 });
+
+// Collections (#331 D137): `#/collection/<id>` opens Images filtered to one collection; its breadcrumb is "Collection".
+test('collection links resolve to their id, title Collection, and re-render only when the id changes', async () => {
+    const {resolveRoute,mountRouter,isHandoff,routeTitle,routes,COLLECTION_ROUTE}=await source;
+    assert.deepEqual(COLLECTION_ROUTE,{id:'collection',label:'Collection'});
+    assert.ok(Object.isFrozen(COLLECTION_ROUTE));
+    const route=resolveRoute('#/collection/7');
+    assert.deepEqual([route.id,route.collectionId,route.hash,routeTitle(route)],['collection',7,'#/collection/7','Collection']);
+    assert.equal(isHandoff(route),false);
+    assert.equal(resolveRoute('#/collection/999999999').collectionId,999999999);
+    assert.equal(routes.some(item=>item.id==='collection'),false,'a collection is not an Overview card or a WORKSPACE link');
+    // The listing's and routes' id rule: 1 to 9 digits without a leading zero.
+    for(const hash of ['#/collection','#/collection/','#/collection/0','#/collection/07','#/collection/-2','#/collection/1.5',
+        '#/collection/1234567890','#/collection/3/x','#/collection/abc','#/collections/3']) {
+        assert.equal(resolveRoute(hash).id,'images',hash);
+    }
+    const win=new EventTarget();win.location={hash:'#/collection/3'};
+    win.history={state:null,replaceState(state,unused,hash){win.location.hash=hash;}};
+    const seen=[];const dispose=mountRouter(win,next=>seen.push([next.id,next.collectionId]));
+    win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/collection/4';win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/saved/4';win.dispatchEvent(new Event('hashchange'));
+    win.location.hash='#/collection/4';win.dispatchEvent(new Event('hashchange'));
+    assert.deepEqual(seen,[['collection',3],['collection',4],['saved',undefined],['collection',4]]);
+    dispose();
+});
