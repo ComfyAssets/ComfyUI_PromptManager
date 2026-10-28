@@ -13,11 +13,13 @@ held.
 import asyncio
 import os
 import shutil
+import sqlite3
 import threading
 from unittest.mock import patch
 
 from database import restore_stage
 from database.models import PromptModel
+from py.api import admin as admin_mod
 from py.api.jobs import RESTORE_JOB_KIND
 
 try:
@@ -153,6 +155,57 @@ class TestLegacyRestoreAtShutdown(ShutdownRestoreCase):
         self.assertEqual(self.backups(), [])
         self.assertEqual(self.stages(), [])  # the finished stage is removed
         self.assertEqual(self.uploads(), [])
+        self.assertIsNone(self.api._jobs.active(RESTORE_JOB_KIND))
+
+    async def test_a_publish_that_fails_after_the_cancel_still_cancels(self):
+        self.save("old")
+
+        def refuse(model, staged):
+            raise sqlite3.OperationalError("refused")
+
+        gate = self.gate(refuse)
+        with (
+            self.fake_upload(["restored"]),
+            patch.object(PromptModel, "publish_staged", gate.method()),
+        ):
+            task = asyncio.ensure_future(self.api.restore_database(None))
+            await self.wait_thread(gate.entered)
+            task.cancel()
+            await self.assert_still_pending(task)
+            gate.release.set()
+            # Not answered as a 500: the cancel goes on.
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, WAIT)
+        self.assertEqual(_texts(self.db_path), ["old"])
+        self.assertEqual(self.stages(), [])
+        self.assertEqual(self.uploads(), [])
+        self.assertIsNone(self.api._jobs.active(RESTORE_JOB_KIND))
+
+    async def test_a_second_cancel_still_adopts_the_restored_library(self):
+        self.save("old")
+        old_db = self.api.db
+        publish = self.gate(PromptModel.publish_staged)
+        prune = self.gate(admin_mod._prune_safety_backups)
+        with (
+            self.fake_upload(["restored"]),
+            patch.object(PromptModel, "publish_staged", publish.method()),
+            patch.object(admin_mod, "_prune_safety_backups", prune),
+        ):
+            task = asyncio.ensure_future(self.api.restore_database(None))
+            await self.wait_thread(publish.entered)
+            task.cancel()
+            await self.assert_still_pending(task)
+            publish.release.set()
+            await self.wait_thread(prune.entered)  # adopting the library
+            task.cancel()  # the loop's own shutdown cancels again
+            await self.assert_still_pending(task)
+            prune.release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, WAIT)
+        self.assertEqual(_texts(self.db_path), ["restored"])
+        self.assertIsNot(self.api.db, old_db)
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(self.stages(), [])
         self.assertIsNone(self.api._jobs.active(RESTORE_JOB_KIND))
 
 

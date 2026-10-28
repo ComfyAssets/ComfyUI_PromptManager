@@ -4,9 +4,10 @@ When the interpreter exits, ``threading._shutdown`` first shuts every
 ``ThreadPoolExecutor`` (``submit`` then raises "cannot schedule new futures
 after interpreter shutdown") and joins the non-daemon threads; only then do
 the ``atexit`` callbacks (the package teardown) run. Our daemon threads keep
-working meanwhile, and a late ``Thread.start`` can be refused with "can't
-create new thread at interpreter shutdown". Such a refusal is logged once at
-DEBUG, with no traceback, and leaves nothing pending.
+working meanwhile. ``Thread.start`` is refused ("can't create new thread at
+interpreter shutdown") only later, once the interpreter is finalizing; the
+unit tests cover that case, the child process the pool case. Such a refusal
+is logged once at DEBUG, with no traceback, and leaves nothing pending.
 
 ``threading.Thread`` is replaced only in the module under test (a copy of
 the ``threading`` namespace), never process-wide. The child-process test runs
@@ -64,6 +65,7 @@ class _Capture(logging.Handler):
 
 
 def _capture(testcase, name):
+    parallel._noted.clear()  # "once" is per process: start each test afresh
     logger = logging.getLogger(name)
     handler = _Capture()
     previous = logger.level
@@ -76,6 +78,15 @@ def _capture(testcase, name):
 
     testcase.addCleanup(restore)
     return handler.records
+
+
+def _assert_one_debug_line(testcase, records):
+    """Exactly one refusal line, at DEBUG and without a traceback."""
+    refusals = [r for r in records if "interpreter is exiting" in r.getMessage()]
+    testcase.assertEqual(len(refusals), 1, [r.getMessage() for r in records])
+    testcase.assertEqual(refusals[0].levelno, logging.DEBUG)
+    testcase.assertEqual([r for r in records if r.levelno > logging.DEBUG], [])
+    testcase.assertTrue(all(r.exc_info is None for r in records))
 
 
 class TestScheduleRefusedAtShutdown(unittest.TestCase):
@@ -91,8 +102,7 @@ class TestScheduleRefusedAtShutdown(unittest.TestCase):
             self.assertFalse(self.handler.schedule("/out/a.png"))
             self.assertFalse(self.handler.schedule("/out/b.png"))
         self.assertEqual(self.handler.pending_count(), 0)
-        self.assertEqual([r for r in records if r.levelno > logging.DEBUG], [])
-        self.assertTrue(all(r.exc_info is None for r in records))
+        _assert_one_debug_line(self, records)
 
     def test_another_start_failure_still_raises_and_leaves_nothing_pending(self):
         class Failing(threading.Thread):
@@ -132,8 +142,7 @@ class TestPreviewQueueRefusedAtShutdown(unittest.TestCase):
         self.assertEqual(len(thumbnailer._queue), 0)
         self.assertEqual(thumbnailer._queued, set())
         self.assertTrue(thumbnailer.wait_idle(0))
-        self.assertEqual([r for r in records if r.levelno > logging.DEBUG], [])
-        self.assertTrue(all(r.exc_info is None for r in records))
+        _assert_one_debug_line(self, records)
 
 
 class TestMapParallelRefusedAtShutdown(unittest.TestCase):
@@ -143,8 +152,7 @@ class TestMapParallelRefusedAtShutdown(unittest.TestCase):
             self.assertEqual(
                 parallel.map_parallel(lambda n: n * n, [1, 2, 3], 4), [1, 4, 9]
             )
-        self.assertEqual([r for r in records if r.levelno > logging.DEBUG], [])
-        self.assertTrue(all(r.exc_info is None for r in records))
+        _assert_one_debug_line(self, records)
 
     def test_another_pool_error_still_raises(self):
         class Broken(ThreadPoolExecutor):

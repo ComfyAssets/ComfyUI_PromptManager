@@ -7,12 +7,14 @@ the GIL while decoding, resizing and encoding, so threads still scale close
 to linearly for both jobs.
 
 Interpreter exit (#375): ``threading._shutdown`` shuts every thread pool
-before it joins the non-daemon threads and long before the package teardown
-runs, while our daemon threads keep working. A pool then refuses new work
-("cannot schedule new futures after interpreter shutdown") and a late
-``Thread.start`` can be refused ("can't create new thread at interpreter
-shutdown"). ``refused_at_shutdown`` recognises both; ``note_refusal`` logs
-one DEBUG line per place, with no traceback.
+(``submit`` then raises "cannot schedule new futures after interpreter
+shutdown") before it joins the non-daemon threads and long before the package
+teardown runs, while our daemon threads keep working. Measured on 3.12 and
+3.14, ``Thread.start`` still succeeds in that window; it is refused ("can't
+create new thread at interpreter shutdown") only once the interpreter is
+marked finalizing, after the ``atexit`` callbacks. ``refused_at_shutdown``
+recognises both; ``note_refusal`` logs one DEBUG line per place, with no
+traceback.
 """
 
 import logging
