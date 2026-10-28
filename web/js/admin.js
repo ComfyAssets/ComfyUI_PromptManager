@@ -973,8 +973,6 @@
                 this.showModal("settingsModal");
             }
 
-            // ── LoraManager integration ──────────────────────────────
-
             /** Saves Page options: only `infinite_scroll`, so a stale page never overwrites what System saved (#330 S13-9). */
             async saveSettings() {
                 const infiniteScroll = document.getElementById("infiniteScrollDefault").checked;

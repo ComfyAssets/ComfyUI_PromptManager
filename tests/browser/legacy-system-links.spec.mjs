@@ -188,6 +188,8 @@ test('Page options keeps the page-only settings admin', async ({ page, request }
     const after = (await (await request.get('/prompt_manager/settings')).json()).settings;
     expect(after).toEqual({ ...before, infinite_scroll: true });
     await page.reload();
+    // The dialog shows the saved default once the page has read it (the header follows it first).
+    await expect(page.locator('#infiniteScrollSession')).toBeChecked();
     await page.locator('#pageOptionsBtn').click();
     await expect(page.locator('#infiniteScrollDefault')).toBeChecked();
 });
