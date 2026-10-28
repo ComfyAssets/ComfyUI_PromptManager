@@ -27,6 +27,7 @@ from .health import HealthOperations, iter_consistency_issues
 from .duplicate_copies import DuplicateCopyOperations
 from .workflow_storage import WorkflowStorageOperations
 from .category_import import CategoryImportOperations, EmptyReplacement  # noqa: F401
+from .image_categories import ImageCategoryOperations
 from .workflow_documents import (
     DocumentReader,
     documents_of_rows,
@@ -368,6 +369,7 @@ class PromptDatabase(
     DuplicateCopyOperations,
     WorkflowStorageOperations,
     CategoryImportOperations,
+    ImageCategoryOperations,
 ):
     """Database operations class for managing prompts."""
 

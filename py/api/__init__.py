@@ -72,6 +72,7 @@ from .diagnostics_report import DiagnosticsReportMixin
 from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
 from .lora_import_routes import LoraImportRoutesMixin
+from .image_categories import ImageCategoryRoutesMixin
 
 try:
     from ...database.operations import PromptDatabase
@@ -336,6 +337,7 @@ class PromptManagerAPI(
     AutotagRoutesMixin,
     LoraIntegrationMixin,
     LoraImportRoutesMixin,
+    ImageCategoryRoutesMixin,
 ):
     """REST API handler for PromptManager operations and web interface.
 
@@ -700,6 +702,7 @@ class PromptManagerAPI(
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)
         self._register_lora_import_routes(routes)
+        self._register_image_category_routes(routes)
 
         # Register gzip compression middleware (once)
         global _gzip_registered

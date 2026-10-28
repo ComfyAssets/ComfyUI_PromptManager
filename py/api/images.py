@@ -802,6 +802,53 @@ def _favorite_root_key(root) -> str:
     return _favorite_relative_key(os.path.realpath(str(root)))
 
 
+def _source_depth(source: str) -> int:
+    return len([part for part in re.split(r"[\\/]+", source) if part])
+
+
+def deepest_source(sources, absolute_path):
+    """``(source, POSIX path below it)`` of the deepest source holding the path.
+
+    A source matches by its real path or by its spelling as configured (a
+    detected output folder can be a symlink), and the deepest real path wins.
+    The path is compared lexically after ``normpath`` and never resolved, so a
+    symlinked subfolder keeps its listed spelling. Containment folds case
+    where the OS does. *source* is the real path. None when no source
+    contains the path.
+    """
+    path = os.path.normpath(str(absolute_path))
+    folded = os.path.normcase(path)
+    best = None
+    for source in sources:
+        real = os.path.normpath(os.path.realpath(str(source)))
+        for spelling in dict.fromkeys((real, os.path.normpath(str(source)))):
+            prefix = os.path.join(os.path.normcase(spelling), "")
+            if not folded.startswith(prefix):
+                continue
+            if best is None or _source_depth(real) > _source_depth(best[0]):
+                best = (real, spelling)
+            break
+    if best is None:
+        return None
+    relative = os.path.relpath(path, best[1])
+    return best[0], relative.replace(os.sep, "/")
+
+
+def image_category_key(sources, absolute_path):
+    """The file key of an image's own category (#332), or None.
+
+    ``(root key, relative key)``: the deepest output source that contains the
+    file and the path below it, keyed with the favorites helpers. Without
+    nested sources it equals the file's favorite key. A path no source
+    contains has no key (and so no own category).
+    """
+    found = deepest_source(sources, absolute_path)
+    if found is None:
+        return None
+    source, relative = found
+    return _favorite_root_key(source), _favorite_relative_key(relative)
+
+
 def _name_suffix(name):
     """``Path(name).suffix`` as Python 3.10-3.13 compute it.
 
