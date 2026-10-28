@@ -889,6 +889,25 @@ unattributed stage, when it is a plain first stage: not a detailer, no prompt ov
 set, and no listed sampler in its own latent ancestry (else it stays unattributed) (`tests/test_resolver_saver_anchor.py`, shapes in
 `tests/saver_anchor_graphs.py` from the maintainer's `gpu_unlock_bench`, dataset and
 ANIMA runs; browser parity through the `anchor-*` cases, which carry `__file_name`).
+Recorded run history (#386): both inspect routes (Images and a history occurrence)
+ask `database.run_attribution.recorded_output` inside the file's stat window. It
+answers only for a file that exactly one recorded run reported and that was written
+during that run (the #342 rules): the one output node that run reported it from (none
+when several did) and, per sampler anchor, the effective texts PromptManager recorded
+at execution (a role only inferred from the graph is none). Only when the file alone
+leaves the prompt open (`ambiguous` or `unresolved`) the inspector resolves again
+anchored on that node (`recorded_saver_id`, walked like a file-name match; a file
+name naming a different saver contradicts history and anchors nothing), and keeps
+that result only when history's saver chose its samplers (`recorded_anchor`) and it
+names the positive (resolved, or a guider with no negative); its `graph-inferred`
+sides read `recorded-run` ("Recorded run" badge, ranked below every "Workflow
+inferred" source). Still open at the one sampler that saver leads to, with that
+sampler's positive text recorded (a language model's output feeding PromptManager),
+the recorded texts show as `execution`. Outputs and texts are read in one
+transaction. A result the file resolves alone never changes; a lookup failure is
+logged and judges the file alone; local Inspect and ingestion are unchanged
+(`tests/test_recorded_saver_anchor.py`, `tests/test_run_attribution.py`,
+`tests/test_api_history_outputs.py`).
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240
@@ -2534,6 +2553,14 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
+System is the home for settings and maintenance (#330 System S13). The legacy pages keep
+their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
+Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
+thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
+System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
+keeps only its own settings in Page options. What left the legacy pages is listed in
+"Legacy System UI removed by S13".
+
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
 `expected_revision`, #220), then the runtime fields. A failed domain keeps its drafts and
@@ -4148,6 +4175,9 @@ auto-tag / review", which the Images selection bar owns, not a System section. A
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
 file. Anchors are line numbers on `main` at this PR.
 
+S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
+"Legacy System UI removed by S13" below lists every removed element against its row.
+
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
 - no owner, or a status outside the three;
 - a malformed Native control cell;
@@ -4228,7 +4258,11 @@ opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a ca
 only when its row above is `covered`. One row per removed capability: Capability is the
 exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
 Removed methods list what went (`—` for none), and Native test copies that row's Test
-cell. An id that stays on a System link is not listed, only its handler.
+cell. An id that stays on a System link is not listed, only its handler. The gallery's
+Default View Mode left Page options too: System › Appearance's Default layout is the one
+default-layout control. Nothing writes the legacy `defaultViewMode` any more; a stored
+value still picks the view the legacy gallery opens in (grid otherwise), and Page options
+Save and Reset keep it.
 
 `tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
 `covered` or copies another test, when an id or method is listed twice for one page, or
@@ -4260,6 +4294,18 @@ legacy page workflows), not by this check.
 | Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
 | Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
 | Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
+| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
+| Default view mode, image quality | gallery | `#defaultViewModeSelect`, `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
+| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
+| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
+| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
+| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
+| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
+| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
+| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
+| Auto-tag model download | admin | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Auto-tag model download | gallery | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Unload model | gallery | — | `unloadModel()` | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -4278,17 +4324,15 @@ page writes a key that is neither a preference nor inventoried, writes one it ca
 CacheStorage or IndexedDB; `the storage scan reports every way of writing browser
 storage` pins those patterns. It skips `web/lib` (third-party builds) and the pinned
 Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
-its storage belongs to the Toolkit repository and a new pin is reviewed on its own). The
-gallery's server thumbnail clear stays its own request and runs first: refused or
-unreachable, it changes nothing and says so (the old code toasted success when the
-request failed); refused browser storage is reported, never hidden
-(`tests/js/legacy-refusals.test.js`; the browser case `the gallery cache clear keeps
-preferences and other tools caches` in `workflows.spec.mjs`).
+its storage belongs to the Toolkit repository and a new pin is reviewed on its own). Since
+System S13 (#330) the legacy gallery no longer offers Clear cache: System › Maintenance's
+Metadata cache and Thumbnail cache reviews own both parts (removal table above), and
+`cache-ownership.js` serves the native review.
 
-The legacy duplicates dialog's View Full now names its source (`?root=<index>`, with the
-path URL-encoded) when the gallery's output folder is a listed source; before, the serve
-route opened the first source holding a file at that path
-(`test_view_full_names_the_gallery_folder_source`).
+The duplicates dialog's View Full named its source (`?root=<index>`, with the path
+URL-encoded) when the gallery's output folder is a listed source
+(`test_view_full_names_the_gallery_folder_source`); S13 removed the legacy dialog, and the
+route keeps that behaviour for System › Maintenance's duplicate review.
 
 ### Library location contract (#249 System S6b)
 
