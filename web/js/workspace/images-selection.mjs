@@ -49,7 +49,7 @@ function el(tag, text, className) {
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
     getListing, getFilter, checked: initial = Object.freeze(new Set()), collections = null, collection = null,
-    onCollectionsChanged = () => {}, onSourceChanged = () => {} }) {
+    onCollectionsChanged = null, onSourceChanged = null }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     // D135: the range anchor, "all N matching" mode, touch selection mode and a pending Shift+click on a checkbox.

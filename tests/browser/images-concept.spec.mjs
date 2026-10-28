@@ -30,9 +30,12 @@ function captionDay(seconds,now=new Date()) {
     return `${name} · ${date.toLocaleDateString('en-US',options)}`;
 }
 
-/** D8 (amended by #249 PR D): the selection bar's real actions only; Add to collection and Remove links… are left out. */
-const OMITTED_BULK=Object.freeze(['Add to collection','Remove links…']);
-const OMITTED_BULK_SELECTORS=Object.freeze(['bulk-collection','bulk-remove'].map(action=>`#bulkbar [data-action="${action}"]`));
+/**
+ * D8 (amended by #249 PR D and #331): the selection bar's real actions only; Remove links… is left out. Add to
+ * collection compares in place (D138).
+ */
+const OMITTED_BULK=Object.freeze(['Remove links…']);
+const OMITTED_BULK_SELECTORS=Object.freeze(['bulk-remove'].map(action=>`#bulkbar [data-action="${action}"]`));
 /** D85: Auto-tag selected follows the concept's Add tags, a concept button of its own text. */
 const AUTO_TAG_CLONE=Object.freeze([{selector:'#bulkbar [data-action="bulk-tags"]',text:'Auto-tag selected'}]);
 
@@ -461,12 +464,54 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images selecti
         'Add to collection','Export metadata','Remove links…','Clear']);
     expect.soft(diffInventory(stripExact(mapBulkbar(reference.bulkbar,0).bulkbar.bar),stripExact(removed.bar)),'bar without the omitted actions').toEqual([]);
     expect.soft(actual.bulkbar.bar.items.map(item=>item.text),'production bar').toEqual(['1 selected','Add tags','Auto-tag selected',
-        'Set category','Export metadata','Clear']);
+        'Set category','Add to collection','Export metadata','Clear']);
     expect.soft(compare(empty,emptyActual,manifest,['bulkbar','cards','panel']),'nothing checked').toEqual([]);
     expect.soft(compare(oracle,actual,manifest,['bulkbar','cards','panel']),'one card checked').toEqual([]);
     // The bar comparison notices a change to the production bar.
     await mutate(page,{css:'.bulkbar { padding: 4px }'});
     expect(compare(oracle,await inventoryOf(page,'#workspace-main'),manifest,['bulkbar']).map(item=>item.path)).toContain('bulkbar.bar.paddingTop');
+});
+
+/**
+ * #331 D137: the collection page's Edit leads the heading actions, drawn in the concept as a plain copy of its Import
+ * button reading "Edit" (no icon, no action), so the browser lays out what follows it; returns an undo.
+ */
+async function drawCollectionEdit(page) {
+    await page.evaluate(()=>{
+        const actions=document.querySelector('#main .heading-actions');
+        const edit=actions.querySelector('button').cloneNode(false);
+        for(const key of Object.keys(edit.dataset))delete edit.dataset[key];
+        edit.textContent='Edit';actions.prepend(edit);window.__collectionEdit=edit;
+    });
+    await settle(page);
+    return ()=>page.evaluate(()=>{window.__collectionEdit.remove();delete window.__collectionEdit;});
+}
+
+// #331 D137: `#/collection/<id>` against the concept's `#collection-landscapes` (app.js a1152–1157, a1186–1189): the
+// collection's name as the h1, "Collection" as the breadcrumb, the Images description, toolbar and filter row. The grid
+// is not compared: the concept's members come from its categories, production's from the stored collection.
+for(const [width,height] of SIZES)for(const theme of THEMES)test(`collection page heading, toolbar and filter row match the concept ${width}x${height} ${theme}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height});
+    const manifest=testInfo.manifest;
+    await openConcept(page,'collection-landscapes',theme);await page.mouse.move(0,0);await settle(page);
+    await expect(page.locator('#main #page-title')).toHaveText('Landscapes');
+    await expect(page.locator('#breadcrumb')).toHaveText('Collection');
+    const restore=await drawCollectionEdit(page);
+    const reference=await inventoryOf(page,'#main');
+    await restore();
+    await openProduction(page,`collection/${manifest.collections.Landscapes}`,theme);await page.mouse.move(0,0);
+    await expect(page.locator(CARDS)).toHaveCount(12);
+    await expect(page.locator('#workspace-main #page-title')).toHaveText('Landscapes');
+    await expect(page.locator('#workspace-breadcrumb')).toHaveText('Collection');
+    await expect(page).toHaveTitle('Collection · Prompt Manager');
+    await settle(page);
+    const actual=await inventoryOf(page,'#workspace-main');
+    expect.soft(actual.heading.actions.buttons.map(item=>item.text),'production heading actions').toEqual(['Edit','Import','New prompt']);
+    expect.soft(reference.heading.actions.buttons.map(item=>item.text),'mapped concept heading actions').toEqual(['Edit','Import','New prompt']);
+    expect.soft(compare(reference,actual,manifest,['heading','toolbar','filterRow']),'collection page').toEqual([]);
+    // The comparison notices a lost Edit.
+    await mutate(page,{remove:['#workspace-main .heading-actions > button:first-child']});
+    expect(compare(reference,await inventoryOf(page,'#workspace-main'),manifest,['heading']).length).toBeGreaterThan(0);
 });
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): one CSS mutation (the

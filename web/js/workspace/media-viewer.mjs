@@ -24,7 +24,7 @@ function element(tag, className, text) {
  * reach `onCollectionsChanged({added, removed})` once the viewer closes, so the viewer keeps its place while open.
  */
 export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,adapter = rootedFileAdapter,
-    collections = null,onCollectionsChanged = () => {}}) {
+    collections = null,onCollectionsChanged = null}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -117,7 +117,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 else onRestoreFocus?.(entry);
             }
             if (!scope.signal.aborted) onClose?.();
-            if (collectionChanges && !scope.signal.aborted) onCollectionsChanged(collectionChanges);
+            if (collectionChanges && !scope.signal.aborted) onCollectionsChanged?.(collectionChanges);
         }
         active = {close:closeViewer,stop:() => session.stop()};
         local.cleanup(() => {

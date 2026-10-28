@@ -31,7 +31,7 @@ function el(tag, text, className) {
  * Open the dialog for `target` (`{root_index, root_scope, path}`) with the client store `collections`. `openDialog`
  * and `closeDialog` are the dialog seams; `notify` the toast.
  */
-export function openCollectionsDialog({ scope, collections, target, trigger = null, notify = showWorkspaceToast, onChanged = () => {},
+export function openCollectionsDialog({ scope, collections, target, trigger = null, notify = showWorkspaceToast, onChanged = null,
     openDialog = openContentDialog, closeDialog = closeWorkspaceDialog }) {
     const local = new AbortController();
     const active = () => !scope.signal.aborted && !local.signal.aborted;
@@ -140,7 +140,7 @@ export function openCollectionsDialog({ scope, collections, target, trigger = nu
         }
         if (!active()) return;
         saving = false;
-        if (added.length || removed.length) onChanged({ added, removed });
+        if (added.length || removed.length) onChanged?.({ added, removed });
         if (!failed) {
             closeDialog();
             notify(COLLECTIONS_UPDATED_TOAST);

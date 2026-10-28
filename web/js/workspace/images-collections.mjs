@@ -35,7 +35,7 @@ export function collectionTargets(images, { allMatching = false, total = images.
  * the dialog seam. A stale source (409) calls `onSourceChanged()` after its toast, so the page reloads the listing.
  */
 export function openAddToCollection({ scope, collections, images, trigger = null, allMatching = false, total = images.length,
-    notify = showWorkspaceToast, openInput = openInputDialog, onSourceChanged = () => {} }) {
+    notify = showWorkspaceToast, openInput = openInputDialog, onSourceChanged = null }) {
     const { targets, refusal } = collectionTargets(images, { allMatching, total });
     if (refusal) { notify(refusal); return; }
     openInput({ scope, trigger, title: ADD_DIALOG_TITLE, label: ADD_DIALOG_LABEL, action: ADD_DIALOG_ACTION,
@@ -49,7 +49,7 @@ export function openAddToCollection({ scope, collections, images, trigger = null
             } catch (error) {
                 if (scope.signal.aborted) return;
                 notify(writeFailure(error, ADD_FAILED_TOAST));
-                if (error?.code === 'source-changed') onSourceChanged();
+                if (error?.code === 'source-changed') onSourceChanged?.();
             }
         } });
 }
@@ -59,18 +59,18 @@ export function openAddToCollection({ scope, collections, images, trigger = null
  * remove, or a collection found deleted meanwhile, calls `onChanged()` so the page lists it again.
  */
 export async function removeFromCollection({ scope, collections, collectionId, images, allMatching = false, total = images.length,
-    notify = showWorkspaceToast, onChanged = () => {}, onSourceChanged = () => {} }) {
+    notify = showWorkspaceToast, onChanged = null, onSourceChanged = null }) {
     const { targets, refusal } = collectionTargets(images, { allMatching, total });
     if (refusal) { notify(refusal); return; }
     try {
         const result = await collections.remove(collectionId, targets);
         if (scope.signal.aborted) return;
         notify(removedMessage(result.collection.name, result.removed));
-        onChanged();
+        onChanged?.();
     } catch (error) {
         if (scope.signal.aborted) return;
         notify(writeFailure(error, REMOVE_FAILED_TOAST));
-        if (isCollectionGone(error)) onChanged();
-        else if (error?.code === 'source-changed') onSourceChanged();
+        if (isCollectionGone(error)) onChanged?.();
+        else if (error?.code === 'source-changed') onSourceChanged?.();
     }
 }

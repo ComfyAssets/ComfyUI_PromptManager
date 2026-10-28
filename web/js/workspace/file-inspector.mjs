@@ -210,7 +210,7 @@ export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
  * collections checklist; `onCollectionsChanged({added, removed})` hears the confirmed changes.
  */
 export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback,
-    collections = null, onCollectionsChanged = () => {}}) {
+    collections = null, onCollectionsChanged = null}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
