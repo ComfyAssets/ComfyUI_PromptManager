@@ -1,6 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
+import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog} from './vocabulary-canonical-comparison.mjs';
 
@@ -40,7 +41,7 @@ async function expectLibrary(page,{tags='',category='',count}) {
 
 let manifest;
 test.beforeEach(async({page,request,browserName})=>{
-    await startCoverage(page,browserName);manifest=await seed(request);
+    await startCoverage(page,browserName);await armUnseenRestores(page);manifest=await seed(request);
     page.vocabularyErrors=[];page.on('pageerror',error=>page.vocabularyErrors.push(error.message));
 });
 test.afterEach(async({page,browserName})=>{await saveCoverage(page,browserName);expect(page.vocabularyErrors).toEqual([]);});
@@ -264,7 +265,8 @@ const toast=page=>page.locator('#workspace-toast');
 const actionNames=scope=>scope.locator('.dialog-actions button').evaluateAll(nodes=>nodes.map(node=>node.textContent.trim()));
 const snapshot=async request=>{const response=await request.get('/__test__/vocabulary/snapshot');await expect(response).toBeOK();return response.json();};
 const backup=async request=>{const response=await request.get('/__test__/vocabulary/backup');await expect(response).toBeOK();return response.body();};
-const restore=async(request,buffer)=>expect(await request.post('/prompt_manager/restore',{multipart:{database_file:{name:'vocabulary.db',mimeType:'application/octet-stream',buffer}}})).toBeOK();
+// A restore the open page has not seen, so its dialog stays to report it (#413).
+const restore=async(page,request,buffer)=>expect(await unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'vocabulary.db',mimeType:'application/octet-stream',buffer}}}))).toBeOK();
 const tagNames=rows=>rows.tags.map(([,name])=>name);
 function trackWrites(page) {
     const writes=[];page.on('request',item=>{if(item.method()!=='GET')writes.push({method:item.method(),url:new URL(item.url()).pathname,body:item.postDataJSON()});});return writes;
@@ -482,7 +484,7 @@ test('conflict and restore states keep the dialog and write nothing',async({page
 
     const before=await snapshot(request);
     box=await openDialog(page,main(page).getByRole('button',{name:'+ Create tag',exact:true}),'Create tag');
-    await restore(request,saved);
+    await restore(page,request,saved);
     await field(box,'Tag name').fill('sunrise');await button(box,'Apply').click();
     await expect(note(box)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was changed.');
     await expect(button(box,'Apply')).toBeDisabled();
@@ -622,7 +624,7 @@ test('delete confirmation read failure, missing tag and restore keep Delete disa
     await expect(button(box,'Delete')).toBeDisabled();await expect(tagRow(page,'calm').locator('td:nth-child(2)')).toHaveText('2');
     await button(box,'Cancel').click();
 
-    box=await openRename(page,'mist');await restore(request,saved);
+    box=await openRename(page,'mist');await restore(page,request,saved);
     await button(box,'Delete tag…').click();
     await expect(note(box)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was changed.');
     await expect(button(box,'Delete')).toBeDisabled();expect(await actionNames(box)).toEqual(['Reload','Cancel','Delete']);

@@ -127,9 +127,9 @@ function mapTaggingConcept(reference, { template, phone }) {
         actions: { ...reference.actions, buttons: [preview, ['Download again', ''], ['Unload', '']] },
         // D134: the prompt-tag batch, reviewed first.
         operations: [{ tree: ['div', 'div.row-actions'], title: 'Tag output images', description: BATCH, actions: [['Review', '']] }],
-        // D132: the engine select shows its whole chosen option at every width (at 390 the concept's 120px cap cuts it;
-        // `#tag-model` alone may grow there). Existing tags keeps the concept's own fit, cut or not.
-        selectsFit: reference.selectsFit.map((fit, index) => (index === 0 ? true : fit)),
+        // D132 (#398): every select shows its whole chosen option at every width (at 390 the concept's 120px cap cuts
+        // them; production lets each grow past it).
+        selectsFit: reference.selectsFit.map(() => true),
     };
 }
 
@@ -168,16 +168,28 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
     });
 }
 
-// D132 below the concept's smallest size: on a 320px phone the engine select still shows its whole option.
-for (const theme of THEMES) test(`auto-tagging engine select fits at 320 wide ${theme}`, async ({ page }) => {
-    await page.setViewportSize({ width: 320, height: 700 });
-    const production = await productionTagging(page, theme);
-    for (const model of ['hf', 'gguf', 'wd14-swinv2']) {
-        await page.locator('#workspace-main #tag-model').selectOption(model);
-        expect((await page.evaluate(measureTagging, '#workspace-main')).selectsFit[0], model).toBe(true);
-    }
-    expect(production.pageScroll).toBe(false);
-});
+// D132 (#398) at phone width and below the concept's smallest size: every option of every select, once chosen, shows
+// whole, with no page scroll.
+for (const theme of THEMES) for (const width of [390, 320]) {
+    test(`auto-tagging selects fit every option at ${width} wide ${theme}`, async ({ page }, testInfo) => {
+        await page.setViewportSize({ width, height: 844 });
+        await productionTagging(page, theme);
+        await page.locator('#workspace-main #tag-existing').selectOption('replace_after_review');
+        await page.locator('#workspace-main section.surface').screenshot({ path: testInfo.outputPath(`production-tagging-selects-${theme}-${width}.png`) });
+        const selects = page.locator('#workspace-main section.surface > .setting-row > select');
+        await expect(selects).toHaveCount(2);
+        for (let index = 0; index < 2; index += 1) {
+            const select = selects.nth(index);
+            const values = await select.evaluate(node => [...node.options].map(option => option.value));
+            for (const value of values) {
+                await select.selectOption(value);
+                const measured = await page.evaluate(measureTagging, '#workspace-main');
+                expect(measured.selectsFit, `${await select.getAttribute('id')}=${value}`).toEqual([true, true]);
+                expect(measured.pageScroll, value).toBe(false);
+            }
+        }
+    });
+}
 
 test('auto-tagging comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
@@ -222,6 +234,9 @@ test('auto-tagging comparison detects mutations', async ({ page, request }) => {
     const undoSqueeze = await mutate(page, { css: '#workspace-main #tag-model { max-width: 60px !important; min-width: 0 !important; }' });
     expect(await paths()).toEqual(expect.arrayContaining(['selectsFit.0']));
     await undoSqueeze();
+    const undoSqueezeExisting = await mutate(page, { css: '#workspace-main #tag-existing { max-width: 60px !important; min-width: 0 !important; }' });
+    expect(await paths()).toEqual(expect.arrayContaining(['selectsFit.1']));
+    await undoSqueezeExisting();
     // A row that wraps where the concept's does not.
     const undoWrap = await mutate(page, { css: '#workspace-main .setting-row:has(> #tag-existing) { flex-wrap: wrap; }' });
     expect(await paths()).toEqual(['rows.1.flexWrap']);
@@ -233,14 +248,14 @@ test('auto-tagging comparison detects mutations', async ({ page, request }) => {
     expect(diffInventory(expected, await measure())).toEqual([]);
 });
 
-// D132 at phone width, unmapped: only the engine row wraps; Existing tags keeps the concept's cut select.
+// D132 at phone width: only the engine row wraps; Existing tags grows beside its text instead (#398).
 test('auto-tagging at 390 wraps only the engine row', async ({ page, request }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const concept = await conceptTagging(page, 'dark');
     const production = await productionTagging(page, 'dark');
     expect(diffInventory(mapTaggingConcept(concept, await savedTemplate(request, page)), production)).toEqual([]);
     expect(production.rows.map(row => row.flexWrap)).toEqual(['wrap', 'nowrap', 'nowrap', 'nowrap', 'nowrap']);
-    expect(production.selectsFit[1]).toBe(concept.selectsFit[1]);
+    expect(production.selectsFit).toEqual([true, true]);
 });
 
 /** Runs in the page: the open review dialog: its title, body and the concept's tokens. */
