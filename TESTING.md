@@ -270,7 +270,15 @@ GitHub sends SIGTERM, which would end Playwright without any report; under `CI`
 `Still running when the run ended (SIGTERM): N` and one line per unfinished
 test (path relative to the suite's `rootDir`), then sends Playwright its own
 SIGINT, so the workers stop, the run ends interrupted and the blob report is
-written to `tools/vendor/test-results/blob/`. That directory and the traces
+written to `tools/vendor/test-results/blob/`. In the coverage job npm signals
+only `frontend-coverage.mjs`, which forwards SIGTERM and SIGINT to the child it
+is running (started in its own process group, so a group-wide signal still
+arrives once). Delivery is proven locally in the pinned image for a SIGTERM to
+the whole process group (`timeout -s TERM`). A SIGTERM to npm alone
+(`timeout --foreground`) reaches nothing: npm forwards it to the `sh -c` that
+runs the script, and that shell exits without passing it on. Delivery in CI,
+where the step runs through `docker exec`, is not yet observed; the next real
+step timeout will show it. That directory and the traces
 upload with `if: always()`; `npx playwright merge-reports` opens the blob.
 Each test keeps the 30 s default and there is no `globalTimeout`. Two limits
 of this: it assumes the npm cache hits (a cold cache adds up to 5 minutes to
