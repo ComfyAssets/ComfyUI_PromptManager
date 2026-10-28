@@ -194,6 +194,10 @@ _TABLES = (
 )
 
 
+# The concept's collections and the slice of its images each holds (#331).
+CONCEPT_COLLECTIONS = (("Landscapes", slice(0, 12)), ("Experiments", slice(12, 20)))
+
+
 def concept_starred(prompt_index: int, round_index: int) -> bool:
     """The concept's favorites (app.js ``starred``): each other prompt's first image."""
     return round_index == 0 and prompt_index % 2 == 0
@@ -496,6 +500,19 @@ def seed_workspace_concept(
         )
     images.reverse()
     runs.reverse()
+    # The concept's COLLECTIONS rows (app.js a336–339): "Landscapes" holds the
+    # first 12 images in the concept's order and "Experiments" the next 8, so
+    # the rows and counts compare as the concept shows them (#331 D136).
+    collections = {}
+    for name, members in CONCEPT_COLLECTIONS:
+        added = db.add_to_collection(
+            name=name,
+            items=[
+                (favorite_root, _favorite_relative_key(image["path"]))
+                for image in images[members]
+            ],
+        )
+        collections[name] = added["collection"]["id"]
     seedless = []
     for number in range(seedless_images):
         name = f"seedless_{number + 1:05}.png"
@@ -532,4 +549,5 @@ def seed_workspace_concept(
         "images": images,
         "runs": runs,
         "tags": tags,
+        "collections": collections,
     }

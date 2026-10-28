@@ -267,6 +267,29 @@ test('a collection deleted in another tab shows the deleted-collection page', as
     await expect(rows(page)).toHaveCount(1);
 });
 
+// D136 / CUJ 15: the rows show and open at desktop and phone width in both themes. The concept's own phone rule hides
+// every nav count there, so the rows keep their counts only at desktop width.
+for (const [width, height] of [[1600, 1100], [390, 844]]) for (const theme of ['dark', 'light']) {
+    test(`collection rows show and open at ${width}x${height} ${theme}`, async ({ page, request }) => {
+        const manifest = await seed(request);
+        await page.setViewportSize({ width, height });
+        await page.goto(`${workspace}#/images`);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
+        for (const name of ['Experiments', 'Landscapes']) await expect(row(page, name)).toBeVisible();
+        const count = row(page, 'Landscapes').locator('.nav-count');
+        if (width > 950) await expect(count).toBeVisible();
+        else await expect(count).toBeHidden();
+        // Phone width: the label stays hidden as every sidebar label is; desktop shows it.
+        if (width > 950) await expect(collectionsLabel(page)).toBeVisible();
+        else await expect(collectionsLabel(page)).toBeHidden();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await row(page, 'Landscapes').click();
+        await expect(page).toHaveURL(new RegExp(`#/collection/${manifest.collections.Landscapes.id}$`));
+        await expect(heading(page)).toHaveText('Landscapes');
+        await expect(imageCards(page)).toHaveCount(12);
+    });
+}
+
 test('a finished restore reads the collections again', async ({ page, request }) => {
     await seed(request);
     await expect(await request.post('/__test__/system/reset')).toBeOK();
