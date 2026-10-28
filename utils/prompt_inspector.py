@@ -1,4 +1,10 @@
-"""Read prompt evidence without inference, indexing, or decoding image pixels."""
+"""Read prompt evidence without inference, indexing, or decoding image pixels.
+
+``inspection_resolution`` is the inspector's resolve (inspection profile, then
+the recorded saver anchor, #386). Ingestion (the output scan, through
+``utils.file_prompt``) calls it too, only for files the default profile
+cannot decide (#247), so the inspector and ingestion cannot drift.
+"""
 
 import hashlib
 import io
@@ -571,6 +577,93 @@ def _recorded_execution(resolved: dict, texts: Mapping) -> dict | None:
     return {"prompts": prompts, "resolution": resolution}
 
 
+_ABSENT_RESOLUTION = {
+    "state": "absent",
+    "sampler_id": None,
+    "reason": "No parsed prompt metadata",
+    "reason_code": None,
+    "node": None,
+}
+_MALFORMED_RESOLUTION = {
+    "state": "unresolved",
+    "sampler_id": None,
+    "reason": MALFORMED_EVIDENCE_REASON,
+    "reason_code": "malformed",
+    "node": None,
+}
+
+
+@dataclass(frozen=True)
+class InspectionResult:
+    """The inspector's resolution of one file's metadata (#386, #247).
+
+    ``resolution`` is the result to use. ``anchored`` is the result anchored
+    on the recorded saver, kept or not (None when no anchored resolve ran).
+    ``by_record`` says the anchored result was kept: history's saver chose
+    the samplers and the result names the positive. ``malformed`` marks
+    metadata the inspector cannot read as a graph.
+    """
+
+    resolution: dict
+    anchored: dict | None = None
+    by_record: bool = False
+    malformed: bool = False
+
+
+def inspection_resolution(
+    metadata: Mapping,
+    file_name: str | None,
+    recorded_saver_id: str | None,
+    *,
+    profile: ResolverProfile = INSPECTION_PROFILE,
+) -> InspectionResult:
+    """Resolve raw file metadata as the inspector does.
+
+    Keeps only the role records, parses a string ``prompt`` and attaches the
+    parsed ``workflow`` only when the graph may hold a PromptManager node.
+    Resolves with ``profile``; when that leaves the prompt open and
+    ``recorded_saver_id`` is given, resolves again anchored on that saver
+    and keeps the anchored result only when it names the positive.
+    """
+    workflow = metadata.get("workflow")
+    canonical = {
+        key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
+    }
+    if not canonical:
+        return InspectionResult(dict(_ABSENT_RESOLUTION))
+    malformed = InspectionResult(dict(_MALFORMED_RESOLUTION), malformed=True)
+    if "prompt" not in canonical and "parameters" not in canonical:
+        return malformed
+    if isinstance(canonical.get("prompt"), str):
+        try:
+            canonical["prompt"] = json.loads(canonical["prompt"])
+        except (ValueError, RecursionError):
+            return malformed
+    workflow = (
+        _parsed_workflow(workflow) if _may_hold_prompt_manager(canonical) else None
+    )
+    if workflow is not None and "prompt" in canonical:
+        # Only to recognize overwritten PromptManager text (R1); never a role.
+        canonical["workflow"] = workflow
+    resolved = resolve_prompt_pair(canonical, profile=profile, file_name=file_name)
+    if resolved["state"] not in _UNDECIDED or recorded_saver_id is None:
+        return InspectionResult(resolved)
+    anchored = resolve_prompt_pair(
+        canonical,
+        profile=profile,
+        file_name=file_name,
+        recorded_saver_id=recorded_saver_id,
+    )
+    # Only a result whose samplers history's saver chose is about this file.
+    if (
+        anchored.get("recorded_anchor") is True
+        and anchored["state"] not in _UNDECIDED
+        and isinstance(anchored["positive"], dict)
+    ):
+        return InspectionResult(anchored, anchored, True)
+    return InspectionResult(resolved, anchored)
+
+
 def inspect_prompt_evidence(
     metadata: dict,
     saved: dict | None = None,
@@ -593,22 +686,13 @@ def inspect_prompt_evidence(
     ``execution``.
 
     Inspection routes resolve with ``INSPECTION_PROFILE``: bounded work, not
-    graph size. Ingestion (scan, live monitor, admin import) calls the resolver
-    directly with its default profile. ``resolution`` carries the closed
-    ``reason_code`` and, for a blocking node, ``node: {id, class_type}``.
+    graph size. The resolve itself is ``inspection_resolution``, which
+    ingestion also calls for files its default profile cannot decide (#247).
+    ``resolution`` carries the closed ``reason_code`` and, for a blocking
+    node, ``node: {id, class_type}``.
     """
-    workflow = metadata.get("workflow")
-    metadata = {
-        key: value for key, value in metadata.items() if key in _ROLE_METADATA_KEYS
-    }
-    resolution = {
-        "state": "unresolved",
-        "sampler_id": None,
-        "reason": MALFORMED_EVIDENCE_REASON,
-        "reason_code": "malformed",
-        "node": None,
-    }
-    if not metadata:
+    roles = {key for key in metadata if key in _ROLE_METADATA_KEYS}
+    if not roles:
         result = {role: _side("absent") for role in ("positive", "negative")}
         if saved:
             context = saved.get("pair_context")
@@ -621,56 +705,30 @@ def inspect_prompt_evidence(
                         "verified against this file."
                     ),
                 }
-        return {
-            "prompts": result,
-            "resolution": {
-                "state": "absent",
-                "sampler_id": None,
-                "reason": "No parsed prompt metadata",
-                "reason_code": None,
-                "node": None,
-            },
-        }
-    canonical = dict(metadata)
-    malformed = {
-        "prompts": _explained(
-            {role: _side("unresolved") for role in ("positive", "negative")},
-            resolution,
-        ),
-        "resolution": resolution,
-    }
-    if "prompt" not in canonical and "parameters" not in canonical:
-        return malformed
-    if isinstance(canonical.get("prompt"), str):
-        try:
-            canonical["prompt"] = json.loads(canonical["prompt"])
-        except (ValueError, RecursionError):
-            return malformed
-    workflow = (
-        _parsed_workflow(workflow) if _may_hold_prompt_manager(canonical) else None
+        return {"prompts": result, "resolution": dict(_ABSENT_RESOLUTION)}
+    inspected = inspection_resolution(
+        metadata, file_name, recorded_saver_id, profile=profile
     )
-    if workflow is not None and "prompt" in canonical:
-        # Only to recognize overwritten PromptManager text (R1); never a role.
-        canonical["workflow"] = workflow
-    resolved = resolve_prompt_pair(canonical, profile=profile, file_name=file_name)
-    recorded = False
-    if resolved["state"] in _UNDECIDED and recorded_saver_id is not None:
-        anchored = resolve_prompt_pair(
-            canonical,
-            profile=profile,
-            file_name=file_name,
-            recorded_saver_id=recorded_saver_id,
-        )
-        # Only a result whose samplers history's saver chose is about this file.
-        if anchored.get("recorded_anchor") is True:
-            if anchored["state"] not in _UNDECIDED and isinstance(
-                anchored["positive"], dict
-            ):
-                resolved, recorded = anchored, True
-            elif recorded_texts:
-                executed = _recorded_execution(anchored, recorded_texts)
-                if executed is not None:
-                    return executed
+    if inspected.malformed:
+        resolution = inspected.resolution
+        return {
+            "prompts": _explained(
+                {role: _side("unresolved") for role in ("positive", "negative")},
+                resolution,
+            ),
+            "resolution": resolution,
+        }
+    resolved, recorded = inspected.resolution, inspected.by_record
+    anchored = inspected.anchored
+    if (
+        not recorded
+        and recorded_texts
+        and anchored is not None
+        and anchored.get("recorded_anchor") is True
+    ):
+        executed = _recorded_execution(anchored, recorded_texts)
+        if executed is not None:
+            return executed
     state = resolved["state"]
     result = {}
     for role in ("positive", "negative"):

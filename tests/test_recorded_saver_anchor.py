@@ -375,5 +375,65 @@ class TestRecordedTexts(unittest.TestCase):
                 self.assertEqual(evidence["resolution"]["sampler_id"], sampler)
 
 
+class TestInspectionResolution(unittest.TestCase):
+    """``inspection_resolution``: the inspector's resolve and recorded anchor,
+    shared with ingestion (#247), so the two cannot drift."""
+
+    def _result(self, graph, saver=None, *, as_text=True, name="IMG_GEN_00371_.png"):
+        from utils.prompt_inspector import inspection_resolution
+
+        prompt = json.dumps(graph) if as_text else graph
+        return inspection_resolution({"prompt": prompt}, name, saver)
+
+    def test_the_recorded_saver_names_its_branch_by_record(self):
+        result = self._result(shapes.shared_prefix(), _saver(2))
+        self.assertTrue(result.by_record)
+        self.assertFalse(result.malformed)
+        self.assertEqual(result.resolution["state"], "resolved")
+        self.assertEqual(_positive(result.resolution), shapes.BRANCH_TEXTS[1])
+        self.assertIs(result.anchored, result.resolution)
+
+    def test_without_a_saver_nothing_is_anchored(self):
+        result = self._result(shapes.shared_prefix())
+        self.assertEqual(result.resolution["state"], "ambiguous")
+        self.assertIsNone(result.anchored)
+        self.assertFalse(result.by_record)
+
+    def test_a_saver_that_names_nothing_keeps_the_open_result(self):
+        result = self._result(shapes.shared_prefix(), "missing")
+        self.assertEqual(result.resolution["state"], "ambiguous")
+        self.assertIsNotNone(result.anchored)
+        self.assertFalse(result.by_record)
+
+    def test_a_file_that_resolves_alone_is_never_anchored(self):
+        result = self._result(
+            shapes.branch_bench(), _saver(4), name="s45_branch_2_00001_.png"
+        )
+        self.assertEqual(_positive(result.resolution), shapes.BRANCH_TEXTS[1])
+        self.assertIsNone(result.anchored)
+        self.assertFalse(result.by_record)
+
+    def test_parsed_metadata_resolves_as_the_file_text_does(self):
+        # The monitor hands parsed dicts; the scan hands the file's strings.
+        parsed = self._result(shapes.shared_prefix(), _saver(3), as_text=False)
+        text = self._result(shapes.shared_prefix(), _saver(3))
+        self.assertEqual(parsed.resolution, text.resolution)
+
+    def test_malformed_metadata_is_reported_as_malformed(self):
+        from utils.prompt_inspector import inspection_resolution
+
+        result = inspection_resolution({"prompt": "{not json"}, None, None)
+        self.assertTrue(result.malformed)
+        self.assertEqual(result.resolution["state"], "unresolved")
+        self.assertEqual(result.resolution["reason_code"], "malformed")
+
+    def test_metadata_without_a_role_record_is_absent(self):
+        from utils.prompt_inspector import inspection_resolution
+
+        result = inspection_resolution({"workflow": "{}"}, None, "9")
+        self.assertFalse(result.malformed)
+        self.assertEqual(result.resolution["state"], "absent")
+
+
 if __name__ == "__main__":
     unittest.main()
