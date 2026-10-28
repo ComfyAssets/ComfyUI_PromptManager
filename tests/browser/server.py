@@ -262,6 +262,8 @@ def create_app(root: Path) -> web.Application:
         with target.db.model.get_connection() as conn:
             for table in (
                 "saved_views",
+                "image_collection_items",
+                "image_collections",
                 "image_favorites",
                 "media_review_decisions",
                 "media_review_items",

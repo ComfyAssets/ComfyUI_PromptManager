@@ -22,6 +22,10 @@ from .managed_connection import (
 from . import restore_stage
 from .library_schema import library_schema_error, migrate_library_state
 from .image_favorites import image_favorites_schema_error, migrate_image_favorites
+from .image_collections import (
+    image_collections_schema_error,
+    migrate_image_collections,
+)
 from .annotation_schema import annotation_schema_error, migrate_annotation_state
 from .autotag_schema import (
     autotag_schema_error,
@@ -337,6 +341,7 @@ class PromptModel:
         migrate_library_state(conn)
         migrate_image_favorites(conn)
         migrate_saved_views(conn)
+        migrate_image_collections(conn)
         # A review group without its annotation group is refused before the
         # annotation install could make it look valid (catalog only; the rows
         # are validated once, in migrate_review_state).
@@ -1156,7 +1161,7 @@ class PromptModel:
             path: File to inspect
             require_library_state: Also require the tables every current
                 database has (Library state, image favorites, saved views,
-                image annotations and the review queue), as a migrated
+                collections, image annotations and the review queue), as a migrated
                 restore stage must; old backups may lack them.
             documents: Read every workflow document and refuse a damaged
                 one. A restore checks its upload without it and repairs
@@ -1225,6 +1230,11 @@ class PromptModel:
             )
             if views_error:
                 return False, views_error
+            collections_error = image_collections_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if collections_error:
+                return False, collections_error
             annotation_error = annotation_schema_error(
                 conn, allow_missing=not require_library_state
             )

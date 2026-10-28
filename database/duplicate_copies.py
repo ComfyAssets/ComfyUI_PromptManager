@@ -9,6 +9,8 @@ IMMEDIATE`` transaction, so no row ever names a deleted file:
   already links the kept copy: then its saved-pair links join that record
   and it is deleted;
 - its favorite;
+- its collection memberships (#331), joined onto the kept copy's as their
+  union under the same keys a favorite moves by;
 - its image tags (``media_image_tags`` of its byte record), joined onto the
   kept copy's byte record as their union, in order;
 - its pending Needs review items, settled: only an item still ``pending`` at
@@ -50,6 +52,15 @@ INSERT_FAVORITE_SQL = "INSERT OR IGNORE INTO image_favorites VALUES (?, ?, ?)"
 DELETE_FAVORITE_SQL = (
     "DELETE FROM image_favorites WHERE root_key = ? AND relative_path = ?"
 )
+COPY_MEMBERSHIPS_SQL = (
+    "INSERT OR IGNORE INTO image_collection_items "
+    "(collection_id, root_key, relative_path, added_at) "
+    "SELECT collection_id, ?, ?, added_at FROM image_collection_items "
+    "WHERE root_key = ? AND relative_path = ?"
+)
+DELETE_MEMBERSHIPS_SQL = (
+    "DELETE FROM image_collection_items WHERE root_key = ? AND relative_path = ?"
+)
 COPY_BYTE_SQL = (
     f"SELECT b.id FROM {FILES_TABLE} f JOIN {BYTES_TABLE} b "  # nosec B608
     "ON b.file_id=f.id WHERE f.locator=? AND b.sha256=?"
@@ -73,6 +84,8 @@ FILE_LINK_SQL = (
     DELETE_LINK_SQL,
     FAVORITE_SQL,
     DELETE_FAVORITE_SQL,
+    COPY_MEMBERSHIPS_SQL,
+    DELETE_MEMBERSHIPS_SQL,
     COPY_BYTE_SQL,
     COPY_TAG_COUNT_SQL,
     PENDING_COUNT_SQL,
@@ -135,12 +148,15 @@ class DuplicateCopyOperations:
         by), ``targets`` (``{removed spelling: kept spelling}``, the spelling
         a moved record takes; else ``kept_path``), ``favorites`` (``(root key,
         removed key, kept root key, kept key)`` per listed root holding the
-        file), ``removed_locator``,
-        ``kept_locator``, ``sha256`` and the kept copy's ``kept_size`` and
-        ``kept_mtime_ns``. Returns ``{moved, merged, favorites, tags,
-        review}``.
+        file; they move its favorite and its collection memberships),
+        ``removed_locator``, ``kept_locator``, ``sha256`` and the kept copy's
+        ``kept_size`` and ``kept_mtime_ns``. Returns ``{moved, merged,
+        favorites, tags, review, collections}`` (``collections``: the
+        memberships inserted on the kept copy).
         """
-        counts = dict.fromkeys(("moved", "merged", "favorites", "tags", "review"), 0)
+        counts = dict.fromkeys(
+            ("moved", "merged", "favorites", "tags", "review", "collections"), 0
+        )
         kept_keys = [normalize_image_path(path) for path in move["kept"]]
         with self._pair_transaction() as conn:
             for spelled in dict.fromkeys(move["removed"]):
@@ -173,6 +189,7 @@ class DuplicateCopyOperations:
                     counts["moved"] += 1
             for favorite in move.get("favorites", ()):
                 counts["favorites"] += _move_favorite(conn, *favorite)
+                counts["collections"] += _move_memberships(conn, *favorite)
             counts["tags"] = self._move_copy_tags(conn, move)
             for (item_id,) in conn.execute(
                 _PENDING_OF_LOCATOR, (move["removed_locator"],)
@@ -213,3 +230,12 @@ def _move_favorite(conn, root_key, removed_key, kept_root, kept_key):
     conn.execute(INSERT_FAVORITE_SQL, (kept_root, kept_key, row[0]))
     conn.execute(DELETE_FAVORITE_SQL, (root_key, removed_key))
     return 1
+
+
+def _move_memberships(conn, root_key, removed_key, kept_root, kept_key):
+    """Copy a removed copy's memberships to the kept copy; the rows inserted."""
+    inserted = conn.execute(
+        COPY_MEMBERSHIPS_SQL, (kept_root, kept_key, root_key, removed_key)
+    ).rowcount
+    conn.execute(DELETE_MEMBERSHIPS_SQL, (root_key, removed_key))
+    return inserted

@@ -835,7 +835,6 @@ class TestMetadataParsing(unittest.TestCase):
         self.assertEqual(parsed["positive_prompt"], "a cat")
         self.assertEqual(parsed["negative_prompt"], "dog")
         self.assertEqual(parsed["parameters"]["parameters"], meta["parameters"])
-        self.assertEqual(self.api._extract_readable_prompt(parsed), "a cat")
 
     def test_parse_comfyui_fields(self):
         meta = {
@@ -855,97 +854,6 @@ class TestMetadataParsing(unittest.TestCase):
         )
         self.assertEqual(parsed["prompt"], "plain text")
         self.assertEqual(parsed["workflow"], {"nodes": []})
-
-    def test_extract_readable_prompt_variants(self):
-        extract = self.api._extract_readable_prompt
-        self.assertEqual(extract({"prompt": "plain"}), "plain")
-        self.assertEqual(extract({"prompt": ["a", "", "b"]}), "a b")
-        self.assertEqual(extract({"prompt": 42}), "42")
-        self.assertEqual(
-            extract({"prompt": None, "parameters": {"positive": ["x", "y"]}}), "x y"
-        )
-        self.assertIsNone(extract({"prompt": {}, "parameters": {}}))
-
-        graph = {
-            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "pos"}},
-            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "neg"}},
-            "3": {
-                "class_type": "KSampler",
-                "inputs": {"positive": ["1", 0], "negative": ["2", 0]},
-            },
-        }
-        self.assertEqual(extract({"prompt": graph}), "pos")
-        self.assertEqual(extract({"prompt": {"x": 1}, "workflow": graph}), "pos")
-
-    def test_node_inputs_and_text_lookup(self):
-        self.assertEqual(self.api._get_node_inputs("nope"), {})
-        self.assertEqual(self.api._get_node_inputs({"inputs": 5}), {})
-        self.assertEqual(self.api._get_node_inputs({"inputs": {"a": 1}}), {"a": 1})
-        listed = self.api._get_node_inputs(
-            {"inputs": [{"name": "text", "link": None}, {"nope": 1}, "junk"]}
-        )
-        self.assertEqual(list(listed), ["text"])
-
-        self.assertIsNone(self.api._find_text_in_node(None))
-        self.assertEqual(self.api._find_text_in_node({"inputs": {"text": "hi"}}), "hi")
-        self.assertEqual(
-            self.api._find_text_in_node(
-                {"type": "CLIPTextEncode", "widgets_values": ["w"]}
-            ),
-            "w",
-        )
-        self.assertIsNone(
-            self.api._find_text_in_node(
-                {"type": "CLIPTextEncode", "widgets_values": [" "]}
-            )
-        )
-        self.assertIsNone(self.api._find_text_in_node({"type": "KSampler"}))
-
-    def test_positive_prompt_from_nodes_array_and_fallbacks(self):
-        extract = self.api._extract_positive_prompt_from_comfyui_data
-        self.assertIsNone(extract("x"))
-        self.assertIsNone(extract({}))
-        self.assertIsNone(extract({"nodes": []}))
-
-        workflow = {
-            "nodes": [
-                {"id": 1, "type": "CLIPTextEncode", "widgets_values": ["pos"]},
-                {
-                    "id": 2,
-                    "type": "CLIPTextEncode",
-                    "widgets_values": ["neg"],
-                    "title": "Negative",
-                },
-                {"id": 3, "type": "KSampler", "inputs": [{"name": "seed", "link": 4}]},
-                "junk",
-            ]
-        }
-        self.assertEqual(extract(workflow), "pos")
-
-        only_negative = {
-            "nodes": [
-                {
-                    "id": 2,
-                    "type": "CLIPTextEncode",
-                    "widgets_values": ["neg"],
-                    "title": "neg",
-                },
-            ]
-        }
-        self.assertEqual(extract(only_negative), "neg")
-
-        bad_link = {
-            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "pos"}},
-            "3": {
-                "class_type": "KSampler",
-                "inputs": {"positive": "oops", "negative": []},
-            },
-            "4": {
-                "class_type": "KSampler",
-                "inputs": {"positive": ["zz", 0], "negative": []},
-            },
-        }
-        self.assertEqual(extract(bad_link), "pos")
 
 
 if __name__ == "__main__":

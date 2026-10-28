@@ -687,6 +687,39 @@ class TestCleanupJob(DuplicateFilesTestCase):
             "Moved 2 database links to the kept copies", "\n".join(cleanup.log)
         )
 
+    async def test_duplicate_removal_moves_collection_memberships(self):
+        self.trio()
+        db = self.api.db
+        root_key = duplicate_files.favorite_root_key(self.output_dir)
+        grids = db.add_to_collection(name="LoRA grids", items=[(root_key, "b.png")])
+        grids = grids["collection"]["id"]
+        other = db.add_to_collection(
+            name="Other", items=[(root_key, "sub/c.png"), (root_key, "d.png")]
+        )["collection"]["id"]
+        db.add_to_collection(collection_id=grids, items=[(root_key, "sub/c.png")])
+        _plan, cleanup = await self.remove_all_but("a.png")
+        # The union: a.png joins both; c.png's second grids row was a repeat.
+        self.assertEqual(db.collection_members(grids, root_key), {"a.png"})
+        self.assertEqual(db.collection_members(other, root_key), {"a.png", "d.png"})
+        self.assertEqual(sorted(db.file_collections(root_key, "a.png")), [grids, other])
+        self.assertEqual(db.file_collections(root_key, "b.png"), [])
+        self.assertEqual(db.file_collections(root_key, "sub/c.png"), [])
+        self.assertIn(
+            "Moved 2 collection memberships to the kept copies", "\n".join(cleanup.log)
+        )
+
+    def test_one_collection_membership_is_singular(self):
+        job = type(
+            "Job", (), {"log": [], "log_line": lambda s, line: s.log.append(line)}
+        )()
+        totals = dict.fromkeys(
+            ("moved", "merged", "favorites", "tags", "review", "collections"), 0
+        )
+        duplicate_files.DuplicateFilesMixin._log_moved_records(
+            job, {**totals, "collections": 1}
+        )
+        self.assertEqual(job.log, ["Moved 1 collection membership to the kept copies"])
+
     async def test_a_failed_removal_leaves_its_links_on_the_kept_copy(self):
         self.trio()
         prompt = self.save("Stays on c")
@@ -843,8 +876,11 @@ class TestLinkQueries(DuplicateFilesTestCase):
                 with self.subTest(sql=sql):
                     self.assertNotIn("SCAN generated_images", plan)
                     self.assertNotIn("SCAN image_favorites", plan)
+                    self.assertNotIn("SCAN image_collection_items", plan)
         finally:
             conn.close()
+        statements = duplicate_files.query_plan_sql()
+        self.assertTrue(any("image_collection_items" in sql for sql in statements))
 
 
 class TestReviewHelpers(DuplicateFilesTestCase):

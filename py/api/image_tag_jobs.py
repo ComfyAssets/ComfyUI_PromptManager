@@ -58,7 +58,9 @@ from .annotations import (
 from .autotag_routes import BATCH_CANCELLED, MODEL_BUSY_ERROR, model_busy_response
 from .images import (
     MAX_LISTING_SELECTION,
+    CollectionMissing,
     ListingSourceChanged,
+    collection_not_found,
     _current_fingerprint,
     _listing_posix,
     _public_path,
@@ -685,6 +687,8 @@ class ImageTagJobsMixin:
             selection = await self.resolve_listing_filter(spec.filter, cap)
         except ListingSourceChanged:
             return None, _coded("source-changed")
+        except CollectionMissing:
+            return None, collection_not_found()
         except ValueError as exc:
             return None, bad_request(str(exc))
         except Exception:

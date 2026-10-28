@@ -226,6 +226,7 @@ class TestStageAndPublish(StageTestCase):
             for key in ("pairs", "archived_pairs", "image_links", "runs"):
                 self.assertEqual(staged.summary[key], 0, key)
             self.assertEqual(staged.summary["saved_views"], 0)
+            self.assertEqual(staged.summary["collections"], 0)
             self.assertEqual(staged.schema, {"migrated": False, "library_state": True})
             self.assertEqual(
                 staged.digest,
@@ -237,6 +238,48 @@ class TestStageAndPublish(StageTestCase):
             self.assertTrue(prompt_id)
         finally:
             staged.discard()
+
+
+class TestCollectionsSummary(StageTestCase):
+    """#331: collections join the review's summary and the live fingerprint."""
+
+    def add_collection(self, db, name):
+        with db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO image_collections (name, name_key, created_at) "
+                "VALUES (?, ?, '2026-10-27T00:00:00+00:00')",
+                (name, name.casefold()),
+            )
+
+    def test_summary_counts_collections(self):
+        src_path = os.path.join(self.uploads, "with-collections.db")
+        src = PromptDatabase(src_path)
+        try:
+            self.save(src, "kept")
+            self.add_collection(src, "First")
+            self.add_collection(src, "Second")
+        finally:
+            src.close_all()
+        staged = self.db.model.stage_restore(src_path)
+        try:
+            self.assertEqual(staged.summary["collections"], 2)
+        finally:
+            staged.discard()
+        self.assertIn("collections", restore_stage.SUMMARY_KEYS)
+
+    def test_adding_a_collection_changes_the_fingerprint(self):
+        conn = self.db.model.get_connection()
+        summary, before = restore_stage.live_fingerprint(conn)
+        self.assertEqual(summary["collections"], 0)
+        self.add_collection(self.db, "After the review")
+        summary, after = restore_stage.live_fingerprint(conn)
+        self.assertEqual(summary["collections"], 1)
+        self.assertNotEqual(after, before)
+        # A delete and a re-add with the same count still changes it (rowid).
+        with self.db.model.get_connection() as write:
+            write.execute("DELETE FROM image_collections")
+        self.add_collection(self.db, "Replacement")
+        self.assertNotEqual(restore_stage.live_fingerprint(conn)[1], after)
 
 
 class TestOlderBackups(StageTestCase):

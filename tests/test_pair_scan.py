@@ -115,7 +115,12 @@ class TestPairScan(AdminAPITestCase):
         self.assertEqual(second["pairs_added"], 0)
 
     def test_legacy_single_prompt_second_pass_not_reported_as_new_link(self):
-        meta = {"prompt": json.dumps({"1": graph()["1"]})}
+        # A sampler-less graph: one encoder wired into a guider (#252).
+        single = {
+            "1": graph()["1"],
+            "2": {"class_type": "BasicGuider", "inputs": {"conditioning": ["1", 0]}},
+        }
+        meta = {"prompt": json.dumps(single)}
         path = self.output_dir / "old.png"
         self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
         self.assertEqual(self.api._ingest_scanned_file(path, meta), "unchanged")
@@ -292,3 +297,155 @@ class TestPairScan(AdminAPITestCase):
             self.api.db.get_image_prompt_info(str(path))["workflow_data"], workflow
         )
         self.assertEqual(self.api._ingest_scanned_file(path, metadata), "unchanged")
+
+
+def flux_graph(text="a red fox", encoder="CLIPTextEncode"):
+    """A sampler-less Flux graph: the prompt reaches a guider's conditioning (#252)."""
+    return {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "flux.safetensors"}},
+        "2": {"class_type": "DualCLIPLoader", "inputs": {"clip_name1": "t5"}},
+        "6": {"class_type": encoder, "inputs": {"text": text, "clip": ["2", 0]}},
+        "22": {
+            "class_type": "BasicGuider",
+            "inputs": {"model": ["1", 0], "conditioning": ["6", 0]},
+        },
+        "13": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {"guider": ["22", 0], "sigmas": ["17", 0]},
+        },
+        "17": {"class_type": "BasicScheduler", "inputs": {"steps": 20}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["13", 0]}},
+    }
+
+
+class TestSamplerLessScan(AdminAPITestCase):
+    """Graphs where no node takes a positive or negative input (#252)."""
+
+    def _scanned(self, name, prompt_graph, workflow=None):
+        meta = {"prompt": json.dumps(prompt_graph)}
+        if workflow is not None:
+            meta["workflow"] = json.dumps(workflow)
+        return self.api._ingest_scanned_file(self.output_dir / name, meta)
+
+    def _texts(self):
+        return [p["text"] for p in self.api.db.get_recent_prompts()["prompts"]]
+
+    def test_the_one_wired_prompt_is_linked(self):
+        self.assertEqual(self._scanned("flux.png", flux_graph()), "added")
+        self.assertEqual(self._texts(), ["a red fox"])
+
+    def test_a_text_node_feeding_the_encoder_is_one_prompt(self):
+        g = flux_graph(text=["30", 0])
+        g["30"] = {"class_type": "TextInput", "inputs": {"text": "a red fox"}}
+        self.assertEqual(self._scanned("textinput.png", g), "added")
+        self.assertEqual(self._texts(), ["a red fox"])
+
+    def test_a_display_node_that_feeds_nothing_is_never_the_prompt(self):
+        # A real scan stored a "=== GIT CLONE REPORT ===" display text this way.
+        g = flux_graph()
+        g["40"] = {
+            "class_type": "easy showAnything",
+            "inputs": {"text": "=== GIT CLONE REPORT ===\nTotal repositories: 1"},
+        }
+        self.assertEqual(self._scanned("report.png", g), "added")
+        self.assertEqual(self._texts(), ["a red fox"])
+
+    def test_only_unconsumed_texts_store_nothing(self):
+        g = {
+            "40": {"class_type": "easy showAnything", "inputs": {"text": "report"}},
+            "41": {"class_type": "Textbox", "inputs": {"text": "install note"}},
+        }
+        self.assertEqual(self._scanned("notes.png", g), "found")
+        self.assertEqual(self._texts(), [])
+
+    def test_two_wired_texts_are_ambiguous_and_stay_unlinked(self):
+        # A LoRA loader's text input is wired too: the scan stored "<lora:...>".
+        g = flux_graph()
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {
+                "model": ["1", 0],
+                "clip": ["2", 0],
+                "text": "<lora:style:1.00>",
+            },
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        g["6"]["inputs"]["clip"] = ["50", 1]
+        self.assertEqual(self._scanned("lora.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_an_untraceable_wired_text_makes_the_graph_ambiguous(self):
+        # The encoder's text comes from a node no rule reads: never guess the other.
+        g = flux_graph(text=["60", 0])
+        g["60"] = {"class_type": "SomeLLMNode", "inputs": {"seed": 1}}
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "text": "<lora:style:1.00>"},
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        self.assertEqual(self._scanned("llm.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_this_repositorys_prompt_node_is_authoritative(self):
+        g = flux_graph(text="a red fox", encoder="PromptManager")
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "text": "<lora:style:1.00>"},
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        self.assertEqual(self._scanned("own.png", g), "added")
+        self.assertEqual(self._texts(), ["a red fox"])
+
+    def test_a_numeric_text_is_never_stored_as_a_prompt(self):
+        self.assertEqual(self._scanned("number.png", flux_graph(text="2048")), "found")
+        self.assertEqual(self._texts(), [])
+
+    def test_workflow_widget_values_are_never_read(self):
+        # The API text is linked from a node no rule reads; the UI workflow
+        # still holds a stale widget value, which the old scan stored.
+        g = flux_graph(text=["70", 0])
+        g["70"] = {"class_type": "PromptBuilder", "inputs": {"prompt": "x", "n": 2}}
+        workflow = {
+            "nodes": [
+                {"id": 6, "type": "CLIPTextEncode", "widgets_values": ["stale text"]}
+            ]
+        }
+        self.assertEqual(self._scanned("stale.png", g, workflow), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_a_lora_loaders_trigger_word_output_is_not_its_text(self):
+        # The encoder reads the loader's trigger-word output (slot 2), not its
+        # text input: the prompt is unknown, never the "<lora:...>" syntax.
+        g = flux_graph(text=["50", 2])
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "text": "<lora:style:1.00>"},
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        self.assertEqual(self._scanned("trigger.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_a_seeded_text_node_holds_a_template_not_the_prompt(self):
+        g = flux_graph(text=["80", 0])
+        g["80"] = {
+            "class_type": "RandomPrompt",
+            "inputs": {"text": "a {red|blue} fox", "seed": 5},
+        }
+        self.assertEqual(self._scanned("random.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+
+    def test_a1111_parameters_beside_an_undecided_graph_are_read(self):
+        # Metadata savers write both; the old scan read the A1111 positive.
+        g = flux_graph()
+        g["50"] = {
+            "class_type": "Lora Loader (LoraManager)",
+            "inputs": {"model": ["1", 0], "text": "<lora:style:1.00>"},
+        }
+        g["22"]["inputs"]["model"] = ["50", 0]
+        meta = {
+            "prompt": json.dumps(g),
+            "parameters": "a red fox\nNegative prompt: blur\nSteps: 20",
+        }
+        path = self.output_dir / "saver.png"
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
+        self.assertEqual(self._texts(), ["a red fox"])

@@ -1227,7 +1227,9 @@ class PromptRoutesMixin:
         """
         from .images import (
             MAX_LISTING_SELECTION,
+            CollectionMissing,
             ListingSourceChanged,
+            collection_not_found,
             parse_listing_filter,
         )
 
@@ -1252,6 +1254,8 @@ class PromptRoutesMixin:
                 },
                 status=409,
             )
+        except CollectionMissing:
+            return collection_not_found()
         except ValueError as exc:
             return refused(str(exc))
         if selection.truncated:
