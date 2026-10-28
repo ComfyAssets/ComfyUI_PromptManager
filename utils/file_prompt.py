@@ -20,7 +20,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Union
 
 from .generation_params import (
     PLACEHOLDERS,
@@ -95,7 +95,7 @@ def decide_file_prompt(
     metadata: Any,
     *,
     file_name: Optional[str],
-    file_size: Optional[int],
+    file_size: Union[None, int, Callable[[], Optional[int]]],
     in_output: bool,
     lookup: Optional[Callable[[], Any]],
     policy: Policy,
@@ -106,6 +106,8 @@ def decide_file_prompt(
     (the monitor). ``lookup`` returns the file's ``RecordedOutput`` or None;
     it is None when history must not be asked yet. It is called at most
     once, and only for a graph the default profile leaves undecided.
+    ``file_size`` may be a callable: it is read only for a file with prompt
+    metadata whose ``file_info`` has no size.
     """
     if not metadata:
         return Decision(NEVER, try_recorded_run=True)
@@ -127,7 +129,7 @@ def decide_file_prompt(
         lookup,
         policy,
     )
-    return _gated(_decide(found))
+    return _gated(_decide(found), found)
 
 
 def _decide(found: _File) -> Decision:
@@ -165,7 +167,11 @@ def _undecided_graph(found: _File) -> Decision:
         if found.lookup is None and found.in_output:
             return _decision(found, HISTORY, None, "none")
         if not inspected.malformed and inspected.resolution["state"] == "ambiguous":
-            return _never(found, _unlinked(found), try_recorded_run=True)
+            return _never(found, _unlinked(found))
+    if _joins_prompt_manager_parts(found.canonical["prompt"]):
+        # The legacy parser joins prepend + text + append: the text a
+        # PromptManager node stores cannot be told from it (#343).
+        return _never(found, _unlinked(found), try_recorded_run=True)
     text = graph_prompt_text(found.metadata)
     if text is not None:
         return _decision(found, POSITIVE, text, "legacy-parser")
@@ -187,8 +193,35 @@ def _sampler_less(found: _File, graph: Any) -> Decision:
     return _never(found, status, try_recorded_run=True)
 
 
-def _gated(decision: Decision) -> Decision:
-    """Junk text is never stored; the file reports ``found`` (step 13)."""
+_UNDECIDED_SOURCES = ("inspector", "recorded-run", "legacy-parser")
+
+
+def _joins_prompt_manager_parts(graph: Any) -> bool:
+    """Whether a PromptManager-family node has a prepend or append part."""
+    if not isinstance(graph, dict):
+        return False
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        name, inputs = node.get("class_type"), node.get("inputs")
+        if not isinstance(name, str) or "promptmanager" not in name.lower():
+            continue
+        if not isinstance(inputs, dict):
+            continue
+        for key in ("prepend_text", "append_text"):
+            part = inputs.get(key)
+            if part is not None and not (isinstance(part, str) and not part.strip()):
+                return True
+    return False
+
+
+def _gated(decision: Decision, found: _File) -> Decision:
+    """Junk text is never stored (step 13).
+
+    A junk answer of the undecided-graph step keeps that step's unlinked
+    status, so an ambiguous file is still a Needs review case; any other
+    step reports ``found``.
+    """
     if decision.kind not in (PAIR, POSITIVE):
         return decision
     junk = junk_text(decision.text)
@@ -201,7 +234,9 @@ def _gated(decision: Decision) -> Decision:
         source=f"junk:{junk}",
         review=decision.review,
         try_recorded_run=True,
-        unlinked_status="found",
+        unlinked_status=(
+            _unlinked(found) if decision.source in _UNDECIDED_SOURCES else "found"
+        ),
     )
 
 
@@ -263,7 +298,7 @@ def _parsed(metadata: Mapping) -> dict:
     return canonical
 
 
-def _with_size(canonical: dict, file_size: Optional[int]) -> None:
+def _with_size(canonical: dict, file_size: Any) -> None:
     """Record the file's size in ``file_info`` unless the metadata carries one.
 
     Stored as ``generated_images.file_size``; the "new" scan scope skips a
@@ -271,8 +306,10 @@ def _with_size(canonical: dict, file_size: Optional[int]) -> None:
     """
     info = canonical.get("file_info")
     info = dict(info) if isinstance(info, dict) else {}
-    if info.get("size") is None and file_size is not None:
-        info["size"] = file_size
+    if info.get("size") is None:
+        size = file_size() if callable(file_size) else file_size
+        if size is not None:
+            info["size"] = size
     if info:
         canonical["file_info"] = info
 
