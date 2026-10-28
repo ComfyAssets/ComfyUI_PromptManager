@@ -265,15 +265,18 @@ export function openEditDialog({ scope, trigger, item, nouns, onRename, onDelete
         // Kept open: one rename at a time, its outcome shown in place.
         say('');
         for (const button of [remove, cancel, save]) button.disabled = true;
+        // Closed meanwhile (Escape, Close): the outcome is only toasted, and a dialog opened since is left alone.
+        const stillOpen = () => input.isConnected;
         try {
             await onRename(name);
             if (scope.signal.aborted) return;
-            closeWorkspaceDialog();
+            if (stillOpen()) closeWorkspaceDialog();
             showWorkspaceToast(nouns.renamed);
         } catch (error) {
             if (scope.signal.aborted) return;
             for (const button of [remove, cancel, save]) button.disabled = false;
             const outcome = renameError(error) ?? { toast: nouns.renameFailed };
+            if (!stillOpen()) { showWorkspaceToast(outcome.field ?? outcome.toast); return; }
             if (outcome.field) { say(outcome.field); input.focus(); return; }
             if (outcome.close) closeWorkspaceDialog();
             showWorkspaceToast(outcome.toast);

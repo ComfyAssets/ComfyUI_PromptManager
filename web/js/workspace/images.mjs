@@ -466,9 +466,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (!resizeFrame) resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; updateLayout(); });
     });
     scope.cleanup(() => { resize.disconnect(); observer?.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); cancelAnimationFrame(loadFrame); });
-    /** The listing refused the open collection: it was deleted (MC6, D140). */
-    const collectionGone = next => Boolean(filters.collection) && isCollectionGone(next.error);
-    let reportedMissing = false;
+    /**
+     * The listing refused the open collection: it was deleted. A saved view says so in place (MC6, D140); a collection
+     * page reports it (`onCollectionMissing`) once per failed read and meanwhile shows the listing's error and Retry,
+     * so a page whose shell cannot confirm the deletion is never left blank.
+     */
+    const collectionGone = next => Boolean(filters.collection) && !onCollectionMissing && isCollectionGone(next.error);
+    let reportedMissing = null;
     function continuationText(next) {
         if (recovering) return 'Images paused until sources and folders are available.';
         if (collectionGone(next)) return '';
@@ -511,9 +515,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         retry.hidden = !next.error || gone;
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
-        if (gone && onCollectionMissing) {
-            if (!reportedMissing) { reportedMissing = true; queueMicrotask(() => { if (!scope.signal.aborted) onCollectionMissing(); }); }
-        } else if (showsEmpty) {
+        if (onCollectionMissing && filters.collection && isCollectionGone(next.error) && reportedMissing !== next.error) {
+            reportedMissing = next.error;
+            queueMicrotask(() => { if (!scope.signal.aborted) onCollectionMissing(); });
+        }
+        if (showsEmpty) {
             setText(empty, gone ? VIEW_COLLECTION_DELETED : embedded ? emptyText : NO_MATCHES);
             empty.hidden = !gone && (recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0);
         }
