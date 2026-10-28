@@ -262,6 +262,18 @@ test('unavailable model shows inline status and never downloads', async ({ page,
     await expect(dialog(page).locator('.dialog-actions .ca-primary')).toBeFocused();
 });
 
+test('a missing backend package is the server\'s install sentence, no traceback page (#424)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/models', { data: { unavailable: [],
+        missing_packages: { 'wd14-swinv2': ['onnxruntime'] } } })).toBeOK();
+    await openTag(page);
+    const answer = await generated(page);
+    expect(answer.status()).toBe(409);
+    expect(await answer.json()).toMatchObject({ success: false, code: 'model-unavailable' });
+    await expect(status(page)).toHaveText('WD14 SwinV2 needs onnxruntime. Install it into ComfyUI\'s Python: '
+        + 'pip install onnxruntime. Use onnxruntime-gpu for CUDA.');
+    await expect(chips(page)).toHaveCount(0);
+});
+
 test('video tag is manual only', async ({ page, request }) => {
     await openTag(page, VIDEO);
     const preview = dialog(page).locator('video.tag-image-preview');

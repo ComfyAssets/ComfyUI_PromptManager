@@ -3,7 +3,7 @@
 The rule (maintainer test of #284/#288): a file is queued only when its
 final outcome is ambiguous and unlinked. The strict resolver must find it
 ``ambiguous``, the scan's legacy fallback (the browser parser,
-``_graph_prompt_text``) must not link it, and no saved row may link it
+``graph_prompt_text``) must not link it, and no saved row may link it
 already. A file the fallback links, an exact pair the ingester stored and an
 already linked file are never queued. Neither is an ambiguous file with
 nothing to choose: fewer than two of its candidates carry a prompt

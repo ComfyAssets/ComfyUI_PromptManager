@@ -207,17 +207,48 @@ async function readDefaults(api, signal) {
 }
 
 export const UNAVAILABLE_HINT = 'Download it in System › Auto-tagging.';
+const nonEmpty = value => typeof value === 'string' && value.trim() !== '';
+const joined = names => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join(''));
+
+/** The pip names a `/autotag/models` entry says its backend cannot import (#424); only non-empty strings count. */
+export const missingPackages = entry => (object(entry) && Array.isArray(entry.missing_packages)
+    ? entry.missing_packages.filter(nonEmpty) : []);
+
+/** `pip install …` for `entry`'s missing packages: the server's command, else built from the names; '' when none. */
+export function installCommand(entry) {
+    const missing = missingPackages(entry);
+    if (!missing.length) return '';
+    return nonEmpty(entry.install_command) ? entry.install_command : `pip install ${missing.join(' ')}`;
+}
+
+/**
+ * The server's missing-package sentence (`missing_packages_message`, #424) for `name`, else '' (nothing missing):
+ * "<name> needs llama-cpp-python. Install it into ComfyUI's Python: pip install llama-cpp-python. <note>".
+ */
+export function needsPackages(name, entry) {
+    const missing = missingPackages(entry);
+    if (!missing.length) return '';
+    const note = nonEmpty(entry.install_note) ? ` ${entry.install_note}` : '';
+    return `${name} needs ${joined(missing)}. Install ${missing.length === 1 ? 'it' : 'them'} into ComfyUI's Python: `
+        + `${installCommand(entry)}.${note}`;
+}
+
+/** "a, b and c": the missing package names as the sentences list them. */
+export const packageList = entry => joined(missingPackages(entry));
+
 /**
  * Why `model` cannot run, from the `/autotag/models` status (the server's own `model-unavailable` sentence), else ''
- * (downloaded, or the status is unknown: the job then reports a missing model itself).
+ * (ready, or the status is unknown: the job then reports a missing model itself). Not downloaded is named first, then
+ * a backend package that cannot be imported (#424).
  */
 export function modelUnavailable(models, model) {
     const option = modelOf(model);
     requireValue(option, 'Unknown tagging model');
     const status = object(models) && object(models[model]) ? models[model] : null;
-    if (!status || status.downloaded !== false) return '';
-    const name = typeof status.name === 'string' && status.name.trim() ? status.name : option.label.split(' · ')[0];
-    return `${name} is not downloaded. ${UNAVAILABLE_HINT}`;
+    if (!status) return '';
+    const fallback = option.label.split(' · ')[0];
+    if (status.downloaded === false) return `${nonEmpty(status.name) ? status.name : fallback} is not downloaded. ${UNAVAILABLE_HINT}`;
+    return needsPackages(nonEmpty(status.label) ? status.label : fallback.replace(' (Recommended)', ''), status);
 }
 
 function initialState(source, preset) {

@@ -135,6 +135,41 @@ test('a model that is not downloaded is named with the server sentence', () => {
     assert.throws(() => modelUnavailable({}, 'nope'), TypeError);
 });
 
+test('a downloaded model whose backend package is missing names the package and the command (#424)', () => {
+    const { modelUnavailable, needsPackages } = state;
+    const gguf = { downloaded: true, name: 'GGUF (Recommended)', label: 'GGUF JoyCaption', missing_packages: ['llama-cpp-python'],
+        install_command: 'pip install llama-cpp-python',
+        install_note: 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python' };
+    const sentence = 'GGUF JoyCaption needs llama-cpp-python. Install it into ComfyUI\'s Python: pip install llama-cpp-python. '
+        + 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python';
+    assert.equal(modelUnavailable({ gguf }, 'gguf'), sentence);
+    // Not downloaded is named first, in its own sentence.
+    assert.equal(modelUnavailable({ gguf: { ...gguf, downloaded: false } }, 'gguf'),
+        'GGUF (Recommended) is not downloaded. Download it in System › Auto-tagging.');
+    assert.equal(modelUnavailable({ gguf: { ...gguf, missing_packages: [] } }, 'gguf'), '');
+    assert.equal(needsPackages('HuggingFace JoyCaption', { missing_packages: ['accelerate', 'bitsandbytes'] }),
+        'HuggingFace JoyCaption needs accelerate and bitsandbytes. Install them into ComfyUI\'s Python: pip install accelerate bitsandbytes.');
+    assert.equal(needsPackages('X', { missing_packages: ['a', 'b', 'c'], install_command: 'pip install a b c' }),
+        'X needs a, b and c. Install them into ComfyUI\'s Python: pip install a b c.');
+    assert.equal(needsPackages('X', null), '');
+    assert.equal(needsPackages('X', { missing_packages: [1, ''] }), '');
+    // Without the server's label the option's own name is used.
+    assert.ok(modelUnavailable({ 'wd14-vit': { downloaded: true, missing_packages: ['onnxruntime'] } }, 'wd14-vit')
+        .startsWith('WD14 ViT needs onnxruntime.'));
+});
+
+test('the bulk dialog keeps Start disabled while the chosen model misses a package (#424)', async () => {
+    const { createTaggingOptionsController } = state;
+    const models = { 'wd14-vit': { downloaded: true, label: 'WD14 ViT', missing_packages: ['onnxruntime'],
+        install_command: 'pip install onnxruntime' } };
+    const options = createTaggingOptionsController({ api: { get: async () => ({ success: true, models, model_type: 'wd14-vit' }) } });
+    await options.open();
+    assert.equal(options.state.model, 'wd14-vit');
+    assert.equal(options.state.canStart, false);
+    assert.equal(options.state.unavailable, 'WD14 ViT needs onnxruntime. Install it into ComfyUI\'s Python: pip install onnxruntime.');
+    options.dispose();
+});
+
 test('the bulk options start from the server defaults and wait for them before Start', async () => {
     const { createTaggingOptionsController } = state;
     let answer;

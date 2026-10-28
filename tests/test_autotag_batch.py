@@ -553,6 +553,35 @@ class TestStartRefusals(BatchTestCase):
         self.assertEqual(self.api._jobs.list(), [])
         self.assertIsNone(model_gate.holder())
 
+    async def test_a_missing_backend_package_refuses_the_start(self):
+        self.tagger.missing["gguf"] = ["llama-cpp-python"]
+        status, data = await self.start_batch(model_type="gguf")
+        self.assertEqual((status, data["code"]), (409, "model-unavailable"))
+        self.assertEqual(data["success"], False)
+        self.assertTrue(
+            data["error"].startswith("GGUF JoyCaption needs llama-cpp-python."), data
+        )
+        self.assertIn("pip install llama-cpp-python", data["error"])
+        self.assertEqual(self.api._jobs.list(), [])
+        self.assertEqual(self.tagger.load_calls, [])
+        self.assertIsNone(model_gate.holder())
+
+    async def test_a_package_lost_after_the_start_fails_the_job_without_a_traceback(
+        self,
+    ):
+        from py.autotag import MissingBackendPackages
+
+        self.image("a.png", (1, 1, 1))
+        self.tagger.load_error = MissingBackendPackages("gguf", ["llama-cpp-python"])
+        with self.assertNoLogs(self.api.logger, level="ERROR"):
+            job = await self.run_batch(model_type="gguf")
+        self.assertEqual(job.state, "failed")
+        self.assertTrue(
+            job.status_line.startswith("GGUF JoyCaption needs"), job.status_line
+        )
+        self.assertTrue(any("pip install llama-cpp-python" in line for line in job.log))
+        self.assertIsNone(model_gate.holder())
+
     async def test_model_busy_when_the_gate_is_held(self):
         owner = model_gate.new_owner("image-annotations")
         self.assertTrue(model_gate.try_acquire(owner))
@@ -657,6 +686,20 @@ class TestPreview(BatchTestCase):
             self.assertIsNone(llm["estimate_seconds"])
             self.assertIsNone(llm["estimate_device"])
         self.assertEqual([s for s in _strings(skip) if _absolute(s)], [])
+
+    async def test_preview_names_missing_backend_packages(self):
+        self.image("a.png", (1, 1, 1))
+        data = (await self.preview(model_type="gguf"))[1]
+        self.assertEqual(data["model"]["missing_packages"], [])
+        self.assertIsNone(data["model"]["install_command"])
+        self.tagger.missing["gguf"] = ["llama-cpp-python"]
+        data = (await self.preview(model_type="gguf"))[1]
+        self.assertTrue(data["model"]["downloaded"])
+        self.assertEqual(data["model"]["missing_packages"], ["llama-cpp-python"])
+        self.assertEqual(
+            data["model"]["install_command"], "pip install llama-cpp-python"
+        )
+        self.assertIn("DGGML_CUDA", data["model"]["install_note"])
 
     async def test_preview_uses_the_graphics_card_rate_when_wd14_runs_on_cuda(self):
         self.image("a.png", (1, 1, 1))
