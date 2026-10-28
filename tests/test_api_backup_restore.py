@@ -264,6 +264,41 @@ class TestRestoreRoute(BackupRestoreTestCase):
         texts = sorted(p["text"] for p in self.api.db.search_prompts())
         self.assertEqual(texts, ["restored a", "restored b"])
 
+    async def test_restore_round_trip_keeps_tags_and_image_links(self):
+        """A downloaded backup brings back every prompt with its tags and images.
+
+        The legacy admin page's Restore form left for System (#330); this keeps
+        its browser test's data check at the route.
+        """
+        db = self.api.db
+        originals = {}
+        for text, tags, image in (
+            ("round trip cat", ["cats", "pets"], "cat.png"),
+            ("round trip dog", ["dogs"], "dog.png"),
+        ):
+            prompt_id = db.save_prompt(
+                text=text, tags=tags, prompt_hash=generate_prompt_hash(text)
+            )
+            path = self._write(image, b"\x89PNG\r\n\x1a\n")
+            self.assertTrue(db.link_image_to_prompt(str(prompt_id), path))
+            originals[text] = (prompt_id, sorted(tags), [path])
+
+        resp = await self.client.get("/prompt_manager/backup")
+        self.assertEqual(resp.status, 200)
+        backup = self._write("downloaded.db", await resp.read())
+        self.assertTrue(db.delete_prompt(originals["round trip dog"][0]))
+
+        resp = await self._restore(backup)
+        self.assertEqual(resp.status, 200, await resp.text())
+
+        restored = {p["text"]: p for p in self.api.db.search_prompts()}
+        self.assertEqual(sorted(restored), sorted(originals))
+        for text, (prompt_id, tags, paths) in originals.items():
+            self.assertEqual(restored[text]["id"], prompt_id)
+            self.assertEqual(sorted(restored[text]["tags"]), tags)
+            images = self.api.db.get_prompt_images(str(prompt_id))
+            self.assertEqual([image["image_path"] for image in images], paths)
+
     async def test_restore_leaves_no_temp_files_behind(self):
         upload = self._make_db_file(["restored"])
         created = []
