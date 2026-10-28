@@ -294,8 +294,11 @@ class TestUndecidedGraph(unittest.TestCase):
         self.assertEqual(decision.unlinked_status, "ambiguous")
         self.assertEqual(decision.review, "ambiguous")
         self.assertTrue(decision.try_recorded_run)
+        # A linked part the parser does not follow: its answer is the node's
+        # own text, which is what the node stores (#170 parity).
         linked = _prompt_manager_branches(prepend=["99", 0], append="")
-        self.assertEqual(_decide(_graph(linked), lookup=_Lookup()).kind, "never")
+        decision = _decide(_graph(linked), lookup=_Lookup())
+        self.assertEqual((decision.kind, decision.text), ("positive", "a cat"))
 
     def test_step_8_4_prompt_manager_text_without_parts_keeps_the_floor(self):
         """Regression guard (passes on the base): no prepend or append."""

@@ -168,11 +168,11 @@ def _undecided_graph(found: _File) -> Decision:
             return _decision(found, HISTORY, None, "none")
         if not inspected.malformed and inspected.resolution["state"] == "ambiguous":
             return _never(found, _unlinked(found))
-    if _joins_prompt_manager_parts(found.canonical["prompt"]):
+    text = graph_prompt_text(found.metadata)
+    if text is not None and _joined_text(found.canonical["prompt"], text):
         # The legacy parser joins prepend + text + append: the text a
         # PromptManager node stores cannot be told from it (#343).
         return _never(found, _unlinked(found), try_recorded_run=True)
-    text = graph_prompt_text(found.metadata)
     if text is not None:
         return _decision(found, POSITIVE, text, "legacy-parser")
     return _never(found, _unlinked(found), try_recorded_run=True)
@@ -196,22 +196,42 @@ def _sampler_less(found: _File, graph: Any) -> Decision:
 _UNDECIDED_SOURCES = ("inspector", "recorded-run", "legacy-parser")
 
 
-def _joins_prompt_manager_parts(graph: Any) -> bool:
-    """Whether a PromptManager-family node has a prepend or append part."""
+def _joined_text(graph: Any, text: str) -> bool:
+    """Whether ``text`` may hold a PromptManager node's prepend or append.
+
+    True when a PromptManager-family node has a prepend or append part and
+    ``text`` is not the literal ``text`` of one such node (the legacy
+    parser's answer when it does not follow a linked part).
+    """
+    own = _prompt_manager_parts(graph)
+    return own is not None and text.strip() not in own
+
+
+def _prompt_manager_parts(graph: Any) -> Optional[set]:
+    """The literal texts of PromptManager-family nodes with a prepend or
+    append part, or None when no such node exists."""
     if not isinstance(graph, dict):
-        return False
+        return None
+    found = None
     for node in graph.values():
         if not isinstance(node, dict):
             continue
         name, inputs = node.get("class_type"), node.get("inputs")
         if not isinstance(name, str) or "promptmanager" not in name.lower():
             continue
-        if not isinstance(inputs, dict):
+        if not isinstance(inputs, dict) or not _has_part(inputs):
             continue
-        for key in ("prepend_text", "append_text"):
-            part = inputs.get(key)
-            if part is not None and not (isinstance(part, str) and not part.strip()):
-                return True
+        found = found if found is not None else set()
+        if isinstance(inputs.get("text"), str):
+            found.add(inputs["text"].strip())
+    return found
+
+
+def _has_part(inputs: dict) -> bool:
+    for key in ("prepend_text", "append_text"):
+        part = inputs.get(key)
+        if part is not None and not (isinstance(part, str) and not part.strip()):
+            return True
     return False
 
 
