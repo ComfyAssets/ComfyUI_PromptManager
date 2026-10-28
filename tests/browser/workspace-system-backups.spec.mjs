@@ -47,6 +47,17 @@ async function serverJson(request, url) {
     return response.json();
 }
 
+/**
+ * The restore job's own end (#361): its progress stream closes when the job takes its final state, however long the
+ * disk-bound publish takes (bounded by the test, not by a 5 s expect), and the job finished. The toast the page shows
+ * for it is then the page's reaction alone, checked with the default timeout.
+ */
+async function restoreFinished(request, id) {
+    await expect(await request.get(`/prompt_manager/jobs/${id}/events`)).toBeOK();
+    const { job } = await serverJson(request, `/prompt_manager/jobs/${id}`);
+    expect([job.kind, job.state]).toEqual(['restore', 'finished']);
+}
+
 async function openBackups(page) {
     // A fresh page each time: the drafts live for the page session (Q10), and a hash-only goto would not reload.
     if (page.url().endsWith('#/system/backups')) await page.reload();
@@ -216,6 +227,7 @@ test('Restore starts the job, opens Activity; views reload after it finishes', a
     const { job } = await (await applied).json();
     expect([job.kind, job.title, job.cancellable]).toEqual(['restore', 'Database restore', false]);
     await expect(page).toHaveURL(`${workspace}#/activity/${job.id}`);
+    await restoreFinished(request, job.id);
     await expect(toast(page)).toHaveText(/^Database restore finished · Restored \d+ prompts?, /);
     // The library is the backup's again, and the page says so without a reload: the sidebar counts were read again.
     expect(await libraryTotal(request)).toBe(restoredTotal);
@@ -244,7 +256,8 @@ test('a finished restore shows the open page again from the restored data', asyn
     const card = page.locator('#workspace-main article.prompt-card').filter({ hasText: 'S9 prompt the restore removes' });
     await expect(card).toHaveCount(1);
     await expect(await request.post('/__test__/release')).toBeOK();
-    await applied;
+    const { job } = await (await applied).json();
+    await restoreFinished(request, job.id);
     await expect(toast(page)).toHaveText(/^Database restore finished · /);
     // The shelf was read again from the restored library, on the same route.
     await expect(card).toHaveCount(0);
@@ -423,6 +436,7 @@ test('a refused restore reopens its review: Restore retries it, Discard releases
     await dialog(page).getByRole('button', { name: 'Restore', exact: true }).click();
     const { job } = await (await applied).json();
     await expect(page).toHaveURL(`${workspace}#/activity/${job.id}`);
+    await restoreFinished(request, job.id);
     await expect(toast(page)).toHaveText(/^Database restore finished · /);
     expect(await stagesOf(request)).toBe(0);
 });

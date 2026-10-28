@@ -313,6 +313,26 @@ from the tests' package unload (`cleanup_package`), and it removes its own
 ComfyUI-Manager restart through `os.execv`, a closed Windows console, or
 ComfyUI Desktop stopping its server. SQLite's WAL journal covers those.
 
+Jobs running at exit (#376): before any `atexit` callback, Python joins every
+executor thread (`concurrent.futures` registers that join with
+`threading._register_atexit`). The package registers its own callback there
+(`utils/exit_signal.install`, after `concurrent.futures`, so it runs first):
+it sets the exit signal and kills the running encoder processes
+(`shutdown_encoders`, the ffmpeg that never sees Ctrl+C on Windows). The call in
+flight then stops at its next safe point: `Job.cancelled` is True, so every
+check a job already makes between files stops it, `map_parallel` starts no
+further item (`ExitRequested`), the scan walk stops between folders, LoRA
+import staging stops before its next sidecar (also for the legacy scan) and a
+tagging model download stops before its next chunk where huggingface_hub takes
+`tqdm_class` (1.x removes its temp file; 0.x `hf_hub_download` does not take it
+and finishes the file). Xet transfers ignore that checkpoint, so the hook also
+calls hub's own `abort_xet_session` when huggingface_hub is loaded. The
+trigger-word cache load (small JSON sidecars) has no checkpoint. No check sits
+inside a library write. That hook is
+CPython-internal; without it (or when it is refused) `install` returns False and
+exit waits for the call in flight, as before. `tests/test_exit_cancel.py` runs a
+child process with three such calls running and requires its exit within 15 s.
+
 Stop contract: `PromptTracker.shutdown(timeout)`,
 `ImageGenerationHandler.shutdown(timeout)` (restartable),
 `ImageGenerationHandler.close(timeout)` (final: `schedule()` refuses and a
@@ -3991,7 +4011,30 @@ modals use the same routes and keep working.
   other: each file's identity is checked just before its unlink.
 - **Clear all logs** (`POST /logs/truncate`, also the admin page's Clear) empties the
   active log through its handler, deletes the rotated copies (Rule R) and clears the
-  buffer; other files and links are kept. Response keys are unchanged.
+  buffer; other files and links are kept. Response keys are unchanged. It deletes or
+  empties no more than its confirmation showed (#389):
+  - `/logs/files` rows carry `identity`, the string `"<size>:<mtime_ns>:<ino>"` (a
+    string: `mtime_ns` and many inodes are beyond a browser's exact integers). The
+    workspace sends `{"expected": [{name, identity}]}` with the active and rotated rows
+    its dialog was built from. Under the files lock and every handler lock each listed
+    rotated copy must still match (`_matches_review`) and the listed active log must be
+    the same inode, or nothing changes: 409 `logs-changed`. Only listed copies are
+    deleted; one that appeared after the confirmation is kept. A malformed list is 400.
+  - Without a body (the legacy admin page, whose confirm lists nothing; also the
+    workspace when the file list could not be read and the dialog said "deletes its
+    rotated copies") every rotated copy present at the locked rescan is deleted.
+  - Either way, before anything changes (best effort, not a cross-process lock: a
+    write before our own last write, or any while file logging is off here, is not
+    seen): a second writer of the active log (our
+    handler's flushed stream is behind the file's size, or its file is now a rotated
+    copy: another ComfyUI sharing the folder) is 409 `logs-foreign-writer`; an active
+    log with more than one name (`st_nlink > 1` by `lstat` or the handler's `fstat`,
+    NTFS included) is 409 `logs-hard-link`, never truncated (replacing it instead would
+    rename a file our handler holds open, which Windows refuses). Each copy is
+    `lstat`-checked again just before its unlink; one that changed stops the clear there
+    and keeps it, the copies after it and the active log, which is emptied last.
+  - The browser fixture grows the active log through the handler's own stream, since a
+    second handle appending to it is exactly what Clear refuses.
 - **Runtime settings** (`GET/POST /logs/config`): the level (DEBUG…CRITICAL) and console
   logging apply until the server restarts; the retention values are shown read-only in
   the workspace and the API keeps accepting them.
@@ -4661,7 +4704,23 @@ files, oldest forgotten first, keyed by 16-byte digests: 8.6 MiB measured at
 the cap). A file whose inspection raises is logged, counted in
 `review_errors` and reported `unresolved`; the scan goes on. An older version's
 pending, undecided item of bytes now untraced leaves the queue
-(`settle_stale_review_items`), so an item never stays stuck at 409. The 16-candidate limited
+(`settle_stale_review_items`), so an item never stays stuck at 409.
+Saver anchor (#390, `tests/test_review_saver_anchor.py`): the scan and Apply
+resolve with the file's name as the workspace inspector does, so the one saver
+whose `filename_prefix` names the file anchors its branch. A file is never both
+unlinked and unqueued (maintainer ruling): when only that anchor resolves it
+(the named inspection run resolves, the unnamed one does not) and neither the
+default profile nor the parser floor links it, the scan queues it with the
+anchor's pair as its one candidate (evidence `anchor: "saver"`; the page
+preselects it), never linking it. Such an item counts as a choice for the
+untraced settle. Files already linked or resolved by the default path are
+unchanged. No match, several matches or an unfinished walk anchor nothing, and
+the file is queued as before. `REVIEW_RULE_VERSION` is folded into inspection
+item versions, so older inspection items are recorded again once. Apply accepts
+the anchored pair and refuses a choice the anchor contradicts. Measured on the
+maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
+`gpu_unlock_bench` files the inspector resolves are linked by the parser
+floor. The 16-candidate limited
 rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
