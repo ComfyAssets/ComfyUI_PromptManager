@@ -446,3 +446,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
    outside 1–500 is highlighted as a refused setting is (D92). */
 .toolbar #log-limit { inline-size: 6em; min-height: 36px; font-size: 11px; /* D109 */ }
 .toolbar #log-limit[aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; /* D109 */ }
+
+/* #332 D146: the category chip names its origin (" · this image", " · prompt", " · recipe") in muted text that never
+   splits; at 390px the chip may wrap between the category and its origin. */
+.chip .chip-source { color: var(--ca-muted); white-space: nowrap; }

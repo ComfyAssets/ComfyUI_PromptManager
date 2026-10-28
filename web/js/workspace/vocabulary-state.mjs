@@ -254,6 +254,23 @@ export function browseFilters(kind, value) {
         : {text: '', category: value, tags: [], sort: 'newest'};
 }
 
+/**
+ * A category row's count (#332 D143): "N positive prompts" when no image holds it as its own category, "N positive
+ * prompts · M images" when both do, "M images" when only images do (stored rows, files on disk or not).
+ */
+export function categoryRowText(category) {
+    const prompts = count(category?.prompt_count) ? category.prompt_count : 0;
+    const images = count(category?.image_count) ? category.image_count : 0;
+    if (!images) return countOf(prompts, 'positive prompt');
+    if (!prompts) return countOf(images, 'image');
+    return `${countOf(prompts, 'positive prompt')} · ${countOf(images, 'image')}`;
+}
+
+/** Where a category's Browse opens: the Library while prompts hold it, else Images (MC10, its Library would be empty). */
+export function categoryBrowseTarget(category) {
+    return count(category?.prompt_count) && category.prompt_count > 0 ? 'library' : 'images';
+}
+
 /** The exact tag's current owner counts, for the delete confirmation. Throws on any unconfirmed shape. */
 export function readTagImpact(api, row, {signal} = {}) {
     requireRow(row);
