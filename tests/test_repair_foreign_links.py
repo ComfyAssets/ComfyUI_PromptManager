@@ -261,6 +261,9 @@ class DryRunTests(RepairFixture):
         self.assertEqual(wal.stat().st_size if wal.exists() else 0, 0)
         markdown = Path(self.tmp, "plan.md").read_text(encoding="utf-8")
         self.assertIn(f"| {self.rows['A']} |", markdown)
+        long_path = os.path.join("dataset", NAME.format(1))
+        self.assertIn(f"| {long_path} |", markdown, "file paths are never cut")
+        self.assertIn(generate_prompt_hash(TEXTS[1])[:12], markdown)
         self.assertIn("new", markdown)
         self.assertIn("would lose every link", markdown)
 
