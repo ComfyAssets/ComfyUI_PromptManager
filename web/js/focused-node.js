@@ -6,6 +6,9 @@ import {SAVE_WIDGET, normalizeSaveWidget, placeSaveWidgetLast, saveWidget, saves
 
 const names = ['text', 'category', 'tags', 'search_text', 'prepend_text', 'append_text'];
 let nextEditorId = 0;
+// The editor draws these widgets itself; the host keeps them as hidden, zero-height values.
+function hiddenWidgetSize() { return [0, -4]; }
+function hideNativeWidget(widget) { widget.hidden = true; widget.type = 'hidden'; widget.computeSize = hiddenWidgetSize; }
 
 function loadStyles() {
     const href = new URL('./prompt-editor.css', import.meta.url).href;
@@ -44,7 +47,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         for (const name of pair ? [...names,'negative_text'] : names) {
             let widget = this.widgets?.find(item => item.name === name);
             if (!widget) widget = this.addWidget('text', name, '', () => {}, {});
-            widget.hidden = true; widget.type = 'hidden'; widget.computeSize = () => [0, -4];
+            hideNativeWidget(widget);
             widgets.set(name, widget);
         }
         exposeTextSockets(this, textInputs);
@@ -52,7 +55,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         // toolbar, like the other hidden widgets are drawn by the editor.
         placeSaveWidgetLast(this);
         const nativeSave = saveWidget(this);
-        if (nativeSave) { nativeSave.hidden = true; nativeSave.type = 'hidden'; nativeSave.computeSize = () => [0, -4]; }
+        if (nativeSave) hideNativeWidget(nativeSave);
         const element = document.createElement('div'); element.className = `ca-tools pm-focused${split ? ' pm-split' : ''}${pair ? ' pm-pair' : ''}`;
         element.setAttribute('aria-label',pair ? 'Paired prompt editor' : split ? 'Split prompt editor' : 'Focused prompt editor');
         loadStyles(); mountTheme(element, app.ui?.settings, scope);

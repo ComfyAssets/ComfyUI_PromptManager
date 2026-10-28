@@ -45,6 +45,9 @@ test(`${variant} Save to library switch saves its value and loads older workflow
     const toggle=page.getByRole('checkbox',{name:'Save to library',exact:true});
     await expect(toggle).toBeChecked();
     expect(await page.evaluate(()=>node.widgets.map(widget=>widget.name))).toEqual(['text','category','tags','search_text','prepend_text','append_text','save_to_library']);
+    // The native switch is drawn in the toolbar only: the host keeps it hidden and zero-height, like the text fallbacks
+    expect(await page.evaluate(()=>{const widget=node.widgets.find(item=>item.name==='save_to_library');return {type:widget.type,hidden:widget.hidden,size:widget.computeSize()};})).toEqual({type:'hidden',hidden:true,size:[0,-4]});
+    expect(await page.evaluate(()=>node.widgets.find(item=>item.name==='text').computeSize())).toEqual([0,-4]);
     await toggle.uncheck();
     await expect(page.locator('.pm-focused > .pm-editor-status[role=status]')).toHaveText('Save to library is off: runs of this node are not added to the library.');
     const saved=await page.evaluate(()=>node.serialize());
