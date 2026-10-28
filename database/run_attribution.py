@@ -300,18 +300,29 @@ def recorded_output(
 _LOGGER = logging.getLogger("prompt_manager.run_attribution")
 
 
-def recorded_output_lookup(db: Any, *, close: bool = False) -> Callable[[Any], Any]:
+def recorded_output_lookup(
+    db: Any, *, close: bool = False, reference: Optional[dict] = None
+) -> Callable[[Any], Any]:
     """``lookup(path) -> RecordedOutput or None`` for the inspect routes (#386).
 
     Uses ComfyUI's output folder. Any failure (no history, a locked library)
     is logged and names no node, so the file is judged from its own metadata.
     ``close`` closes the calling thread's connection afterwards, for routes
-    that close theirs after reading.
+    that close theirs after reading. ``reference`` (a history occurrence's
+    output reference) spells the file as history recorded it: the route's
+    target is case-normalized on Windows, and history matches names exactly.
     """
 
     def lookup(path: Any) -> Optional[RecordedOutput]:
+        root = host_output_directory()
+        if reference is not None:
+            if reference.get("folder_type") != "output" or not root:
+                return None
+            path = os.path.join(
+                root, reference.get("subfolder") or "", reference.get("filename") or ""
+            )
         try:
-            return recorded_output(db, str(path), host_output_directory())
+            return recorded_output(db, str(path), root)
         except (sqlite3.Error, OSError, ValueError):
             _LOGGER.warning("Recorded run lookup failed", exc_info=True)
             return None

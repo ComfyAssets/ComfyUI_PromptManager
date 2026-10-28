@@ -730,7 +730,9 @@ class HistoryRoutesMixin:
                             "library",
                             {"status": "unavailable" if saved_unavailable else "none"},
                         ),
-                        recorded=recorded_output_lookup(db, close=True),
+                        recorded=recorded_output_lookup(
+                            db, close=True, reference=receipt["reference"]
+                        ),
                     )
                     _reauthorize_current_target(resolved, scope)
                     identity = {

@@ -336,6 +336,28 @@ class TestRecordedOutputNode(RecordedRuns, unittest.TestCase):
                 )
         broken.model.close.assert_called_once_with()
 
+    def test_a_history_reference_spells_the_file_as_history_recorded_it(self):
+        # On Windows the history route's target is normcased (lower case);
+        # history matches names exactly, so the route passes its reference.
+        from database.run_attribution import recorded_output_lookup
+
+        upper = os.path.join(self.output, "sub", "IMG_00001_.png")
+        Path(upper).write_bytes(b"png")
+        self.record_run(self.db, self.output, [("sub", "IMG_00001_.png")], [])
+        target = os.path.join(self.output, "sub", "img_00001_.png")
+        reference = {
+            "folder_type": "output",
+            "subfolder": "sub",
+            "filename": "IMG_00001_.png",
+        }
+        with mock.patch(
+            "database.run_attribution.host_output_directory", return_value=self.output
+        ):
+            found = recorded_output_lookup(self.db, reference=reference)(target)
+            self.assertEqual(found.saver_id, "9")
+            temp = {**reference, "folder_type": "temp"}
+            self.assertIsNone(recorded_output_lookup(self.db, reference=temp)(target))
+
     def test_a_library_without_history_tables_names_nothing(self):
         broken = mock.Mock()
         broken.model.get_connection.return_value.execute.side_effect = (
