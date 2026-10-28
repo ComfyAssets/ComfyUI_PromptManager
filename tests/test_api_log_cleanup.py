@@ -415,5 +415,74 @@ class TestApply(LogCleanupTestCase):
         self.assertEqual(job.status_line, "The log cleanup failed.")
 
 
+TRUNCATE = "/prompt_manager/logs/truncate"
+FILES = "/prompt_manager/logs/files"
+
+
+class TestClearAllLogsConfirmed(LogCleanupTestCase):
+    """#389: POST /logs/truncate deletes no more than the confirmation listed."""
+
+    async def confirmed(self):
+        response = await self.client.request("GET", FILES)
+        data = await response.json()
+        return [
+            {"name": row["filename"], "identity": row["identity"]}
+            for row in data["files"]
+            if row["kind"] in ("active", "rotated")
+        ]
+
+    def handler(self):
+        return next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+
+    async def test_a_rollover_after_the_confirmation_is_refused(self):
+        self.write("prompt_manager.log.1", b"a" * 100)
+        self.write("prompt_manager.log.2", b"b" * 200)
+        expected = await self.confirmed()
+        self.app_logger.info("written after the confirmation")
+        self.handler().doRollover()
+        before = self.snapshot()
+        body = await self.post(TRUNCATE, {"expected": expected}, 409)
+        self.assertEqual(body["success"], False)
+        self.assertEqual(body["code"], "logs-changed")
+        self.assertIn("nothing was cleared", body["error"])
+        self.assertEqual(self.snapshot(), before)
+
+    async def test_the_confirmed_files_are_cleared(self):
+        self.write("prompt_manager.log.1", b"a" * 100)
+        expected = await self.confirmed()
+        body = await self.post(TRUNCATE, {"expected": expected}, 200)
+        self.assertEqual(
+            sorted(body["results"]["truncated"]),
+            ["prompt_manager.log", "prompt_manager.log.1"],
+        )
+        self.assertEqual(self.names(), ["prompt_manager.log"])
+
+    async def test_the_legacy_call_without_a_body_still_clears(self):
+        self.write("prompt_manager.log.1", b"a" * 100)
+        response = await self.client.request("POST", TRUNCATE)
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.names(), ["prompt_manager.log"])
+
+    async def test_a_foreign_writer_is_refused_with_a_clear_message(self):
+        self.write("prompt_manager.log.1", b"a" * 100)
+        with open(self.path("prompt_manager.log"), "ab") as other:
+            other.write(b"line from another ComfyUI\n")
+        body = await self.post(TRUNCATE, {"expected": await self.confirmed()}, 409)
+        self.assertEqual(body["code"], "logs-foreign-writer")
+        self.assertIn("Another program is writing", body["error"])
+        self.assertIn("prompt_manager.log.1", self.names())
+
+    async def test_a_malformed_confirmation_is_400(self):
+        self.write("prompt_manager.log.1", b"a" * 100)
+        for expected in ("all", [{"name": "prompt_manager.log.1", "identity": 5}]):
+            with self.subTest(expected=expected):
+                await self.post(TRUNCATE, {"expected": expected}, 400)
+        self.assertIn("prompt_manager.log.1", self.names())
+
+
 if __name__ == "__main__":
     unittest.main()

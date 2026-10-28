@@ -11,6 +11,11 @@ import stat
 
 from aiohttp import web
 
+try:
+    from ...utils.logging_config import ClearRefused, parse_confirmed
+except ImportError:  # loaded as the top-level ``py`` package (tests)
+    from utils.logging_config import ClearRefused, parse_confirmed
+
 # Keys PromptManagerLogger.update_config() understands. Anything else is
 # rejected so a client cannot inject arbitrary entries into the logging config.
 LOG_CONFIG_KEYS = frozenset(
@@ -263,10 +268,43 @@ class LoggingRoutesMixin:
             )
 
     async def truncate_logs(self, request):
-        """Truncate all log files."""
+        """Clear all logs: what ``{"expected": [...]}`` lists, or all (#389).
+
+        ``expected`` holds the ``{name, identity}`` rows of ``/logs/files`` the
+        confirmation showed. Without a body (the legacy admin page, whose
+        confirmation lists nothing) every rotated copy present now is deleted.
+        A malformed list is 400; a clear that would empty or delete what was
+        not confirmed changes nothing and is 409 with the reason's ``code``.
+        """
         try:
+            args = ()
+            if request.can_read_body:
+                data, error_response = await self._read_json_body(request)
+                if error_response is not None:
+                    return error_response
+                if "expected" in data:
+                    try:
+                        parse_confirmed(data["expected"])
+                    except ValueError:
+                        return web.json_response(
+                            {
+                                "success": False,
+                                "error": "expected must list name and identity"
+                                " rows from /logs/files",
+                            },
+                            status=400,
+                        )
+                    args = (data["expected"],)
             logger_manager = self._get_logger_manager()
-            results = await self._run_in_executor(logger_manager.truncate_logs)
+            try:
+                results = await self._run_in_executor(
+                    logger_manager.truncate_logs, *args
+                )
+            except ClearRefused as refused:
+                return web.json_response(
+                    {"success": False, "error": str(refused), "code": refused.code},
+                    status=409,
+                )
 
             return web.json_response(
                 {

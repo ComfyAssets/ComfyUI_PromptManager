@@ -31,6 +31,7 @@ from .inspection_service import CurrentFileChanged, inspect_current_file
 try:
     from ...database.execution_history import HistoryEpochChanged
     from ...database.history_gallery import read_history_gallery
+    from ...database.run_attribution import recorded_output_lookup
     from ...database.history_reads import (
         HistoryCaptureChanged,
         OutputPosition,
@@ -42,6 +43,7 @@ try:
 except ImportError:
     from database.execution_history import HistoryEpochChanged
     from database.history_gallery import read_history_gallery
+    from database.run_attribution import recorded_output_lookup
     from database.history_reads import (
         HistoryCaptureChanged,
         OutputPosition,
@@ -727,6 +729,9 @@ class HistoryRoutesMixin:
                         library=saved.get(
                             "library",
                             {"status": "unavailable" if saved_unavailable else "none"},
+                        ),
+                        recorded=recorded_output_lookup(
+                            db, close=True, reference=receipt["reference"]
                         ),
                     )
                     _reauthorize_current_target(resolved, scope)

@@ -181,10 +181,12 @@ check, so run it before pushing a new or deleted frontend file instead of
 waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job that passes only when every frontend job succeeds: the three
-`frontend coverage (shard N/3)` jobs, `frontend coverage (merge)`, and the four
-`page workflows (firefox|webkit, shard N/2)` jobs. A failed, cancelled or skipped
-job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+aggregate job. It requires the three `frontend coverage (shard N/3)` jobs and
+`frontend coverage (merge)` to succeed on every event. The four
+`page workflows (firefox|webkit, shard N/2)` jobs run only in the merge queue,
+on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
+`viewerjs` requires them to be skipped on a pull request and to succeed
+everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
 runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/3`
 (shard 1 also runs the node units and the viewer suite, shard 3 the vendor pins
 and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
@@ -271,6 +273,13 @@ gh run view <run id> --json jobs                          # shows a job that alr
 gh run view --job <job id> --log-failed                   # that job's failed log, at once
 ```
 
+Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures first show up in the
+merge queue, on the merge-group commit rather than the
+pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
+(or `viewerjs-check.yml`) and match its head branch
+(`gh-readonly-queue/main/pr-<N>-...`). Windows and macOS failures show up only
+after the merge, in `gh run list --workflow portability.yml`.
+
 Start fixing as soon as a failed log shows the cause, but push the fix only after
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
 so a push cancels the running jobs and can hide a second failure.
@@ -312,6 +321,26 @@ from the tests' package unload (`cleanup_package`), and it removes its own
 `atexit` callback. Nothing runs when the process is killed: SIGTERM, a
 ComfyUI-Manager restart through `os.execv`, a closed Windows console, or
 ComfyUI Desktop stopping its server. SQLite's WAL journal covers those.
+
+Jobs running at exit (#376): before any `atexit` callback, Python joins every
+executor thread (`concurrent.futures` registers that join with
+`threading._register_atexit`). The package registers its own callback there
+(`utils/exit_signal.install`, after `concurrent.futures`, so it runs first):
+it sets the exit signal and kills the running encoder processes
+(`shutdown_encoders`, the ffmpeg that never sees Ctrl+C on Windows). The call in
+flight then stops at its next safe point: `Job.cancelled` is True, so every
+check a job already makes between files stops it, `map_parallel` starts no
+further item (`ExitRequested`), the scan walk stops between folders, LoRA
+import staging stops before its next sidecar (also for the legacy scan) and a
+tagging model download stops before its next chunk where huggingface_hub takes
+`tqdm_class` (1.x removes its temp file; 0.x `hf_hub_download` does not take it
+and finishes the file). Xet transfers ignore that checkpoint, so the hook also
+calls hub's own `abort_xet_session` when huggingface_hub is loaded. The
+trigger-word cache load (small JSON sidecars) has no checkpoint. No check sits
+inside a library write. That hook is
+CPython-internal; without it (or when it is refused) `install` returns False and
+exit waits for the call in flight, as before. `tests/test_exit_cancel.py` runs a
+child process with three such calls running and requires its exit within 15 s.
 
 Stop contract: `PromptTracker.shutdown(timeout)`,
 `ImageGenerationHandler.shutdown(timeout)` (restartable),
@@ -361,6 +390,10 @@ A spec performance budget gets two tests:
   round's p95; the failure message lists every timing. Example:
   `test_filter_budget` (Images filters, spec D12: p95 < 150 ms at 50,000 files
   and 20,000 links).
+
+A hot SQLite read that returns many rows aggregates them into one step
+(`json_group_array`) instead of stepping once per row, so it does not wait for
+the GIL once per row while ComfyUI generates (#354, `get_image_link_matches`).
 
 The `perf budget` job in `.github/workflows/test.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
@@ -519,29 +552,95 @@ Before changing paths, SQLite, streams, restore or cleanup:
   open with `FirstWriterHold`) and give peers that must all succeed the
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
-- Run native Windows CI early for these changes and include a Windows impact and
-  evidence note in the PR. All twelve OS/Python combinations and every applicable
+- Run native Windows CI early for these changes. Pull requests and the merge
+  queue run only Linux, so start Windows and macOS on the branch with
+  `gh workflow run portability.yml --ref <branch>`.
+  Include a Windows impact and evidence note in the PR. All six Windows/macOS
+  combinations in that run, every Linux leg and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
+## Pull requests and the merge queue
+
+Each PR runs the full matrix once, in the merge queue (#420). The event decides
+what runs:
+
+| Job | `pull_request` | `merge_group`, push to `main`, `workflow_dispatch` |
+| --- | --- | --- |
+| `py3.12 on ubuntu-latest` | runs | runs |
+| `py3.13 on ubuntu-latest`, `py3.14 on ubuntu-latest` | not created | run |
+| `real ComfyUI compatibility` | skipped | runs |
+| `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
+| `frontend coverage (shard N/3)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 3) | run | run |
+| `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
+| `all tests`, `viewerjs` (gates) | run | run |
+| `perf budget` | skipped | push and dispatch only (not in the queue) |
+| `py3.12-3.14 on windows-latest/macos-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
+
+GitHub has one required set for pull requests and the queue. A job skipped by
+its `if:` reports Success. A dropped matrix leg never reports, so it would stay
+pending. That is why `all tests` (in `test.yml`) and `viewerjs` carry the
+guarantee:
+- On a pull request they require the subset to succeed and the queue-only jobs
+  to be skipped.
+- On every other event they require every job to succeed.
+
+So a merge group cannot turn green unless all three Linux Python legs, real
+ComfyUI and the four browser shards passed.
+
+Windows and macOS (Python 3.12-3.14) are out of the blocking path for now
+(maintainer, 2026-10-28). They run in `portability.yml` on every push to `main`,
+nightly and on demand, and no context there is required. A red portability run
+is still a failure: fix it at its cause, not by rerunning, and have every one
+green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
+event split and runs both gate scripts for each event.
+
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks: all twelve Python/OS
-combinations, Python coverage, formatting, frontend modules, `viewerjs`, `real ComfyUI compatibility`,
-and `bandit (high severity)`.
-The branch must be current with main, and administrators follow the same checks.
+`.github/branch-protection.json` records the required checks:
+`py3.12 on ubuntu-latest`, `coverage gate (85%)`, `black and flake8`,
+`frontend modules`, `all tests`, `viewerjs`, `real ComfyUI compatibility` and
+`bandit (high severity)`. Each one reports on a pull request.
+The same set lives in two places, and both must change together: the `main`
+ruleset (25960526, which also holds the merge queue) and the classic branch
+protection on `main`, which the manifest mirrors. GitHub requires the union of
+the two, so a context left in either one blocks every PR that does not report it.
 It does not require an additional human approval.
 
 A repository administrator applies the configuration after the new workflow is
 passing, then verifies it:
 
 ```sh
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 \
+  | jq '.rules[] | select(.type == "required_status_checks") | [.parameters.required_status_checks[].context]'
+```
+
+A PUT replaces the whole `rules` array, so edit the current ruleset in place.
+Keep the `deletion`, `non_fast_forward` and `merge_queue` rules, and give every
+context `integration_id` 15368 (GitHub Actions), so no other integration can
+post a required check. Save the current ruleset first; it is the rollback:
+
+```sh
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 > ruleset-before.json
+jq '{name, target, enforcement, conditions, bypass_actors, rules: [.rules[]
+     | if .type == "required_status_checks"
+       then .parameters.required_status_checks = [$ARGS.positional[] | {context: ., integration_id: 15368}]
+       else . end]}' ruleset-before.json --args "py3.12 on ubuntu-latest" "..." > ruleset-new.json
+gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 --input ruleset-new.json
+```
+
+Afterwards, read it back. Check that the `merge_queue` rule is still there and
+that every context keeps its `integration_id`. Then apply the manifest to the
+classic protection and read both back:
+
+```sh
 gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection \
   --input .github/branch-protection.json
 gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required_status_checks
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rules/branches/main
 ```
-
-Update the manifest whenever required job names change. Keep the frontend check
+ Update the manifest whenever
+required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
 
 ## Unified workspace
@@ -794,6 +893,25 @@ unattributed stage, when it is a plain first stage: not a detailer, no prompt ov
 set, and no listed sampler in its own latent ancestry (else it stays unattributed) (`tests/test_resolver_saver_anchor.py`, shapes in
 `tests/saver_anchor_graphs.py` from the maintainer's `gpu_unlock_bench`, dataset and
 ANIMA runs; browser parity through the `anchor-*` cases, which carry `__file_name`).
+Recorded run history (#386): both inspect routes (Images and a history occurrence)
+ask `database.run_attribution.recorded_output` inside the file's stat window. It
+answers only for a file that exactly one recorded run reported and that was written
+during that run (the #342 rules): the one output node that run reported it from (none
+when several did) and, per sampler anchor, the effective texts PromptManager recorded
+at execution (a role only inferred from the graph is none). Only when the file alone
+leaves the prompt open (`ambiguous` or `unresolved`) the inspector resolves again
+anchored on that node (`recorded_saver_id`, walked like a file-name match; a file
+name naming a different saver contradicts history and anchors nothing), and keeps
+that result only when history's saver chose its samplers (`recorded_anchor`) and it
+names the positive (resolved, or a guider with no negative); its `graph-inferred`
+sides read `recorded-run` ("Recorded run" badge, ranked below every "Workflow
+inferred" source). Still open at the one sampler that saver leads to, with that
+sampler's positive text recorded (a language model's output feeding PromptManager),
+the recorded texts show as `execution`. Outputs and texts are read in one
+transaction. A result the file resolves alone never changes; a lookup failure is
+logged and judges the file alone; local Inspect and ingestion are unchanged
+(`tests/test_recorded_saver_anchor.py`, `tests/test_run_attribution.py`,
+`tests/test_api_history_outputs.py`).
 
 `tools/inspection_corpus.py --root DIR --out JSONL [--workers N] [--baseline JSONL]
 [--summary TXT] [--code TREE]` measures a media folder read-only against the #240
@@ -2439,6 +2557,14 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
+System is the home for settings and maintenance (#330 System S13). The legacy pages keep
+their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
+Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
+thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
+System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
+keeps only its own settings in Page options. What left the legacy pages is listed in
+"Legacy System UI removed by S13".
+
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
 `expected_revision`, #220), then the runtime fields. A failed domain keeps its drafts and
@@ -3983,7 +4109,30 @@ modals use the same routes and keep working.
   other: each file's identity is checked just before its unlink.
 - **Clear all logs** (`POST /logs/truncate`, also the admin page's Clear) empties the
   active log through its handler, deletes the rotated copies (Rule R) and clears the
-  buffer; other files and links are kept. Response keys are unchanged.
+  buffer; other files and links are kept. Response keys are unchanged. It deletes or
+  empties no more than its confirmation showed (#389):
+  - `/logs/files` rows carry `identity`, the string `"<size>:<mtime_ns>:<ino>"` (a
+    string: `mtime_ns` and many inodes are beyond a browser's exact integers). The
+    workspace sends `{"expected": [{name, identity}]}` with the active and rotated rows
+    its dialog was built from. Under the files lock and every handler lock each listed
+    rotated copy must still match (`_matches_review`) and the listed active log must be
+    the same inode, or nothing changes: 409 `logs-changed`. Only listed copies are
+    deleted; one that appeared after the confirmation is kept. A malformed list is 400.
+  - Without a body (the legacy admin page, whose confirm lists nothing; also the
+    workspace when the file list could not be read and the dialog said "deletes its
+    rotated copies") every rotated copy present at the locked rescan is deleted.
+  - Either way, before anything changes (best effort, not a cross-process lock: a
+    write before our own last write, or any while file logging is off here, is not
+    seen): a second writer of the active log (our
+    handler's flushed stream is behind the file's size, or its file is now a rotated
+    copy: another ComfyUI sharing the folder) is 409 `logs-foreign-writer`; an active
+    log with more than one name (`st_nlink > 1` by `lstat` or the handler's `fstat`,
+    NTFS included) is 409 `logs-hard-link`, never truncated (replacing it instead would
+    rename a file our handler holds open, which Windows refuses). Each copy is
+    `lstat`-checked again just before its unlink; one that changed stops the clear there
+    and keeps it, the copies after it and the active log, which is emptied last.
+  - The browser fixture grows the active log through the handler's own stream, since a
+    second handle appending to it is exactly what Clear refuses.
 - **Runtime settings** (`GET/POST /logs/config`): the level (DEBUG…CRITICAL) and console
   logging apply until the server restarts; the retention values are shown read-only in
   the workspace and the API keeps accepting them.
@@ -4029,6 +4178,9 @@ Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
 auto-tag / review", which the Images selection bar owns, not a System section. A row that
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
 file. Anchors are line numbers on `main` at this PR.
+
+S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
+"Legacy System UI removed by S13" below lists every removed element against its row.
 
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
 - no owner, or a status outside the three;
@@ -4103,6 +4255,62 @@ list stay unscoped: any row's control proves them.
 | API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
 
+### Legacy System UI removed by S13
+
+System S13 (#330) points the legacy pages' System buttons at native System (a link that
+opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
+only when its row above is `covered`. One row per removed capability: Capability is the
+exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
+Removed methods list what went (`—` for none), and Native test copies that row's Test
+cell. An id that stays on a System link is not listed, only its handler. The gallery's
+Default View Mode left Page options too: System › Appearance's Default layout is the one
+default-layout control. Nothing writes the legacy `defaultViewMode` any more; a stored
+value still picks the view the legacy gallery opens in (grid otherwise), and Page options
+Save and Reset keep it.
+
+`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
+`covered` or copies another test, when an id or method is listed twice for one page, or
+when a listed id is still on its page (`id="…"` in the markup or the script, a
+`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
+method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
+kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
+legacy page workflows), not by this check.
+
+| Capability | Page | Removed ids | Removed methods | Native test |
+| --- | --- | --- | --- | --- |
+| Diagnostics run | admin | `#diagnosticsModal`, `#runDiagnosticsBtn`, `#diagnosticsContent` | `showDiagnosticsModal()`, `closeDiagnostics()`, `runDiagnostics()`, `renderDiagnostics()` | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
+| Synthetic image-link test | admin | `#testImageLinkBtn` | `testImageLink()` | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
+| View logs with level and limit | admin | `#logsModal`, `#logLevel`, `#logLimit`, `#refreshLogsBtn`, `#logsContainer` | `showLogsModal()`, `closeLogs()`, `refreshLogs()`, `displayLogs()` | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
+| Log statistics | admin | `#logStatsTotal`, `#logStatsErrors`, `#logStatsWarnings`, `#logStatsLevel`, `#logStatsSize` | `loadLogStats()`, `formatBytes()` | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
+| Log files list and download | admin | `#downloadLogsBtn`, `#logFilesList` | `loadLogFiles()`, `downloadLogs()`, `downloadLogFile()` | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
+| Clear/truncate logs | admin | `#clearLogsBtn` | `clearLogs()` | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
+| Set log level (incl. CRITICAL), console logging | admin | `#updateLogConfigBtn`, `#setLogLevel`, `#consoleLogging` | `loadLogConfig()`, `updateLogConfig()` | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
+| Image scan directories add/remove | admin | `#scanPathsList`, `#addScanPathBtn` | `renderScanPaths()`, `addScanPath()`, `removeScanPath()`, `_collectScanPaths()` | Add source validates on the server, then marks the host draft dirty; Save persists (workspace-system-sources.spec.mjs) |
+| Currently monitoring list + Refresh | admin | `#refreshMonitoringStatus`, `#monitoringStatus` | `updateMonitoringStatus()` | watching only with a live observer; restart pending otherwise (workspace-system-sources.spec.mjs) |
+| Search results auto-hide `result_timeout` | admin | `#resultTimeout` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
+| Web UI display mode | admin | `#webuiDisplayMode` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
+| Worker threads | admin | `#workerThreads`, `#workerThreadsValue` | `renderWorkerThreads()` | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
+| LoraManager badge, enable, path, trigger words, CivitAI key, clear key | admin | `#loraDetectionBadge`, `#loraEnabled`, `#loraSettings`, `#loraManagerPath`, `#loraTriggerWords`, `#civitaiApiKey`, `#clearCivitaiKey` | `detectLoraManager()`, `_bindLoraEvents()`, `saveLoraSettings()` | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
+| LoRA data import with progress | admin | `#loraImportModal`, `#loraImportBtn`, `#loraImportStatus`, `#loraImportPercent`, `#loraImportBar`, `#loraImportProcessed`, `#loraImportImported` | `runLoraImport()` | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
+| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | admin | `#maintenanceModal`, `#cleanup_duplicates`, `#vacuum`, `#cleanup_orphaned_images`, `#prune_orphaned_prompts`, `#runMaintenanceBtn`, `#maintenanceResults` | `showMaintenanceModal()`, `closeMaintenance()`, `runMaintenance()`, `renderMaintenanceResults()` | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
+| Maintenance check_hash_duplicates, check_consistency | admin | `#check_hash_duplicates`, `#check_consistency` | — | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
+| Maintenance statistics (database info) | admin | `#statistics` | — | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
+| Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
+| Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
+| Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
+| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
+| Default view mode, image quality | gallery | `#defaultViewModeSelect`, `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
+| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
+| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
+| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
+| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
+| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
+| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
+| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
+| Auto-tag model download | admin | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Auto-tag model download | gallery | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Unload model | gallery | — | `unloadModel()` | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
+
 ### Browser cache ownership (#222)
 
 The legacy gallery's Clear cache used to delete every localStorage key starting `pm_` or
@@ -4120,17 +4328,15 @@ page writes a key that is neither a preference nor inventoried, writes one it ca
 CacheStorage or IndexedDB; `the storage scan reports every way of writing browser
 storage` pins those patterns. It skips `web/lib` (third-party builds) and the pinned
 Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
-its storage belongs to the Toolkit repository and a new pin is reviewed on its own). The
-gallery's server thumbnail clear stays its own request and runs first: refused or
-unreachable, it changes nothing and says so (the old code toasted success when the
-request failed); refused browser storage is reported, never hidden
-(`tests/js/legacy-refusals.test.js`; the browser case `the gallery cache clear keeps
-preferences and other tools caches` in `workflows.spec.mjs`).
+its storage belongs to the Toolkit repository and a new pin is reviewed on its own). Since
+System S13 (#330) the legacy gallery no longer offers Clear cache: System › Maintenance's
+Metadata cache and Thumbnail cache reviews own both parts (removal table above), and
+`cache-ownership.js` serves the native review.
 
-The legacy duplicates dialog's View Full now names its source (`?root=<index>`, with the
-path URL-encoded) when the gallery's output folder is a listed source; before, the serve
-route opened the first source holding a file at that path
-(`test_view_full_names_the_gallery_folder_source`).
+The duplicates dialog's View Full named its source (`?root=<index>`, with the path
+URL-encoded) when the gallery's output folder is a listed source
+(`test_view_full_names_the_gallery_folder_source`); S13 removed the legacy dialog, and the
+route keeps that behaviour for System › Maintenance's duplicate review.
 
 ### Library location contract (#249 System S6b)
 
@@ -4422,8 +4628,18 @@ Filters (`mode=workspace`; anything invalid is 400 "Invalid gallery filters"):
   rating 5 to 1, then linked but unrated, then unlinked and ambiguous; ties break
   newest first. A signed cursor covers every filter and the sort, so reusing it
   with a change is 400.
-- One link read (`get_image_link_matches`, streamed and bounded to the listed
-  paths) serves the filters, the rating sort and the count.
+- One link read (`get_image_link_matches`) serves the filters, the rating sort
+  and the count. SQLite returns its rows as one JSON value in one step (#354):
+  Python's `sqlite3` releases and retakes the GIL around every step, and while
+  ComfyUI generates each retake can wait on the busy thread, so a read that
+  stepped once per linked row took seconds. The result keeps only the listed
+  paths; peak memory grows with the database's matching linked rows (about
+  530 bytes each, freed on return). When the JSON step fails (a SQLite without
+  JSON functions, a BLOB value, a JSON text over SQLite's length limit) the read
+  streams the rows as before and logs one warning per process; a missing JSON
+  function stops the attempt for the rest of the process. An interrupted read
+  (Move library) raises as before. `tests/test_database_link_matches.py` proves both reads
+  equal on every filter and on odd values.
 
 `positive_count` is the number of distinct linked positives over the full matching
 set, not the page:
@@ -4473,6 +4689,70 @@ concept fixture stars the concept's favorites (each other prompt's first image).
 - Schema validation (`image_favorites_schema_error`) runs at startup and on
   restore. Old backups without the table restore, and backup plus restore keeps
   WAL-resident favorites and closes every handle (`tests/test_database_backup.py`).
+
+Image categories (#332, store and routes): an image file may carry its own
+category; without one it shows the category its link supplies.
+
+- The table is `image_categories(root_key, relative_path, category, updated_at)`
+  with primary key `(root_key, relative_path)` and the index
+  `idx_image_categories_category`. `migrate_image_categories` creates both empty
+  inside a savepoint, with no backfill. It reads only `sqlite_master` and its own
+  table's PRAGMAs, and writes only its two objects. `tests/test_image_categories.py`
+  checks this with an SQLite authorizer on a 23,000-link library, and checks that
+  `prompts` and `prompt_pairs` `(id, category, updated_at)` are byte-for-byte equal
+  afterwards.
+- The **file key** is `image_category_key(sources, absolute path)` in
+  `py/api/images.py`: the deepest output source that contains the path (compared
+  lexically, never resolving the path, so a symlinked subfolder keeps its listed
+  spelling) and the path below it, keyed with the favorites helpers. A source
+  matches by its real path or its configured spelling (a detected output folder
+  can be a symlink). Without nested sources it equals a favorite's key. Every write and read uses it. A path
+  that no source contains has no key, so it has no own category.
+- `image_categories_schema_error` checks the structure at startup (a value saved
+  under older rules never stops the library opening; a table without its index,
+  which this code never leaves, is repaired by the install). Restore also checks the
+  values: text columns, keys within the favorites bound, `category` 1 to 100
+  characters with no character below U+0020 and no leading or trailing space, and
+  `updated_at` of at most 64 bytes. Backups made before #332 restore without the
+  table; a migrated restore stage must have it (`require_library_state`).
+- `PUT /prompt_manager/images/category` `{items, category}` answers
+  `{success, category, updated, unchanged, not_found}`.
+  `DELETE /prompt_manager/images/category` `{items}` answers `{success, cleared}`.
+  `GET /prompt_manager/images/categories` answers `{success, categories}`: the
+  sorted distinct own values whose file is in some source's listing.
+- `items` are 1 to 500 Images targets `{root_index, root_scope, path}`, checked by
+  `py/api/media_target.py` (shared with Collections, #331). Refusals:
+  - 400: a malformed body, a field other than `items` and `category`, a
+    `root_index` outside the output sources (a LoRA folder), or a category that is
+    blank after stripping, over 100 characters, or holds a control character;
+  - 403: traversal, a drive, a backslash, a non-media name ("Only media files can
+    have a category") or a key over the stored bound;
+  - 409 `source-changed`: a stale `root_scope`;
+  - 413: a body over 1 MiB.
+  Any invalid item fails the whole request before a write. Targets that fold to one
+  key are written and counted once. Instead of `items` a request may send `filter`,
+  the Images listing's own query ("Select all N matching", #392, keys as in
+  `parse_listing_filter`), resolved now: over 500 matches is a 400
+  `too-many-images` ("Select at most 500 images."), a renumbered source a 409
+  `source-changed`.
+- PUT writes only files the source's listing holds and counts the rest in
+  `not_found`; when none is listed it answers 404 `files-not-found` and writes
+  nothing. A file that already has the value counts as `unchanged` and keeps its
+  `updated_at`. DELETE accepts any well-formed target, so a missing file's
+  category can still be removed. An unexpected failure is a logged 500 ("The
+  category could not be changed." / "Image categories could not be read.") without
+  the exception text. The routes never read or write `prompts`, `prompt_pairs` or
+  `generated_images`; `POST /prompt_manager/bulk/category` is unchanged.
+- Duplicate cleanup (System › Maintenance): the kept copy's own category wins. A
+  kept copy without one receives the removed copy's (`COPY_SQL`, part of the
+  cleanup's query-plan check). The removed copy's row is never deleted, so a
+  give-back (the kept copy changed) and a failed delete lose nothing. The job log
+  says "Kept N image categories on the kept copies".
+  `tests/test_duplicate_image_categories.py` covers nested sources in both orders.
+- A moved, renamed or deleted file's row stays and is hidden; a file that later
+  appears at the same path shows it. The real-host check is the last test in
+  `tests/comfyui/image-attribution.spec.mjs`: PUT, list, DELETE on a generated
+  output.
 
 Image annotations schema (#249, `database/annotation_schema.py`): the group
 `media_annotation_metadata` (one row: schema version, `image_index_revision`),
@@ -4596,7 +4876,23 @@ files, oldest forgotten first, keyed by 16-byte digests: 8.6 MiB measured at
 the cap). A file whose inspection raises is logged, counted in
 `review_errors` and reported `unresolved`; the scan goes on. An older version's
 pending, undecided item of bytes now untraced leaves the queue
-(`settle_stale_review_items`), so an item never stays stuck at 409. The 16-candidate limited
+(`settle_stale_review_items`), so an item never stays stuck at 409.
+Saver anchor (#390, `tests/test_review_saver_anchor.py`): the scan and Apply
+resolve with the file's name as the workspace inspector does, so the one saver
+whose `filename_prefix` names the file anchors its branch. A file is never both
+unlinked and unqueued (maintainer ruling): when only that anchor resolves it
+(the named inspection run resolves, the unnamed one does not) and neither the
+default profile nor the parser floor links it, the scan queues it with the
+anchor's pair as its one candidate (evidence `anchor: "saver"`; the page
+preselects it), never linking it. Such an item counts as a choice for the
+untraced settle. Files already linked or resolved by the default path are
+unchanged. No match, several matches or an unfinished walk anchor nothing, and
+the file is queued as before. `REVIEW_RULE_VERSION` is folded into inspection
+item versions, so older inspection items are recorded again once. Apply accepts
+the anchored pair and refuses a choice the anchor contradicts. Measured on the
+maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
+`gpu_unlock_bench` files the inspector resolves are linked by the parser
+floor. The 16-candidate limited
 rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
