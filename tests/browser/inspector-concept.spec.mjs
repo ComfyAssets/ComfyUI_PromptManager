@@ -228,7 +228,8 @@ async function productionSendOf(page,context) {
 async function tagOf(page) {
     const before=await page.locator('#result-count').textContent();
     await panelOf(page).locator('.detail-inner > .tags').last().getByRole('button',{name:'cinematic',exact:true}).click();
-    await expect.poll(()=>page.locator('#result-count').textContent()).not.toBe(before);
+    // Production's caption reads "Loading images…" until the tag's listing answers (#391); the concept's search is instant.
+    await expect.poll(async()=>{const text=await page.locator('#result-count').textContent();return text!==before&&text!=='Loading images…';}).toBe(true);
     await settle(page);
     return {count:await page.locator('#result-count').textContent(),
         cards:await page.locator(`${CARDS} .image-open`).evaluateAll(nodes=>nodes.map(node=>node.getAttribute('aria-label')))};
@@ -326,6 +327,25 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(rows.nth(1).locator('button.chip')).toHaveText(['minimal','warm_light','editorial']);
     await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
+});
+
+// #391: a tag chip replaces the collection; until its listing answers the caption says it is loading, never that the
+// filter matched nothing ("0 of 0 images" was painted before the response and read by a fast reader).
+test('a tag chip collection reads as loading, not empty, until its listing answers (#391)',async({page})=>{
+    await page.setViewportSize({width:1600,height:1100});
+    await openProductionPanel(page,'dark');
+    let release,arrived;
+    const held=new Promise(resolve=>{release=resolve;}),reached=new Promise(resolve=>{arrived=resolve;});
+    await page.route(url=>url.pathname==='/prompt_manager/images/output'&&url.searchParams.get('tags')==='cinematic',
+        async route=>{arrived();await held;await route.continue();},{times:1});
+    const count=page.locator('#result-count');
+    await panelOf(page).locator('.detail-inner > .tags').last().getByRole('button',{name:'cinematic',exact:true}).click();
+    await reached;
+    await expect(count).toHaveText('Loading images…');
+    await expect(page.locator(CARDS)).toHaveCount(0);
+    release();
+    await expect(count).toHaveText(countCopy('8 of 8 images · 2 positive prompts'));
+    await expect(page.locator(CARDS)).toHaveCount(8);
 });
 
 // Task C3 (D88, #249 PR C): the concept's chip row is the image's own tags (`i.tags`, app.js a402). With those names

@@ -35,7 +35,8 @@ read. These per-server hooks only change what a System test needs on top:
   previews for Convert outdated;
 - ``POST /__test__/system/jxl-encoder`` ``{available}`` (#317) makes the
   server read as having (``cjxl``) or lacking a JPEG XL encoder without
-  probing; reset restores the thumbnail settings and the real detection.
+  probing, whatever the host has installed (#371: ``false`` stands in for the
+  detector itself); reset restores the thumbnail settings and the real detection.
 
 - ``POST /__test__/system/duplicate-prompts`` (S7) adds two prompts whose
   text differs only in case and spacing (a duplicate prompt text group);
@@ -118,6 +119,11 @@ def register_system_commands(app, routes, api, root: Path):
     }
     from py.api import thumbnail_encode
 
+    real_detect = thumbnail_encode._detect
+
+    def _no_encoder():
+        return None
+
     monitor = getattr(image_monitor, "_monitor_instance", None)
     failures: dict[str, int] = {}
 
@@ -147,6 +153,7 @@ def register_system_commands(app, routes, api, root: Path):
         api._health_report = None
         for (owner, name), value in host_values.items():
             setattr(owner, name, value)
+        thumbnail_encode._detect = real_detect
         thumbnail_encode.reset_encoders()
         image_monitor._monitor_instance = monitor
         api.__dict__.pop("_library_resolver", None)
@@ -298,7 +305,12 @@ def register_system_commands(app, routes, api, root: Path):
         available = data.get("available")
         if not isinstance(available, bool):
             raise web.HTTPBadRequest()
-        # Test-only: stand in the cached detection (no probe).
+        # Test-only: the fixture, not the host, decides (#371). Without an encoder the
+        # detector itself stands in, so a re-probe (a "none found" is probed again on
+        # every settings read) cannot find the host's real encoder; with one the cached
+        # answer stands, and a failed write still probes the real detector as before.
+        # Reset restores the real detector.
+        thumbnail_encode._detect = real_detect if available else _no_encoder
         with thumbnail_encode._detect_lock:
             thumbnail_encode._detected = "cjxl" if available else None
         return web.json_response({"success": True})
