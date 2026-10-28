@@ -187,6 +187,41 @@ class TestStoreScannedPrompt(StoreCase):
             )
         self.assertEqual((status, calls), ("added", [1]))
 
+    def _linked_folder(self):
+        """``(out_real, out_link)``: a symlink to the same output folder."""
+        from tests.test_api_duplicate_files import TestReview
+
+        if not TestReview._can_symlink(self.temp.name):  # pragma: no cover
+            self.skipTest("symlinks are not available")
+        real = Path(self.temp.name) / "out_real"
+        real.mkdir()
+        link = Path(self.temp.name) / "out_link"
+        os.symlink(str(real), str(link))
+        (real / "a.png").write_bytes(b"png")
+        return os.path.realpath(str(real)), str(link)
+
+    def test_a_file_linked_through_its_real_folder_is_found_through_a_link(self):
+        """The scan stores realpath spellings, the monitor the watcher's."""
+        real, link = self._linked_folder()
+        other = self.save("a dog")
+        self.db.link_image_to_prompt(other, os.path.join(real, "a.png"))
+        through_link = os.path.join(link, "a.png")
+        self.assertEqual(
+            store_scanned_prompt_or_raise(
+                self.db, through_link, META, "a cat", SCAN_MARKS
+            ),
+            ("conflict", None),
+        )
+        self.assertEqual(
+            store_scanned_prompt_or_raise(
+                self.db, through_link, META, "a dog", SCAN_MARKS
+            ),
+            ("unchanged", other),
+        )
+        pair = ingest_resolved_pair(self.db, through_link, META, resolved())
+        self.assertEqual(pair["status"], "conflict")
+        self.assertEqual(len(self.links()), 1)
+
 
 class TestPairMarks(StoreCase):
     def test_marks_reach_only_created_components(self):

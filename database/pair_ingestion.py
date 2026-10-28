@@ -70,13 +70,29 @@ def mark_created(conn: Any, db: Any, prompt_id: int, marks: Marks, name: str) ->
 
 
 def file_link_rows(conn: Any, image_path: str) -> List[Any]:
-    """The file's link rows (either spelling), each with its prompt's hash."""
-    return conn.execute(
-        "SELECT gi.*,p.hash AS positive_hash FROM generated_images gi "
-        "JOIN prompts p ON p.id=gi.prompt_id "
-        "WHERE gi.file_path=? OR gi.image_path=?",
-        (normalize_image_path(image_path), image_path),
-    ).fetchall()
+    """The file's link rows, each with its prompt's hash.
+
+    Matched under the path and its resolved spelling (an output folder
+    reached through a symlink or junction), each normalized and raw;
+    deduplicated by row id.
+    """
+    rows: Dict[Any, Any] = {}
+    for spelling in dict.fromkeys((image_path, _resolved(image_path))):
+        for row in conn.execute(
+            "SELECT gi.*,p.hash AS positive_hash FROM generated_images gi "
+            "JOIN prompts p ON p.id=gi.prompt_id "
+            "WHERE gi.file_path=? OR gi.image_path=?",
+            (normalize_image_path(spelling), spelling),
+        ).fetchall():
+            rows.setdefault(row["id"], row)
+    return list(rows.values())
+
+
+def _resolved(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return path
 
 
 def link_conflict(rows: List[Any], prompt_hash: str) -> bool:
