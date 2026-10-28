@@ -337,6 +337,31 @@ class TestCachedJobsCount(JobCase):
         self.job(g, cached=["pm"])
         self.assertEqual([self.count(t) for t in ("one", "two", "three")], [2, 2, 2])
 
+    def test_a_repeated_id_or_message_never_counts_a_node_twice(self):
+        g = graph()
+        self.first(g)
+        self.job(g, cached=["pm", "pm"])
+        self.assertEqual(self.count(LLM), 2)
+        self.item_id += 1
+        self.runs.begin_attempt(((1, "again", g, {}, ["save"], {}), self.item_id))
+        for _ in range(2):
+            self.runs.replay(self.executor, "again", ["pm"], lambda: self.db)
+        self.assertEqual(self.count(LLM), 3)
+
+    def test_a_shorter_list_keeps_its_receipt_after_a_longer_one(self):
+        g = graph()
+        self.first(g, text="alpha")
+        results = []
+
+        def run():
+            for index, text in enumerate(("alpha", "beta")):
+                results.append(self.execute(g, text=text, index=index))
+
+        self.job(g, run=run)
+        self.cache("pm", (mock.ANY, "alpha"))
+        self.job(g, cached=["pm"])
+        self.assertEqual((self.count("alpha"), self.count("beta")), (3, 1))
+
     def test_a_job_reusing_a_prompt_id_counts_and_executes_normally(self):
         g = graph()
         self.first(g)
@@ -632,6 +657,7 @@ class TestReceipts(unittest.TestCase):
         for item_id, text in ((1, "x"), (2, "y"), (3, "z"), (4, "y")):
             self.begin(item_id)
             self.runs.record_item("a", (text,), Facts(text))
+            self.runs.end_attempt(item_id)
         receipts = self.runs._receipts[key]
         self.assertEqual([r.item_id for r in receipts], [4, 3])
 

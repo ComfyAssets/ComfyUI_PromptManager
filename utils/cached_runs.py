@@ -274,9 +274,17 @@ class CachedRuns:
             self._attempt = attempt
 
     def end_attempt(self, item_id: Any) -> None:
+        """The job finished: its receipts are complete and replace equal older ones.
+
+        Deduplicating only complete receipts keeps a list execution that is
+        still recording ([A] so far of [A, B]) from dropping an older [A].
+        """
         with self._lock:
             if self._attempt is not None and self._attempt.item_id == item_id:
                 self._attempt = None
+            for run_key, receipts in self._receipts.items():
+                if receipts and receipts[0].item_id == item_id:
+                    self._receipts[run_key] = _deduplicated(receipts)
 
     def _current(self) -> Tuple[Optional[_Attempt], Optional[int]]:
         """The attempt the executing node belongs to, and its list index."""
@@ -320,13 +328,12 @@ class CachedRuns:
             if receipts and receipts[0].item_id == item_id:
                 receipt = receipts[0]
             else:
+                # The previous job's receipt is complete (its task_done may
+                # never have fired): it replaces older receipts it equals.
+                receipts = _deduplicated(receipts)
                 receipt = _Receipt(item_id)
                 receipts.insert(0, receipt)
             receipt.items[index] = item
-            outputs = receipt.outputs()
-            receipts = [receipt] + [
-                older for older in receipts[1:] if older.outputs() != outputs
-            ]
             self._receipts[run_key] = receipts[: self._max_receipts]
             while len(self._receipts) > self._max_keys:
                 self._receipts.popitem(last=False)
@@ -363,6 +370,8 @@ class CachedRuns:
                 )
                 continue
             with self._lock:
+                if node_id in attempt.replayed:
+                    continue  # a repeated message or id never counts twice
                 attempt.replayed.add(node_id)
             counts: List[Count] = []
             role = graph_role(attempt.graph, node_id, node_type)
@@ -410,6 +419,14 @@ class CachedRuns:
             if len(facts) != 1:
                 return None
             return [matches[0].items[index] for index in range(length)]
+
+
+def _deduplicated(receipts: List[_Receipt]) -> List[_Receipt]:
+    """The newest receipt replaces older ones with the same outputs."""
+    if not receipts:
+        return receipts
+    outputs = receipts[0].outputs()
+    return [receipts[0]] + [r for r in receipts[1:] if r.outputs() != outputs]
 
 
 def _job_nodes(graph: Dict[str, Any], outputs: Any) -> Dict[str, Tuple[str, str]]:
