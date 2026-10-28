@@ -18,15 +18,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
+    from tests.disk_waits import DISK_BOUND_SECONDS
     from tests.open_handles import open_handles_under
     from tests.test_api_maintenance import ApplyTestCase, _digest
 except ImportError:  # discovered with tests/ as the top-level directory
+    from disk_waits import DISK_BOUND_SECONDS
     from open_handles import open_handles_under
     from test_api_maintenance import ApplyTestCase, _digest
 
 from py.api import duplicate_files  # noqa: E402
 from py.config import GalleryConfig, PromptManagerConfig  # noqa: E402
 
+# Gates and server-state polls. Waits on a find or cleanup job's task use
+# DISK_BOUND_SECONDS: those jobs hash, back up and unlink files (#409).
 WAIT = 10
 FIND = "/prompt_manager/jobs/duplicates"
 GROUPS = "/prompt_manager/maintenance/duplicates/"
@@ -83,7 +87,7 @@ class DuplicateFilesTestCase(ApplyTestCase):
         self.assertEqual(response.status, 202, text)
         self.assertNotIn(self.tmpdir, text)
         job = self.api._jobs.get(json.loads(text)["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)
         return job
 
     async def groups(self, job_id, status=200, **query):
@@ -127,7 +131,7 @@ class DuplicateFilesTestCase(ApplyTestCase):
         plan = await self.review(job.id, [self.keep_of(group, path)])
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         return plan, cleanup
 
     async def until(self, predicate):
@@ -178,7 +182,7 @@ class TestFindJob(DuplicateFilesTestCase):
         gate.set()
         body = await (await legacy).text()
         job = self.api._jobs.get(summary["id"])
-        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)
         events = _sse_payloads(body)
         done = events[-1]
         self.assertEqual(done["type"], "complete")
@@ -241,7 +245,7 @@ class TestFindJob(DuplicateFilesTestCase):
         self.assertTrue((await cancel.json())["cancellation_requested"])
         gate.set()
         job = self.api._jobs.get(job_id)
-        await asyncio.wait_for(asyncio.shield(job.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)
         self.assertEqual(job.state, "cancelled")
         last = _sse_payloads(await (await stream).text())[-1]
         self.assertEqual(last, {"type": "error", "message": "Duplicate scan cancelled"})
@@ -341,6 +345,8 @@ class TestReview(DuplicateFilesTestCase):
         self.assertEqual(plan["protected"], {"count": 0, "reasons": []})
 
     async def test_cannot_delete_keeper_or_outside_group(self):
+        # About which files may go, not the backup: skip its fsync-heavy copy.
+        PromptManagerConfig.SAFETY_BACKUP = False
         self.trio()
         self.write("e.png", b"other pair")
         self.write("f.png", b"other pair")
@@ -372,7 +378,7 @@ class TestReview(DuplicateFilesTestCase):
         self.assertEqual([row["label"] for row in plan["details"]], ["b.png"])
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.counters["removed"], 1)
         self.assertTrue((self.output_dir / "a.png").is_file())
         self.assertTrue((self.output_dir / "sub" / "c.png").is_file())
@@ -496,7 +502,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         plan = await self.review(job.id, keep)
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertTrue(kept.is_file())
         self.assertFalse(gone.exists())
         self.assertFalse(video_thumb.exists())
@@ -508,7 +514,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         self.write("b.png", b"new bytes")  # changed since the review
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.counters, {"removed": 1, "kept": 2, "errors": 0})
         self.assertEqual((self.output_dir / "b.png").read_bytes(), b"new bytes")
         self.assertFalse((self.output_dir / "sub" / "c.png").exists())
@@ -522,7 +528,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         self.write("a.png", b"edited keeper")
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.counters["removed"], 0)
         self.assertTrue((self.output_dir / "b.png").is_file())
         self.assertTrue((self.output_dir / "sub" / "c.png").is_file())
@@ -549,7 +555,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         with patch.object(duplicate_files, "_unlink", side_effect=unlink):
             body = await self.apply(plan["token"])
             cleanup = self.api._jobs.get(body["job"]["id"])
-            await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+            await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.state, "failed")
         self.assertEqual(cleanup.counters, {"removed": 1, "kept": 1, "errors": 1})
         self.assertEqual(
@@ -584,7 +590,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         ):
             body = await self.apply(plan["token"])
             cleanup = self.api._jobs.get(body["job"]["id"])
-            await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+            await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.counters, {"removed": 0, "kept": 3, "errors": 1})
         self.assertEqual(
             cleanup.outcomes["errors"][0]["detail"], duplicate_files.DELETE_FAILED
@@ -619,7 +625,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
             with context:
                 body = await self.apply(plan["token"])
                 cleanup = self.api._jobs.get(body["job"]["id"])
-                await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+                await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         finally:
             if handle is not None:  # pragma: no cover - Windows
                 handle.close()
@@ -642,7 +648,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         with patch.object(duplicate_files, "_unlink", side_effect=unlink):
             body = await self.apply(plan["token"])
             cleanup = self.api._jobs.get(body["job"]["id"])
-            await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+            await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.counters["removed"], 2)
         self.assertEqual(open_at_unlink, [])
 
@@ -703,7 +709,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         with patch.object(duplicate_files, "_unlink", side_effect=unlink):
             body = await self.apply(plan["token"])
             cleanup = self.api._jobs.get(body["job"]["id"])
-            await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+            await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         # Its records moved to the identical kept copy before the unlink failed.
         [image] = self.api.db.get_prompt_images(prompt)
         self.assertTrue(image["image_path"].endswith("a.png"))
@@ -719,7 +725,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
         self.assertEqual((busy["code"], busy["running"]["id"]), ("busy", find["id"]))
         gate.set()
         await asyncio.wait_for(
-            asyncio.shield(self.api._jobs.get(find["id"]).task), WAIT
+            asyncio.shield(self.api._jobs.get(find["id"]).task), DISK_BOUND_SECONDS
         )
         # The token survived the refusal; the cleanup holds off a new find.
         release = asyncio.Event()
@@ -737,7 +743,7 @@ class TestCleanupJob(DuplicateFilesTestCase):
             self.assertEqual(legacy.status, 409)
             release.set()
             cleanup = self.api._jobs.get(body["job"]["id"])
-            await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+            await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
 
     async def test_cleanup_refused_up_front_when_the_backup_does_not_fit(self):
         from py.api import maintenance
@@ -965,7 +971,7 @@ class TestReviewHelpers(DuplicateFilesTestCase):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.second_source())]
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.state, "failed")
         self.assertEqual(cleanup.last_event["code"], "sources-changed")
         self.assertEqual(self.backups(), [])
@@ -985,7 +991,7 @@ class TestReviewHelpers(DuplicateFilesTestCase):
         ):
             body = await self.apply(plan["token"])
             cleanup = self.api._jobs.get(body["job"]["id"])
-            await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+            await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         self.assertEqual(cleanup.state, "failed")
         self.assertEqual(
             cleanup.outcomes["errors"][-1]["detail"], duplicate_files.RECORDS_FAILED
