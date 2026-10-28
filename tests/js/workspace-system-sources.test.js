@@ -157,3 +157,17 @@ test('a valid configured source missing from the effective list is another spell
     assert.deepEqual(sourceRows({ sources, saved, current: saved }).rows.at(-1), { key: 'output/.', title: 'output',
         description: 'output/. · same folder as another source', scan: null, remove: 'output/.' });
 });
+
+test('D147: "Save prompts from other workflows" drafts save_foreign_runs, disabled while monitoring is off (#247)', async () => {
+    const { FOREIGN_RUNS, foreignRunsState } = await sourcesModule;
+    assert.deepEqual(FOREIGN_RUNS, { id: 'foreign-runs', key: 'save_foreign_runs', label: 'Save prompts from other workflows',
+        description: 'New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.',
+        off: 'Applies while Watch for new outputs is on.' });
+    assert.deepEqual(foreignRunsState({ value: true, monitoring: true }), { disabled: false, checked: true, note: null });
+    assert.deepEqual(foreignRunsState({ value: false, monitoring: true }), { disabled: false, checked: false, note: null });
+    // Monitoring drafted or saved off: nothing is watched, so the row says why it is disabled and keeps its value.
+    assert.deepEqual(foreignRunsState({ value: true, monitoring: false }), { disabled: true, checked: true, note: FOREIGN_RUNS.off });
+    // Not read yet (or the host read failed): disabled without a value, the host rows' own note applies.
+    assert.deepEqual(foreignRunsState({ value: undefined, monitoring: undefined }), { disabled: true, checked: null, note: null });
+    assert.deepEqual(foreignRunsState({ value: undefined, monitoring: false }), { disabled: true, checked: null, note: null });
+});

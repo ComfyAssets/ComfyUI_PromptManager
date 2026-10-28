@@ -614,10 +614,21 @@ const WATCHED = new Set(['watching', 'stopping']);
 const REFRESH_FILES = { title: 'Refresh files', description: 'Read every source again to find files added or removed outside ComfyUI.',
     label: 'Refresh' };
 
+// D147 (#247): the row production adds directly below "Watch for new outputs", in that row's markup.
+const FOREIGN_RUNS = { id: 'foreign-runs', label: 'Save prompts from other workflows',
+    description: 'New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.' };
+
+/** D147: the concept's "Watch for new outputs" row as the inserted "Save prompts from other workflows" row. */
+function foreignRunsRow(monitoringRow, settings) {
+    return { ...monitoringRow, text: [['label', FOREIGN_RUNS.label, FOREIGN_RUNS.id], ['p', FOREIGN_RUNS.description, null]],
+        control: { ...monitoringRow.control, id: FOREIGN_RUNS.id, checked: settings.save_foreign_runs } };
+}
+
 /** The concept's Sources with the recorded deviations applied, given the server's real settings and sources. */
 function mapSourcesConcept(reference, { settings, sources }) {
     const [sample] = reference.sources;
     const scan = sample.actions[0];
+    const rowAt = reference.surface.tree.indexOf('div.setting-row');
     return {
         ...reference,
         // The real sources replace the two samples (without the "sample path" note). D98: each configured one has Remove,
@@ -625,13 +636,15 @@ function mapSourcesConcept(reference, { settings, sources }) {
         sources: sources.effective.map(source => ({ ...sample, title: source.label,
             description: `${source.path} · ${WATCH_TEXT[source.watch]}`,
             actions: [{ ...scan, text: WATCHED.has(source.watch) ? 'Scan changes' : 'Scan folder' }, { ...scan, text: 'Remove' }] })),
-        rows: reference.rows.map(row => {
-            if (row.control.id === 'monitoring') return { ...row, control: { ...row.control, checked: settings.monitoring_enabled } };
+        rows: reference.rows.flatMap(row => {
+            if (row.control.id === 'monitoring') return [{ ...row, control: { ...row.control, checked: settings.monitoring_enabled } },
+                foreignRunsRow(row, settings)];
             // D113: the range ends at the server's core count (the concept's fixed 16) and shows the real worker count.
-            return { ...row, control: { ...row.control, max: String(settings.cpu_count), value: String(settings.worker_threads) } };
+            return [{ ...row, control: { ...row.control, max: String(settings.cpu_count), value: String(settings.worker_threads) } }];
         }),
-        // D98: "Refresh files" closes the surface.
-        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.operation'] },
+        // D147: the inserted row after the first setting row; D98: "Refresh files" closes the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree.slice(0, rowAt + 1), 'div.setting-row',
+            ...reference.surface.tree.slice(rowAt + 1), 'div.operation'] },
         operations: [...reference.operations, { ...reference.operations[0], title: REFRESH_FILES.title,
             description: REFRESH_FILES.description, actions: [{ ...reference.operations[0].actions[0], text: REFRESH_FILES.label }] }],
     };
@@ -685,10 +698,12 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     const expected = mapSourcesConcept(concept, server);
     const production = await productionSources(page, 'dark', { notice: true });
     expect(diffInventory(expected, production)).toEqual([]);
-    // Unmapped, the concept differs only in the real sources, the D98 operation and the D113 range.
+    // Unmapped, the concept differs only in the real sources, the D98 operation, the D147 row (which moves the D113
+    // range to the third row) and the D113 range.
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort())
-        .toEqual(['operations.2', 'operations.length', 'rows.1', 'sources.0', 'sources.1', 'surface.tree'].sort());
+        .toEqual(['operations.2', 'operations.length', 'rows.1', 'rows.2', 'rows.length', 'sources.0', 'sources.1',
+            'surface.tree'].sort());
     const measure = () => page.evaluate(measureSources, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
     // A removed notice and a removed source row.
@@ -702,6 +717,13 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     await page.evaluate(() => { document.querySelector('#workspace-main label[for="monitoring"]').textContent = 'Watch for outputs'; });
     expect(await paths()).toEqual(['rows.0.text.0.1']);
     await page.evaluate(() => { document.querySelector('#workspace-main label[for="monitoring"]').textContent = 'Watch for new outputs'; });
+    // D147: the inserted row is compared too: a missing one and a changed label are caught.
+    const undoForeign = await mutate(page, { remove: ['#workspace-main .setting-row:has(#foreign-runs)'] });
+    expect(await paths()).toEqual(expect.arrayContaining(['rows.length', 'surface.tree.length']));
+    await undoForeign();
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="foreign-runs"]').textContent = 'Save other prompts'; });
+    expect(await paths()).toEqual(['rows.1.text.0.1']);
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="foreign-runs"]').textContent = 'Save prompts from other workflows'; });
     await page.evaluate(() => { document.querySelector('#workspace-main .panel-heading button').textContent = 'Add source'; });
     expect(await paths()).toEqual(['heading.action.text']);
     await page.evaluate(() => { document.querySelector('#workspace-main .panel-heading button').textContent = '+ Add source'; });
