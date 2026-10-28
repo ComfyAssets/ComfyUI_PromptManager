@@ -165,6 +165,8 @@ jobs:
 
   browser-workflows:
     name: page workflows (${{ matrix.browser }}, shard ${{ matrix.shard }}/2)
+    # Merge queue, main and manual runs only (#420); pull requests run the Chromium/touch coverage shards.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
     # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
@@ -219,8 +221,9 @@ jobs:
           retention-days: 14
 
   # Branch protection requires the exact context "viewerjs". This job keeps that
-  # name and fails unless every frontend job above succeeded (every shard, the
-  # coverage merge and every browser shard), including when one was cancelled or skipped.
+  # name and fails unless every coverage shard and the coverage merge succeeded and
+  # the browser shards succeeded, or, on a pull request only, were skipped (#420).
+  # Any failure, cancellation or other skip fails it.
   viewerjs:
     needs: [frontend-coverage, frontend-coverage-merge, browser-workflows]
     if: always()
@@ -229,11 +232,15 @@ jobs:
     steps:
       - name: Require every frontend job to succeed
         env:
+          EVENT_NAME: ${{ github.event_name }}
           COVERAGE_RESULT: ${{ needs.frontend-coverage.result }}
           MERGE_RESULT: ${{ needs.frontend-coverage-merge.result }}
           WORKFLOWS_RESULT: ${{ needs.browser-workflows.result }}
         run: |
+          queue_only=success
+          if [ "$EVENT_NAME" = pull_request ]; then queue_only=skipped; fi
+          echo "event: $EVENT_NAME (browser-workflows must be $queue_only)"
           echo "frontend-coverage: $COVERAGE_RESULT"
           echo "frontend-coverage-merge: $MERGE_RESULT"
           echo "browser-workflows: $WORKFLOWS_RESULT"
-          test "$COVERAGE_RESULT" = success && test "$MERGE_RESULT" = success && test "$WORKFLOWS_RESULT" = success
+          test "$COVERAGE_RESULT" = success && test "$MERGE_RESULT" = success && test "$WORKFLOWS_RESULT" = "$queue_only"
