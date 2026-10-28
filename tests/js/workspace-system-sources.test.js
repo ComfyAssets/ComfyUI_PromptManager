@@ -170,4 +170,7 @@ test('D147: "Save prompts from other workflows" drafts save_foreign_runs, disabl
     // Not read yet (or the host read failed): disabled without a value, the host rows' own note applies.
     assert.deepEqual(foreignRunsState({ value: undefined, monitoring: undefined }), { disabled: true, checked: null, note: null });
     assert.deepEqual(foreignRunsState({ value: undefined, monitoring: false }), { disabled: true, checked: null, note: null });
+    // Saved off while the running monitor still watches until the restart (D128 `stopping`): it can still be set.
+    assert.deepEqual(foreignRunsState({ value: true, monitoring: false, stopping: true }),
+        { disabled: false, checked: true, note: FOREIGN_RUNS.off });
 });

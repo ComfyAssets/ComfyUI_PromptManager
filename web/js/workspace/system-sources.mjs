@@ -15,7 +15,8 @@
  * - "Watch for new outputs" (`monitoring_enabled`) and "Worker threads" (`worker_threads`, a range up to the server's
  *   `cpu_count`, D113) are host drafts too. "Enrich existing metadata" reviews a scan of every source.
  * - D147 (#247): "Save prompts from other workflows" (`save_foreign_runs`), a host draft below "Watch for new outputs",
- *   applied by the server at once (the monitor reads it for every file); disabled, saying why, while monitoring is off.
+ *   applied by the server at once (the monitor reads it for every file); disabled, saying why, while monitoring is off,
+ *   unless the running monitor still watches until a restart (D128 `stopping`): then it can still be set.
  * - "Thumbnail generation → Review options" opens "Thumbnail maintenance" (thumbnail-review.mjs, S5 Task 14), which
  *   starts the thumbnail Activity job.
  *
@@ -72,12 +73,13 @@ export const FOREIGN_RUNS = Object.freeze({ id: 'foreign-runs', key: 'save_forei
 
 /**
  * D147: the row for the drafted `save_foreign_runs` (`value`) and `monitoring_enabled` (`monitoring`): disabled until
- * read, and while monitoring is off, when `note` says why (the value is kept and saved as it is).
+ * read, and while monitoring is off, when `note` says why (the value is kept and saved as it is). `stopping`: a source
+ * is still watched until the restart (D128), so the value can still be set; the note stays.
  */
-export function foreignRunsState({ value, monitoring }) {
+export function foreignRunsState({ value, monitoring, stopping = false }) {
     if (value === undefined) return { disabled: true, checked: null, note: null };
     const off = monitoring === false;
-    return { disabled: off, checked: value === true, note: off ? FOREIGN_RUNS.off : null };
+    return { disabled: off && !stopping, checked: value === true, note: off ? FOREIGN_RUNS.off : null };
 }
 
 // Labels of the sources added in this page session (validate-source answers them), for the rows not saved yet.
@@ -385,15 +387,20 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
 
     // D147: disabled while monitoring is drafted off, with the reason under the description.
     function paintForeign(row, value, unavailable) {
-        const state = foreignRunsState({ value, monitoring: drafts.get('host', 'monitoring_enabled') });
+        const stopping = sources?.effective?.some(source => source.watch === 'stopping') === true;
+        const state = foreignRunsState({ value, monitoring: drafts.get('host', 'monitoring_enabled'), stopping });
         row.input.disabled = state.disabled;
         if (state.checked !== null) row.input.checked = state.checked;
         const note = unavailable && value === undefined ? HOST_UNAVAILABLE : state.note;
         if (note && row.note?.textContent !== note) {
             row.note?.remove();
             row.note = el('p', note, 'small');
+            row.note.id = `${FOREIGN_RUNS.id}-note`;
             row.text.append(row.note);
         } else if (!note && row.note) { row.note.remove(); row.note = null; }
+        // The note is the switch's description, so a screen reader says why it is disabled.
+        if (row.note) row.input.setAttribute('aria-describedby', row.note.id);
+        else row.input.removeAttribute('aria-describedby');
     }
 
     // The sources changed since this page read them (a refused per-source scan): read them and the saved values again.
@@ -414,6 +421,7 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         if (answer === STALE || scope.signal.aborted) return;
         sources = answer?.sources ?? null;
         paintList();
+        paintControls();
     }
 
     // A save (or a reread after a conflict) changed the saved sources or monitoring: read their state again. The first

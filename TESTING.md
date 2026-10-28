@@ -3180,21 +3180,6 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   `Watch for new outputs saves monitoring_enabled; a restart applies it` and `a save
   refused for one unusable source names it and marks its row`
   (workspace-system-sources.spec) and the system-state and system-sources node tests.
-- **D147** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
-  without a PromptManager node; the maintainer chose a visible switch over a config key.
-  A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
-  "Save prompts from other workflows" (`#foreign-runs`, host key `save_foreign_runs`,
-  config.json `gallery.monitoring.save_foreign_runs`, default on), "New outputs of
-  workflows without a PromptManager node add their prompt to the library when it is
-  certain.". It is saved with the revision like the other host rows and applied at once
-  (the monitor reads it for every file), so a save names no restart. While "Watch for
-  new outputs" is drafted off the switch is disabled and a `p.small` under the
-  description says "Applies while Watch for new outputs is on." (the value is kept).
-  Pinned by `sources matches the concept` (the mapping inserts the row after the
-  monitoring row), `sources comparison detects mutations` (a missing row and a changed
-  label are caught), `D147: Save prompts from other workflows saves save_foreign_runs
-  live; off while monitoring is off (#247)` (workspace-system-sources.spec: keyboard on
-  desktop, a tap on touch) and the system-sources node test.
 - **D129** (library location, S6b): the concept shows neither where the library lives
   nor a way to move it. System › Overview's "Library health" gains a "Library location"
   `.operation` row after Backup status, in that row's own markup: "<path> · <why>",
@@ -3304,6 +3289,26 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
   the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
   label in turn.
+- **D147** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
+  without a PromptManager node; the maintainer chose a visible switch over a config key.
+  A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
+  "Save prompts from other workflows" (`#foreign-runs`, host key `save_foreign_runs`,
+  config.json `gallery.monitoring.save_foreign_runs`, default on), "New outputs of
+  workflows without a PromptManager node add their prompt to the library when it is
+  certain.". It is saved with the revision like the other host rows and applied at once
+  (the monitor reads it for every file), so a save names no restart. While "Watch for
+  new outputs" is drafted off, a `p.small` under the description says "Applies while
+  Watch for new outputs is on." (the switch's `aria-describedby`; the value is kept) and
+  the switch is disabled, except while a source still reads "watching until restart"
+  (D128): the running observer still delivers files then, so the value can be set. The
+  server stores no foreign prompt while `monitoring_enabled` is saved off, whatever the
+  observer does.
+  Pinned by `sources matches the concept` (the mapping inserts the row after the
+  monitoring row), `sources comparison detects mutations` (a missing row and a changed
+  label are caught), `D147: Save prompts from other workflows saves save_foreign_runs
+  live; off while monitoring is off (#247)` (keyboard on desktop, a tap on touch) and
+  `D147: saved off while the monitor still watches until a restart, the foreign row can
+  still be set (D128)` (workspace-system-sources.spec) and the system-sources node test.
 - **D109** (Logs, S12, #329): the concept's Logs surface on the live server. The toolbar
   keeps "Level", Refresh and the download (renamed "Download log": the active log,
   `/logs/download/prompt_manager.log`, through the api client), with all six minimum
@@ -5115,8 +5120,12 @@ handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
   prompt is stored and the file linked at once. `history` (an undecided graph inside
   ComfyUI's output folder): the file is registered in its own waiting set, then the
   ladder runs again at once with the file's recorded output, because the run may have
-  been sealed before the file settled; certain then means stored, otherwise it keeps
-  waiting. Anything else is logged "No certain prompt for <file>; left unlinked".
+  been sealed before the file settled. When that lookup finds a record, its answer is
+  final: certain is stored, anything else is logged "No certain prompt for <file>;
+  left unlinked" and the file stops waiting (no seal is coming). When it finds none,
+  only the inspector's or the recorded saver's answer is stored; anything else (the
+  legacy floor included) keeps waiting for the re-check. Anything else at the first
+  pass is logged "No certain prompt for <file>; left unlinked".
 - **After the run ends.** When the run's outputs are sealed, each waiting foreign file
   gets one re-check (`ForeignRecheck(reference)`) with the sealed output reference,
   so history is asked with the spelling it recorded (a Windows folder whose case
@@ -5125,8 +5134,10 @@ handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
   the legacy floor in the monitor (D-Q3); an untraceable one still is.
 - **Waiting sets.** `_awaiting_foreign` and `_foreign_due` sit beside the keyless sets
   with the same bounds (1000 files, one hour) but are separate, so a large foreign run
-  never evicts a waiting keyless file. An expired or evicted entry is logged "No
-  recorded run for <file>; left unlinked". `awaiting_foreign()` lists them;
+  never evicts a waiting keyless file. An expired entry is logged "No recorded run
+  for <file>; left unlinked", an evicted one (waiting or due) "Too many files wait for
+  their run; <file> left unlinked", both after the lock is released. A due re-check
+  is dropped only when it was scheduled, never a newer reference for the same file. `awaiting_foreign()` lists them;
   `shutdown()` and `close()` clear them, and a closed handler re-checks nothing.
 - **Store.** One write through `survive_switch` (rerun after a Move library): a pair
   through `ingest_resolved_pair(..., marks=RUN_MARKS)`, a positive through
@@ -5139,8 +5150,10 @@ handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
   stays 0, no `last_used_at`), and nothing is queued for Needs review.
 - **The setting.** `GalleryConfig.SAVE_FOREIGN_RUNS` (`gallery.monitoring.
   save_foreign_runs`, default true, only a bool applies) is read for every file, at
-  settle and at the re-check; off logs "No PromptManager prompt in workflow, skipping
-  image" as before. System › Sources & scans "Save prompts from other workflows" (D147)
+  settle, at the re-check and again just before the store, together with
+  `MONITORING_ENABLED`: either saved off stops foreign writes at once (the running
+  observer watches until a restart, D128); off logs "No PromptManager prompt in
+  workflow, skipping image" as before. System › Sources & scans "Save prompts from other workflows" (D147)
   saves it through `POST /prompt_manager/settings` with no restart field; the
   diagnostics report lists it.
 
@@ -5148,7 +5161,10 @@ Tests: `tests/test_run_attribution.py` `TestMonitorForeignRuns` (dataset branche
 linked after the seal, a seal before settle, a name two runs reported, the setting
 off at settle and at the re-check, a plain workflow linked at settle with no run
 count and the tracker queue untouched, the sealed reference's spelling, the separate
-bound, expiry, a seal while the pending set is full, shutdown, a failed store),
+bound, expiry, a seal while the pending set is full, shutdown, a failed store, no
+record at settle keeps waiting, a record without an answer ends the wait, monitoring
+saved off, the setting read before the store, a seal between registering and the
+settle lookup, a newer due reference kept, evictions logged, one link per file),
 `tests/test_image_linking.py` `TestForeignWorkflows`, `tests/test_image_monitor_singleton.py`
 (close drops a foreign re-check), `tests/test_config.py`,
 `tests/test_settings_sources.py` `TestSaveForeignRunsSetting`, and the real-host
