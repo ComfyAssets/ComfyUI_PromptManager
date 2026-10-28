@@ -17,6 +17,8 @@ from database.run_attribution import (
 from tests import test_execution_history_database as history_tests
 from tests.background_stops import close_handler
 from tests.test_api_admin import AdminAPITestCase
+from tests import saver_anchor_graphs as shapes
+from tests.test_pair_scan import sampled_graph
 from tests.test_execution_context_database import known, snapshot
 from tests.test_prompt_attribution import issue_graph, llm_text_graph, make_tracker
 from utils.execution_contexts import (
@@ -451,6 +453,45 @@ class TestScanUsesHistory(RecordedRuns, AdminAPITestCase):
         self.assertIsNone(self.linked_prompt(path))
         self.assertEqual(db.list_prompt_pairs()["pairs"], [])
 
+    def scan_dataset(self, names, nodes):
+        """Two branches of the shared-prefix dataset graph, one run, then a scan."""
+        paths = [self.write(name) for name in names]
+        self.record_run(
+            self.api.db,
+            str(self.output_dir),
+            [("", path.name) for path in paths],
+            [],
+            nodes=nodes,
+        )
+        meta = {"prompt": json.dumps(shapes.shared_prefix())}
+        return paths, self.api._ingest_scan_batch_sync([(p, meta) for p in paths])
+
+    def test_the_recorded_saver_links_each_dataset_file_to_its_branch(self):
+        """#247: before, the legacy parser gave every branch the first prompt."""
+        paths, counts = self.scan_dataset(
+            ["IMG_GEN_00001_.png", "IMG_GEN_00002_.png"], ["13", "23"]
+        )
+        self.assertEqual(counts["added"], 2, counts)
+        for path, text in zip(paths, shapes.BRANCH_TEXTS):
+            prompt = self.api.db.get_prompt_by_hash(generate_prompt_hash(text))
+            self.assertEqual(self.linked_prompt(path), prompt["id"])
+            self.assertEqual(prompt["category"], "scanned")
+
+    def test_a_file_the_legacy_answer_linked_is_left_as_it_is(self):
+        """#247 Q5: a rescan never adds a second link to the branch prompt."""
+        db = self.api.db
+        legacy = shapes.BRANCH_TEXTS[0]
+        legacy_id = db.save_prompt(legacy, prompt_hash=generate_prompt_hash(legacy))
+        path = self.write("IMG_GEN_00002_.png")
+        db.link_image_to_prompt(legacy_id, str(path))
+        self.record_run(db, str(self.output_dir), [("", path.name)], [], nodes=["23"])
+        meta = {"prompt": json.dumps(shapes.shared_prefix())}
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "conflict")
+        self.assertEqual(self.linked_prompt(path), legacy_id)
+        self.assertIsNone(
+            db.get_prompt_by_hash(generate_prompt_hash(shapes.BRANCH_TEXTS[1]))
+        )
+
 
 class TestHostHelpers(unittest.TestCase):
     """The host lookups degrade to "no proof", never to an error."""
@@ -752,13 +793,17 @@ class TestScanBatchLookup(RecordedRuns, AdminAPITestCase):
     """M5: a scan batch asks history once per chunk of names, not per file."""
 
     def test_a_batch_its_metadata_links_never_asks_history(self):
-        """R3: the batch lookup is made only when a file needs it."""
+        """R3: the batch lookup is made only when a file needs it.
+
+        Since #247 every file the default profile leaves undecided asks (the
+        recorded saver may name its branch), so these files resolve as pairs.
+        """
         files = []
         for n in range(3):
             path = self.output_dir / f"typed_{n:05}_.png"
             path.write_bytes(b"png")
             files.append(path)
-        meta = {"prompt": json.dumps(issue_graph(text="typed mountains"))}
+        meta = {"prompt": json.dumps(sampled_graph("typed mountains"))}
         statements = []
         conn = self.api.db.model.get_connection()
         conn.set_trace_callback(statements.append)
@@ -801,6 +846,52 @@ class TestScanBatchLookup(RecordedRuns, AdminAPITestCase):
             )
         }
         self.assertEqual(linked, {f.name for f in files[:4]})
+
+    def test_the_batch_saver_equals_the_files_recorded_output(self):
+        from py.api.admin import _BatchHistory
+
+        db = self.api.db
+        names = ["one_node.png", "two_nodes.png", "two_runs.png", "unrecorded.png"]
+        files = []
+        for name in names:
+            path = self.output_dir / name
+            path.write_bytes(b"png")
+            files.append(path)
+        root = str(self.output_dir)
+        self.record_run(db, root, [("", "one_node.png")], [], nodes=["13"])
+        self.record_run(
+            db, root, [("", "two_nodes.png")] * 2, [], item=1, nodes=["13", "23"]
+        )
+        self.record_run(db, root, [("", "two_runs.png")], [], item=2)
+        self.record_run(db, root, [("", "two_runs.png")], [], item=3)
+        history = _BatchHistory(self.api, files)
+        with mock.patch(
+            "database.run_attribution.host_output_directory", return_value=root
+        ):
+            for path in files:
+                with self.subTest(path=path.name):
+                    expected = recorded_output(db, str(path), root)
+                    found = history.recorded(str(path))
+                    if expected is None:
+                        self.assertIsNone(found)
+                    else:
+                        self.assertEqual(found.saver_id, expected.saver_id)
+        self.assertEqual(history.recorded(str(files[0])).saver_id, "13")
+        self.assertIsNone(history.recorded(str(files[1])).saver_id)
+
+    def test_a_failed_batch_lookup_is_logged_and_names_nothing(self):
+        from py.api.admin import _BatchHistory
+
+        path = self.output_dir / "x.png"
+        history = _BatchHistory(self.api, [path])
+        with (
+            mock.patch(
+                "py.api.admin.recorded_runs", side_effect=sqlite3.OperationalError("x")
+            ),
+            self.assertLogs("prompt_manager", "WARNING"),
+        ):
+            self.assertIsNone(history.recorded(str(path)))
+        self.assertIsNone(history.get(str(path)))
 
 
 class TestLinkedOutputRoot(RecordedRuns, unittest.TestCase):

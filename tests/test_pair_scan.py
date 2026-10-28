@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from tests.test_api_admin import AdminAPITestCase
+from utils.hashing import generate_prompt_hash
 
 
 def graph(positive="cat", negative="blur"):
@@ -449,3 +450,102 @@ class TestSamplerLessScan(AdminAPITestCase):
         path = self.output_dir / "saver.png"
         self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
         self.assertEqual(self._texts(), ["a red fox"])
+
+
+class TestScanDecision(AdminAPITestCase):
+    """The scan applies the shared per-file decision (#247): one prompt per
+    file, no junk text, marks on every prompt it creates."""
+
+    def _path(self, name):
+        path = self.output_dir / name
+        path.write_bytes(b"png")
+        return path
+
+    def _links(self, path):
+        rows = self.api.db.model.get_connection().execute(
+            "SELECT prompt_id FROM generated_images WHERE image_path=?", (str(path),)
+        )
+        return [row[0] for row in rows]
+
+    def _prompt(self, text):
+        return self.api.db.get_prompt_by_hash(generate_prompt_hash(text))
+
+    def test_a_file_linked_to_another_prompt_is_a_conflict(self):
+        path = self._path("fox.png")
+        other = self.api.db.save_prompt(
+            "a dog", prompt_hash=generate_prompt_hash("a dog")
+        )
+        self.api.db.link_image_to_prompt(other, str(path))
+        meta = {"prompt": json.dumps(flux_graph())}
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "conflict")
+        self.assertEqual(self._links(path), [other])
+        self.assertIsNone(self._prompt("a red fox"))
+
+    def test_junk_text_is_never_stored(self):
+        cases = {
+            "lora.png": {"prompt": json.dumps(flux_graph(text="<lora:style:1.00>"))},
+            "model.png": {"parameters": "models/flux-dev.safetensors"},
+        }
+        for name, meta in cases.items():
+            with self.subTest(name=name):
+                path = self._path(name)
+                self.assertEqual(self.api._ingest_scanned_file(path, meta), "found")
+                self.assertEqual(self._links(path), [])
+        self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
+
+    def test_created_prompts_carry_the_scan_marks(self):
+        path = self._path("pair.png")
+        meta = {"prompt": json.dumps(sampled_graph("cat", "blur"))}
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
+        for text in ("cat", "blur"):
+            prompt = self._prompt(text)
+            self.assertEqual(prompt["category"], "scanned")
+            self.assertEqual(prompt["tags"], ["auto-scanned"])
+            self.assertEqual(prompt["notes"], "Auto-scanned from pair.png")
+
+    def test_outcome_of_a_positive_reports_its_title(self):
+        """Regression guard (passes on the base): the detailed positive row."""
+        path = self._path("fox.png")
+        meta = {"prompt": json.dumps(flux_graph())}
+        first = self.api._ingest_scanned_file(path, meta, detailed=True)
+        self.assertEqual(first, {"status": "added", "title": "a red fox"})
+        again = self.api._ingest_scanned_file(path, meta, detailed=True)
+        self.assertEqual(again["status"], "unchanged")
+        other = self._path("fox2.png")
+        linked = self.api._ingest_scanned_file(other, meta, detailed=True)
+        self.assertEqual(linked["status"], "linked")
+
+    def test_outcome_of_a_pair_reports_its_counts(self):
+        """Regression guard (passes on the base): the detailed pair row."""
+        path = self._path("pair.png")
+        meta = {"prompt": json.dumps(sampled_graph("cat", "blur"))}
+        result = self.api._ingest_scanned_file(path, meta, detailed=True)
+        self.assertEqual(result["status"], "added")
+        self.assertEqual((result["pairs_added"], result["links_added"]), (1, 1))
+        self.assertEqual(result["title"], "cat")
+
+    def test_outcome_without_a_store_reports_the_unlinked_status(self):
+        """Regression guard (passes on the base): never-stored rows."""
+        path = self._path("notes.png")
+        meta = {"prompt": json.dumps({"40": {"class_type": "Textbox", "inputs": {}}})}
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "found")
+        self.assertIsNone(self.api._ingest_scanned_file(path, {}))
+
+    def test_review_lists_get_the_default_profiles_ambiguous_files(self):
+        """Regression guard (passes on the base): Needs review inputs."""
+        g = sampled_graph()
+        g["6"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "dog"}}
+        g["12"] = {**g["3"], "inputs": {**g["3"]["inputs"], "positive": ["6", 0]}}
+        ambiguous, untraced, records = [], [], {}
+        path = self._path("two.png")
+        status = self.api._ingest_scanned_file(
+            path,
+            {"prompt": json.dumps(g)},
+            ambiguous=ambiguous,
+            untraced=untraced,
+            records=records,
+        )
+        # Linked by the legacy floor, still listed (queued only if unlinked).
+        self.assertEqual(status, "added")
+        self.assertEqual((ambiguous, untraced), ([path], []))
+        self.assertEqual(records["canonical"]["prompt"], g)

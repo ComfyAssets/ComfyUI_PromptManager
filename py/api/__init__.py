@@ -75,6 +75,7 @@ from .lora_import_routes import LoraImportRoutesMixin
 
 try:
     from ...database.operations import PromptDatabase
+    from ...utils.file_prompt import parse_comfyui_prompt
     from ...utils.logging_config import get_logger
     from ...utils.video_metadata import is_video_path, read_video_metadata
 except ImportError:
@@ -84,6 +85,7 @@ except ImportError:
         0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     from database.operations import PromptDatabase
+    from utils.file_prompt import parse_comfyui_prompt
     from utils.logging_config import get_logger
     from utils.video_metadata import is_video_path, read_video_metadata
 
@@ -1025,85 +1027,4 @@ class PromptManagerAPI(
 
     def _parse_comfyui_prompt(self, metadata):
         """Parse ComfyUI and A1111 prompt data from metadata."""
-        result = {
-            "prompt": None,
-            "workflow": None,
-            "parameters": {},
-            "positive_prompt": None,
-            "negative_prompt": None,
-        }
-
-        # Check for A1111/Forge style parameters first.
-        # The chunk is one block: a possibly multi-line positive prompt, then a
-        # "Negative prompt:" section, then a trailing "Steps: ..." settings line.
-        # Taking lines[0] as the positive prompt truncates any multi-line prompt
-        # to one line, so split on the settings line instead.
-        if "parameters" in metadata:
-            import re as _re
-
-            params = metadata["parameters"]
-            body = params
-            settings = ""
-            _sm = _re.search(r"\nSteps:\s", body)
-            if _sm:
-                settings = body[_sm.start() + 1 :].strip()
-                body = body[: _sm.start()]
-            negative = None
-            _nm = _re.search(r"(?im)^\s*negative prompt:\s*", body)
-            if _nm:
-                negative = body[_nm.end() :].strip()
-                body = body[: _nm.start()]
-            elif body.lower().lstrip().startswith("negative prompt:"):
-                negative = body.lower().lstrip()[len("negative prompt:") :].strip()
-                body = ""
-            result["positive_prompt"] = body.strip() or None
-            if negative:
-                result["negative_prompt"] = negative
-            # Store raw parameters too
-            result["parameters"]["parameters"] = params
-            if settings:
-                for _f in ("Steps", "Sampler", "Schedule type", "CFG scale", "Seed"):
-                    _fm = _re.search(
-                        r"(?i)(?:^|,\s*)" + _re.escape(_f) + r":\s*([^,]+)", settings
-                    )
-                    if _fm:
-                        result["parameters"][_f.lower().replace(" ", "_")] = _fm.group(
-                            1
-                        ).strip()
-
-        # If no A1111 format found, proceed with ComfyUI parsing
-        if result["positive_prompt"] is None:
-            # Check for direct prompt field
-            if "prompt" in metadata:
-                try:
-                    prompt_data = json.loads(metadata["prompt"])
-                    result["prompt"] = prompt_data
-                except json.JSONDecodeError:
-                    result["prompt"] = metadata["prompt"]
-
-            # Check for workflow
-            if "workflow" in metadata:
-                try:
-                    workflow_data = json.loads(metadata["workflow"])
-                    result["workflow"] = workflow_data
-                except json.JSONDecodeError:
-                    result["workflow"] = metadata["workflow"]
-
-            # Check for other common ComfyUI fields
-            common_fields = [
-                "positive",
-                "negative",
-                "steps",
-                "cfg",
-                "sampler",
-                "scheduler",
-                "seed",
-            ]
-            for field in common_fields:
-                if field in metadata:
-                    try:
-                        result["parameters"][field] = json.loads(metadata[field])
-                    except json.JSONDecodeError:
-                        result["parameters"][field] = metadata[field]
-
-        return result
+        return parse_comfyui_prompt(metadata)

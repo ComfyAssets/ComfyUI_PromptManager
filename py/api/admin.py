@@ -40,43 +40,37 @@ except ImportError:
     from utils import exit_signal
 
 try:
-    from ...database.pair_ingestion import blank_positive, ingest_resolved_pair
+    from ...database.pair_ingestion import SCAN_MARKS, ingest_resolved_pair
     from ...database.run_attribution import (
+        RecordedOutput,
         host_output_directory,
+        in_output_folder,
+        named_prompt,
+        recorded_output_lookup,
+        recorded_runs,
         stored_run_prompt,
-        stored_run_prompts,
     )
-    from ...utils.generation_params import (
-        PLACEHOLDERS,
-        GenerationParamsError,
-        extract_generation_params,
-        parse_page_json,
-    )
-    from ...utils.prompt_pair_resolver import resolve_prompt_pair, sampler_less_prompt
-    from ...utils.review_capture import reviewable
+    from ...database.scanned_prompts import store_scanned_prompt
+    from ...utils.file_prompt import NEVER, PAIR, Policy, decide_file_prompt
 except ImportError:
-    from database.pair_ingestion import blank_positive, ingest_resolved_pair
+    from database.pair_ingestion import SCAN_MARKS, ingest_resolved_pair
     from database.run_attribution import (
+        RecordedOutput,
         host_output_directory,
+        in_output_folder,
+        named_prompt,
+        recorded_output_lookup,
+        recorded_runs,
         stored_run_prompt,
-        stored_run_prompts,
     )
-    from utils.generation_params import (
-        PLACEHOLDERS,
-        GenerationParamsError,
-        extract_generation_params,
-        parse_page_json,
-    )
-    from utils.prompt_pair_resolver import resolve_prompt_pair, sampler_less_prompt
-    from utils.review_capture import reviewable
+    from database.scanned_prompts import store_scanned_prompt
+    from utils.file_prompt import NEVER, PAIR, Policy, decide_file_prompt
 
 
 try:
     from ...database.library import display_title
-    from ...utils.hashing import generate_prompt_hash
 except ImportError:
     from database.library import display_title
-    from utils.hashing import generate_prompt_hash
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff")
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv")
@@ -316,22 +310,6 @@ def _file_size(path):
         return os.path.getsize(path)
     except OSError:
         return None
-
-
-def _with_file_size(canonical, media_file):
-    """Record the file's size in ``file_info`` unless the metadata carries one.
-
-    Stored as ``generated_images.file_size``; the "new" scan scope skips a known
-    file only while its size is unchanged.
-    """
-    info = canonical.get("file_info")
-    info = dict(info) if isinstance(info, dict) else {}
-    if info.get("size") is None:
-        size = _file_size(media_file)
-        if size is not None:
-            info["size"] = size
-    if info:
-        canonical["file_info"] = info
 
 
 def _scan_roots(output_dirs):
@@ -589,18 +567,56 @@ class _BatchHistory:
     """A scan batch's recorded-history lookup, made on the first file needing it.
 
     Most files link through their metadata and never ask; the first one that
-    does triggers one lookup for the whole batch (``_recorded_runs_for``).
+    does triggers one ``recorded_runs`` pass for the whole batch, from which
+    both the stored prompt (``get``) and the recorded saver (``recorded``)
+    of every file are read. A failure is logged and names nothing.
     """
 
     def __init__(self, api, media_files):
         self._api = api
-        self._files = media_files
-        self._found = None
+        self._files = [str(path) for path in media_files]
+        self._runs = None
+        self._prompts = {}
+
+    def _found(self):
+        if self._runs is None:
+            try:
+                self._runs = recorded_runs(
+                    self._api.db, self._files, host_output_directory(), None
+                )
+            except Exception:
+                self._api.logger.warning(
+                    "History attribution failed for a scan batch", exc_info=True
+                )
+                self._runs = {}
+        return self._runs
 
     def get(self, path):
-        if self._found is None:
-            self._found = self._api._recorded_runs_for(self._files)
-        return self._found.get(path)
+        """The stored prompt id history attributes to ``path``, else None."""
+        found = self._found().get(path)
+        if found is None:
+            return None
+        run_id = found[0]
+        if run_id not in self._prompts:
+            try:
+                self._prompts[run_id] = named_prompt(self._api.db, run_id)
+            except Exception:
+                self._api.logger.warning(
+                    "History attribution failed for a scan batch", exc_info=True
+                )
+                self._prompts[run_id] = None
+        return self._prompts[run_id]
+
+    def recorded(self, path):
+        """``RecordedOutput(saver, {})`` for an attributed file, else None.
+
+        ``saver`` is set only when the run reported the file from one node.
+        """
+        found = self._found().get(path)
+        if found is None:
+            return None
+        nodes = found[1]
+        return RecordedOutput(next(iter(nodes)) if len(nodes) == 1 else None, {})
 
 
 class AdminRoutesMixin:
@@ -1665,24 +1681,6 @@ class AdminRoutesMixin:
                 note(media_file, status)
         return counts
 
-    @staticmethod
-    def _graph_prompt_text(metadata):
-        """The positive prompt the browser parser traces from the graphs, or None.
-
-        Records parse as the legacy pages parsed them (NaN reads as null).
-        """
-        records = {}
-        for key in ("prompt", "workflow"):
-            value = metadata.get(key)
-            records[key] = parse_page_json(value) if isinstance(value, str) else value
-        try:
-            positive = extract_generation_params(records)["positivePrompt"]
-        except GenerationParamsError:
-            return None
-        if not isinstance(positive, str) or positive == PLACEHOLDERS["positivePrompt"]:
-            return None
-        return positive.strip() or None
-
     def _ingest_scanned_file(
         self,
         media_file,
@@ -1693,124 +1691,72 @@ class AdminRoutesMixin:
         records=None,
         history=None,
     ):
-        """Enrich exact pairs; retain legacy positive-only import for absent pairs.
+        """Store the prompt the shared per-file decision names (#247).
 
-        Returns the file's scan status, or None without prompt metadata. With
-        ``detailed``, a stored or linked file returns a dict instead: its
-        ``status``, the prompt's display ``title`` and, for a resolved pair,
-        the pair counts. When the resolver finds the file ambiguous (whether
-        or not the browser parser then links it) and ``ambiguous`` is a list,
-        ``media_file`` is appended to it; only a file that then returns
-        ``"ambiguous"`` (nothing linked it) is a Needs review case. An
-        ambiguous result with nothing to choose (``reviewable`` is False: fewer
-        than two candidates carry a prompt) that nothing links returns
-        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``.
-        The parsed records of either ambiguous file go to
-        ``records["canonical"]`` when ``records`` is a dict.
+        ``utils.file_prompt.decide_file_prompt`` (scan policy) decides; this
+        stores the result. Returns the file's scan status, or None without
+        prompt metadata. With ``detailed``, a stored or linked file returns a
+        dict instead: its ``status``, the prompt's display ``title`` and, for
+        a resolved pair, the pair counts. When the resolver finds the file
+        ambiguous (whether or not a later step then links it) and
+        ``ambiguous`` is a list, ``media_file`` is appended to it; only a file
+        that then returns ``"ambiguous"`` (nothing linked it) is a Needs
+        review case. An ambiguous result with nothing to choose
+        (``reviewable`` is False: fewer than two candidates carry a prompt)
+        goes to ``untraced`` instead and returns ``"unresolved"`` when nothing
+        links it. The parsed records of either ambiguous file go to
+        ``records["canonical"]`` when ``records`` is a dict. ``history`` is
+        the batch's lazy recorded-history lookup.
         """
-        if not metadata:
-            # No prompt metadata (--disable-metadata, bare savers): only the
-            # recorded run can say which prompt made it (#342)
-            return self._link_recorded_run(media_file, {}, detailed, history)
-        canonical = dict(metadata)
-        for key in ("prompt", "workflow"):
-            if isinstance(canonical.get(key), str):
-                try:
-                    canonical[key] = json.loads(canonical[key])
-                except (ValueError, TypeError):
-                    # Preserve malformed metadata for conservative resolver rejection.
-                    pass
-        if not canonical.get("prompt") and not canonical.get("parameters"):
-            return self._link_recorded_run(media_file, canonical, detailed, history)
-        _with_file_size(canonical, media_file)
-        resolution = resolve_prompt_pair(canonical)
-        if blank_positive(resolution):
-            # Only prepend/append text: no stored prompt can own it (#342)
-            resolution = {**resolution, "state": "unresolved"}
-        # Ambiguous without a choice: unresolved unless something links it.
-        unchoosable = resolution["state"] == "ambiguous" and not reviewable(resolution)
-        if unchoosable:
-            if untraced is not None:
-                untraced.append(media_file)
-            if records is not None:
-                records["canonical"] = canonical
-        elif resolution["state"] == "ambiguous" and ambiguous is not None:
-            ambiguous.append(media_file)
-            if records is not None:
-                records["canonical"] = canonical
-        if resolution["state"] == "resolved":
+        path = str(media_file)
+        if history is not None:
+            lookup = functools.partial(history.recorded, path)
+        else:
+            lookup = functools.partial(recorded_output_lookup(self.db), path)
+        decision = decide_file_prompt(
+            metadata,
+            file_name=Path(path).name,
+            file_size=_file_size(media_file),
+            in_output=in_output_folder(path, host_output_directory()),
+            lookup=lookup,
+            policy=Policy.SCAN,
+        )
+        self._note_review(media_file, decision, ambiguous, untraced, records)
+        if decision.kind == NEVER:
+            if decision.try_recorded_run:
+                linked = self._link_recorded_run(
+                    media_file, decision.canonical, detailed, history
+                )
+                if linked is not None:
+                    return linked
+            return decision.unlinked_status
+        if decision.kind == PAIR:
             result = ingest_resolved_pair(
-                self.db, str(media_file), canonical, resolution
+                self.db, path, decision.canonical, decision.resolution, marks=SCAN_MARKS
             )
             if not detailed:
                 return result["status"]
-            return {
-                **result,
-                "title": self._scan_title(media_file, resolution["positive"]["text"]),
-            }
-        if canonical.get("prompt") and resolution["state"] in (
-            "ambiguous",
-            "unresolved",
-        ):
-            # The resolver could not decide: link the prompt the inspector and the
-            # legacy pages show for this file (the browser parser, in Python).
-            # Graphs without a recognized sampler keep the legacy extractor below.
-            prompt_text = self._graph_prompt_text(metadata)
-            if not prompt_text:
-                linked = self._link_recorded_run(
-                    media_file, canonical, detailed, history
-                )
-                if linked is not None:
-                    return linked
-                return "unresolved" if unchoosable else resolution["state"]
-        elif resolution["state"] == "ambiguous":
-            return "unresolved" if unchoosable else "ambiguous"
-        elif resolution["state"] == "unresolved" and not isinstance(
-            canonical.get("parameters"), str
-        ):
-            return resolution["state"]
-        elif canonical.get("prompt"):
-            # No node takes a positive or negative input (a guider or wrapper
-            # graph): the one wired text, never a guess (#252).
-            found = sampler_less_prompt(canonical["prompt"])
-            prompt_text = found["text"]
-            if prompt_text is None and isinstance(canonical.get("parameters"), str):
-                # A metadata saver also wrote A1111 text: its positive prompt.
-                parsed = self._parse_comfyui_prompt(metadata)["positive_prompt"]
-                prompt_text = parsed.strip() if parsed and parsed.strip() else None
-            if prompt_text is None:
-                linked = self._link_recorded_run(
-                    media_file, canonical, detailed, history
-                )
-                if linked is not None:
-                    return linked
-                return "unresolved" if found["state"] == "ambiguous" else "found"
-        else:
-            prompt_text = self._parse_comfyui_prompt(metadata)["positive_prompt"]
-            if not (prompt_text and prompt_text.strip()):
-                return "found"
-            prompt_text = prompt_text.strip()
-
-        status = self._store_scanned_prompt(media_file, canonical, prompt_text)
+            title_text = decision.resolution["positive"]["text"]
+            return {**result, "title": self._scan_title(media_file, title_text)}
+        status, _prompt_id = store_scanned_prompt(
+            self.db, path, decision.canonical, decision.text, SCAN_MARKS
+        )
         if not detailed or status not in SCAN_TITLED_DETAILS:
             return status
-        return {"status": status, "title": self._scan_title(media_file, prompt_text)}
+        return {"status": status, "title": self._scan_title(media_file, decision.text)}
 
-    def _recorded_runs_for(self, media_files):
-        """``{path: prompt id or None}`` from recorded history for a scan batch.
-
-        One output lookup per chunk of names (``stored_run_prompts``), so a
-        batch never queries history once per file. An empty dict on failure.
-        """
-        try:
-            return stored_run_prompts(
-                self.db, [str(path) for path in media_files], host_output_directory()
-            )
-        except Exception:
-            self.logger.warning(
-                "History attribution failed for a scan batch", exc_info=True
-            )
-            return {}
+    @staticmethod
+    def _note_review(media_file, decision, ambiguous, untraced, records):
+        """Hand an ambiguous file to the batch's Needs review lists."""
+        if decision.review == "untraced":
+            if untraced is not None:
+                untraced.append(media_file)
+            if records is not None:
+                records["canonical"] = decision.canonical
+        elif decision.review == "ambiguous" and ambiguous is not None:
+            ambiguous.append(media_file)
+            if records is not None:
+                records["canonical"] = decision.canonical
 
     def _link_recorded_run(self, media_file, canonical, detailed=False, history=None):
         """Link a file recorded history attributes to one stored prompt (#342).
@@ -1863,35 +1809,3 @@ class AdminRoutesMixin:
         except Exception:
             self.logger.warning("Scan row title could not be read; using its text")
         return display_title((), text)
-
-    def _store_scanned_prompt(self, media_file, canonical, prompt_text):
-        """Link ``media_file`` to ``prompt_text``'s prompt, saving it when new."""
-        prompt_hash = generate_prompt_hash(prompt_text)
-        existing = self.db.get_prompt_by_hash(prompt_hash)
-        if existing:
-            try:
-                image_id = self.db.link_image_to_prompt(
-                    existing["id"], str(media_file), metadata=canonical
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to link {media_file.name} to existing prompt: {e}"
-                )
-                return "found"
-            return "linked" if image_id else "unchanged"
-
-        prompt_id = self.db.save_prompt(
-            prompt_text,
-            "scanned",
-            ["auto-scanned"],
-            None,
-            f"Auto-scanned from {media_file.name}",
-            prompt_hash,
-        )
-        if not prompt_id:
-            return "found"
-        try:
-            self.db.link_image_to_prompt(prompt_id, str(media_file), metadata=canonical)
-        except Exception as e:
-            self.logger.error(f"Failed to link {media_file.name} to new prompt: {e}")
-        return "added"
