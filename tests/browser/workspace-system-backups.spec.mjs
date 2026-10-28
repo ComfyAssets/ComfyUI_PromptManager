@@ -1,6 +1,7 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
 import { seedConcept } from './concept-inventory.mjs';
+import { followRestore, SEEN_RESTORE_PILL, SEEN_RESTORE_TOAST } from './unseen-restore.mjs';
 
 // System › Backup & export (#249 System S9 Task 24) on the S8 backend and the concept-shaped fixture: Back up and its
 // status line (D103), the restore review (D105) and its job, the exports, Import / inspect and the recovery policy
@@ -263,6 +264,24 @@ test('a finished restore shows the open page again from the restored data', asyn
     await expect(card).toHaveCount(0);
     await expect(page).toHaveURL(`${workspace}#/library`);
     expect(await libraryTotal(request)).toBe(restoredTotal);
+});
+
+// #415: an open dialog waits out a finished restore, except a review: the plan it staged no longer describes storage,
+// so it closes as dismissed (its stage discarded), as before.
+test('a restore seen finishing elsewhere closes an open restore review and discards its stage', async ({ page, request }) => {
+    const bytes = await backupBytes(request);
+    const restoreRun = await followRestore(page);
+    await openBackups(page);
+    await expect(page.locator('#activity-pill')).toHaveAttribute('href', SEEN_RESTORE_PILL);
+    await chooseBackup(page, bytes);
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+    expect((await serverJson(request, '/__test__/system/backups')).stages).toBe(1);
+    const discarded = page.waitForResponse(response => response.url().includes(`${PREVIEW_URL}/`) && response.request().method() === 'DELETE');
+    await restoreRun.finish();
+    await expect(toast(page)).toHaveText(SEEN_RESTORE_TOAST);
+    expect((await discarded).status()).toBe(200);
+    await expect(dialog(page)).toHaveCount(0);
+    expect((await serverJson(request, '/__test__/system/backups')).stages).toBe(0);
 });
 
 test('invalid file shows the validator message; nothing is staged', async ({ page, request }) => {
