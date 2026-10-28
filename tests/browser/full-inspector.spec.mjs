@@ -679,6 +679,9 @@ test('collection viewer uses real public transforms and resets on navigation',as
 async function slideshowFixture(page,request,preferences={videoAutoplay:false,videoMute:true,videoLoop:false}) {
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true,include_video:true}})).toBeOK();
     await page.goto('/prompt_manager/workspace#/images');
+    // Install the fake clock before the fixture wraps setTimeout: the wrapped timer (which the viewer session captures)
+    // must be the fake one, so page.clock.runFor alone decides when the 3500 ms slideshow deadline fires.
+    await page.clock.install();
     await page.evaluate(async preferences=>{
         if(preferences) localStorage.setItem('gallerySettings',JSON.stringify(preferences));
         const [{createMediaViewer},{createInspectionController},{createScope},{createPromptSender}]=await Promise.all([
@@ -698,7 +701,7 @@ async function slideshowFixture(page,request,preferences={videoAutoplay:false,vi
     },preferences);
     await expect(mediaDialog(page).getByRole('button',{name:'Zoom in',exact:true})).toHaveAttribute('aria-disabled','false');
     await expect(mediaDialog(page).locator('#viewer-details > div > p.small')).toHaveText('complete.png');
-    await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+1000));
+    await page.clock.pauseAt(new Date(Date.now()+1000));
 }
 const slideshowButton=page=>mediaDialog(page).locator('#viewer-toolbar').getByRole('button',{name:/^(Play|Pause|Stop) slideshow$/});
 const timerCount=page=>page.evaluate(()=>window.slideshowTimers.size);

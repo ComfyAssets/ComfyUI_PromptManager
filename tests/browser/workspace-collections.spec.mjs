@@ -331,6 +331,167 @@ test('renaming a collection deleted in another tab says so and shows the deleted
     await expect(rows(page)).toHaveCount(1);
 });
 
+/** A Playwright hold on the collections list read: `held` fills as reads arrive; `release()` lets them all through. */
+async function holdListReads(page, answer = route => route.fallback()) {
+    const held = [];
+    let open = false;
+    await page.route(`**${API}`, route => {
+        if (route.request().method() !== 'GET') return route.fallback();
+        if (open) return answer(route);
+        held.push(route);
+        return undefined;
+    });
+    return {
+        held,
+        async release() {
+            open = true;
+            for (const route of held.splice(0)) await answer(route).catch(() => {});
+        },
+    };
+}
+
+test('a list read superseded by another read still opens a collection made since (review M1)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const listing = await (await request.get('/prompt_manager/images/output?mode=workspace&limit=1')).json();
+    const [file] = listing.images;
+    await page.goto(`${workspace}#/collection/${manifest.collections.Landscapes.id}`);
+    await expect(heading(page)).toHaveText('Landscapes');
+    // Another tab makes "Fresh"; this tab does not list it yet.
+    const added = await request.post(`${API}/items`, { data: { name: 'Fresh',
+        items: [{ root_index: file.root_index, root_scope: file.root_scope, path: file.path }] } });
+    await expect(added).toBeOK();
+    const fresh = (await added.json()).collection.id;
+    await expect(rows(page)).toHaveCount(2);
+    const hold = await holdListReads(page);
+    // A rename schedules the 300 ms count re-read; opening "Fresh" first reads the list once more. The timer's read
+    // supersedes that one while both are held.
+    await editButton(page).click();
+    await nameField(page).fill('Landscape grids');
+    await editDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(toast(page)).toHaveText('Collection renamed.');
+    await page.evaluate(hash => { window.location.hash = hash; }, `#/collection/${fresh}`);
+    await expect.poll(() => hold.held.length).toBeGreaterThanOrEqual(2);
+    await expect(main(page)).not.toContainText('Collections could not be loaded.');
+    await hold.release();
+    await expect(heading(page)).toHaveText('Fresh');
+    await expect(imageCards(page)).toHaveCount(1);
+});
+
+test('a listing that finds the collection gone while the list still has it offers Retry (review M2)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const { id } = manifest.collections.Experiments;
+    let gone = true;
+    await page.route('**/prompt_manager/images/output?*', route => gone && route.request().url().includes(`collection=${id}`)
+        ? route.fulfill({ status: 404, contentType: 'application/json',
+            body: '{"success":false,"error":"Collection not found","code":"collection-not-found"}' })
+        : route.fallback());
+    await page.goto(`${workspace}#/images`);
+    await expect(rows(page)).toHaveCount(2);
+    // The shell's re-read is held, then fails: the page must not stay blank.
+    const hold = await holdListReads(page, route => route.fulfill({ status: 500, contentType: 'application/json',
+        body: '{"success":false,"error":"Collections could not be read."}' }));
+    await row(page, 'Experiments').click();
+    await expect.poll(() => hold.held.length).toBe(1);
+    await hold.release();
+    const retry = main(page).getByRole('button', { name: 'Retry', exact: true });
+    await expect(retry).toBeVisible();
+    await expect(main(page).locator('#gallery-continuation p')).toHaveText('Images could not be loaded. Retry or rescan the collection.');
+    gone = false;
+    await page.unroute(`**${API}`);
+    await retry.click();
+    await expect(imageCards(page)).toHaveCount(8);
+
+    // The list read again still lists it: the same Retry, never a blank page.
+    gone = true;
+    await page.evaluate(() => { window.location.hash = '#/images'; });
+    await expect(heading(page)).toHaveText('Images');
+    await row(page, 'Experiments').click();
+    await expect(retry).toBeVisible();
+    gone = false;
+    await retry.click();
+    await expect(imageCards(page)).toHaveCount(8);
+});
+
+test('the missing-members note follows the list read again (review L2)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const { id } = manifest.collections.Landscapes;
+    let missing = null;
+    await page.route(`**${API}`, async route => {
+        if (route.request().method() !== 'GET' || missing === null) return route.fallback();
+        const response = await route.fetch();
+        const data = await response.json();
+        data.collections = data.collections.map(item => item.id === id ? { ...item, missing } : item);
+        return route.fulfill({ response, json: data });
+    });
+    await page.goto(`${workspace}#/collection/${id}`);
+    await expect(missingNote(page)).toHaveText('1 image in this collection is not in your current sources.');
+    const rename = async name => {
+        await editButton(page).click();
+        await nameField(page).fill(name);
+        await editDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+        await expect(toast(page)).toHaveText('Collection renamed.');
+    };
+    missing = 3;
+    await rename('Landscapes A');
+    await expect(missingNote(page)).toHaveText('3 images in this collection are not in your current sources.');
+    missing = 0;
+    await rename('Landscapes B');
+    await expect(missingNote(page)).toHaveCount(0);
+    missing = 1;
+    await rename('Landscapes C');
+    await expect(missingNote(page)).toHaveText('1 image in this collection is not in your current sources.');
+});
+
+test('a rename that settles after its dialog closed leaves the next dialog open (review L1)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const { id } = manifest.collections.Landscapes;
+    await page.goto(`${workspace}#/collection/${id}`);
+    await expect(imageCards(page)).toHaveCount(12);
+    let release;
+    const released = new Promise(resolve => { release = resolve; });
+    await page.route(`**${API}/${id}`, async route => {
+        if (route.request().method() !== 'PATCH') return route.fallback();
+        await released;
+        return route.fallback();
+    });
+    await editButton(page).click();
+    await nameField(page).fill('Later');
+    await editDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(editDialog(page)).toHaveCount(0);
+    await main(page).getByRole('button', { name: 'Save view', exact: true }).click();
+    const save = page.getByRole('dialog', { name: 'Save this view', exact: true });
+    await expect(save).toBeVisible();
+    release();
+    await expect(heading(page)).toHaveText('Later');
+    await expect(save).toBeVisible();
+});
+
+test('a page that says a collection or view could not be opened takes focus after a route change (review L3)', async ({ page, request }) => {
+    await seed(request);
+    await page.goto(`${workspace}#/images`);
+    await expect(heading(page)).toHaveText('Images');
+    await page.evaluate(() => { window.location.hash = '#/collection/999999'; });
+    await expect(description(page)).toHaveText('This collection no longer exists.');
+    await expect(heading(page)).toBeFocused();
+
+    await page.route(`**${API}`, route => route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"x"}' })
+        : route.fallback());
+    await page.evaluate(() => { window.location.hash = '#/images'; });
+    await expect(heading(page)).toHaveText('Images');
+    await page.evaluate(() => { window.location.hash = '#/collection/999998'; });
+    await expect(main(page).getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+    await expect(heading(page)).toBeFocused();
+
+    await page.route('**/prompt_manager/saved-views', route => route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"x"}' })
+        : route.fallback());
+    await page.evaluate(() => { window.location.hash = '#/saved/5'; });
+    await expect(description(page)).toHaveText('Saved views could not be loaded. Your saved data has not changed.');
+    await expect(heading(page)).toBeFocused();
+});
+
 // #331 D138 (design §7): the selection bar's Add to collection and Remove from collection.
 const bar = page => page.locator('#bulkbar > .bulkbar');
 const barButton = (page, name) => bar(page).getByRole('button', { name, exact: true });

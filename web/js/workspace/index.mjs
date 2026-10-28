@@ -250,7 +250,9 @@ function mountWorkspace() {
         if (view.signal.aborted) return;
         // A view saved since the list loaded (another tab) is read once more before the link counts as gone.
         if (!savedViews.find(route.savedId) && savedViews.status === 'ready') {
-            await savedViews.load();
+            // settled(), not load()'s own promise: a newer read (a restore, another change) can supersede this one.
+            savedViews.load();
+            await savedViews.settled();
             if (view.signal.aborted) return;
         }
         const saved = savedViews.find(route.savedId);
@@ -265,7 +267,8 @@ function mountWorkspace() {
             window.location.replace('#/images');
             return;
         }
-        const {description} = renderHeading(main, {title:route.label});
+        const {description, h1} = renderHeading(main, {title:route.label});
+        focusTitle(h1);
         description.textContent = 'Saved views could not be loaded. Your saved data has not changed.';
         description.setAttribute('role', 'alert');
         const retry = createButton('Retry');
@@ -319,7 +322,9 @@ function mountWorkspace() {
         await collections.settled();
         if (view.signal.aborted) return;
         if (!collections.find(route.collectionId) && collections.status === 'ready') {
-            await collections.load();
+            // settled(), not load()'s own promise: the 300 ms count read or a restore can supersede this one.
+            collections.load();
+            await collections.settled();
             if (view.signal.aborted) return;
         }
         let collection = collections.find(route.collectionId);
@@ -327,12 +332,23 @@ function mountWorkspace() {
         if (collection) {
             renderPage({...COLLECTION_ROUTE, label:collection.name, title:routeTitle(COLLECTION_ROUTE)}, view, null, {collection:collection.id,
                 // The listing found the collection gone meanwhile: the list is read again and, once it no longer lists
-                // the collection, the page is shown again (the deleted-collection page).
-                onCollectionMissing:() => collections.load().then(() => {
-                    if (!collections.find(route.collectionId)) showAgain();
-                })});
-            const note = missingNote(collection.missing);
-            if (note) pageHeading(main).description.after(element('p', note, 'small'));
+                // the collection, the page is shown again (the deleted-collection page). A failed read, or a list that
+                // still holds it, leaves the listing's own error and Retry (images.mjs).
+                onCollectionMissing:async () => {
+                    collections.load();
+                    await collections.settled();
+                    if (collections.status === 'ready' && !collections.find(route.collectionId)) showAgain();
+                }});
+            // MC3: the note follows every read of the list for the page's life; none while nothing is missing.
+            const note = element('p', '', 'small');
+            const showNote = () => {
+                const text = missingNote(collections.find(route.collectionId)?.missing);
+                note.textContent = text;
+                if (!text) note.remove();
+                else if (!note.isConnected) pageHeading(main)?.description.after(note);
+            };
+            showNote();
+            view.cleanup(collections.subscribe(showNote));
             // The dialog's Delete question uses the latest stored count.
             mountEditAction(view, trigger => openEditCollectionDialog({ scope: view, trigger,
                 collection: collection = {...collection, ...collections.find(collection.id), name:collection.name},
@@ -349,7 +365,8 @@ function mountWorkspace() {
                 onGone: () => collections.settled().then(showAgain) }));
             return;
         }
-        const {description} = renderHeading(main, {title:route.label});
+        const {description, h1} = renderHeading(main, {title:route.label});
+        focusTitle(h1);
         document.title = `${routeTitle(route)} · Prompt Manager`;
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (collections.status === 'ready') {
@@ -370,13 +387,18 @@ function mountWorkspace() {
         main.append(retry);
     }
 
+    /** The concept focuses its page title on a hashchange navigation (app.js 1168), never on the first render. */
+    function focusTitle(h1) {
+        if (!firstRender) h1.focus();
+        firstRender = false;
+    }
+
     function renderPage(route, view, saved = null, {collection = null, onCollectionMissing = null} = {}) {
         document.title = `${routeTitle(route)} · Prompt Manager`;
         // The concept's heading(); each view fills its description and actions.
         // The concept focuses its page title on a hashchange navigation (app.js 1168); the skip link focuses `main`.
         const { description, h1 } = renderHeading(main, { title: route.label });
-        if (!firstRender) h1.focus();
-        firstRender = false;
+        focusTitle(h1);
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
         if (route.id === 'images' || route.id === 'favorites' || route.id === 'collection') {
             mountNewPromptAction(main, api, view);
