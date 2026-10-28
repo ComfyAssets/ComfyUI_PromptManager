@@ -117,8 +117,6 @@
                 document.getElementById('skipReviewBtn').addEventListener('click', () => this.skipReviewImage());
                 document.getElementById('applyReviewBtn').addEventListener('click', () => this.applyReviewTags());
                 document.getElementById('cancelAutoTagBtn').addEventListener('click', () => this.cancelAutoTag());
-                document.getElementById('cancelDownloadBtn').addEventListener('click', () => this.cancelDownload());
-                document.getElementById('unloadModelBtn').addEventListener('click', () => this.unloadModel());
 
                 // WD14 model selection toggle (prompt vs thresholds)
                 document.querySelectorAll('input[name="autoTagModel"]').forEach(radio => {
@@ -149,7 +147,7 @@
                 });
 
                 // Close AutoTag modals on outside click
-                ['autoTagModal', 'autoTagReviewModal', 'autoTagProgressModal', 'autoTagDownloadModal', 'addPromptModal'].forEach(modalId => {
+                ['autoTagModal', 'autoTagReviewModal', 'autoTagProgressModal', 'addPromptModal'].forEach(modalId => {
                     document.getElementById(modalId).addEventListener('click', (e) => {
                         if (e.target.id === modalId) {
                             this.hideModal(modalId);
@@ -2648,7 +2646,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             // State for AutoTag feature
             autoTagState = {
                 eventSource: null,
-                downloadEventSource: null,
                 reviewImages: [],
                 reviewIndex: 0,
                 currentTags: [],
@@ -2685,11 +2682,15 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     el.appendChild(span);
                 } else {
                     el.textContent = '';
-                    const btn = document.createElement('button');
-                    btn.className = 'px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors';
-                    btn.textContent = 'Download';
-                    btn.addEventListener('click', () => window.gallery.downloadModel(modelKey));
-                    el.appendChild(btn);
+                    // Download lives in System › Auto-tagging (#330); the batch refuses a model that is not downloaded.
+                    const link = document.createElement('a');
+                    link.href = 'workspace#/system/tagging';
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    link.title = 'Opens System › Auto-tagging in a new tab';
+                    link.className = 'px-3 py-1 bg-pm-accent hover:bg-pm-accent-hover text-pm text-xs rounded transition-colors';
+                    link.textContent = 'Manage in System';
+                    el.appendChild(link);
                 }
             }
 
@@ -2742,100 +2743,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 } catch (error) {
                     console.error('Error checking models:', error);
                     statusEls.forEach(el => { el.textContent = 'Error'; });
-                }
-            }
-
-            async downloadModel(modelType) {
-                const modelNames = {
-                    'gguf': 'GGUF Model',
-                    'hf': 'HuggingFace Model',
-                    'wd14-swinv2': 'WD14 SwinV2',
-                    'wd14-vit': 'WD14 ViT'
-                };
-                const modelName = modelNames[modelType] || modelType;
-                document.getElementById('downloadModelName').textContent = modelName;
-                document.getElementById('downloadStatus').textContent = 'Preparing...';
-                document.getElementById('downloadProgressPercent').textContent = '0%';
-                document.getElementById('downloadProgressBar').style.width = '0%';
-                document.getElementById('downloadProgressBar').classList.remove('animate-pulse');
-
-                this.hideModal("autoTagModal");
-                this.showModal("autoTagDownloadModal");
-
-                try {
-                    this.autoTagState.downloadEventSource = SseStream.connect(`/prompt_manager/autotag/download/${modelType}`, { method: 'POST' });
-
-                    this.autoTagState.downloadEventSource.onmessage = (event) => {
-                        const data = JSON.parse(event.data);
-
-                        // The server sends `type` (progress / complete / error); the download is an
-                        // Activity job with no byte progress, so the bar is indeterminate (#328).
-                        if (data.type === 'progress') {
-                            document.getElementById('downloadStatus').textContent = 'Downloading\u2026';
-                            document.getElementById('downloadProgressPercent').textContent = '';
-                            const bar = document.getElementById('downloadProgressBar');
-                            bar.style.width = '100%';
-                            bar.classList.add('animate-pulse');
-                        } else if (data.type === 'complete') {
-                            this.autoTagState.downloadEventSource.close();
-                            this.hideModal("autoTagDownloadModal");
-                            this.showModal("autoTagModal");
-                            this.checkAutoTagModels();
-                            this.showNotification('Model downloaded successfully!', 'success');
-                        } else if (data.type === 'error') {
-                            this.autoTagState.downloadEventSource.close();
-                            this.hideModal("autoTagDownloadModal");
-                            this.showModal("autoTagModal");
-                            this.showNotification(`Download failed: ${data.message}`, 'error');
-                        }
-                    };
-
-                    this.autoTagState.downloadEventSource.onerror = () => {
-                        this.autoTagState.downloadEventSource.close();
-                        this.hideModal("autoTagDownloadModal");
-                        this.showModal("autoTagModal");
-                        this.showNotification('Download connection lost', 'error');
-                    };
-                } catch (error) {
-                    console.error('Download error:', error);
-                    this.hideModal("autoTagDownloadModal");
-                    this.showModal("autoTagModal");
-                    this.showNotification('Failed to start download', 'error');
-                }
-            }
-
-            cancelDownload() {
-                if (this.autoTagState.downloadEventSource) {
-                    this.autoTagState.downloadEventSource.close();
-                    this.autoTagState.downloadEventSource = null;
-                }
-                this.hideModal("autoTagDownloadModal");
-                this.showModal("autoTagModal");
-            }
-
-            async unloadModel() {
-                const unloadBtn = document.getElementById("unloadModelBtn");
-                unloadBtn.disabled = true;
-                unloadBtn.textContent = 'Unloading...';
-
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/unload', {
-                        method: 'POST'
-                    });
-                    const data = await response.json();
-
-                    if (data.success) {
-                        this.showNotification(data.message, 'success');
-                        await this.checkAutoTagModels(); // Refresh status
-                    } else {
-                        this.showNotification(`Failed to unload model: ${data.error}`, 'error');
-                    }
-                } catch (error) {
-                    console.error('Error unloading model:', error);
-                    this.showNotification('Failed to unload model', 'error');
-                } finally {
-                    unloadBtn.disabled = false;
-                    unloadBtn.textContent = 'Unload Model';
                 }
             }
 

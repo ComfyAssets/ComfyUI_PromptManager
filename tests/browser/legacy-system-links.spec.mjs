@@ -20,6 +20,17 @@ async function openPageOptions(page) {
     await expect(page.locator('#settingsModal')).toBeVisible();
 }
 
+/** The auto-tag modal with its model rows read from /autotag/models. */
+async function openAutoTag(page) {
+    const read = page.waitForResponse(item => item.url().endsWith('/prompt_manager/autotag/models'));
+    await page.locator('#autoTagBtn').click();
+    await read;
+    await expect(page.locator('#autoTagModal')).toBeVisible();
+}
+
+const notDownloaded = (page, request) => post(request, '/__test__/tagging/models', { unavailable: ['gguf'] });
+const modelLoaded = (page, request) => post(request, '/__test__/tagging/loaded', { model: 'wd14-vit' });
+
 // One row per System link of the design's §2 map: the page, the control's label, how to find it, the section it opens
 // and what a test must arrange before the control shows.
 const LINKS = Object.freeze([
@@ -28,6 +39,12 @@ const LINKS = Object.freeze([
     { page: 'admin', label: 'Backup DB', locate: page => page.locator('#backupBtn'), section: 'backups' },
     { page: 'admin', label: 'Restore DB', locate: page => page.locator('#restoreBtn'), section: 'backups' },
     { page: 'gallery', label: 'Settings', locate: page => page.locator('#settingsBtn'), section: 'appearance' },
+    { page: 'admin', label: 'Manage in System (model row)', arrange: notDownloaded, reveal: openAutoTag,
+        locate: page => page.locator('#ggufModelStatus a'), section: 'tagging' },
+    { page: 'gallery', label: 'Manage in System (model row)', arrange: notDownloaded, reveal: openAutoTag,
+        locate: page => page.locator('#ggufModelStatus a'), section: 'tagging' },
+    { page: 'gallery', label: 'Manage in System (Unload Model)', arrange: modelLoaded, reveal: openAutoTag,
+        locate: page => page.locator('#unloadModelBtn'), section: 'tagging' },
     { page: 'gallery', label: 'Page options Maintenance', reveal: openPageOptions,
         locate: page => page.locator('#pageOptionsMaintenanceLink'), section: 'maintenance' },
     { page: 'gallery', label: 'Page options Sources & scans', reveal: openPageOptions,
@@ -248,4 +265,27 @@ test('Page options keeps the page-only settings gallery', async ({ page }) => {
         autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
         defaultLimit: 100, debugMode: false, checkThumbnailsAtStartup: true, lazyLoading: true, gridColumns: 8,
         infiniteScroll: false, apiTimeout: 30 });
+});
+
+test('the legacy auto-tag modal stays open after Manage in System', async ({ page, context, request }) => {
+    for (const legacy of ['admin', 'gallery']) {
+        await post(request, '/__test__/tagging/models', { unavailable: ['gguf'] });
+        await page.goto(PAGES[legacy]);
+        await openAutoTag(page);
+        const link = page.locator('#ggufModelStatus').getByRole('link', { name: 'Manage in System', exact: true });
+        await expect(link).toHaveAttribute('title', 'Opens System › Auto-tagging in a new tab');
+        // A downloaded model keeps its status text.
+        await expect(page.locator('#wd14VitModelStatus')).toHaveText('\u2713 Downloaded');
+        const opened = context.waitForEvent('page');
+        await link.click();
+        const system = await opened;
+        await expect(system).toHaveURL(/#\/system\/tagging$/);
+        await expect(page.locator('#autoTagModal')).toBeVisible();
+        await system.close();
+        // Downloaded in System meanwhile: reopening the modal reads the models again (CUJ 4).
+        await post(request, '/__test__/tagging/models', { unavailable: [] });
+        await page.goto(PAGES[legacy]);
+        await openAutoTag(page);
+        await expect(page.locator('#ggufModelStatus')).toHaveText('\u2713 Downloaded');
+    }
 });

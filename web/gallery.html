@@ -358,9 +358,11 @@
                             <span class="text-pm-secondary text-xs ml-2">(Faster processing, uses ~4-16GB VRAM)</span>
                         </div>
                     </div>
-                    <button id="unloadModelBtn" class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs rounded-pm-sm transition-colors hidden">
-                        Unload Model
-                    </button>
+                    <a id="unloadModelBtn" href="workspace#/system/tagging" target="_blank" rel="noopener"
+                       title="Unload the model in System › Auto-tagging (opens a new tab)"
+                       class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs rounded-pm-sm transition-colors hidden">
+                        Manage in System
+                    </a>
                 </label>
                 <p id="modelLoadedStatus" class="text-pm-muted text-xs mt-1 hidden">
                     <span class="text-pm-success">●</span> Model currently loaded: <span id="loadedModelType">none</span>
@@ -515,39 +517,6 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 <button id="cancelAutoTagBtn"
                         class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
                     Cancel
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Auto Tag Download Modal -->
-    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-md p-3 max-w-md w-full mx-4 border border-pm">
-            <h3 class="text-sm font-semibold text-pm mb-3">Downloading Model</h3>
-
-            <!-- Model Name -->
-            <div class="mb-3">
-                <p class="text-pm-secondary text-xs">Downloading:</p>
-                <p id="downloadModelName" class="text-pm text-xs font-medium">GGUF Model</p>
-            </div>
-
-            <!-- Progress Bar -->
-            <div class="mb-3">
-                <div class="flex justify-between text-xs text-pm-secondary mb-1">
-                    <span id="downloadStatus">Preparing...</span>
-                    <span id="downloadProgressPercent">0%</span>
-                </div>
-                <div class="w-full bg-pm-input rounded-full h-2">
-                    <div id="downloadProgressBar" class="bg-pm-accent h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                </div>
-                <p class="text-pm-secondary text-xs mt-2">The download continues in Activity.</p>
-            </div>
-
-            <!-- Cancel Button -->
-            <div class="flex justify-center">
-                <button id="cancelDownloadBtn"
-                        class="px-3 py-1 bg-pm-error hover:bg-pm-error text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                    Close
                 </button>
             </div>
         </div>
