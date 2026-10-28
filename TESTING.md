@@ -264,16 +264,20 @@ with new measurements written next to it.
 
 Browser jobs (#425): GitHub keeps no log of a job killed at its limit and skips
 its upload steps, so the test step in each browser job in `viewerjs-check.yml`
-has its own `timeout-minutes` (18, below the job's 20) and Playwright stops
-first. Under `CI`, `globalTimeout` comes from `PM_TEST_GLOBAL_TIMEOUT_MINUTES`
-(page workflows 17, coverage workflows 15; the viewer suite has a fixed 3);
-the comment above `jobs:` holds the measurements. Locally there is no limit
-unless you set that variable (fractions work: `0.5` is 30 s). Each test keeps
-the 30 s default. When the run is cut off, the log ends with `Still running
-when the run ended (timedout): N` and one line per test that never finished
-(`tools/vendor/running-tests-reporter.mjs`; `list` cannot name them). The
-blob report in `tools/vendor/test-results/blob/` and the traces upload with
-`if: always()`; `npx playwright merge-reports` opens the blob.
+has its own `timeout-minutes` (18, below the job's 20). At the step limit
+GitHub sends SIGTERM, which would end Playwright without any report; under `CI`
+`tools/vendor/running-tests-reporter.mjs` catches the first one, prints
+`Still running when the run ended (SIGTERM): N` and one line per unfinished
+test (path relative to the suite's `rootDir`), then sends Playwright its own
+SIGINT, so the workers stop, the run ends interrupted and the blob report is
+written to `tools/vendor/test-results/blob/`. That directory and the traces
+upload with `if: always()`; `npx playwright merge-reports` opens the blob.
+Each test keeps the 30 s default and there is no `globalTimeout`. Two limits
+of this: it assumes the npm cache hits (a cold cache adds up to 5 minutes to
+`npm ci`, and the job limit can then still win), and coverage shard 1 (12m53s
+measured) is the tight one in its 18-minute step. Local runs keep the `list`
+reporter only; reproduce with `CI=1 timeout -s TERM 40 npm run --prefix
+tools/vendor test:workflows -- --project=firefox`.
 
 ### After a push
 

@@ -1,8 +1,5 @@
 import { defineConfig } from '@playwright/test';
-import { globalTimeoutMs, reporters } from './test-workers.mjs';
-
-// The viewer suite takes under a minute in CI and runs before the coverage workflows in the same step.
-const CI_GLOBAL_TIMEOUT_MINUTES = 3;
+import { reporters } from './test-workers.mjs';
 
 export default defineConfig({
     testDir: './tests',
@@ -12,7 +9,6 @@ export default defineConfig({
     workers: 2,
     forbidOnly: Boolean(process.env.CI),
     retries: process.env.CI ? 1 : 0,
-    globalTimeout: globalTimeoutMs({ ciMinutes: CI_GLOBAL_TIMEOUT_MINUTES }),
     reporter: reporters({ name: 'viewer' }),
     use: { browserName: 'chromium', headless: true, trace: 'retain-on-failure' },
     projects: [
