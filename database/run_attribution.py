@@ -164,7 +164,7 @@ def _runs_by_location(db: Any, names: List[str]) -> Optional[Dict[tuple, dict]]:
     return found
 
 
-def _recorded_runs(
+def recorded_runs(
     db: Any,
     image_paths: Iterable[str],
     output_root: Optional[str],
@@ -201,7 +201,8 @@ def _recorded_runs(
     return attributed
 
 
-def _named_prompt(db: Any, run_id: str) -> Optional[int]:
+def named_prompt(db: Any, run_id: str) -> Optional[int]:
+    """The one stored prompt every positive context of ``run_id`` names, else None."""
     contexts = db.get_execution_contexts(run_id).get("contexts") or []
     named = {
         context.get("positive_prompt_id")
@@ -228,11 +229,11 @@ def stored_run_prompts(
     paths = list(dict.fromkeys(path for path in image_paths if path))
     result: Dict[str, Optional[int]] = dict.fromkeys(paths)
     prompts: Dict[str, Optional[int]] = {}
-    for path, (run_id, _nodes) in _recorded_runs(
+    for path, (run_id, _nodes) in recorded_runs(
         db, paths, output_root, path_style
     ).items():
         if run_id not in prompts:
-            prompts[run_id] = _named_prompt(db, run_id)
+            prompts[run_id] = named_prompt(db, run_id)
         result[path] = prompts[run_id]
     return result
 
@@ -275,7 +276,7 @@ def recorded_output(
 ) -> Optional[RecordedOutput]:
     """The recorded run facts for ``image_path``, else None (#386).
 
-    The file must be attributed to one run (``_recorded_runs``: one run
+    The file must be attributed to one run (``recorded_runs``: one run
     reported its location and it was written during that run). Read-only; it
     never links anything.
     """
@@ -286,7 +287,7 @@ def recorded_output(
     if own_transaction:  # outputs and texts from one state of history
         conn.execute("BEGIN")
     try:
-        found = _recorded_runs(db, [image_path], output_root, path_style)
+        found = recorded_runs(db, [image_path], output_root, path_style)
         if image_path not in found:
             return None
         run_id, nodes = found[image_path]

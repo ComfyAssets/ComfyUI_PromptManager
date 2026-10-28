@@ -41,9 +41,14 @@ _TEXT_KEY = re.compile(r"^(text|string|prompt)(_?[a-z0-9]+)?$", re.IGNORECASE)
 _NEGATIVE_KEY = re.compile(r"(^|_)neg(ative)?($|_)", re.IGNORECASE)
 
 
+def is_negative_input(key: Any) -> bool:
+    """Whether an input name carries a negative prompt (#90's one rule)."""
+    return isinstance(key, str) and bool(_NEGATIVE_KEY.search(key))
+
+
 def follows_input(key: Any) -> bool:
     """Whether an input name carries positive conditioning or prompt text."""
-    if not isinstance(key, str) or _NEGATIVE_KEY.search(key):
+    if not isinstance(key, str) or is_negative_input(key):
         return False
     return key == "positive" or bool(
         _CONDITIONING_KEY.match(key) or _TEXT_KEY.match(key)
