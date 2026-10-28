@@ -28,7 +28,12 @@ from .generation_params import (
     extract_generation_params,
     parse_page_json,
 )
-from .prompt_graph import metadata_opted_out, side_opted_out
+from .prompt_graph import (
+    PROMPT_MANAGER_TYPES,
+    metadata_opted_out,
+    save_setting,
+    side_opted_out,
+)
 from .prompt_inspector import inspection_resolution
 from .prompt_pair_resolver import _numeric, resolve_prompt_pair, sampler_less_prompt
 from .review_capture import reviewable
@@ -128,6 +133,12 @@ def decide_file_prompt(
     _with_size(canonical, file_size)
     resolution = resolve_prompt_pair(canonical)
     if resolution["state"] == "resolved" and side_opted_out(
+        canonical.get("prompt"), resolution["positive"]
+    ):
+        # The positive passes a node that is off, though the #90 graph walk
+        # did not reach it (steps 5 and 7)
+        return Decision(NOT_SAVED, canonical=canonical)
+    if resolution["state"] == "resolved" and side_opted_out(
         canonical.get("prompt"), resolution["negative"]
     ):
         # Only the negative's node is off: the positive alone, never a pair
@@ -187,6 +198,11 @@ def _undecided_graph(found: _File) -> Decision:
         found.metadata, found.file_name, saver, name_anchor=False
     )
     text = _inspected_text(inspected.resolution)
+    if text is not None and side_opted_out(
+        found.canonical["prompt"], inspected.resolution["positive"]
+    ):
+        # The inspector follows pass-throughs the #90 graph walk does not
+        return Decision(NOT_SAVED, canonical=found.canonical)
     if text is not None:
         source = "recorded-run" if inspected.by_record else "inspector"
         return _decision(found, POSITIVE, text, source)
@@ -196,6 +212,9 @@ def _undecided_graph(found: _File) -> Decision:
         if not inspected.malformed and inspected.resolution["state"] == "ambiguous":
             return _never(found, _unlinked(found))
     text = graph_prompt_text(found.metadata)
+    if text is not None and _off_text(found.canonical["prompt"], text):
+        # The legacy answer is a switched-off node's own text (#90)
+        return Decision(NOT_SAVED, canonical=found.canonical)
     if text is not None and _joined_text(found.canonical["prompt"], text):
         # The legacy parser joins prepend + text + append: the text a
         # PromptManager node stores cannot be told from it (#343).
@@ -221,6 +240,26 @@ def _sampler_less(found: _File, graph: Any) -> Decision:
 
 
 _UNDECIDED_SOURCES = ("inspector", "recorded-run", "legacy-parser")
+
+
+def _off_text(graph: Any, text: str) -> bool:
+    """Whether ``text`` is the literal text of a PromptManager-family node
+    whose Save to library is not on."""
+    if not isinstance(graph, dict):
+        return False
+    wanted = text.strip()
+    for node_id, node in graph.items():
+        if not isinstance(node, dict) or node.get("class_type") not in (
+            PROMPT_MANAGER_TYPES
+        ):
+            continue
+        inputs = node.get("inputs")
+        literal = inputs.get("text") if isinstance(inputs, dict) else None
+        if not isinstance(literal, str) or literal.strip() != wanted:
+            continue
+        if save_setting(graph, node_id) is not True:
+            return True
+    return False
 
 
 def _joined_text(graph: Any, text: str) -> bool:

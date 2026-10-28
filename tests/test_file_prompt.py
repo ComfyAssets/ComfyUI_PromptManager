@@ -166,6 +166,23 @@ class TestStepsBeforeResolving(unittest.TestCase):
         self.assertEqual((reads, decision.canonical["file_info"]), ([1], {"size": 9}))
 
 
+def _off_behind(middle, key):
+    """A switched-off PromptManagerText reaching the encoder through
+    ``middle``'s ``key`` input."""
+    graph = save_tests.run_graph()
+    graph["1"] = {
+        "class_type": "PromptManagerText",
+        "inputs": {"text": "SECRET OFF TEXT", "save_to_library": False},
+    }
+    graph["7"] = {"class_type": middle, "inputs": {key: ["1", 0]}}
+    graph["8"] = {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": ["7", 0], "clip": ["4", 1]},
+    }
+    graph["3"]["inputs"]["positive"] = ["8", 0]
+    return graph
+
+
 class TestSaveToLibrarySteps(unittest.TestCase):
     """#90: a PromptManager node with Save to library off stores nothing."""
 
@@ -184,9 +201,59 @@ class TestSaveToLibrarySteps(unittest.TestCase):
     def test_step_2_a_wired_switch_is_not_saved_wired(self):
         graph = save_tests.run_graph(save=["9", 0])
         graph["9"] = {"class_type": "SomeCustomSwitch", "inputs": {}}
-        decision = _decide(_graph(graph))
+        lookup = _Lookup("9")
+        decision = _decide(_graph(graph), lookup=lookup)
         self.assertEqual(decision.kind, "not_saved_wired")
         self.assertFalse(decision.try_recorded_run)
+        self.assertIsNone(decision.review)
+        self.assertEqual(lookup.calls, 0)
+
+    def test_step_8_1_an_off_node_behind_a_pass_through_is_not_saved(self):
+        """The #90 graph walk does not follow ``anything`` or ``value``; the
+        inspector does, so its positive is checked against the switch."""
+        for middle, key in (("easy showAnything", "anything"), ("MyNode", "value")):
+            with self.subTest(middle=middle):
+                graph = _off_behind(middle, key)
+                for policy in Policy:
+                    decision = _decide(_graph(graph), policy=policy, lookup=_Lookup())
+                    self.assertEqual(decision.kind, "not_saved")
+                    self.assertIsNone(decision.text)
+
+    def test_step_8_4_a_legacy_answer_from_an_off_node_is_not_saved(self):
+        graph = _off_behind("MyNode", "value")
+        graph["9"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "on text"}}
+        graph["5"] = {**graph["3"], "inputs": {**graph["3"]["inputs"]}}
+        graph["5"]["inputs"]["positive"] = ["9", 0]
+        decision = _decide(_graph(graph), lookup=_Lookup())
+        self.assertEqual(decision.kind, "not_saved")
+        self.assertIsNone(decision.text)
+
+    def test_steps_5_and_7_check_the_resolved_positive_too(self):
+        """A resolved positive through an off node the #90 walk missed."""
+        cases = {
+            "pair": save_tests.run_graph(save=False),
+            "negative off": save_tests.run_graph(save=False, negative_save=False),
+        }
+        for name, graph in cases.items():
+            with (
+                self.subTest(name=name),
+                mock.patch.object(
+                    file_prompt, "metadata_opted_out", return_value=False
+                ),
+            ):
+                self.assertEqual(_decide(_graph(graph)).kind, "not_saved")
+
+    def test_step_5_a_junk_positive_is_never_stored(self):
+        """Pinned: the positive alone still passes the junk gate, and a blank
+        positive (never storable) stores nothing either."""
+        graph = save_tests.run_graph(save=True, negative_save=False)
+        graph["1"]["inputs"]["text"] = "2048"
+        decision = _decide(_graph(graph))
+        self.assertEqual((decision.kind, decision.source), ("never", "junk:number"))
+        self.assertEqual(decision.unlinked_status, "found")
+        graph["1"]["inputs"]["text"] = ""
+        decision = _decide(_graph(graph))
+        self.assertEqual((decision.kind, decision.text), ("never", None))
 
     def test_step_2_a_workflow_only_opt_out_comes_before_step_3(self):
         workflow = {

@@ -590,3 +590,21 @@ class TestScanDecision(AdminAPITestCase):
             meta = {"prompt": json.dumps(sampled_graph("cat", "blur"))}
             self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
         self.assertEqual(calls, [1])
+
+    def test_an_off_node_behind_a_pass_through_stores_nothing(self):
+        """#90 regression guard for the scan (main stored nothing here)."""
+        from tests.test_save_to_library import run_graph
+
+        g = run_graph(save=False)
+        g["1"]["class_type"] = "PromptManagerText"
+        g["7"] = {"class_type": "easy showAnything", "inputs": {"anything": ["1", 0]}}
+        g["8"] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": ["7", 0], "clip": ["4", 1]},
+        }
+        g["3"]["inputs"]["positive"] = ["8", 0]
+        path = self._path("off.png")
+        meta = {"prompt": json.dumps(g)}
+        self.assertEqual(self.api._ingest_scanned_file(path, meta), "not_saved")
+        self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
+        self.assertEqual(self._links(path), [])

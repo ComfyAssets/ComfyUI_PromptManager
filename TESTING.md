@@ -5285,7 +5285,11 @@ workflows without a PromptManager node. It does no file or database I/O.
   node had Save to library off is `not_saved`, and one whose switch is wired
   from a node the file cannot show is `not_saved_wired`: nothing is written, no
   recorded-run fallback, no Needs review item. A resolved pair whose negative's
-  node is off stores the positive alone (source `opted-out-negative`).
+  node is off stores the positive alone (source `opted-out-negative`). The
+  #90 graph walk follows only prompt-like inputs, so the text every later step
+  names is checked too: a resolved or inspected positive whose path passes a
+  node that is off (`side_opted_out`), or a legacy answer that is such a
+  node's own text, makes the file `not_saved`.
 - **Order.** The default profile decides first, exactly as before (resolved
   pair, A1111, sampler-less). Only a graph it leaves ambiguous or unresolved
   reaches the inspector's resolve (`inspection_resolution` in
