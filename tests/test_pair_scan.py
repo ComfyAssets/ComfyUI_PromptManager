@@ -1,7 +1,9 @@
 """Metadata scanning enriches known pairs and conservatively leaves conflicts."""
 
 import json
+import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.test_api_admin import AdminAPITestCase
 from utils.hashing import generate_prompt_hash
@@ -549,3 +551,42 @@ class TestScanDecision(AdminAPITestCase):
         self.assertEqual(status, "added")
         self.assertEqual((ambiguous, untraced), ([path], []))
         self.assertEqual(records["canonical"]["prompt"], g)
+
+    def test_an_ambiguous_file_with_a_junk_answer_is_still_queued(self):
+        from tests.test_file_prompt import _numeric_first_branches
+
+        path = self._path("numbers.png")
+        meta = {"prompt": json.dumps(_numeric_first_branches())}
+        with patch.object(
+            type(self.api), "_record_scanned_review", autospec=True
+        ) as record:
+            counts = self.api._ingest_scan_batch_sync([(path, meta)])
+        self.assertEqual(counts["ambiguous"], 1, counts)
+        record.assert_called_once()
+        self.assertEqual(self._links(path), [])
+
+    def test_a_conflict_row_says_the_link_was_kept(self):
+        from py.api.admin import _scan_outcome
+
+        _group, row, _line = _scan_outcome(self._path("c.png"), [], "conflict")
+        self.assertEqual(row["detail"], "Kept: already linked to a different prompt")
+
+    def test_a_library_move_reruns_the_scan_writes(self):
+        from py.api import admin
+
+        real = admin.ingest_resolved_pair
+        model = self.api.db.model
+
+        def moved_once(*args, **kwargs):
+            if not calls:
+                calls.append(1)
+                model._generation += 1
+                raise sqlite3.OperationalError("closed")
+            return real(*args, **kwargs)
+
+        calls = []
+        path = self._path("pair.png")
+        with patch.object(admin, "ingest_resolved_pair", side_effect=moved_once):
+            meta = {"prompt": json.dumps(sampled_graph("cat", "blur"))}
+            self.assertEqual(self.api._ingest_scanned_file(path, meta), "added")
+        self.assertEqual(calls, [1])

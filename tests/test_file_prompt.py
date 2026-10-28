@@ -82,6 +82,43 @@ def _gated(graph):
     return graph
 
 
+def _prompt_manager_branches(prepend="PRE", append="APP"):
+    """Two KSampler branches, each fed by a PromptManagerText string."""
+    graph = sampled_graph()
+    del graph["1"]
+    sampler = graph.pop("3")
+    for index, text in enumerate(("a cat", "a dog"), start=1):
+        base = index * 10
+        graph[str(base)] = {
+            "class_type": "PromptManagerText",
+            "inputs": {"text": text, "prepend_text": prepend, "append_text": append},
+        }
+        graph[str(base + 1)] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": [str(base), 0]},
+        }
+        graph[str(base + 2)] = {
+            **sampler,
+            "inputs": {**sampler["inputs"], "positive": [str(base + 1), 0]},
+        }
+    return graph
+
+
+def _numeric_first_branches():
+    """Three branches; the legacy parser's answer (the first) is a number."""
+    graph = sampled_graph("2048")
+    for index, text in ((5, "a cat"), (6, "a dog")):
+        graph[str(index * 10)] = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": text},
+        }
+        graph[str(index * 10 + 1)] = {
+            **graph["3"],
+            "inputs": {**graph["3"]["inputs"], "positive": [str(index * 10), 0]},
+        }
+    return graph
+
+
 class TestStepsBeforeResolving(unittest.TestCase):
     def test_step_1_no_metadata_tries_the_recorded_run(self):
         for metadata in ({}, None):
@@ -113,6 +150,19 @@ class TestStepsBeforeResolving(unittest.TestCase):
             _decide(meta, file_size=42).canonical["file_info"], {"size": 7, "width": 3}
         )
         self.assertNotIn("file_info", _decide(_graph(sampled_graph())).canonical)
+
+    def test_a_file_size_reader_is_called_only_for_prompt_metadata(self):
+        reads = []
+
+        def size():
+            reads.append(1)
+            return 9
+
+        for metadata in ({}, {"workflow": "{}"}):
+            _decide(metadata, file_size=size)
+        self.assertEqual(reads, [])
+        decision = _decide(_graph(sampled_graph()), file_size=size)
+        self.assertEqual((reads, decision.canonical["file_info"]), ([1], {"size": 9}))
 
 
 class TestResolvedSteps(unittest.TestCase):
@@ -184,8 +234,10 @@ class TestUndecidedGraph(unittest.TestCase):
         self.assertEqual(decision.source, "legacy-parser")
 
     def test_step_8_1_the_file_name_anchor_alone_never_decides(self):
-        """#390 ruling: a file only its saver's file name resolves is queued
-        for Needs review by the scan, never linked; the monitor leaves it."""
+        """#390: the file-name anchor never decides a link. The scan's legacy
+        floor may still link the file (as before #247), and a file nothing
+        links is queued with the anchor's choice per #390; the monitor
+        stores nothing."""
         name = "s45_branch_2_00001_.png"
         scan = _decide(_graph(shapes.branch_bench()), lookup=_Lookup(), file_name=name)
         self.assertEqual((scan.kind, scan.source), ("positive", "legacy-parser"))
@@ -231,7 +283,28 @@ class TestUndecidedGraph(unittest.TestCase):
         )
         self.assertEqual(decision.kind, "never")
         self.assertEqual(decision.unlinked_status, "ambiguous")
+        self.assertFalse(decision.try_recorded_run)
         self.assertEqual(lookup.calls, 1)
+
+    def test_step_8_4_joined_prompt_manager_text_is_never_the_legacy_answer(self):
+        """The legacy parser returns prepend + text + append; the stored text
+        of a PromptManager node cannot be told from it."""
+        decision = _decide(_graph(_prompt_manager_branches()), lookup=_Lookup())
+        self.assertEqual(decision.kind, "never")
+        self.assertEqual(decision.unlinked_status, "ambiguous")
+        self.assertEqual(decision.review, "ambiguous")
+        self.assertTrue(decision.try_recorded_run)
+        # A linked part the parser does not follow: its answer is the node's
+        # own text, which is what the node stores (#170 parity).
+        linked = _prompt_manager_branches(prepend=["99", 0], append="")
+        decision = _decide(_graph(linked), lookup=_Lookup())
+        self.assertEqual((decision.kind, decision.text), ("positive", "a cat"))
+
+    def test_step_8_4_prompt_manager_text_without_parts_keeps_the_floor(self):
+        """Regression guard (passes on the base): no prepend or append."""
+        graph = _prompt_manager_branches(prepend="", append=" ")
+        decision = _decide(_graph(graph), lookup=_Lookup())
+        self.assertEqual((decision.kind, decision.text), ("positive", "a cat"))
 
     def test_step_8_4_an_ambiguous_file_gets_the_legacy_answer_in_the_scan(self):
         decision = _decide(_graph(shapes.shared_prefix()), lookup=_Lookup())
@@ -358,6 +431,7 @@ class TestJunkGate(unittest.TestCase):
             "nan",
             "a portrait saved as final.safetensors",
             "4k",
+            "C:\\My Models\\x.safetensors",
         ):
             with self.subTest(text=text):
                 self.assertIsNone(junk_text(text))
@@ -381,6 +455,16 @@ class TestJunkGate(unittest.TestCase):
             decision = _decide(_graph(_gated(sampled_graph(LORA))), lookup=_Lookup())
         self.assertEqual(decision.source, "junk:lora-only")
         self.assertEqual(decision.kind, "never")
+        self.assertEqual(decision.unlinked_status, "unresolved")
+
+    def test_step_13_junk_at_step_8_keeps_that_steps_status_and_review(self):
+        # An ambiguous file whose legacy answer is a number is still a
+        # Needs review case: its status stays "ambiguous".
+        decision = _decide(_graph(_numeric_first_branches()), lookup=_Lookup())
+        self.assertEqual((decision.kind, decision.source), ("never", "junk:number"))
+        self.assertEqual(decision.unlinked_status, "ambiguous")
+        self.assertEqual(decision.review, "ambiguous")
+        self.assertTrue(decision.try_recorded_run)
 
 
 class TestParseComfyuiPrompt(unittest.TestCase):
