@@ -121,6 +121,7 @@
     "POST /prompt_manager/images/generate-thumbnails",
     "POST /prompt_manager/images/generate-thumbnails/progress",
     "POST /prompt_manager/images/link",
+    "POST /prompt_manager/images/rescope",
     "POST /prompt_manager/images/reveal",
     "POST /prompt_manager/jobs/autotag",
     "POST /prompt_manager/jobs/duplicates",

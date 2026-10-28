@@ -19,7 +19,7 @@ function element(tag, className, text) {
     return node;
 }
 
-export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,adapter = rootedFileAdapter}) {
+export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -148,7 +148,8 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 src = url.href;
             }
             const node = element(selected.is_video ? 'video' : 'img');
-            mediaLocal.listen(node,'error',() => {if (current()) session.failed(key);});
+            // #430: the page may find the file under a renumbered source (`onMediaError`).
+            mediaLocal.listen(node,'error',() => {if (current()) {session.failed(key);onMediaError?.(selected);}});
             if (selected.is_video) {
                 node.controls = true;node.playsInline = true;node.preload = 'metadata';
                 const preferences = readViewerPreferences();

@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 37,
-    "branches": 61,
-    "functions": 32,
-    "statements": 37
+    "lines": 47,
+    "branches": 64,
+    "functions": 50,
+    "statements": 47
   },
   "api-client.js": {
     "lines": 98,
@@ -38,7 +38,7 @@
   "focused-node.js": {
     "lines": 97,
     "branches": 87,
-    "functions": 90,
+    "functions": 91,
     "statements": 97
   },
   "gallery-settings.js": {
@@ -48,10 +48,10 @@
     "statements": 98
   },
   "gallery.js": {
-    "lines": 49,
-    "branches": 68,
-    "functions": 50,
-    "statements": 49
+    "lines": 54,
+    "branches": 72,
+    "functions": 57,
+    "statements": 54
   },
   "html-escape.js": {
     "lines": 98,
@@ -61,7 +61,7 @@
   },
   "image-helpers.js": {
     "lines": 96,
-    "branches": 91,
+    "branches": 92,
     "functions": 98,
     "statements": 96
   },
@@ -266,7 +266,7 @@
   "workspace/image-tagging.mjs": {
     "lines": 97,
     "branches": 92,
-    "functions": 88,
+    "functions": 89,
     "statements": 97
   },
   "workspace/images-category.mjs": {
@@ -296,6 +296,12 @@
   "workspace/images-selection.mjs": {
     "lines": 98,
     "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/images-source-recovery.mjs": {
+    "lines": 98,
+    "branches": 98,
     "functions": 98,
     "statements": 98
   },
@@ -415,7 +421,7 @@
   },
   "workspace/local-resolver.mjs": {
     "lines": 96,
-    "branches": 86,
+    "branches": 87,
     "functions": 98,
     "statements": 96
   },
@@ -535,7 +541,7 @@
   },
   "workspace/system-diagnostics.mjs": {
     "lines": 95,
-    "branches": 86,
+    "branches": 87,
     "functions": 94,
     "statements": 95
   },
@@ -631,7 +637,7 @@
   },
   "workspace/vocabulary-dialog.mjs": {
     "lines": 98,
-    "branches": 88,
+    "branches": 89,
     "functions": 95,
     "statements": 98
   },
@@ -644,7 +650,7 @@
   "workspace/vocabulary.mjs": {
     "lines": 98,
     "branches": 91,
-    "functions": 93,
+    "functions": 98,
     "statements": 98
   },
   "workspace/workspace-dialogs.mjs": {
