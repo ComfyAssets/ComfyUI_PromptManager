@@ -275,6 +275,7 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
         record_runtime_context(
             type(self).__name__, text, prepend_text, append_text, encoding_text
         )
+        self._record_cached_item(unique_id, (encoding_text,), storage_text)
         return result
 
     @classmethod

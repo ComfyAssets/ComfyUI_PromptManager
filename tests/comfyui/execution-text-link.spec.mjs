@@ -11,7 +11,7 @@ import { installHostHooks } from './host-fixture.mjs';
 
 // The worker's owned host must be up before the shared host hooks open the page.
 test.beforeEach(async ({ execution }) => { expect(execution.databasePath).toBeTruthy(); });
-installHostHooks(test, ['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerPair', 'PMHistoryInputs']);
+installHostHooks(test, ['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerPair', 'PMHistoryInputs', 'PMCycledText']);
 
 // `primitive`: a core string node the queue-time resolver follows. `legacy`: the frontend's virtual Primitive node,
 // whose value is queued as literal text. `preview`: PrimitiveString -> PreviewAny, the shape of the maintainer's
@@ -38,6 +38,7 @@ function build(page, { kind, positive, negative, prefix, saveToLibrary }) {
                 primitive.widgets[0].value = side.text;
                 return;
             }
+            if (side.via === 'cycled') { connect(add('PMCycledText', 0, y), 0, prompt, name); return; }
             const text = add('PrimitiveString', 0, y);
             text.widgets.find(widget => widget.name === 'value').value = side.text;
             let source = text;
@@ -76,9 +77,9 @@ function build(page, { kind, positive, negative, prefix, saveToLibrary }) {
     }, { kind, positive, negative, prefix, saveToLibrary });
 }
 
-async function run(execution, page, testCase) {
+async function run(execution, page, testCase, built) {
     const prefix = `textlink/${randomUUID()}`;
-    const { output, workflow, promptNode } = await build(page, { ...testCase, prefix });
+    const { output, workflow, promptNode } = built ?? await build(page, { ...testCase, prefix });
     const id = randomUUID();
     const response = await execution.request.post('/prompt', { data: { prompt: output, prompt_id: id, extra_data: { extra_pnginfo: { workflow } } } });
     expect(response.ok(), await response.text()).toBe(true);
@@ -235,3 +236,164 @@ for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused'
         }
     });
 }
+
+// #347: a cached PromptManager node counts every job, as an executing one does. Jobs after the first change only
+// the sampler seed, so ComfyUI serves the PromptManager node (and its PreviewAny source) from its output cache.
+const COUNTS = `import json, sqlite3, sys, pathlib
+db = sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
+one = lambda sql, key: (db.execute(sql, (int(key),)).fetchone() or [None])[0] if key != "-" else None
+print(json.dumps({"positive": one("SELECT run_count FROM prompts WHERE id=?", sys.argv[2]),
+    "negative": one("SELECT run_count FROM prompts WHERE id=?", sys.argv[3]),
+    "pair": one("SELECT run_count FROM prompt_pairs WHERE id=?", sys.argv[4])}))`;
+async function runCounts(execution, context) {
+    const key = value => value == null ? '-' : String(value);
+    const { stdout } = await promisify(execFile)(process.env.PM_TEST_PYTHON || 'python',
+        ['-c', COUNTS, execution.databasePath, key(context.positive_prompt_id), key(context.negative_prompt_id), key(context.pair_id)], { timeout: 5000 });
+    return JSON.parse(stdout);
+}
+
+async function setCache(execution, mode) {
+    expect((await execution.request.post('/pm_execution_fixture/cache', { data: { mode } })).ok()).toBe(true);
+}
+
+// Queue an already built workflow again with another sampler seed; returns the job's history item and cached nodes.
+async function queueAgain(execution, first, { seed, edit, targets, status = 'success' } = {}) {
+    const output = structuredClone(first.output);
+    const sampler = Object.values(output).find(node => node.class_type === 'KSampler');
+    sampler.inputs.seed = seed;
+    edit?.(output);
+    const id = randomUUID();
+    const data = { prompt: output, prompt_id: id, extra_data: { extra_pnginfo: { workflow: first.workflow } } };
+    if (targets) data.partial_execution_targets = targets;
+    const response = await execution.request.post('/prompt', { data });
+    expect(response.ok(), await response.text()).toBe(true);
+    let item;
+    await expect.poll(async () => {
+        item = (await (await execution.request.get(`/history/${id}`)).json())[id];
+        return item?.status?.status_str ?? null;
+    }, { timeout: 20000 }).toBe(status);
+    const cached = item.status.messages.find(([event]) => event === 'execution_cached')?.[1]?.nodes ?? [];
+    return { id, item, cached };
+}
+
+// The recorded context of one job, once its capture reached SQLite.
+async function capturedContext(execution, id) {
+    let result;
+    await expect.poll(async () => {
+        result = await readExecutionRuns(execution.databasePath, id);
+        const row = result.rows[0];
+        return row ? result.captures[row.run_id].state : null;
+    }, { timeout: 10000 }).toMatch(/^(complete|partial)$/);
+    return result.captures[result.rows[0].run_id].contexts[0];
+}
+
+async function firstRun(execution, page, testCase) {
+    const prefix = `textlink/${randomUUID()}`;
+    const built = await build(page, { ...testCase, prefix });
+    const evidence = await run(execution, page, testCase, built);
+    return { ...evidence, workflow: built.workflow };
+}
+
+for (const kind of ['PromptManager', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerText', 'PromptManagerPair']) {
+    test(`${kind} counts each cached re-run of text linked from PreviewAny (#347)`, async ({ execution, page }) => {
+        test.setTimeout(90000);
+        await setCache(execution, 'RAM_PRESSURE');
+        const pair = kind === 'PromptManagerPair';
+        const testCase = { kind, positive: { typed: 'Typed under the link', text: unique(`Cached ${kind}`), via: 'preview' },
+            negative: pair ? { typed: unique('Typed negative') } : undefined };
+        const first = await firstRun(execution, page, testCase);
+        for (const seed of [2, 3]) {
+            const again = await queueAgain(execution, first, { seed });
+            expect(again.cached, 'ComfyUI served the PromptManager node from its cache').toContain(first.promptNode);
+        }
+        const counts = await runCounts(execution, first.context);
+        expect(counts.positive).toBe(3);
+        if (pair) expect(counts).toMatchObject({ negative: 0, pair: 3 });
+    });
+}
+
+test.describe('cached runs in one renderer (#347)', () => {
+    // Cache behavior does not depend on the renderer: one project runs these.
+    test.beforeEach(({}, testInfo) => { test.skip(testInfo.project.name !== 'classic-start', 'covered in classic-start'); });
+    const linked = () => ({ kind: 'PromptManager', positive: { typed: 'Typed under the link', text: unique('Cached'), via: 'preview' } });
+
+    for (const mode of ['CLASSIC', 'LRU', 'RAM_PRESSURE', 'NONE']) {
+        test(`counts 3 jobs under the ${mode} cache`, async ({ execution, page }) => {
+            test.setTimeout(90000);
+            await setCache(execution, mode);
+            try {
+                const first = await firstRun(execution, page, linked());
+                for (const seed of [2, 3]) {
+                    const again = await queueAgain(execution, first, { seed });
+                    if (mode === 'NONE') expect(again.cached).not.toContain(first.promptNode);
+                    else expect(again.cached).toContain(first.promptNode);
+                }
+                expect((await runCounts(execution, first.context)).positive).toBe(3);
+            } finally { await setCache(execution, 'RAM_PRESSURE'); }
+        });
+    }
+
+    test('alternating upstream values A, B, A under LRU each count their own prompt', async ({ execution, page }) => {
+        test.setTimeout(90000);
+        await setCache(execution, 'LRU');
+        try {
+            const [a, b] = [unique('Cycled A'), unique('Cycled B')];
+            const cycle = async value => expect((await execution.request.post('/pm_execution_fixture/cycled', { data: { value } })).ok()).toBe(true);
+            await cycle(a);
+            const first = await firstRun(execution, page, { kind: 'PromptManager', positive: { typed: 'Typed under the link', text: a, via: 'cycled' } });
+            expect(first.context.positive.raw).toBe(a);
+            await cycle(b);
+            const second = await queueAgain(execution, first, { seed: 2 });
+            expect(second.cached).not.toContain(first.promptNode);
+            await cycle(a);
+            const third = await queueAgain(execution, first, { seed: 3 });
+            expect(third.cached, 'LRU kept A').toContain(first.promptNode);
+            expect((await runCounts(execution, first.context)).positive).toBe(2);
+            const bContext = await capturedContext(execution, second.id);
+            expect(bContext.positive.raw).toBe(b);
+            expect((await runCounts(execution, bContext)).positive).toBe(1);
+        } finally { await setCache(execution, 'RAM_PRESSURE'); }
+    });
+
+    test('typed text served from the cache still counts once per job', async ({ execution, page }) => {
+        test.setTimeout(90000);
+        await setCache(execution, 'RAM_PRESSURE');
+        const first = await firstRun(execution, page, { kind: 'PromptManager', positive: { typed: unique('Typed cached') } });
+        for (const seed of [2, 3]) expect((await queueAgain(execution, first, { seed })).cached).toContain(first.promptNode);
+        expect((await runCounts(execution, first.context)).positive).toBe(3);
+    });
+
+    test('a job failing downstream of a cached node counts it once; a job that does not need it, never', async ({ execution, page }) => {
+        test.setTimeout(90000);
+        await setCache(execution, 'RAM_PRESSURE');
+        const first = await firstRun(execution, page, linked());
+        const failing = await queueAgain(execution, first, { seed: 2, status: 'error', edit: output => {
+            output.pm_failure = { class_type: 'PMHistoryOutput', inputs: { value: [Object.keys(output).find(id => output[id].class_type === 'KSampler'), 0], mode: 'failure' } };
+        } });
+        expect(failing.cached).toContain(first.promptNode);
+        expect((await runCounts(execution, first.context)).positive).toBe(2);
+        // "Run selected output": only an unrelated output node; ComfyUI still reports the cached PromptManager node
+        const unrelated = await queueAgain(execution, first, { seed: 2, targets: ['pm_unrelated'], edit: output => {
+            output.pm_unrelated = { class_type: 'PMHistoryCached', inputs: { value: unique('unrelated') } };
+        } });
+        expect(unrelated.cached).toContain(first.promptNode);
+        expect((await runCounts(execution, first.context)).positive).toBe(2);
+    });
+
+    test('a cached node rewired to the negative input does not count the positive prompt', async ({ execution, page }) => {
+        test.setTimeout(90000);
+        await setCache(execution, 'RAM_PRESSURE');
+        const first = await firstRun(execution, page, linked());
+        const rewired = await queueAgain(execution, first, { seed: 2, edit: output => {
+            const sampler = Object.values(output).find(node => node.class_type === 'KSampler');
+            [sampler.inputs.positive, sampler.inputs.negative] = [sampler.inputs.negative, sampler.inputs.positive];
+        } });
+        expect(rewired.cached).toContain(first.promptNode);
+        expect((await runCounts(execution, first.context)).positive).toBe(1);
+        // The history capture of a cached job is unchanged: effective text from the cache, no stored-prompt hint
+        const cachedContext = await capturedContext(execution, (await queueAgain(execution, first, { seed: 3 })).id);
+        expect(cachedContext.positive.effective).toBe(first.context.positive.effective);
+        expect(cachedContext.positive_prompt_id).toBeNull();
+        expect((await runCounts(execution, first.context)).positive).toBe(2);
+    });
+});

@@ -12,6 +12,14 @@ else:
 
 try:
     from .prompt_manager import IO, InputTypeDict, PromptManagerFocused
+    from .utils.cached_runs import (
+        PAIR,
+        Role,
+        Seen,
+        own_counts,
+        pair_components,
+        stored_facts,
+    )
     from .utils.hashing import generate_prompt_hash
     from .utils.pair_execution import record_pair_execution
     from .utils.prompt_graph import (
@@ -27,6 +35,14 @@ try:
     )
 except ImportError:
     from prompt_manager import IO, InputTypeDict, PromptManagerFocused
+    from utils.cached_runs import (
+        PAIR,
+        Role,
+        Seen,
+        own_counts,
+        pair_components,
+        stored_facts,
+    )
     from utils.hashing import generate_prompt_hash
     from utils.pair_execution import record_pair_execution
     from utils.prompt_graph import (
@@ -181,6 +197,9 @@ class PromptManagerPair(PromptManagerFocused):
         record_runtime_context(
             type(self).__name__, negative_text, "", "", negative_text, role="negative"
         )
+        self._record_cached_item(
+            unique_id, (positive, negative_text), text, negative_text
+        )
         return result
 
     def _save_and_track_pair(
@@ -228,36 +247,35 @@ class PromptManagerPair(PromptManagerFocused):
             and generate_prompt_hash(resolved_negative)
             == generate_prompt_hash(negative_text)
         )
+        negative_seen = resolved_negative is not None and generate_prompt_hash(
+            resolved_negative
+        ) == generate_prompt_hash(negative_text)
         positive_pending = getattr(self, "pending_first_use", PENDING_FIRST_USE)
         pair_pending = getattr(self, "pending_pair_first_use", PENDING_PAIR_FIRST_USE)
-        counted = set()
-        for field, component_text, resolved_text, component_id in (
-            ("text", text, resolved_positive, prompt_id),
-            (
-                "negative_text",
-                negative_text,
-                resolved_negative,
-                pair["negative_prompt_id"],
-            ),
-        ):
-            component_hash = generate_prompt_hash(component_text)
-            if (
-                field not in used_fields
-                or not component_id
-                or component_hash in counted
-            ):
-                continue
-            counted.add(component_hash)
-            seen_at_queue = (
-                resolved_text is not None
-                and generate_prompt_hash(resolved_text) == component_hash
+        facts = stored_facts(text, negative_text)
+        role = Role(frozenset(used_fields), pair_used)
+        # Own counts are skipped when this job already counted the node from
+        # ComfyUI's cache (#347); the pending first-use catch-up never is.
+        counts = (
+            []
+            if self._replayed(unique_id)
+            else own_counts(
+                PAIR, facts, role, Seen(positive_seen, negative_seen, pair_seen)
             )
-            runs = positive_pending.consume(component_hash) + int(not seen_at_queue)
+        )
+        component_ids = {"text": prompt_id, "negative_text": pair["negative_prompt_id"]}
+        for field, component_hash in pair_components(facts, role):
+            component_id = component_ids[field]
+            if not component_id:
+                continue
+            runs = positive_pending.consume(component_hash) + int(
+                ("prompt", component_hash) in counts
+            )
             if runs:
                 self.db.record_prompt_use(component_id, times=runs)
         if pair_used:
             runs = pair_pending.consume(pair_run_key(text, negative_text)) + int(
-                not pair_seen
+                ("pair", facts.positive_hash, facts.negative_hash) in counts
             )
             if runs:
                 self.db.record_prompt_pair_use(pair_id, times=runs)

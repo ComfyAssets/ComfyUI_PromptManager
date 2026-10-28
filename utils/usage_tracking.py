@@ -16,7 +16,9 @@ it never counts. Servers without a ``prompt_queue`` fall back to counting at
 submit time.
 
 Text from known pure string nodes is resolved at queue time too. Anything else
-(PromptSearchList batches, unknown nodes) is counted by the node as it executes.
+(PromptSearchList batches, unknown nodes) is counted by the node as it executes,
+and when ComfyUI serves such a node from its cache, the job replays what that
+execution counted (``cached_runs``, #347).
 """
 
 import threading
@@ -179,13 +181,22 @@ def queued_pair_runs(graph: Any) -> List[Tuple[str, str, str]]:
 
 def find_pair_id(db: Any, positive: str, negative: str) -> Optional[int]:
     """Find a saved pair without creating or overwriting its metadata."""
-    positive_row = db.get_prompt_by_hash(generate_prompt_hash(positive))
-    negative_row = (
-        db.get_prompt_by_hash(generate_prompt_hash(negative))
-        if negative.strip()
-        else None
+    return find_pair_id_by_hashes(
+        db,
+        generate_prompt_hash(positive),
+        generate_prompt_hash(negative) if negative.strip() else None,
     )
-    if not positive_row or (negative.strip() and not negative_row):
+
+
+def find_pair_id_by_hashes(
+    db: Any, positive_hash: str, negative_hash: Optional[str]
+) -> Optional[int]:
+    """The saved pair of two prompt hashes; ``None`` negative is the empty one."""
+    positive_row = db.get_prompt_by_hash(positive_hash)
+    negative_row = (
+        db.get_prompt_by_hash(negative_hash) if negative_hash is not None else None
+    )
+    if not positive_row or (negative_hash is not None and not negative_row):
         return None
     row = (
         db.model.get_connection()
