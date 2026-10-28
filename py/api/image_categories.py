@@ -139,10 +139,14 @@ class ImageCategoryRoutesMixin:
             listing = self._favorite_listing(root, files)
             root_key = _favorite_root_key(root)
             # normalize_image_path(root / listed) without a call per file: the
-            # listed spellings are clean relative POSIX paths.
+            # listed spellings are clean relative POSIX paths. Windows abspath
+            # also drops a component's trailing dots and spaces, so it keeps
+            # the call there.
             base = os.path.join(normalize_image_path(str(root)), "")
 
-            def normalized(listed, base=base):
+            def normalized(listed, base=base, root=root):
+                if os.name == "nt":
+                    return normalize_image_path(str(root / listed))
                 return base + os.path.normcase(listed.replace("/", os.sep))
 
             nested = [

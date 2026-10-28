@@ -1772,6 +1772,17 @@ class TestWorkspaceImages(ImageAPITestCase):
             "SEARCH other USING COVERING INDEX idx_image_file_path (file_path=?)", plan
         )
         self.assertFalse([step for step in plan if step.startswith("SCAN other")])
+        # The category's narrowing clause (#332) keeps every join an index search.
+        sql, params = link_filter_query(
+            "", ["tag-1"], every_link=True, category="cat-3"
+        )
+        with self.api.db.model.get_connection() as conn:
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+        self.assertIn(
+            "SEARCH other USING COVERING INDEX idx_image_file_path (file_path=?)", plan
+        )
+        scans = [step for step in plan if step.startswith("SCAN")]
+        self.assertTrue(all(step.startswith("SCAN gi") for step in scans), plan)
 
     @unittest.skipUnless(
         PERF_BUDGET and not TRACED,
