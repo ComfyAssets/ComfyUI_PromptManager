@@ -988,36 +988,6 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
         </div>
     </div>
 
-    <!-- Auto Tag Download Modal -->
-    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-4">Downloading Model</h3>
-
-            <div class="mb-3">
-                <p class="text-pm-secondary text-xs">Downloading:</p>
-                <p id="downloadModelName" class="text-pm text-xs font-medium">GGUF Model</p>
-            </div>
-
-            <div class="mb-4">
-                <div class="flex justify-between text-xs text-pm-secondary mb-1">
-                    <span id="downloadStatus">Preparing...</span>
-                    <span id="downloadProgressPercent">0%</span>
-                </div>
-                <div class="w-full bg-pm-input rounded-full h-1.5">
-                    <div id="downloadProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-                </div>
-                <p class="text-pm-secondary text-xs mt-2">The download continues in Activity.</p>
-            </div>
-
-            <div class="flex justify-center">
-                <button id="cancelDownloadBtn"
-                        class="px-3 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
-                    Close
-                </button>
-            </div>
-        </div>
-    </div>
-
     <script src="js/comfy-metadata.js"></script>
     <script src="js/prompt-list-sort.js"></script>
     <script src="js/view-router.js"></script>

@@ -3,7 +3,7 @@
 import os
 import stat
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 try:
     from ...utils.prompt_inspector import (
@@ -100,18 +100,23 @@ def inspect_current_file(
     saved: dict | None,
     library: dict,
     image_tags: Callable[[int, int], dict] | None = None,
+    recorded: Callable[[Path], Any] | None = None,
 ) -> dict:
     """Current-file evidence read between two equal stats of *path*.
 
     *image_tags*, when given, is called once with that stable
     ``(st_size, st_mtime_ns)`` and its facet is returned as ``image_tags``
     (spec amendment S1: tags of a byte record verified at exactly that stat).
+    *recorded*, when given, is asked within the same stat window for what
+    recorded run history knows about *path* (``RecordedOutput`` or None: the
+    save node that wrote it and the texts PromptManager recorded, #386).
     """
     before = _current_file_facts(path)
     try:
         inspection = read_inspection_file(path)
     except MetadataReadError:
         inspection = None
+    run = recorded(path) if recorded is not None and inspection is not None else None
     after = _current_file_facts(path)
     fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
     if any(getattr(before, key) != getattr(after, key) for key in fields):
@@ -129,9 +134,15 @@ def inspect_current_file(
         profile = (
             PREVIEW_INSPECTION_PROFILE if _in_host_temp(path) else INSPECTION_PROFILE
         )
-        # The file name anchors on the saver that wrote it (#381).
+        # The file name anchors on the saver that wrote it (#381); recorded run
+        # history names that saver when the file alone cannot (#386).
         evidence = inspect_prompt_evidence(
-            inspection.metadata, role_saved, profile=profile, file_name=path.name
+            inspection.metadata,
+            role_saved,
+            profile=profile,
+            file_name=path.name,
+            recorded_saver_id=run.saver_id if run is not None else None,
+            recorded_texts=run.texts if run is not None else None,
         )
     return {
         "file": {
