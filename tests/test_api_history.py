@@ -1169,3 +1169,47 @@ class HistoryHostCleanupTests(unittest.IsolatedAsyncioTestCase):
                     fence.validate(epoch, generation)
                 with self.assertRaises(sqlite3.Error):
                     api._history_fence()
+
+
+class SharedTempFolderRestoreTests(ImageAPITestCase):
+    """#346: a restore survives another suite starting in the shared temp folder.
+
+    Every ``PromptManagerAPI`` sweeps its database's folder for stages and
+    uploads an interrupted restore left. A fixture database directly in the
+    shared temp folder let any other test process (another worktree's suite,
+    a pre-push hook) delete this restore's files mid-request. The shared
+    folder here is a scratch stand-in for the system temp folder, so the test
+    never sweeps the real one.
+    """
+
+    async def get_application(self):
+        shared = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        # Cleanups run last-in first-out: this one after the fixture's own.
+        self.addCleanup(shared.cleanup)
+        self.shared_tmp = shared.name
+        with patch.object(tempfile, "tempdir", shared.name):
+            return await super().get_application()
+
+    async def test_restore_survives_another_suite_sweeping_the_shared_folder(self):
+        from database import restore_stage
+        from database.models import PromptModel
+
+        self.api.db.save_prompt("kept by the upload")
+        source = self.comfy_dir / "upload.db"
+        self.assertTrue(self.api.db.model.backup_database(str(source)))
+        stage = PromptModel.stage_restore
+        swept = []
+
+        def stage_then_other_suite_starts(model, src_path):
+            staged = stage(model, src_path)
+            # What another suite's PromptManagerAPI does at startup.
+            other = os.path.join(self.shared_tmp, "other-suite.db")
+            swept.extend(restore_stage.sweep_restore_temps(other))
+            return staged
+
+        form = FormData()
+        form.add_field("database_file", source.read_bytes(), filename="upload.db")
+        with patch.object(PromptModel, "stage_restore", stage_then_other_suite_starts):
+            response = await self.client.post("/prompt_manager/restore", data=form)
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(swept, [], "another suite's sweep reached this restore")

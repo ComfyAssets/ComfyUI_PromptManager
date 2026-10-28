@@ -113,3 +113,19 @@ by their own suites. The expectations start as the observed baseline. A change
 that alters an outcome edits the vector in the same commit.
 `tests/js/legacy-metadata-characterization.test.js` pins what
 the legacy viewers show on the same files.
+
+# Legacy contract snapshot
+
+`legacy_contract_snapshot.json` records what the legacy admin and gallery pages
+talk to while System S13 (#330) moves their tools to native System: every
+registered route as `"<METHOD> <path>"` (`routes`) and the key paths of
+`GET /prompt_manager/settings` to depth 2 (`settings_keys`; list items give the
+union of their keys as `name[].key`). `tests/test_legacy_contract_snapshot.py`
+compares a temp-database API against it. Record it again only for an intended
+change, and say why in the PR body:
+
+```sh
+PM_RECORD_LEGACY_SNAPSHOT=1 python3 -m unittest tests.test_legacy_contract_snapshot
+```
+
+Cutover (#334) removes the test and this fixture.

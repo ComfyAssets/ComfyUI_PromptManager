@@ -234,6 +234,23 @@ test('the count line reads N of M images and K positive prompts only when known'
     assert.equal(countLine({loaded:1200,total:3400,positiveCount:0}),'1,200 of 3,400 images · 0 positive prompts');
 });
 
+test('the count line reads as loading, never as an empty result, until a first page answers (#391)', async () => {
+    const {countLine,createImageStream}=await source;
+    assert.equal(countLine({loaded:0,total:0,positiveCount:null,loading:true,error:null}),'Loading images…');
+    // A failed first page and a settled empty one say what the server said; a later page keeps the loaded count.
+    assert.equal(countLine({loaded:0,total:0,positiveCount:null,loading:false,error:new Error('x')}),'0 of 0 images');
+    assert.equal(countLine({loaded:0,total:0,positiveCount:0,loading:false,error:null}),'0 of 0 images · 0 positive prompts');
+    assert.equal(countLine({loaded:40,total:102,positiveCount:2,loading:true,error:null}),'40 of 102 images · 2 positive prompts');
+    // While a reset's first page is in flight the line reads as loading (the cleared state before it is replaced in
+    // the same task, so it is never painted).
+    let answer;const lines=[];
+    const stream=createImageStream({api:{get:()=>new Promise(resolve=>{answer=resolve;})},onChange:state=>lines.push(countLine(state))});
+    const loading=stream.reset({tags:['cinematic']});
+    assert.equal(lines.at(-1),'Loading images…');
+    answer({images:[{path:'a.png',root_index:0}],total:1,has_more:false,next_cursor:null,positive_count:1});await loading;
+    assert.equal(lines.at(-1),'1 of 1 image · 1 positive prompt');
+});
+
 test('the caption date names the newest result day under Newest first only', async () => {
     const {captionDate}=await source;
     const now=new Date(2026,9,17,15,0);

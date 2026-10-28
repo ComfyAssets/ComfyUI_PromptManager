@@ -5,7 +5,6 @@ Route tests for the prompt API (py/api/prompts.py).
 import json
 import os
 import sys
-import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +28,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
 
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
+from tests.private_temp import private_temp_db  # noqa: E402
 import py.api.prompts as prompts_module  # noqa: E402
 from py.api.prompts import (  # noqa: E402
     BULK_CATEGORY_MAX_PROMPTS,
@@ -43,8 +43,7 @@ class PromptAPITestCase(AioHTTPTestCase):
     """App with PromptManager routes and a temporary SQLite database."""
 
     async def get_application(self):
-        self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self._temp_db.close()
+        self._temp_db = private_temp_db(self)
 
         app = web.Application()
         routes = web.RouteTableDef()
