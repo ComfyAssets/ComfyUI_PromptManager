@@ -516,7 +516,7 @@ test('a rollover after the review deletes nothing and Activity offers Review aga
 test('Clear all logs states both counts, confirms first and reads everything again', async ({ page, request }) => {
     await seedLogs(request, LOG_FOLDER);
     const truncates = [];
-    page.on('request', item => { if (item.url().endsWith('/prompt_manager/logs/truncate')) truncates.push(item.url()); });
+    page.on('request', item => { if (item.url().endsWith('/prompt_manager/logs/truncate')) truncates.push(item.postDataJSON()); });
     await openDiagnostics(page);
     await expect(lines(page)).toContainText('Database backup verified');
     const details = await openFiles(page);
@@ -535,6 +535,10 @@ test('Clear all logs states both counts, confirms first and reads everything aga
     await dialog(page).getByRole('button', { name: 'Clear', exact: true }).click();
     await expect(toast(page)).toHaveText('Logs cleared · 3 rotated copies deleted.');
     expect(truncates).toHaveLength(1);
+    // #389: Clear sends back exactly the files the dialog was built from, each with its identity string.
+    expect(truncates[0].expected.map(row => row.name).sort()).toEqual(['prompt_manager.log', 'prompt_manager.log.1',
+        'prompt_manager.log.2', 'prompt_manager.log.3']);
+    for (const row of truncates[0].expected) expect(row.identity).toMatch(/^\d+:\d+:\d+$/);
     // Read again: the viewer, the file line and the list.
     await expect(lines(page)).not.toContainText('Database backup verified');
     await expect(details.locator(':scope > p.small').first()).toHaveText(/rotated copies: 0$/);
@@ -562,6 +566,23 @@ test('Clear all logs reads the files again before it states what it deletes', as
     await expect(dialog(page).locator('#modal-body > p')).toHaveText(/^Empties prompt_manager\.log, deletes its rotated copies and clears/);
     await dialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
     expect(await names(request)).toEqual(['prompt_manager.log', 'prompt_manager.log.1', 'prompt_manager.log.2', 'prompt_manager.log.3']);
+});
+
+test('a rollover while Clear all logs is open deletes nothing and says why (#389)', async ({ page, request }) => {
+    await seedLogs(request, { rotated: [1024, 1024], active: 100 });
+    await openDiagnostics(page);
+    await openFiles(page);
+    await operation(page, 'Clear all logs').getByRole('button', { name: 'Clear all logs…', exact: true }).click();
+    await expect(dialog(page).locator('#modal-body > p')).toHaveText(/^Empties prompt_manager\.log, deletes 2 rotated copies /);
+    // The log rolls over after the confirmation was built: the copies it listed are not the ones there now.
+    await expect(await request.post('/__test__/logs/rotate')).toBeOK();
+    const rolled = await names(request);
+    const answer = page.waitForResponse(response => response.url().endsWith('/prompt_manager/logs/truncate'));
+    await dialog(page).getByRole('button', { name: 'Clear', exact: true }).click();
+    expect((await answer).status()).toBe(409);
+    await expect(toast(page)).toHaveText('The log files changed since you confirmed; nothing was cleared. '
+        + 'Read the list again and clear again.');
+    expect(await names(request)).toEqual(rolled);
 });
 
 test('each listed file downloads by its returned name and a link has no Download', async ({ page, request }) => {

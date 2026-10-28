@@ -3979,7 +3979,28 @@ modals use the same routes and keep working.
   other: each file's identity is checked just before its unlink.
 - **Clear all logs** (`POST /logs/truncate`, also the admin page's Clear) empties the
   active log through its handler, deletes the rotated copies (Rule R) and clears the
-  buffer; other files and links are kept. Response keys are unchanged.
+  buffer; other files and links are kept. Response keys are unchanged. It deletes or
+  empties no more than its confirmation showed (#389):
+  - `/logs/files` rows carry `identity`, the string `"<size>:<mtime_ns>:<ino>"` (a
+    string: `mtime_ns` and many inodes are beyond a browser's exact integers). The
+    workspace sends `{"expected": [{name, identity}]}` with the active and rotated rows
+    its dialog was built from. Under the files lock and every handler lock each listed
+    rotated copy must still match (`_matches_review`) and the listed active log must be
+    the same inode, or nothing changes: 409 `logs-changed`. Only listed copies are
+    deleted; one that appeared after the confirmation is kept. A malformed list is 400.
+  - Without a body (the legacy admin page, whose confirm lists nothing; also the
+    workspace when the file list could not be read and the dialog said "deletes its
+    rotated copies") every rotated copy present at the locked rescan is deleted.
+  - Either way, before anything changes: a second writer of the active log (our
+    handler's flushed stream is behind the file's size, or its file is now a rotated
+    copy: another ComfyUI sharing the folder) is 409 `logs-foreign-writer`; an active
+    log with more than one name (`st_nlink > 1` by `lstat` or the handler's `fstat`,
+    NTFS included) is 409 `logs-hard-link`, never truncated (replacing it instead would
+    rename a file our handler holds open, which Windows refuses). Each copy is
+    `lstat`-checked again just before its unlink; one that changed stops the clear there
+    and keeps it, the copies after it and the active log, which is emptied last.
+  - The browser fixture grows the active log through the handler's own stream, since a
+    second handle appending to it is exactly what Clear refuses.
 - **Runtime settings** (`GET/POST /logs/config`): the level (DEBUG…CRITICAL) and console
   logging apply until the server restarts; the retention values are shown read-only in
   the workspace and the API keeps accepting them.

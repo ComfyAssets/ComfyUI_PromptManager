@@ -709,7 +709,8 @@ class TestRotatedCopyRule(IsolatedLoggerTestCase):
         self.assertNotEqual(link["size"], os.path.getsize(target))
         for row in rows.values():
             self.assertEqual(
-                set(row), {"filename", "path", "size", "modified", "is_main", "kind"}
+                set(row),
+                {"filename", "path", "size", "modified", "is_main", "kind", "identity"},
             )
 
     def test_an_unreadable_timestamp_does_not_break_the_scan(self):
@@ -761,6 +762,195 @@ class TestRotatedCopyRule(IsolatedLoggerTestCase):
             with self.subTest(name=name):
                 with self.assertRaises(FileNotFoundError):
                     self.manager.log_file_entry(name)
+
+
+class TestClearOnlyWhatWasConfirmed(IsolatedLoggerTestCase):
+    """#389: Clear all logs empties or deletes no more than its confirmation showed."""
+
+    def setUp(self):
+        super().setUp()
+        self.logger.info("active log line")  # the active log exists
+        self.outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(self.outside)
+
+    def _path(self, name):
+        return os.path.join(self.log_dir, name)
+
+    def _write(self, name, data=b"rotated\n"):
+        with open(self._path(name), "wb") as handle:
+            handle.write(data)
+
+    def _read(self, path):
+        with open(path, "rb") as handle:
+            return handle.read()
+
+    def _snapshot(self):
+        return {name: self._read(self._path(name)) for name in os.listdir(self.log_dir)}
+
+    def _assert_unchanged(self, before, growing="prompt_manager.log"):
+        """Nothing deleted or emptied (the refusal itself logs to ``growing``)."""
+        after = self._snapshot()
+        self.assertEqual(sorted(after), sorted(before))
+        for name, data in before.items():
+            if name == growing:
+                self.assertTrue(after[name].startswith(data), name)
+            else:
+                self.assertEqual(after[name], data, name)
+
+    def _confirmed(self):
+        """What the workspace dialog showed: the listed active and rotated rows."""
+        return [
+            {"name": row["filename"], "identity": row["identity"]}
+            for row in self.manager.get_log_files()
+            if row["kind"] in ("active", "rotated")
+        ]
+
+    def _file_handler(self):
+        return next(
+            h
+            for h in self.manager.logger.handlers
+            if isinstance(h, logging.FileHandler)
+        )
+
+    def test_listed_identity_is_a_string_that_survives_json_numbers(self):
+        # mtime_ns (~1.7e18) and many inodes exceed 2**53: as JSON numbers a
+        # browser would round them and every confirmed clear would be refused.
+        self._write("prompt_manager.log.1")
+        for row in self.manager.get_log_files():
+            with self.subTest(name=row["filename"]):
+                self.assertIsInstance(row["identity"], str)
+                self.assertRegex(row["identity"], r"^\d+:\d+:\d+$")
+
+    def test_a_rollover_after_the_confirmation_deletes_nothing(self):
+        self._write("prompt_manager.log.1", b"one" * 10)
+        self._write("prompt_manager.log.2", b"two" * 10)
+        confirmed = self._confirmed()
+        self.logger.info("written after the confirmation")
+        self._file_handler().doRollover()  # .2 -> .3, .1 -> .2, log -> .1
+        before = self._snapshot()
+        with self.assertRaises(logging_config.ClearRefused) as caught:
+            self.manager.truncate_logs(confirmed)
+        self.assertEqual(caught.exception.code, "logs-changed")
+        self._assert_unchanged(before)
+
+    def test_a_copy_that_appeared_after_the_confirmation_is_kept(self):
+        self._write("prompt_manager.log.1", b"one")
+        confirmed = self._confirmed()
+        self._write("prompt_manager.log.5", b"not shown")
+        result = self.manager.truncate_logs(confirmed)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            sorted(result["truncated"]), ["prompt_manager.log", "prompt_manager.log.1"]
+        )
+        self.assertEqual(
+            sorted(os.listdir(self.log_dir)),
+            ["prompt_manager.log", "prompt_manager.log.5"],
+        )
+
+    def test_a_foreign_append_to_the_active_log_is_refused(self):
+        # A second ComfyUI sharing the folder writes the same active log.
+        self._write("prompt_manager.log.1")
+        for confirmed in (self._confirmed(), None):
+            with self.subTest(listed=confirmed is not None):
+                with open(self._path("prompt_manager.log"), "ab") as other:
+                    other.write(b"line from another process\n")
+                before = self._snapshot()
+                with self.assertRaises(logging_config.ClearRefused) as caught:
+                    if confirmed is None:
+                        self.manager.truncate_logs()  # the legacy page's call
+                    else:
+                        self.manager.truncate_logs(confirmed)
+                self.assertEqual(caught.exception.code, "logs-foreign-writer")
+                self._assert_unchanged(before)
+                self.logger.info("our own line")  # our stream catches up again
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot rename a log that is open")
+    def test_a_foreign_rotation_of_our_log_is_refused(self):
+        # Another process rolled the shared log over: our handler still writes
+        # the file now named .1, and a new active log is the other's.
+        os.rename(self._path("prompt_manager.log"), self._path("prompt_manager.log.1"))
+        self._write("prompt_manager.log", b"the other process's log\n")
+        before = self._snapshot()
+        with self.assertRaises(logging_config.ClearRefused) as caught:
+            self.manager.truncate_logs()
+        self.assertEqual(caught.exception.code, "logs-foreign-writer")
+        # Our handler still writes the renamed file, so the refusal lands there.
+        self._assert_unchanged(before, growing="prompt_manager.log.1")
+
+    def test_a_copy_that_changes_mid_clear_stops_the_clear(self):
+        # The identity is checked again just before each unlink: another
+        # process rotating while we delete stops the clear there.
+        for n in (1, 2):
+            self._write(f"prompt_manager.log.{n}", b"r" * n)
+        confirmed = self._confirmed()
+        real_unlink = os.unlink
+        calls = []
+
+        def unlink_then_rotate(path, *args, **kwargs):
+            real_unlink(path, *args, **kwargs)
+            if not calls:
+                with open(self._path("prompt_manager.log.2"), "ab") as handle:
+                    handle.write(b"rotated in by another process")
+            calls.append(os.path.basename(path))
+
+        active_before = self._read(self._path("prompt_manager.log"))
+        with mock.patch.object(logging_config.os, "unlink", unlink_then_rotate):
+            result = self.manager.truncate_logs(confirmed)
+        self.assertEqual(calls, ["prompt_manager.log.1"])
+        self.assertEqual(result["truncated"], ["prompt_manager.log.1"])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("prompt_manager.log.2", result["errors"][0])
+        self.assertTrue(os.path.exists(self._path("prompt_manager.log.2")))
+        # The active log is emptied last, so it is kept too.
+        self.assertTrue(
+            self._read(self._path("prompt_manager.log")).startswith(active_before)
+        )
+
+    def _require_hard_link(self, source, link):
+        try:
+            os.link(source, link)
+        except (OSError, NotImplementedError, AttributeError) as error:
+            self.skipTest(f"this filesystem cannot make hard links: {error}")
+
+    def test_a_hard_linked_active_log_is_never_emptied(self):
+        other_name = os.path.join(self.outside, "kept-by-the-user.log")
+        self._require_hard_link(self._path("prompt_manager.log"), other_name)
+        kept = self._read(other_name)
+        self.assertTrue(kept)
+        for call in (lambda: self.manager.truncate_logs(), None):
+            with self.subTest(listed=call is None):
+                with self.assertRaises(logging_config.ClearRefused) as caught:
+                    if call is None:
+                        self.manager.truncate_logs(self._confirmed())
+                    else:
+                        call()
+                self.assertEqual(caught.exception.code, "logs-hard-link")
+                self.assertTrue(self._read(other_name).startswith(kept))
+
+    def test_a_hard_linked_active_log_with_file_logging_off_is_kept(self):
+        self.manager.update_config({"file_logging": False})
+        other_name = os.path.join(self.outside, "kept-by-the-user.log")
+        self._require_hard_link(self._path("prompt_manager.log"), other_name)
+        kept = self._read(other_name)
+        with self.assertRaises(logging_config.ClearRefused):
+            self.manager.truncate_logs()
+        self.assertEqual(self._read(other_name), kept)
+
+    def test_a_malformed_confirmation_is_refused_before_anything_changes(self):
+        self._write("prompt_manager.log.1")
+        before = self._snapshot()
+        for expected in (
+            "prompt_manager.log.1",
+            [{"name": "prompt_manager.log.1"}],
+            [{"name": "prompt_manager.log.1", "identity": 7}],
+            [{"name": "prompt_manager.log.1", "identity": "1:2"}],
+            [{"name": 1, "identity": "1:2:3"}],
+            ["prompt_manager.log.1"],
+        ):
+            with self.subTest(expected=expected):
+                with self.assertRaises(ValueError):
+                    self.manager.truncate_logs(expected)
+                self._assert_unchanged(before)
 
 
 class TestConfiguration(IsolatedLoggerTestCase):
