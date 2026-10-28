@@ -1426,3 +1426,32 @@ class TestPerRecordBudgets(unittest.TestCase):
         self.assertEqual(metadata["record_formats"], {"workflow": "limited"})
         self.assertEqual(metadata["workflow_graph"]["status"], "limited")
         self.assertEqual(metadata["prompt_graph"]["status"], "absent")
+
+
+class TestInheritedCategory(unittest.TestCase):
+    """#332 MC4: one inherited-category rule for the chip, filter and History."""
+
+    def test_recipe_set_blank_and_absent(self):
+        from utils.inspection_response import inherited_category, library_metadata
+
+        cases = [
+            (("Night", "Recipes", True), ("Recipes", "pair")),
+            (("Night", "   ", True), ("Night", "positive")),
+            (("Night", " \t", True), ("Night", "positive")),
+            (("Night", b" ", True), ("Night", "positive")),
+            (("Night", None, True), ("Night", "positive")),
+            (("Night", "Recipes", False), ("Night", "positive")),
+            (("  ", None, False), ("  ", "positive")),
+            ((None, None, False), (None, "positive")),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.assertEqual(inherited_category(*args), expected)
+                positive, recipe, has_recipe = args
+                metadata = library_metadata(
+                    positive, ["t"], (recipe, []) if has_recipe else None
+                )
+                self.assertEqual(
+                    (metadata["category"], metadata["category_scope"]), expected
+                )
+                self.assertEqual(metadata["tags_scope"], "positive")

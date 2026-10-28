@@ -300,6 +300,23 @@ def _blank(value: str | bytes | None) -> bool:
     return value is None or not value.strip()
 
 
+def inherited_category(
+    positive_category: str | bytes | None,
+    recipe_category: str | bytes | None,
+    has_recipe: bool,
+) -> tuple:
+    """``(value, scope)`` of the category an image's link supplies (#332 MC4).
+
+    The one rule for the inspector chip, the Images category filter and
+    History (D39): a linked recipe's own category when it is not blank,
+    ``(recipe category, "pair")``; otherwise the positive's value unchanged,
+    blank or not, ``(positive category, "positive")``.
+    """
+    if has_recipe and not _blank(recipe_category):
+        return recipe_category, "pair"
+    return positive_category, "positive"
+
+
 def library_metadata(
     positive_category: str | bytes | None,
     positive_tags: list,
@@ -312,13 +329,14 @@ def library_metadata(
     the linked positive prompt's, the values Set category writes and the Images
     filters match. Tag sets are never merged. ``recipe`` is (category, tags).
     """
-    category, category_scope = positive_category, "positive"
+    category, category_scope = inherited_category(
+        positive_category,
+        recipe[0] if recipe is not None else None,
+        recipe is not None,
+    )
     tags, tags_scope = positive_tags, "positive"
-    if recipe is not None:
-        if not _blank(recipe[0]):
-            category, category_scope = recipe[0], "pair"
-        if recipe[1]:
-            tags, tags_scope = recipe[1], "pair"
+    if recipe is not None and recipe[1]:
+        tags, tags_scope = recipe[1], "pair"
     return {
         "category": category,
         "category_scope": category_scope,

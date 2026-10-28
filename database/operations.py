@@ -7,7 +7,12 @@ import json
 import math
 import datetime
 import os
-from typing import Optional, List, Dict, Any, Set, Tuple
+from typing import Optional, List, Dict, Any, NamedTuple, Set, Tuple
+
+try:
+    from ..utils.inspection_response import inherited_category
+except ImportError:
+    from utils.inspection_response import inherited_category
 
 from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations  # noqa: F401 (re-exported)
@@ -238,12 +243,16 @@ LEFT JOIN prompt_library_state pls ON pls.prompt_id = pp.positive_prompt_id
 WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
 # One image row describes a card only when no other row claims the same file
 # (as in get_image_link_summaries, several rows are ambiguous). The pair scope
-# and the linked positive follow _LINK_SUMMARY_SQL; category, rating, tags and
-# the searchable text and titles come from that positive (spec D12/D13). Every
+# and the linked positive follow _LINK_SUMMARY_SQL; rating, tags and the
+# searchable text and titles come from that positive (spec D12/D13). The raw
+# recipe and positive categories are read for the inherited category, which
+# Python decides (``inherited_category``, #332 MC4); SQL never filters by
+# category. Every
 # writer since the 3.2.4 migration stores file_path, so it is the path key.
 # The prompt-level conditions are uncorrelated IN sets SQLite builds once, and
 # the CASE evaluates the per-row ambiguity probe only for admitted rows.
-_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id
+_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id,
+pp.id IS NOT NULL, pp.category, p.category
 FROM generated_images gi
 LEFT JOIN prompt_pairs pp ON pp.id = (
     SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
@@ -253,9 +262,11 @@ WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
     SELECT 1 FROM generated_images other
     WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
 # The linked positive of each given path (one unambiguous link, pair scope as
-# in _LINK_FILTER_SQL) with its category; {hit} as in link_filter_query. Used
-# for the few files whose current image tags meet a Tags filter (#249 B3).
-_LINK_FACTS_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id, p.category
+# in _LINK_FILTER_SQL) with the raw categories of its inherited category; {hit}
+# as in link_filter_query. Used for the few files whose current image tags meet
+# a Tags filter (#249 B3).
+_LINK_FACTS_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id,
+pp.id IS NOT NULL, pp.category, p.category
 FROM generated_images gi
 LEFT JOIN prompt_pairs pp ON pp.id = (
     SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
@@ -284,8 +295,26 @@ _LINK_FILTER_TAG = (
 )
 
 
+class LinkMatch(NamedTuple):
+    """One unambiguously linked image's facts for the Images filters.
+
+    ``category`` is its inherited category (#332 MC4: the recipe's when set,
+    else the positive's), never its own image category.
+    """
+
+    hit: bool
+    rating: Optional[int]
+    positive: int
+    category: Any
+
+
+def _link_match(rating, matched, positive, has_pair, pair_category, category):
+    inherited, _scope = inherited_category(category, pair_category, bool(has_pair))
+    return LinkMatch(bool(matched), rating, positive, inherited)
+
+
 def link_filter_query(
-    q: str, category: Optional[str], tags: List[str], *, every_link: bool = False
+    q: str, tags: List[str], *, every_link: bool = False
 ) -> Tuple[str, Dict[str, Any]]:
     """The workspace filter SELECT and its named parameters (all bound).
 
@@ -298,9 +327,6 @@ def link_filter_query(
         hit = _LINK_FILTER_HIT
         params["pattern"] = f"%{escape_like(q)}%"
     admitted = []
-    if category is not None:
-        admitted.append("p.category = :category")
-        params["category"] = category
     for index, tag in enumerate(tags):
         admitted.append(_LINK_FILTER_TAG.format(index=index))
         params[f"tag{index}"] = tag
@@ -2543,38 +2569,38 @@ class PromptDatabase(
     def get_image_link_matches(
         self,
         q: str,
-        category: Optional[str],
         tags: List[str],
         *,
         every_link: bool = False,
         wanted: Optional[Set[str]] = None,
-    ) -> Dict[str, Tuple[bool, Optional[int], int]]:
-        """Map normalized paths of unambiguously linked images to
-        (hit, rating, positive id).
+    ) -> Dict[str, LinkMatch]:
+        """Map normalized paths of unambiguously linked images to a LinkMatch
+        (hit, rating, positive id, inherited category).
 
-        Rows are limited to images whose linked positive has *category* and
-        every tag in *tags* (exact names). ``hit`` says whether *q* occurs in
+        Rows are limited to images whose linked positive has every tag in
+        *tags* (exact names). The category filter is applied by the caller to
+        the effective category (#332). ``hit`` says whether *q* occurs in
         the positive's text, Library title or a tag name; a pair's own title
         names its negative variant and is not searched.
-        Without category or tags only hits are returned, unless *every_link*
+        Without tags only hits are returned, unless *every_link*
         asks for every linked image (the rating sort and the positive count).
         The positive id is the card's linked positive. One SELECT whose rows
         are streamed; with *wanted* (the listing's normalized paths) only those
         paths are kept, so memory is bounded by the listing, not the database.
         """
-        sql, params = link_filter_query(q, category, tags, every_link=every_link)
-        matches: Dict[str, Tuple[bool, Optional[int], int]] = {}
+        sql, params = link_filter_query(q, tags, every_link=every_link)
+        matches: Dict[str, LinkMatch] = {}
         with self.model.get_connection() as conn:
-            for path, rating, matched, positive in conn.execute(sql, params):
+            for path, *row in conn.execute(sql, params):
                 if wanted is None or path in wanted:
-                    matches[path] = (bool(matched), rating, positive)
+                    matches[path] = _link_match(*row)
         return matches
 
     def get_image_link_facts(
         self, paths: List[str], q: str = ""
-    ) -> Dict[str, Tuple[bool, Optional[int], int, Optional[str], Tuple[str, ...]]]:
+    ) -> Dict[str, Tuple[bool, Optional[int], int, Any, Tuple[str, ...]]]:
         """Map each normalized path with one unambiguous link to its positive's
-        (hit, rating, positive id, category, tag names).
+        (hit, rating, positive id, inherited category, tag names).
 
         The link is resolved as in get_image_link_matches, and ``hit`` says
         whether *q* occurs in the positive's text, Library title or a tag
@@ -2585,7 +2611,7 @@ class PromptDatabase(
         if q:
             hit = _LINK_FILTER_HIT
             params["pattern"] = f"%{escape_like(q)}%"
-        rows: Dict[str, Tuple[bool, Optional[int], int, Optional[str]]] = {}
+        rows: Dict[str, LinkMatch] = {}
         names: Dict[int, List[str]] = {}
         unique = list(dict.fromkeys(paths))
         with self.model.get_connection() as conn:
@@ -2594,10 +2620,8 @@ class PromptDatabase(
                 bound = {f"path{i}": path for i, path in enumerate(chunk)}
                 marks = ",".join(f":{key}" for key in bound)
                 sql = _LINK_FACTS_SQL.format(hit=hit, marks=marks)
-                for path, rating, matched, positive, category in conn.execute(
-                    sql, {**params, **bound}
-                ):
-                    rows[path] = (bool(matched), rating, positive, category)
+                for path, *row in conn.execute(sql, {**params, **bound}):
+                    rows[path] = _link_match(*row)
             positives = sorted({row[2] for row in rows.values()})
             for start in range(0, len(positives), _FACTS_CHUNK):
                 chunk = positives[start : start + _FACTS_CHUNK]
@@ -2610,20 +2634,16 @@ class PromptDatabase(
             path: (*row, tuple(names.get(row[2], ()))) for path, row in rows.items()
         }
 
-    def get_image_paths_matching(
-        self, q: str, category: Optional[str], tags: List[str]
-    ) -> Set[str]:
-        """Normalized paths whose linked positive matches *q*, *category* and *tags*.
+    def get_image_paths_matching(self, q: str, tags: List[str]) -> Set[str]:
+        """Normalized paths whose linked positive matches *q* and *tags*.
 
         See get_image_link_matches; an empty *q* matches every linked image
-        the category and tags admit.
+        the tags admit.
         """
         return {
             path
-            for path, (hit, _rating, _positive) in self.get_image_link_matches(
-                q, category, tags
-            ).items()
-            if hit or not q
+            for path, match in self.get_image_link_matches(q, tags).items()
+            if match.hit or not q
         }
 
     def get_prompt_id_for_image(self, image_path: str) -> Optional[int]:
