@@ -88,7 +88,8 @@ class ReviewRecordingMixin:
     def _record_scanned_review(self, media_file, roots, review=None, scanned=None):
         """Record one ambiguous, unlinked scanned file (logged and counted).
 
-        ``scanned`` is the scan's ``(metadata, inspection_resolution)``.
+        ``scanned`` is the scan's ``(metadata, inspection_resolution)``; the
+        resolution is None when the scan did not run the inspection profile.
         """
         try:
             outcome = self._record_review_sync(
@@ -209,74 +210,6 @@ class ReviewRecordingMixin:
             while len(memory) > MAX_UNTRACED_MEMORY:
                 del memory[next(iter(memory))]
         return None
-
-    def _saver_anchored_review(self, media_file, roots, canonical, review=None):
-        """True when the saver that wrote a default-ambiguous file resolves
-        its branch (#390), so the file is not queued (blocking).
-
-        Its current bytes' pending, undecided items then leave the queue
-        (counted in ``review["untraced"]``: nothing to choose). A failure is
-        logged and counted, and the file is queued as before. A file state
-        (size, ``mtime_ns``, item version) found unanchored in this process
-        is not inspected again, and bytes carrying a decision are not
-        inspected at all (a decision is never settled).
-        """
-        located = self._review_location(media_file, roots)
-        if canonical is None or located is None:
-            return False
-        locator = os.path.normcase(located[3])
-        try:
-            facts = os.lstat(located[3])
-        except OSError:
-            return False  # gone: the capture decides as before
-        if self.db.review_decided_at(locator, facts.st_size, facts.st_mtime_ns):
-            return False
-        version = review_capture.inspection_review_version(canonical)
-        if version is None:
-            return False
-        state = _digest(f"anchor:{facts.st_size}:{facts.st_mtime_ns}:{version}")
-        memory = self._unanchored_memory()
-        key = _memory_key(locator)
-        if memory.get(key) == state:
-            return False
-        try:
-            anchored = review_capture.saver_anchored(canonical, media_file.name)
-        except Exception:
-            self.logger.warning(
-                f"{media_file.name} could not be inspected for Needs review",
-                exc_info=True,
-            )
-            if review is not None:
-                review["errors"] += 1
-            return False
-        if not anchored:
-            memory.pop(key, None)  # re-inserted last: the newest state
-            memory[key] = state
-            while len(memory) > MAX_UNTRACED_MEMORY:
-                del memory[next(iter(memory))]
-            return False
-        try:
-            # No version is current for these bytes: any pending item goes.
-            removed = self.db.settle_stale_review_items(
-                locator, facts.st_size, facts.st_mtime_ns, ()
-            )
-        except Exception:
-            self.logger.warning(
-                f"Needs review items of {media_file.name} could not be removed",
-                exc_info=True,
-            )
-            if review is not None:
-                review["errors"] += 1
-            return True
-        if review is not None:
-            review["untraced"] += removed
-        return True
-
-    def _unanchored_memory(self):
-        memory = getattr(self, "_unanchored_inspections", None)
-        if memory is None:
-            memory = self._unanchored_inspections = {}
-        return memory
 
     def _settle_stale_reviews(self, media_file, roots, canonical, review=None):
         """Remove the pending, undecided items of an untraced file's current

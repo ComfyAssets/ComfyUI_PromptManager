@@ -730,6 +730,9 @@ def _candidate_still_offered(resolution: dict, choice: str) -> bool:
     that rewords the top-level reason or reorders candidates leaves a
     pending item applicable.
     """
+    if isinstance(resolution, dict) and resolution.get("state") == "resolved":
+        # The bytes now name one pair (the saver anchor, #390): only it.
+        resolution = {"state": "ambiguous", "candidates": [resolution]}
     if not isinstance(resolution, dict) or resolution.get("state") != "ambiguous":
         return False
     evidence, _count, limited = review_evidence(resolution)

@@ -1594,8 +1594,7 @@ class AdminRoutesMixin:
         whose final outcome is ambiguous and unlinked (the resolver found it
         ambiguous and the fallback did not link it) is recorded for Needs
         review (best effort, counted in ``review`` when given); one a saved
-        row already links is reported ``unchanged`` and never queued, and one
-        whose saver anchors its branch (#390) ``unresolved``. An
+        row already links is reported ``unchanged`` and never queued. An
         ambiguous file with nothing to choose is reported ``unresolved`` and
         its pending items without a choice leave the queue.
         """
@@ -1630,12 +1629,15 @@ class AdminRoutesMixin:
             if ambiguous and outcome == "ambiguous":
                 if self._review_file_linked(media_file, roots):
                     outcome = "unchanged"  # already linked: not a review case
-                elif self._saver_anchored_review(
-                    media_file, roots, records.get("canonical"), review
-                ):
-                    outcome = "unresolved"  # its saver names its branch (#390)
                 else:
-                    self._record_scanned_review(media_file, roots, review)
+                    # The records name the item versions that count; the
+                    # saver anchor (#390) is checked on the captured bytes.
+                    self._record_scanned_review(
+                        media_file,
+                        roots,
+                        review,
+                        scanned=(records.get("canonical"), None),
+                    )
             elif untraced and outcome == "unresolved":
                 # Untraced by the default profile: the inspection profile may
                 # still offer a choice (queued for review, never linked).

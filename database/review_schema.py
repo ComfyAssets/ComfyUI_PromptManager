@@ -235,7 +235,9 @@ def evidence_offers_choice(evidence: Any) -> bool:
     candidates = evidence.get("candidates")
     if not isinstance(candidates, list):
         return False
-    return sum(1 for c in candidates if choosable(c)) >= MIN_CHOOSABLE
+    # The saver anchor's one pair (#390) is a suggestion to confirm.
+    needed = 1 if evidence.get("anchor") == "saver" else MIN_CHOOSABLE
+    return sum(1 for c in candidates if choosable(c)) >= needed
 
 
 def evidence_digest(text: str) -> str:
