@@ -30,7 +30,12 @@ from typing import Any, Callable, List, Optional, Tuple
 try:
     from .hashing import generate_prompt_hash
     from .logging_config import get_logger
-    from .prompt_graph import intrinsic_pair_nodes, resolve_text, run_prompt_components
+    from .prompt_graph import (
+        intrinsic_pair_nodes,
+        resolve_text,
+        run_prompt_components,
+        save_setting,
+    )
     from .prompt_pair_resolver import resolve_text_input
     from .pair_execution import clear_pair_execution
     from .queue_observers import subscribe_dequeue
@@ -41,6 +46,7 @@ except ImportError:
         intrinsic_pair_nodes,
         resolve_text,
         run_prompt_components,
+        save_setting,
     )
     from utils.prompt_pair_resolver import resolve_text_input
     from utils.pair_execution import clear_pair_execution
@@ -127,10 +133,14 @@ def queued_prompt_runs(graph: Any) -> List[Run]:
     """(hash, text) of each positive PromptManager node whose text is knowable.
 
     Each hash once: the same text in two positive nodes is one run of the prompt.
+    A node whose switch is off is never counted; one whose switch is wired from
+    a node the graph cannot read counts itself when it executes (#90).
     """
     runs: List[Run] = []
     seen = set()
     for node_id, field in run_prompt_components(graph):
+        if save_setting(graph, node_id) is not True:
+            continue
         node = graph.get(node_id, {}) if isinstance(graph, dict) else {}
         text = (
             resolve_text_input(graph, node_id, field)
@@ -156,6 +166,8 @@ def queued_pair_runs(graph: Any) -> List[Tuple[str, str, str]]:
     """Resolve raw paired recipes only when both outputs form the used pair."""
     found, seen = [], set()
     for node_id in intrinsic_pair_nodes(graph):
+        if save_setting(graph, node_id) is not True:
+            continue  # wired switch: the node counts itself (#90)
         positive = resolve_text_input(graph, node_id, "text")
         negative = resolve_text_input(graph, node_id, "negative_text")
         if positive is None or not positive.strip() or negative is None:

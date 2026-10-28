@@ -247,6 +247,26 @@ test('browser job timeouts keep a real margin over measured runs', () => {
     }
 });
 
+// A hang (#425) must end inside the test step, before the job limit, so the log and the always()
+// uploads survive: the step's timeout-minutes < the job's.
+const BROWSER_TEST_STEP = /npm run --prefix tools\/vendor test:(workflows|coverage)/;
+
+test('each browser test step stops itself before its job limit and its traces upload anyway', () => {
+    for (const id of browserJobIds) {
+        const body = allJobs.get(id);
+        const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(body)[1]);
+        const jobSteps = steps(body);
+        const testAt = jobSteps.findIndex(step => BROWSER_TEST_STEP.test(step));
+        const testStep = jobSteps[testAt];
+        const stepMinutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(testStep)?.[1]);
+        assert.ok(stepMinutes > 0, `${id}: the test step sets its own timeout-minutes`);
+        assert.ok(jobMinutes - stepMinutes >= 2, `${id}: the step limit leaves time for setup and the uploads`);
+        const upload = jobSteps.slice(testAt + 1).find(step => /^ {10}path: tools\/vendor\/test-results\/$/m.test(step));
+        assert.ok(upload, `${id} uploads tools/vendor/test-results/ (traces and blob report) after the tests`);
+        assert.match(upload, /^ {8}if: always\(\)$/m, `${id} uploads them when the step failed or timed out`);
+    }
+});
+
 // Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
 const GATING_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
 const BOUNDED_WORKFLOWS = [...GATING_WORKFLOWS, 'portability.yml'];

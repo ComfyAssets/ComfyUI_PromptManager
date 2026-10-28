@@ -11,6 +11,7 @@ import weakref
 
 from .execution_context_budget import ContextBudget, PayloadLease, SealedContext
 from .execution_context_graph import (
+    NOT_SAVED,
     GraphProjection,
     GraphRole,
     SourceRef,
@@ -325,6 +326,8 @@ class ContextCapture:
                     nonlocal ambiguous
                     if role.reason == "source-transformed":
                         return _unknown("unsupported")
+                    if role.reason == NOT_SAVED:
+                        return _unknown("unavailable")
                     if not role.sources:
                         return role.inferred or _unknown("unsupported")
                     values = [
