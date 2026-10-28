@@ -577,7 +577,10 @@ event split and runs both gate scripts for each event.
 `py3.12 on ubuntu-latest`, `coverage gate (85%)`, `black and flake8`,
 `frontend modules`, `all tests`, `viewerjs`, `real ComfyUI compatibility` and
 `bandit (high severity)`. Each one reports on a pull request.
-The live set is in the `main` ruleset (25960526), together with the merge queue.
+The same set lives in two places, and both must change together: the `main`
+ruleset (25960526, which also holds the merge queue) and the classic branch
+protection on `main`, which the manifest mirrors. GitHub requires the union of
+the two, so a context left in either one blocks every PR that does not report it.
 It does not require an additional human approval.
 
 A repository administrator applies the configuration after the new workflow is
@@ -603,7 +606,16 @@ gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 --
 ```
 
 Afterwards, read it back. Check that the `merge_queue` rule is still there and
-that every context keeps its `integration_id`. Update the manifest whenever
+that every context keeps its `integration_id`. Then apply the manifest to the
+classic protection and read both back:
+
+```sh
+gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection \
+  --input .github/branch-protection.json
+gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required_status_checks
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rules/branches/main
+```
+ Update the manifest whenever
 required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
 
