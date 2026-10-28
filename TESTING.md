@@ -3991,7 +3991,9 @@ modals use the same routes and keep working.
   - Without a body (the legacy admin page, whose confirm lists nothing; also the
     workspace when the file list could not be read and the dialog said "deletes its
     rotated copies") every rotated copy present at the locked rescan is deleted.
-  - Either way, before anything changes: a second writer of the active log (our
+  - Either way, before anything changes (best effort, not a cross-process lock: a
+    write before our own last write, or any while file logging is off here, is not
+    seen): a second writer of the active log (our
     handler's flushed stream is behind the file's size, or its file is now a rotated
     copy: another ComfyUI sharing the folder) is 409 `logs-foreign-writer`; an active
     log with more than one name (`st_nlink > 1` by `lstat` or the handler's `fstat`,

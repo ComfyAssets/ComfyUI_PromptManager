@@ -819,7 +819,19 @@ class TestClearOnlyWhatWasConfirmed(IsolatedLoggerTestCase):
         for row in self.manager.get_log_files():
             with self.subTest(name=row["filename"]):
                 self.assertIsInstance(row["identity"], str)
-                self.assertRegex(row["identity"], r"^\d+:\d+:\d+$")
+                self.assertRegex(row["identity"], r"^\d+:-?\d+:\d+$")
+
+    def test_a_copy_dated_before_1970_can_be_confirmed(self):
+        self._write("prompt_manager.log.1")
+        try:
+            os.utime(self._path("prompt_manager.log.1"), ns=(0, -(10**9)))
+        except (OSError, OverflowError, ValueError) as error:
+            self.skipTest(f"this filesystem cannot store a time before 1970: {error}")
+        confirmed = self._confirmed()
+        if not any(":-" in row["identity"] for row in confirmed):
+            self.skipTest("the filesystem did not keep the negative time")
+        result = self.manager.truncate_logs(confirmed)
+        self.assertIn("prompt_manager.log.1", result["truncated"])
 
     def test_a_rollover_after_the_confirmation_deletes_nothing(self):
         self._write("prompt_manager.log.1", b"one" * 10)
@@ -847,21 +859,31 @@ class TestClearOnlyWhatWasConfirmed(IsolatedLoggerTestCase):
             ["prompt_manager.log", "prompt_manager.log.5"],
         )
 
+    def _clear(self, confirmed=None):
+        """Run a clear and return what it raised (None), so the files are
+        asserted first: on the old code the test fails on lost bytes."""
+        try:
+            if confirmed is None:
+                self.manager.truncate_logs()  # the legacy page's call
+            else:
+                self.manager.truncate_logs(confirmed)
+        except Exception as error:  # noqa: BLE001 - asserted below
+            return error
+        return None
+
     def test_a_foreign_append_to_the_active_log_is_refused(self):
         # A second ComfyUI sharing the folder writes the same active log.
         self._write("prompt_manager.log.1")
-        for confirmed in (self._confirmed(), None):
-            with self.subTest(listed=confirmed is not None):
+        listings = (None, "listed")
+        for listing in listings:
+            with self.subTest(listed=listing is not None):
+                confirmed = self._confirmed() if listing else None
                 with open(self._path("prompt_manager.log"), "ab") as other:
                     other.write(b"line from another process\n")
                 before = self._snapshot()
-                with self.assertRaises(logging_config.ClearRefused) as caught:
-                    if confirmed is None:
-                        self.manager.truncate_logs()  # the legacy page's call
-                    else:
-                        self.manager.truncate_logs(confirmed)
-                self.assertEqual(caught.exception.code, "logs-foreign-writer")
+                error = self._clear(confirmed)
                 self._assert_unchanged(before)
+                self.assertEqual(getattr(error, "code", None), "logs-foreign-writer")
                 self.logger.info("our own line")  # our stream catches up again
 
     @unittest.skipIf(os.name == "nt", "Windows cannot rename a log that is open")
@@ -917,24 +939,20 @@ class TestClearOnlyWhatWasConfirmed(IsolatedLoggerTestCase):
         self._require_hard_link(self._path("prompt_manager.log"), other_name)
         kept = self._read(other_name)
         self.assertTrue(kept)
-        for call in (lambda: self.manager.truncate_logs(), None):
-            with self.subTest(listed=call is None):
-                with self.assertRaises(logging_config.ClearRefused) as caught:
-                    if call is None:
-                        self.manager.truncate_logs(self._confirmed())
-                    else:
-                        call()
-                self.assertEqual(caught.exception.code, "logs-hard-link")
+        for listed in (False, True):
+            with self.subTest(listed=listed):
+                error = self._clear(self._confirmed() if listed else None)
                 self.assertTrue(self._read(other_name).startswith(kept))
+                self.assertEqual(getattr(error, "code", None), "logs-hard-link")
 
     def test_a_hard_linked_active_log_with_file_logging_off_is_kept(self):
         self.manager.update_config({"file_logging": False})
         other_name = os.path.join(self.outside, "kept-by-the-user.log")
         self._require_hard_link(self._path("prompt_manager.log"), other_name)
         kept = self._read(other_name)
-        with self.assertRaises(logging_config.ClearRefused):
-            self.manager.truncate_logs()
+        error = self._clear()
         self.assertEqual(self._read(other_name), kept)
+        self.assertEqual(getattr(error, "code", None), "logs-hard-link")
 
     def test_a_malformed_confirmation_is_refused_before_anything_changes(self):
         self._write("prompt_manager.log.1")
@@ -945,6 +963,10 @@ class TestClearOnlyWhatWasConfirmed(IsolatedLoggerTestCase):
             [{"name": "prompt_manager.log.1", "identity": 7}],
             [{"name": "prompt_manager.log.1", "identity": "1:2"}],
             [{"name": 1, "identity": "1:2:3"}],
+            [
+                {"name": "prompt_manager.log.1", "identity": "1:2:3"},
+                {"name": "prompt_manager.log.1", "identity": "1:2:3"},
+            ],
             ["prompt_manager.log.1"],
         ):
             with self.subTest(expected=expected):

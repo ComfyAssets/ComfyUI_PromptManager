@@ -50,12 +50,14 @@ CLEAR_FOREIGN_WRITER = (
 )
 CLEAR_HARD_LINK = (
     "prompt_manager.log has another name (a hard link); emptying it would empty"
-    " that file too, so nothing was cleared."
+    " that file too, so nothing was cleared. Remove the other name, then clear"
+    " again."
 )
 # A confirmed row's identity: "<size>:<mtime_ns>:<ino>", a string because
 # mtime_ns and many inodes are larger than a browser's exact integers.
-_IDENTITY = re.compile(r"([0-9]{1,20}):([0-9]{1,20}):([0-9]{1,40})")
-MAX_CONFIRMED_ROWS = 1000
+# mtime_ns is negative for a time before 1970 (a restored archive, say).
+_IDENTITY = re.compile(r"([0-9]{1,20}):(-?[0-9]{1,20}):([0-9]{1,40})")
+MAX_CONFIRMED_ROWS = 10000
 
 
 class ClearRefused(Exception):
@@ -169,7 +171,7 @@ def parse_confirmed(expected) -> List[Dict[str, Any]]:
     """
     if not isinstance(expected, list) or len(expected) > MAX_CONFIRMED_ROWS:
         raise ValueError("expected must be a list of listed log files")
-    rows = []
+    rows, seen = [], set()
     for item in expected:
         if not isinstance(item, dict):
             raise ValueError("each expected file must be an object")
@@ -180,6 +182,9 @@ def parse_confirmed(expected) -> List[Dict[str, Any]]:
         if match is None:
             raise ValueError("an expected file's identity is not size:mtime_ns:ino")
         size, mtime_ns, ino = (int(part) for part in match.groups())
+        if _name_key(name) in seen:
+            raise ValueError("an expected file is listed twice")
+        seen.add(_name_key(name))
         rows.append({"name": name, "size": size, "mtime_ns": mtime_ns, "ino": ino})
     return rows
 
@@ -678,7 +683,9 @@ class PromptManagerLogger:
         program's doing. Our handler's stream is flushed: a file larger than
         the stream's own offset was appended to by someone else, and a stream
         whose file is now a rotated copy was rolled over by someone else.
-        Either is a second writer (another ComfyUI sharing the folder). An
+        Either is a second writer (another ComfyUI sharing the folder). This
+        is best effort, not a lock: writes before our own last write, or any
+        write while this process has file logging off, go unseen. An
         active log with more than one name (a hard link) is never emptied: the
         other name would be emptied too.
         """
