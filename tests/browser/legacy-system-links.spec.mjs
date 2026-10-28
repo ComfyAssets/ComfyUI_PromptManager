@@ -85,17 +85,31 @@ async function openLink(page, request, link) {
     return control;
 }
 
+// Each row opens its section in a new tab and sends no request from the legacy page (the design's `a System link sends
+// no request from the legacy page`, checked per row so one slow page never times out the whole table).
 for (const link of LINKS) {
     test(`legacy ${link.page} ${link.label} opens System ${link.section}`, async ({ page, context, request }) => {
+        // The gallery's thumbnail startup check (K9) reads its status on a timer of its own; it is off here.
+        await page.addInitScript(() => {
+            localStorage.setItem('gallerySettings', JSON.stringify({ checkThumbnailsAtStartup: false }));
+        });
         const control = await openLink(page, request, link);
         const legacyUrl = page.url();
         await expect(control).toHaveAttribute('href', `workspace#/system/${link.section}`);
         await expect(control).toHaveAttribute('target', '_blank');
         await expect(control).toHaveAttribute('rel', 'noopener');
+        // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
+        // Lazy thumbnails may still load whenever the layout changes; they are not the click's.
+        await page.waitForLoadState('networkidle');
+        const sent = [];
+        const record = item => { if (item.resourceType() !== 'image') sent.push(`${item.method()} ${item.url()}`); };
+        page.on('request', record);
         const opened = context.waitForEvent('page');
         await control.click();
         const system = await opened;
         await expect(system).toHaveURL(new RegExp(`/prompt_manager/workspace#/system/${link.section}$`));
+        page.off('request', record);
+        expect(sent, 'a System link sends no request from the legacy page').toEqual([]);
         // System's page heading is "System"; the open section is the pressed button of its section switcher.
         const main = system.locator('#workspace-main');
         await expect(main.getByRole('heading', { level: 1, name: 'System', exact: true })).toBeVisible();
@@ -105,28 +119,6 @@ for (const link of LINKS) {
         await system.close();
     });
 }
-
-test('a System link sends no request from the legacy page', async ({ page, context, request }) => {
-    // The gallery's thumbnail startup check (K9) reads its status on a timer of its own; it is off here.
-    await page.addInitScript(() => {
-        localStorage.setItem('gallerySettings', JSON.stringify({ checkThumbnailsAtStartup: false }));
-    });
-    for (const link of LINKS) {
-        const control = await openLink(page, request, link);
-        // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
-        await page.waitForLoadState('networkidle');
-        const sent = [];
-        const record = item => sent.push(`${item.method()} ${item.url()}`);
-        page.on('request', record);
-        const opened = context.waitForEvent('page');
-        await control.click();
-        const system = await opened;
-        await system.waitForLoadState('domcontentloaded');
-        page.off('request', record);
-        expect(sent, `${link.page} ${link.label}`).toEqual([]);
-        await system.close();
-    }
-});
 
 test('kept admin flows still work', async ({ page, context }) => {
     await page.goto(PAGES.admin);
