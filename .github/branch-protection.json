@@ -3,17 +3,10 @@
     "strict": false,
     "contexts": [
       "py3.12 on ubuntu-latest",
-      "py3.13 on ubuntu-latest",
-      "py3.14 on ubuntu-latest",
-      "py3.12 on windows-latest",
-      "py3.13 on windows-latest",
-      "py3.14 on windows-latest",
-      "py3.12 on macos-latest",
-      "py3.13 on macos-latest",
-      "py3.14 on macos-latest",
       "coverage gate (85%)",
       "black and flake8",
       "frontend modules",
+      "all tests",
       "viewerjs",
       "real ComfyUI compatibility",
       "bandit (high severity)"

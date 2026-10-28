@@ -28,10 +28,18 @@ env:
 #   py matrix, slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
 #     (ubuntu 5m27s-6m27s, macos 6m14s-8m30s, windows 11m42s-15m54s)
 #     3.10 and 3.11 left the matrix and 3.14 joined it in #356; re-measure after three green main runs.
+#     Windows and macOS moved to portability.yml (#420), which keeps this 27-minute limit; this
+#     Linux-only matrix keeps it too until it is re-measured.
 #   real ComfyUI compatibility: 13m32s / 8m55s / 11m46s -> 24 min
 #   coverage gate (85%): 7m26s / 7m22s / 7m54s -> 15 min
 #   perf budget 30s / 29s / 27s, black and flake8 39s / 37s / 39s,
 #   frontend modules 23s / 19s / 29s -> 5 min (the floor)
+#   all tests: a result check without setup, 5 min (the floor)
+#
+# Pull requests run a fast subset (#420): Python 3.12 on ubuntu-latest, coverage, lint and frontend
+# modules. The merge queue (merge_group), pushes to main and manual runs add Python 3.13 and 3.14 on
+# Linux and the real ComfyUI job. "all tests" is the required gate that holds the queue to that set.
+# Windows and macOS run in portability.yml (push to main, nightly, on demand) and never gate a merge.
 jobs:
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
@@ -40,8 +48,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.12", "3.13", "3.14"]
+        os: [ubuntu-latest]
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.12", "3.13", "3.14"]') }}
 
     steps:
       - uses: actions/checkout@v7
@@ -63,6 +71,9 @@ jobs:
 
   comfyui:
     name: real ComfyUI compatibility
+    # Merge queue, main and manual runs only. A job skipped by its condition reports Success, so this
+    # required context never blocks a pull request; "all tests" fails if it is skipped anywhere else.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Chromium and its system libraries come from the pinned Playwright image (tag = @playwright/test in
     # tools/vendor/package-lock.json; tests/vendor/browser-image.test.mjs checks it). The runner install
@@ -253,3 +264,32 @@ jobs:
 
       - name: Run JS tests
         run: node --test tests/js/*.test.js
+
+  # The required context "all tests". A dropped matrix leg never reports a check at all, so the eight
+  # legs that pull requests skip cannot be required by name; this gate requires them instead. Every
+  # job must succeed; real ComfyUI must be skipped on a pull request and succeed on every other event.
+  all-tests:
+    name: all tests
+    needs: [test, comfyui, coverage, lint, js-test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every test job for this event
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TEST_RESULT: ${{ needs.test.result }}
+          COMFYUI_RESULT: ${{ needs.comfyui.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          JS_RESULT: ${{ needs.js-test.result }}
+        run: |
+          queue_only=success
+          if [ "$EVENT_NAME" = pull_request ]; then queue_only=skipped; fi
+          echo "event: $EVENT_NAME (real ComfyUI must be $queue_only)"
+          echo "test matrix: $TEST_RESULT"
+          echo "comfyui: $COMFYUI_RESULT"
+          echo "coverage: $COVERAGE_RESULT"
+          echo "lint: $LINT_RESULT"
+          echo "js-test: $JS_RESULT"
+          test "$TEST_RESULT" = success && test "$COVERAGE_RESULT" = success && test "$LINT_RESULT" = success && test "$JS_RESULT" = success && test "$COMFYUI_RESULT" = "$queue_only"
