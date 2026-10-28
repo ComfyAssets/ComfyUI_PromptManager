@@ -1,6 +1,7 @@
 // Concept-vs-production inventory for the native Tags & categories screen (concept renderTags, app.js:719-729).
 // pageInventoryOf runs in the page; dialogs reuse the editor's inventoryOf. The concept is never rewritten:
 // mapVocabularyConcept / mapVocabularyDialog apply only the recorded deviations, each named with its ruling.
+import {diffInventory} from './library-editor-canonical-comparison.mjs';
 export {inventoryOf, diffInventory} from './library-editor-canonical-comparison.mjs';
 
 export function pageInventoryOf(main) {
@@ -61,23 +62,51 @@ export function pageInventoryOf(main) {
     };
 }
 
+const countOf=(count,noun)=>`${count} ${noun}${count===1?'':'s'}`;
+
+/**
+ * D143 (#332): a category row counts the images whose own category it is: "N positive prompts · M images" when
+ * prompts hold it too, "M images" for a value only images hold. Image-only rows follow every prompt-backed row, before
+ * the closing Manage category row, each drawn as the concept's last category row with its own text (vocabulary-visual
+ * checks this against the concept page with those rows added at runtime). `images` is `{value: count}`; `only` lists
+ * the image-only values in their order.
+ */
+export function withImageCounts(operations,{images={},only=[]}={}) {
+    const rows=operations.map(row=>images[row.h3.text]&&!only.includes(row.h3.text)
+        ?{...row,p:{...row.p,text:`${row.p.text} · ${countOf(images[row.h3.text],'image')}`}}:row);
+    const manage=rows.at(-1),last=rows.at(-2);
+    const added=only.map(value=>({...last,h3:{...last.h3,text:value},p:{...last.p,text:countOf(images[value],'image')}}));
+    return [...rows.slice(0,-1),...added,manage];
+}
+
 // Recorded deviations only (plan "Mock inventory" + decisions D1-D15 + ledger rulings). Everything else must be equal.
-export function mapVocabularyConcept(reference) {
+// `imageCategories` (#332 D143) is the fixture's own image categories, none by default.
+export function mapVocabularyConcept(reference,imageCategories={}) {
+    const operations=reference.operations.map(row=>({...row,p:{...row.p,
+        // Ledger ruling: "1 positive prompts" -> singular, consistent with the shared plural helper (#238/#243).
+        text:row.p.text.replace(/^1 positive prompts$/,'1 positive prompt')}}));
     return {...reference,
         table:{...reference.table,rows:reference.table.rows.map(row=>({...row,
             // Data, not a deviation: the concept tags each sample image with its prompt's tags; the vocabulary fixture
             // tags no image, so every Images count is 0 (#249 C2 retired #245 D3).
             images:'0'}))},
-        operations:reference.operations.map(row=>({...row,p:{...row.p,
-            // Ledger ruling: "1 positive prompts" -> singular, consistent with the shared plural helper (#238/#243).
-            text:row.p.text.replace(/^1 positive prompts$/,'1 positive prompt')}})),
+        operations:withImageCounts(operations,imageCategories),
     };
+}
+
+/** The page comparison: concept rows are the concept's sample tags; production appends fixture-only tags (D4). */
+export function compareVocabularyPage(reference,actual,imageCategories={}) {
+    const expected=mapVocabularyConcept(reference,imageCategories);
+    const shared=expected.table.rows.length;
+    return {diff:diffInventory(expected,{...actual,table:{...actual.table,rows:actual.table.rows.slice(0,shared)}}),
+        extra:actual.table.rows.slice(shared).map(row=>row.tag)};
 }
 
 // Concept dialogs are simpleInput (app.js:1138-1143). donors are concept inventories for controls the concept
 // shows elsewhere: a `.field select` and a `p.small` (Filters dialog, app.js:1351) and a danger dialog action
 // (Archive… in the editor, app.js:976), so added controls are held to concept tokens, never to production values.
-export function mapVocabularyDialog(mode,reference,{filters,editor,categories}) {
+// `preview` is the Manage categories sentence once Preview has been pressed (D9; D144, #332, adds its images).
+export function mapVocabularyDialog(mode,reference,{filters,editor,categories,preview=null}) {
     const fields=reference.fields.map(item=>({...item,
         // Inventory rows 27-29: the name is `required` (blank Apply is blocked natively).
         required:true}));
@@ -98,9 +127,9 @@ export function mapVocabularyDialog(mode,reference,{filters,editor,categories}) 
                 // D9 / Task 8: the proposed name offers a category datalist (no trailing commas: one value).
                 ...fields.map(item=>({...item,listed:true,commaOptions:false}))],
             // D9: the preview sentence is a `p.small`, empty and hidden until Preview.
-            small:[{...filters.small[0],text:''}],
+            small:[{...filters.small[0],text:preview??''}],
             // D9: the primary is `Preview` until a preview is shown, then `Apply`.
-            actions:{...reference.actions,buttons:buttons.map(item=>item.text==='Apply'?{...item,text:'Preview'}:item)}};
+            actions:{...reference.actions,buttons:preview===null?buttons.map(item=>item.text==='Apply'?{...item,text:'Preview'}:item):buttons}};
     }
     return {...reference,fields,actions:{...reference.actions,buttons}};
 }

@@ -1,42 +1,62 @@
-import { countOf, noun } from './plural.mjs';
+import { countOf } from './plural.mjs';
 
 /**
- * The Images selection bar's "Set category" (#249 D8). Images have no category of their own: the listing's category
- * filter matches the linked positive prompt's, so the action sets the category on those prompts.
+ * The Images selection bar's "Set category" (#332, D140; the concept's bulk-category → simpleInput). Apply sets each
+ * selected image's own category (`PUT /prompt_manager/images/category`); "Use prompt category" removes it after a
+ * confirmation (`DELETE`), so the image shows its prompt's category again. It never writes a prompt: prompt
+ * categories are set in the Prompt library editor and on the legacy admin page's "Set Category".
  */
+export const CATEGORY_URL = '/prompt_manager/images/category';
+export const IMAGE_CATEGORIES_URL = '/prompt_manager/images/categories';
 export const CATEGORY_DIALOG = Object.freeze({title:'Categorize selected images', label:'Category', action:'Apply'});
-export const CATEGORY_NONE_LINKED = "None of the selected images is linked to a saved prompt, so there is no prompt category to set.";
+export const USE_PROMPT_CATEGORY = 'Use prompt category';
+export const REMOVE_DIALOG = Object.freeze({title:'Use prompt category', action:'Remove'});
 export const CATEGORY_FAILED = 'Category could not be set. Try again.';
+export const NONE_FOUND = 'None of the selected images could be found. Refresh the images and try again.';
+export const NONE_HAD_OWN = 'None of the selected images had its own category.';
+export const SOURCES_CHANGED = 'The sources changed. Refresh the images and try again.';
 // The server's limit (`validate_category`): the field stops there instead of failing on Apply.
 export const CATEGORY_MAX_LENGTH = 100;
+// One request names at most 500 images (DC2), as "Add tags" does.
+export const MAX_CATEGORY_IMAGES = 500;
 
-function linkedPositive(image) {
-    const link = image?.linked;
-    if (link?.status !== 'linked') return null;
-    return Number.isSafeInteger(link.positive_id) && link.positive_id > 0 ? link.positive_id : null;
+/** The success toast of a set: unchanged files count as set; files no source lists are named after. */
+export function setOutcome(result, category) {
+    const updated = Number(result?.updated) || 0, unchanged = Number(result?.unchanged) || 0;
+    const missing = Number(result?.not_found) || 0;
+    const done = `Category “${category}” set on ${countOf(updated + unchanged, 'image')}.`;
+    return missing ? `${done} ${missing.toLocaleString()} could not be found.` : done;
 }
 
-/** The distinct linked positives of `images`, first-seen order; `skipped` counts the images without one. */
-export function categoryTargets(images) {
-    const ids = new Set();
-    let skipped = 0;
-    for (const image of images) {
-        const id = linkedPositive(image);
-        if (id === null) skipped += 1;
-        else ids.add(id);
+/** The toast of a removal. */
+export function clearOutcome(result) {
+    const cleared = Number(result?.cleared) || 0;
+    return cleared ? `Removed the image category from ${countOf(cleared, 'image')}.` : NONE_HAD_OWN;
+}
+
+/** The confirmation sentence before "Use prompt category" removes the own category of `count` images. */
+export function removeQuestion(count) {
+    const which = count === 1 ? 'the 1 selected image' : `the ${count.toLocaleString()} selected images`;
+    return `Remove the image category from ${which}? Each one then shows its prompt's category, or none if it has no ` +
+        'linked prompt. This cannot be undone.';
+}
+
+/** The toast for a failed write: the coded answers the routes give, else the fixed failure. */
+export function failureMessage(error) {
+    if (error?.code === 'files-not-found') return NONE_FOUND;
+    if (error?.code === 'source-changed') return SOURCES_CHANGED;
+    if (error?.code === 'too-many-images' && typeof error.message === 'string' && error.message) return error.message;
+    return CATEGORY_FAILED;
+}
+
+/** The toolbar's category list: the prompt and recipe categories plus the listed images' own ones, each once. */
+export function mergeCategories(promptCategories, imageCategories) {
+    const merged = [];
+    const seen = new Set();
+    for (const value of [...(promptCategories ?? []), ...(imageCategories ?? [])]) {
+        if (typeof value !== 'string' || !value.trim() || seen.has(value)) continue;
+        seen.add(value);
+        merged.push(value);
     }
-    return {promptIds:[...ids], skipped};
-}
-
-/** The success toast: the prompts changed, then any selected images that had no linked prompt. */
-export function categoryOutcome(prompts, skipped) {
-    const done = `Category set on ${countOf(prompts, 'prompt')}.`;
-    if (!skipped) return done;
-    return `${done} ${countOf(skipped, 'selected image')} had no linked prompt and ${noun(skipped, 'was', 'were')} skipped.`;
-}
-
-/** The prompts the server reports changed; without a count, the number of prompts posted. */
-export function updatedCount(result, posted) {
-    const count = result?.updated_count;
-    return Number.isSafeInteger(count) && count >= 0 ? count : posted;
+    return merged;
 }

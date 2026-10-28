@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact} from './concept-inventory.mjs';
+import {SIZES,THEMES,MOTIONS,seedConcept,openConcept,openProduction,inventoryOf,diffInventory,mutate,stripExact,measureInspector,withChipSource} from './concept-inventory.mjs';
 
 // Task F5 of #249: the production Prompt history (#/library/<id>) against the immutable concept's (#prompt/alpine,
 // app.js renderHistory a587–622, the dialogs a1282–1304, style.css 1059–1179 and 1546–1567), on the concept-shaped real
@@ -270,6 +270,62 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`history geomet
         const {referenceBehaviors:concept,actualBehaviors:production}=result['no-preference'];
         expect.soft(production,'behaviors').toEqual({...concept,run:{...concept.run,name:'Recorded run'}});
     } finally {await host.evaluate(()=>window.conceptHost.dispose());await host.close();}
+});
+
+/**
+ * D145 (#332): the History media inspector (a recorded run's current file, `recorded-run.mjs`) shows the file's own
+ * category with the chip rule of the Images side panel and viewer (D146). The concept has no recorded-run inspector, so
+ * its chip is the concept viewer's own category chip (app.js a402, imageDetails(i, true)) with the recorded D146 origin
+ * and the own category added at runtime (`withChipSource`). The chip's own place depends on what precedes it in either
+ * inspector, so its box is compared by size only.
+ */
+const OWN_CATEGORY='Portraits';
+const chipOnly=chip=>{const {left,top,source,...rest}=chip;return {...rest,source:source&&(({left,top,...own})=>own)(source)};};
+const categoryChipOf=async(page,root)=>(await page.evaluate(measureInspector,root)).badges.chips.find(chip=>chip.source);
+
+async function conceptViewerChip(page,theme) {
+    await openConcept(page,'images',theme);await page.mouse.move(0,0);
+    await page.locator('.gallery-body > .image-grid > .media-card').first().locator('.image-open').click();
+    await expect(page.locator('#viewer-dialog[open] #viewer-details .panel-heading h2')).toHaveText(TITLE);
+    const restore=await withChipSource(page,'#viewer-details','this image',OWN_CATEGORY);await settle(page);
+    const chip=await categoryChipOf(page,'#viewer-details');
+    await restore();
+    return chip;
+}
+
+/** Recorded run for the baseline's newest run, its one reported output opened in the viewer. */
+async function productionRunChip(page,theme,positiveId) {
+    await openProductionHistory(page,theme,'no-preference',positiveId);
+    await page.getByRole('button',{name:'Show repeat run for Quality baseline',exact:true}).click();
+    const run=page.getByRole('dialog',{name:'Recorded run',exact:true});
+    await expect(run).toBeVisible();
+    const view=run.getByRole('button',{name:'View current file',exact:true});
+    await expect(view).toBeEnabled();await view.click();
+    const details=page.locator('#viewer-dialog[open] #viewer-details');
+    await expect(details.locator('.chip-source')).toHaveText(' · this image');
+    await page.mouse.move(0,0);await settle(page);
+    return categoryChipOf(page,'#viewer-dialog[open] #viewer-details');
+}
+
+async function setOwnCategory(request,path,category) {
+    const listing=await (await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();
+    const root_scope=listing.images.find(item=>item.root_index===0).root_scope;
+    const response=await request.put('/prompt_manager/images/category',{data:{items:[{root_index:0,root_scope,path}],category}});
+    await expect(response).toBeOK();
+}
+
+for(const [width,height] of SIZES)for(const theme of THEMES)test(`history media inspector category chip matches the concept ${width}x${height} ${theme} (D145)`,async({page,request},testInfo)=>{
+    await page.setViewportSize({width,height});
+    const {manifest}=testInfo;
+    // The baseline's newest image: the output of the run its dot opens (the fixture records one run per image).
+    const baseline=manifest.images.find(image=>image.prompt==='alpine'&&image.variant===0);
+    await setOwnCategory(request,baseline.path,OWN_CATEGORY);
+    const reference=await conceptViewerChip(page,theme);
+    const actual=await productionRunChip(page,theme,manifest.prompts[0].positive_id);
+    await captureCanonicalState(page,testInfo,`production-history-run-chip-${width}-${theme}`,'#viewer-dialog[open]');
+    expect.soft(reference,'concept chip').toMatchObject({tag:'span',className:'chip',text:`${OWN_CATEGORY} · this image`,hidden:null});
+    // D21: the hidden prefix names the scope; D146 as above.
+    expect.soft(diffInventory({...chipOnly(reference),hidden:'Image category: '},chipOnly(actual)),'chip differences after D21, D145, D146').toEqual([]);
 });
 
 // The comparison is only worth something if it notices a change (spec §7 mutation check): one CSS mutation (the variant

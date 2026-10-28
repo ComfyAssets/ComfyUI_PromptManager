@@ -72,6 +72,10 @@ CONCEPT_RECIPES = (
         "negative": "oversaturated, flat lighting, watermark, text",
     },
 )
+# #332 D143/D144 (opt-in, ``image_categories``): own image categories, one on
+# images only and one shared with prompts. Stored rows count whether or not the
+# files exist, so the keys name files the fixture never writes.
+IMAGE_CATEGORY_ROWS = (("Landscapes", 2), ("Portraits", 1))
 PAIR_ONLY_TAG = "pair_only_detail"
 ARCHIVED_ONLY_TAG = "archived_pair_detail"
 NEGATIVE_ONLY_TAG = "legacy_negative_detail"
@@ -114,8 +118,26 @@ _SNAPSHOT = {
 }
 
 
+def _seed_image_categories(api: PromptManagerAPI) -> dict:
+    """Own image category rows keyed as Images keys them; ``{value: count}``."""
+    from py.api.images import image_category_key
+
+    sources = list(api._get_all_output_dirs())
+    for category, count in IMAGE_CATEGORY_ROWS:
+        keys = [
+            image_category_key(sources, str(Path(sources[0]) / f"{category}_{n}.png"))
+            for n in range(count)
+        ]
+        api.db.set_image_categories(keys, category)
+    return dict(IMAGE_CATEGORY_ROWS)
+
+
 def seed_vocabulary(
-    api: PromptManagerAPI, root: Path, extra_tags: int = 0, extra_categories: int = 0
+    api: PromptManagerAPI,
+    root: Path,
+    extra_tags: int = 0,
+    extra_categories: int = 0,
+    image_categories: bool = False,
 ) -> dict:
     """Replace this server's disposable rows with the concept vocabulary."""
     db = api.db
@@ -169,6 +191,7 @@ def seed_vocabulary(
                 "category": f"bulk_category_{number:04}",
             },
         )
+    images = _seed_image_categories(api) if image_categories else {}
     with db.model.get_connection() as conn:
         tags = [row[0] for row in conn.execute("SELECT name FROM tags ORDER BY id")]
     api.invalidate_gallery_cache()
@@ -182,6 +205,7 @@ def seed_vocabulary(
         "archived_only_tag": ARCHIVED_ONLY_TAG,
         "negative_only_tag": NEGATIVE_ONLY_TAG,
         "unused_tag": UNUSED_TAG,
+        "image_categories": images,
     }
 
 
@@ -202,7 +226,14 @@ def register_vocabulary_commands(
     @routes.post("/__test__/vocabulary/reset")
     async def reset(request: web.Request) -> web.Response:
         data = await request.json() if request.can_read_body else {}
-        if not isinstance(data, dict) or set(data) - {"extra_tags", "extra_categories"}:
+        if not isinstance(data, dict) or set(data) - {
+            "extra_tags",
+            "extra_categories",
+            "image_categories",
+        }:
+            raise web.HTTPBadRequest()
+        images = data.get("image_categories", False)
+        if not isinstance(images, bool):
             raise web.HTTPBadRequest()
         extra = data.get("extra_tags", 0)
         categories = data.get("extra_categories", 0)
@@ -217,7 +248,7 @@ def register_vocabulary_commands(
         if request.query:
             raise web.HTTPBadRequest()
         manifest = await api._run_in_executor(
-            seed_vocabulary, api, root, extra, categories
+            seed_vocabulary, api, root, extra, categories, images
         )
         return web.json_response({"success": True, **manifest})
 

@@ -9,12 +9,11 @@
  * constraint to the existing Library filters.
  */
 import { createButton } from '../shared/toolkit/core.js';
-import { browseFilters, createVocabularyCommand, createVocabularyStream } from './vocabulary-state.mjs';
-import { countOf } from './plural.mjs';
+import { browseFilters, categoryBrowseTarget, categoryRowText, createVocabularyCommand, createVocabularyStream } from './vocabulary-state.mjs';
 import { browseLibrary, invalidateLibraryAfterWrite } from './library.mjs';
 import { createVocabularyDialog } from './vocabulary-dialog.mjs';
 import { pageHeading } from './heading.mjs';
-import { selectedImage } from './images.mjs';
+import { browseImages, selectedImage } from './images.mjs';
 import { onImageTagsSaved, openImageTagging } from './image-tagging.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
@@ -64,7 +63,7 @@ function tagRow(tag) {
 }
 
 function categoryRow(category) {
-    const {row, button} = operation(category.value, countOf(category.prompt_count, 'positive prompt'), 'Browse');
+    const {row, button} = operation(category.value, categoryRowText(category), 'Browse');
     button.dataset.action = 'browse';
     return row;
 }
@@ -211,7 +210,10 @@ export function mountVocabulary(main, api, scope) {
     scope.listen(categoryRows, 'click', event => {
         const button = event.target.closest('button[data-action="browse"]');
         const category = button && categories.itemOf(button.closest('.operation'));
-        if (category) browseLibrary(browseFilters('categories', category.value));
+        if (!category) return;
+        // MC10: a category only images hold opens Images filtered by it; the Library would be empty.
+        if (categoryBrowseTarget(category) === 'images') browseImages({category: category.value});
+        else browseLibrary(browseFilters('categories', category.value));
     });
 
     let settled = Promise.resolve();
