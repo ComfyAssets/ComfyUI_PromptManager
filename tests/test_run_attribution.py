@@ -1043,6 +1043,46 @@ class TestMonitorForeignRuns(RecordedRuns, unittest.TestCase):
         self.assertEqual(self.handler.awaiting_foreign(), [])
         self.assertEqual(list(self.handler._foreign_due), [])
 
+    def link_count(self, path):
+        connection = self.db.model.get_connection()
+        return connection.execute(
+            "SELECT COUNT(*) FROM generated_images WHERE image_path = ?", (str(path),)
+        ).fetchone()[0]
+
+    def test_a_file_linked_to_another_prompt_never_gets_a_second_link(self):
+        """One prompt per file: the pair path and the positive path both refuse."""
+        other = self.db.save_prompt(
+            "an earlier prompt", generate_prompt_hash("an earlier prompt")
+        )
+        plain = self.image("plain_00004_.png")
+        self.db.link_image_to_prompt(other, plain)
+        self.metadata = {"prompt": sampled_graph("a quiet harbor", "blurry")}
+        with self.assertLogs("prompt_manager.image_monitor", "INFO") as logs:
+            self.handler.process_new_image(plain)
+        self.assertIn("Foreign run: conflict", "\n".join(logs.output))
+        dataset = self.image("IMG_GEN_00011_.png")
+        self.db.link_image_to_prompt(other, dataset)
+        self.metadata = {"prompt": shapes.shared_prefix()}
+        self.record_run(
+            self.db, self.output, [("dataset", "IMG_GEN_00011_.png")], [], nodes=["13"]
+        )
+        self.handler.process_new_image(dataset)
+        for path in (plain, dataset):
+            self.assertEqual(self.linked_text(path), "an earlier prompt")
+            self.assertEqual(self.link_count(path), 1)
+        for text in ("a quiet harbor", shapes.BRANCH_TEXTS[0]):
+            self.assertIsNone(self.db.get_prompt_by_hash(generate_prompt_hash(text)))
+
+    def test_the_file_size_is_read_only_when_the_ladder_needs_it(self):
+        """PR 1's lazy size: a foreign file decided without a store reads none."""
+        # Foreign (a core encoder only) and no API graph: never, at step 3
+        encoder = {"type": "CLIPTextEncode", "inputs": [], "widgets_values": ["x"]}
+        self.metadata = {"text_encoder_nodes": [encoder]}
+        path = self.image("bare_00002_.png", subfolder="")
+        with mock.patch("utils.foreign_runs.os.path.getsize") as size:
+            self.handler.process_new_image(path)
+        size.assert_not_called()
+
     def test_a_failed_store_is_logged_and_leaves_the_file_unlinked(self):
         self.metadata = {"prompt": sampled_graph("a quiet harbor", "blurry")}
         path = self.image("plain_00003_.png")

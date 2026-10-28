@@ -73,11 +73,15 @@ def decide_foreign(
     in_output: bool,
     lookup: Optional[Callable[[], Any]],
 ) -> Decision:
-    """The ``MONITOR`` ladder for one foreign output."""
-    try:
-        file_size = os.path.getsize(image_path)
-    except OSError:
-        file_size = None
+    """The ``MONITOR`` ladder for one foreign output (the size is read only
+    when the ladder needs it)."""
+
+    def file_size() -> Optional[int]:
+        try:
+            return os.path.getsize(image_path)
+        except OSError:
+            return None
+
     return decide_file_prompt(
         metadata,
         file_name=os.path.basename(image_path),
