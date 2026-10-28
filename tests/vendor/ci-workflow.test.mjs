@@ -346,6 +346,7 @@ test('the CI workflows run on pull_request, merge_group and push without path fi
         }
         assert.doesNotMatch(text, /^ {4}paths(-ignore)?:/m, `${name} has no path filter that would leave a required check pending`);
     }
+    assert.doesNotMatch(jobs(readWorkflow('code-quality.yml')).get('security'), /^ {4}if:/m, 'bandit runs on every event');
 });
 
 test('every required check reports on a pull request and the gates carry the full matrix', () => {

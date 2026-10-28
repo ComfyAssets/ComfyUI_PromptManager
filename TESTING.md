@@ -273,6 +273,12 @@ gh run view <run id> --json jobs                          # shows a job that alr
 gh run view --job <job id> --log-failed                   # that job's failed log, at once
 ```
 
+Windows, macOS, Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures
+first show up in the merge queue, on the merge-group commit rather than the
+pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
+(or `viewerjs-check.yml`) and match its head branch
+(`gh-readonly-queue/main/pr-<N>-...`).
+
 Start fixing as soon as a failed log shows the cause, but push the fix only after
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
 so a push cancels the running jobs and can hide a second failure.
@@ -523,6 +529,8 @@ Before changing paths, SQLite, streams, restore or cleanup:
   ceilings, never a short wall clock (#242).
 - Run native Windows CI early for these changes: pull requests run only Linux, so
   start the full matrix on the branch with `gh workflow run test.yml --ref <branch>`.
+  That run reports the same check names on the PR head, and a red one can hold
+  the PR out of the queue until it is fixed.
   Include a Windows impact and evidence note in the PR. All nine OS/Python
   combinations (they run again in the merge queue) and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
@@ -573,9 +581,23 @@ gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 \
   | jq '.rules[] | select(.type == "required_status_checks") | [.parameters.required_status_checks[].context]'
 ```
 
-To change the set, PUT the ruleset's `rules` back with the edited
-`required_status_checks` (`gh api --method PUT .../rulesets/25960526 --input <file>`).
-Update the manifest whenever required job names change. Keep the frontend check
+A PUT replaces the whole `rules` array, so edit the current ruleset in place.
+Keep the `deletion`, `non_fast_forward` and `merge_queue` rules, and give every
+context `integration_id` 15368 (GitHub Actions), so no other integration can
+post a required check. Save the current ruleset first; it is the rollback:
+
+```sh
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 > ruleset-before.json
+jq '{name, target, enforcement, conditions, bypass_actors, rules: [.rules[]
+     | if .type == "required_status_checks"
+       then .parameters.required_status_checks = [$ARGS.positional[] | {context: ., integration_id: 15368}]
+       else . end]}' ruleset-before.json --args "py3.12 on ubuntu-latest" "..." > ruleset-new.json
+gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 --input ruleset-new.json
+```
+
+Afterwards, read it back. Check that the `merge_queue` rule is still there and
+that every context keeps its `integration_id`. Update the manifest whenever
+required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
 
 ## Unified workspace
