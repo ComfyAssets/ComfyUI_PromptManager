@@ -278,5 +278,49 @@ class TestNodeRecordsUse(UsageTestCase):
         self.assertEqual(self.db.get_prompt_by_id(pid)["run_count"], 2)
 
 
+class TestNodeRecordsCachedRunReceipt(UsageTestCase):
+    """Each execution leaves a receipt for cached jobs (#347)."""
+
+    GRAPH = {
+        "1": {"class_type": "PromptManagerText", "inputs": {"text": "typed text"}},
+    }
+
+    def _node(self):
+        from unittest import mock
+
+        from prompt_manager_text import PromptManagerText
+
+        node = PromptManagerText.__new__(PromptManagerText)
+        node.db = self.db
+        node.logger = __import__("logging").getLogger("test.prompt_usage")
+        node.prompt_tracker = mock.Mock()
+        node.comfyui_integration = mock.Mock()
+        node._inject_lora_trigger_words = lambda text: text
+        node.cached_runs = mock.Mock()
+        node.cached_runs.replayed.return_value = False
+        return node
+
+    def test_receipt_holds_the_returned_text_and_the_stored_hash(self):
+        from utils.cached_runs import Facts
+
+        node = self._node()
+        node.process_text(
+            "typed text", prepend_text="pre", prompt=self.GRAPH, unique_id="1"
+        )
+        node.cached_runs.record_item.assert_called_once_with(
+            "1", ("pre typed text",), Facts(generate_prompt_hash("typed text"))
+        )
+        # Hook-visible text: the node counts nothing itself
+        row = self.db.get_prompt_by_hash(generate_prompt_hash("typed text"))
+        self.assertEqual(row["run_count"], 0)
+
+    def test_empty_editor_records_empty_facts(self):
+        from utils.cached_runs import Facts
+
+        node = self._node()
+        node.process_text("  ", prompt=self.GRAPH, unique_id="1")
+        node.cached_runs.record_item.assert_called_once_with("1", ("  ",), Facts(None))
+
+
 if __name__ == "__main__":
     unittest.main()
