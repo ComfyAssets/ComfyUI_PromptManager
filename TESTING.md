@@ -5286,10 +5286,14 @@ workflows without a PromptManager node. It does no file or database I/O.
   from a node the file cannot show is `not_saved_wired`: nothing is written, no
   recorded-run fallback, no Needs review item. A resolved pair whose negative's
   node is off stores the positive alone (source `opted-out-negative`). The
-  #90 graph walk follows only prompt-like inputs, so the text every later step
-  names is checked too: a resolved or inspected positive whose path passes a
-  node that is off (`side_opted_out`), or a legacy answer that is such a
-  node's own text, makes the file `not_saved`.
+  #90 graph walk follows only prompt-like inputs, so the ladder also walks
+  every input upstream of each sampler or guider positive (not negative, model,
+  clip, latent or image inputs; every PromptManager node of a graph without a
+  sampler) and checks the text later steps name: a resolved or inspected
+  positive whose path passes such a node (`side_opted_out`), or a legacy answer
+  that is such a node's text (resolved, else literal). A switch that is off
+  makes the file `not_saved`; one wired from a node the graph cannot read makes
+  it `not_saved_wired`, as #90's direct check does.
 - **Order.** The default profile decides first, exactly as before (resolved
   pair, A1111, sampler-less). Only a graph it leaves ambiguous or unresolved
   reaches the inspector's resolve (`inspection_resolution` in

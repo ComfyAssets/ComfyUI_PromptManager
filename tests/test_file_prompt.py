@@ -228,6 +228,69 @@ class TestSaveToLibrarySteps(unittest.TestCase):
         self.assertEqual(decision.kind, "not_saved")
         self.assertIsNone(decision.text)
 
+    def test_step_2_an_off_node_on_any_positive_input_is_not_saved(self):
+        """Any input name upstream of a positive, not only prompt-like ones."""
+        guider = _off_behind("MyNode", "value")
+        guider["3"] = {
+            "class_type": "BasicGuider",
+            "inputs": {"model": ["4", 0], "conditioning": ["8", 0]},
+        }
+        prepended = _off_behind("MyNode", "value")
+        prepended["1"]["inputs"]["prepend_text"] = "pre"
+        pair = _off_behind("MyNode", "value")
+        pair["1"] = {
+            "class_type": "PromptManagerPair",
+            "inputs": {"text": "x", "negative_text": "y", "save_to_library": False},
+        }
+        pair["2"]["inputs"]["text"] = ["1", 1]
+        cases = {"sampler-less guider": guider, "prepend": prepended, "pair": pair}
+        for name, graph in cases.items():
+            with self.subTest(name=name):
+                lookup = _Lookup("9")
+                decision = _decide(_graph(graph), lookup=lookup)
+                self.assertEqual(decision.kind, "not_saved")
+                self.assertFalse(decision.try_recorded_run)
+                self.assertEqual(lookup.calls, 0)
+
+    def test_step_2_a_wired_switch_behind_a_pass_through_is_not_saved_wired(self):
+        graph = _off_behind("MyNode", "value")
+        graph["1"]["inputs"]["save_to_library"] = ["20", 0]
+        graph["20"] = {"class_type": "SomeBoolNode", "inputs": {}}
+        self.assertEqual(_decide(_graph(graph)).kind, "not_saved_wired")
+
+    def test_a_switched_on_node_behind_a_pass_through_is_stored(self):
+        """Regression guard: on, or no switch at all (older files)."""
+        for value in (True, None):
+            with self.subTest(value=value):
+                graph = _off_behind("MyNode", "value")
+                if value is None:
+                    del graph["1"]["inputs"]["save_to_library"]
+                else:
+                    graph["1"]["inputs"]["save_to_library"] = value
+                decision = _decide(_graph(graph), lookup=_Lookup())
+                self.assertEqual(decision.kind, "positive")
+                self.assertEqual(decision.text, "SECRET OFF TEXT")
+
+    def test_the_off_text_guard_reads_a_nodes_resolved_text(self):
+        graph = {
+            "1": {
+                "class_type": "PromptManagerText",
+                "inputs": {"text": ["30", 0], "save_to_library": False},
+            },
+            "30": {
+                "class_type": "PrimitiveStringMultiline",
+                "inputs": {"value": "SECRET OFF TEXT"},
+            },
+            "2": {
+                "class_type": "PromptManagerText",
+                "inputs": {"text": "WIRED", "save_to_library": ["9", 0]},
+            },
+            "9": {"class_type": "SomeBoolNode", "inputs": {}},
+        }
+        self.assertEqual(file_prompt._off_text(graph, " SECRET OFF TEXT"), "not_saved")
+        self.assertEqual(file_prompt._off_text(graph, "WIRED"), "not_saved_wired")
+        self.assertIsNone(file_prompt._off_text(graph, "other"))
+
     def test_steps_5_and_7_check_the_resolved_positive_too(self):
         """A resolved positive through an off node the #90 walk missed."""
         cases = {
