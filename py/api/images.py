@@ -65,6 +65,8 @@ try:
     from ...utils.parallel import map_parallel
     from ...utils.json_strict import dumps_strict
     from ...utils.inspection_response import (
+        OWN_CATEGORY_UNREAD,
+        apply_own_category,
         encode_inspection_response,
         library_metadata,
     )
@@ -85,6 +87,8 @@ except ImportError:
     from utils.parallel import map_parallel
     from utils.json_strict import dumps_strict
     from utils.inspection_response import (
+        OWN_CATEGORY_UNREAD,
+        apply_own_category,
         encode_inspection_response,
         library_metadata,
     )
@@ -3749,13 +3753,20 @@ class ImageRoutesMixin:
                     except Exception:
                         # The link stays known; only its title is withheld.
                         self.logger.warning("Inspection link title could not be read")
+                # An output file's own category (#332); LoRA roots have none.
+                own = (
+                    self._read_own_category(outputs, path)
+                    if index < len(outputs)
+                    else None
+                )
                 try:
                     observed = inspect_current_file(
                         path,
                         source_label=_public_path(roots[index]),
                         saved=saved,
-                        library=self._inspection_library(
-                            saved, unavailable=unavailable
+                        library=apply_own_category(
+                            self._inspection_library(saved, unavailable=unavailable),
+                            own,
                         ),
                         image_tags=self._inspection_image_tags(
                             roots[index], Path(relative).parts
@@ -3821,6 +3832,19 @@ class ImageRoutesMixin:
             return {"state": "current", "tags": list(tags)}
 
         return read
+
+    def _read_own_category(self, sources, path):
+        """One file's own category, None, or OWN_CATEGORY_UNREAD (blocking).
+
+        Keyed by ``image_category_key`` over the output sources, as Images
+        writes it. A failed read is logged and hides the category (DC5).
+        """
+        try:
+            key = image_category_key(sources, path)
+            return None if key is None else self.db.image_category(*key)
+        except Exception:
+            self.logger.warning("Image category could not be read", exc_info=True)
+            return OWN_CATEGORY_UNREAD
 
     def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
         """The inspector's Library facts; the route sets the title afterwards."""

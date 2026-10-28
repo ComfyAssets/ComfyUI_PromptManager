@@ -317,6 +317,32 @@ def inherited_category(
     return positive_category, "positive"
 
 
+class _OwnCategoryUnread:
+    """The own-category read failed: hide the category (#332 DC5)."""
+
+    def __repr__(self) -> str:
+        return "OWN_CATEGORY_UNREAD"
+
+
+OWN_CATEGORY_UNREAD = _OwnCategoryUnread()
+
+
+def apply_own_category(library: dict, own) -> dict:
+    """*library* with an image's own category applied (#332 §5).
+
+    ``own`` is the own category (a string, shown with scope ``"image"``
+    whatever the link status), None (the inherited values stay) or
+    OWN_CATEGORY_UNREAD (category and scope hidden rather than possibly
+    wrong). Returns a new dict.
+    """
+    result = dict(library)
+    if own is OWN_CATEGORY_UNREAD:
+        result.update(category=None, category_scope=None)
+    elif isinstance(own, str):
+        result.update(category=own, category_scope="image")
+    return result
+
+
 def library_metadata(
     positive_category: str | bytes | None,
     positive_tags: list,
@@ -363,9 +389,13 @@ def _library_projection(library: dict) -> dict:
         value = library.get(key)
         if value is None or isinstance(value, str):
             result[key] = value
-    for key in ("category_scope", "tags_scope"):
+    # An image's own category (#332) has the scope "image"; tags never do.
+    for key, scopes in (
+        ("category_scope", ("pair", "positive", "image", None)),
+        ("tags_scope", ("pair", "positive", None)),
+    ):
         scope = library.get(key)
-        if scope in ("pair", "positive", None):
+        if scope in scopes:
             result[key] = scope
     tags = library.get("tags")
     result["tags"] = (
