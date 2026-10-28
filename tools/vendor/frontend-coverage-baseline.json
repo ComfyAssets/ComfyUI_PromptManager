@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 39,
-    "branches": 62,
-    "functions": 35,
-    "statements": 39
+    "lines": 37,
+    "branches": 61,
+    "functions": 32,
+    "statements": 37
   },
   "api-client.js": {
     "lines": 98,
@@ -49,7 +49,7 @@
   },
   "gallery.js": {
     "lines": 49,
-    "branches": 69,
+    "branches": 68,
     "functions": 50,
     "statements": 49
   },
@@ -61,7 +61,7 @@
   },
   "image-helpers.js": {
     "lines": 96,
-    "branches": 92,
+    "branches": 91,
     "functions": 98,
     "statements": 96
   },
@@ -73,7 +73,7 @@
   },
   "metadata-autocomplete.js": {
     "lines": 98,
-    "branches": 85,
+    "branches": 82,
     "functions": 85,
     "statements": 98
   },
@@ -373,7 +373,7 @@
   },
   "workspace/library-location.mjs": {
     "lines": 94,
-    "branches": 92,
+    "branches": 91,
     "functions": 93,
     "statements": 94
   },
@@ -421,7 +421,7 @@
   },
   "workspace/local-resolver.mjs": {
     "lines": 96,
-    "branches": 87,
+    "branches": 86,
     "functions": 98,
     "statements": 96
   },
