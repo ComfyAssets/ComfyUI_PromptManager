@@ -263,15 +263,21 @@ function removedMethods(row) {
 
 const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Where `id` is still on a page: `id="<id>"` in its markup or script, a lookup or a modal-list entry in its script. */
+/**
+ * Where `id` is still on a page: `id="<id>"` in its markup or script; in its script a lookup, a `…Modal("<id>")` call
+ * (`showModal`, `hideModal`) or a modal-list entry.
+ */
 export function idUses(id, { html, script }) {
     const name = escapeRegExp(id);
     const code = stripJsComments(script);
     const uses = [];
-    if (new RegExp(`\\bid=["']${name}["']`).test(html)) uses.push(`id="${id}" in the markup`);
-    if (new RegExp(`\\bid=["']${name}["']`).test(code)) uses.push(`id="${id}" in the script`);
+    // `id=`, not `data-id=`: the attribute starts after a space or a tag's `<name`.
+    const attribute = new RegExp(`(?:^|\\s)id=["']${name}["']`, 'm');
+    if (attribute.test(html)) uses.push(`id="${id}" in the markup`);
+    if (attribute.test(code)) uses.push(`id="${id}" in the script`);
     if (new RegExp(`getElementById\\(\\s*["'\`]${name}["'\`]\\s*\\)`).test(code)) uses.push(`getElementById('${id}')`);
     if (new RegExp(`querySelector(?:All)?\\(\\s*["'\`]#${name}\\b`).test(code)) uses.push(`querySelector('#${id}')`);
+    if (new RegExp(`\\w*Modal\\(\\s*["'\`]${name}["'\`]`).test(code)) uses.push(`a …Modal('${id}') call`);
     // A string list of modal ids (the gallery's backdrop list): the entry next to another `…Modal` entry.
     for (const list of code.matchAll(/\[[^\[\]]*\]/g)) {
         const entry = new RegExp(`["']${name}["']`);

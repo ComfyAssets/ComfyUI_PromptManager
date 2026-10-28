@@ -153,6 +153,8 @@ test('a removed id or method is gone from its page', () => {
         html: '<div id="logsModal"></div><button onclick="window.admin.closeLogs()">x</button>',
         script: [
             "document.getElementById('logLevel').value;",
+            "this.showModal('diagnosticsModal');",
+            '<span data-id="logsContainer"></span>',
             'document.querySelector("#logLimit option");',
             "const backdrops = ['settingsModal', 'duplicatesModal'];",
             'class Admin {',
@@ -170,6 +172,8 @@ test('a removed id or method is gone from its page', () => {
     assert.deepEqual(idUses('logLimit', page), ["querySelector('#logLimit')"]);
     assert.deepEqual(idUses('duplicatesModal', page), ["'duplicatesModal' in a modal list"]);
     assert.deepEqual(idUses('logLevelX', page), []);
+    assert.deepEqual(idUses('diagnosticsModal', page), ["a …Modal('diagnosticsModal') call"]);
+    assert.deepEqual(idUses('logsContainer', page), []);
     assert.deepEqual(methodUses('closeLogs', page), ['.closeLogs( called in the markup']);
     assert.deepEqual(methodUses('refreshLogs', page), ['refreshLogs() defined']);
     assert.deepEqual(methodUses('displayLogs', page), ['displayLogs() defined']);
