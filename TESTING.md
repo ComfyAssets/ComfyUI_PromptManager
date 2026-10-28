@@ -181,10 +181,12 @@ check, so run it before pushing a new or deleted frontend file instead of
 waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job that passes only when every frontend job succeeds: the three
-`frontend coverage (shard N/3)` jobs, `frontend coverage (merge)`, and the four
-`page workflows (firefox|webkit, shard N/2)` jobs. A failed, cancelled or skipped
-job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+aggregate job. It requires the three `frontend coverage (shard N/3)` jobs and
+`frontend coverage (merge)` to succeed on every event. The four
+`page workflows (firefox|webkit, shard N/2)` jobs run only in the merge queue,
+on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
+`viewerjs` requires them to be skipped on a pull request and to succeed
+everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
 runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/3`
 (shard 1 also runs the node units and the viewer suite, shard 3 the vendor pins
 and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
@@ -270,6 +272,13 @@ gh run watch <run id> --exit-status                       # returns when the run
 gh run view <run id> --json jobs                          # shows a job that already failed
 gh run view --job <job id> --log-failed                   # that job's failed log, at once
 ```
+
+Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures first show up in the
+merge queue, on the merge-group commit rather than the
+pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
+(or `viewerjs-check.yml`) and match its head branch
+(`gh-readonly-queue/main/pr-<N>-...`). Windows and macOS failures show up only
+after the merge, in `gh run list --workflow portability.yml`.
 
 Start fixing as soon as a failed log shows the cause, but push the fix only after
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
@@ -539,29 +548,95 @@ Before changing paths, SQLite, streams, restore or cleanup:
   open with `FirstWriterHold`) and give peers that must all succeed the
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
-- Run native Windows CI early for these changes and include a Windows impact and
-  evidence note in the PR. All twelve OS/Python combinations and every applicable
+- Run native Windows CI early for these changes. Pull requests and the merge
+  queue run only Linux, so start Windows and macOS on the branch with
+  `gh workflow run portability.yml --ref <branch>`.
+  Include a Windows impact and evidence note in the PR. All six Windows/macOS
+  combinations in that run, every Linux leg and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
+## Pull requests and the merge queue
+
+Each PR runs the full matrix once, in the merge queue (#420). The event decides
+what runs:
+
+| Job | `pull_request` | `merge_group`, push to `main`, `workflow_dispatch` |
+| --- | --- | --- |
+| `py3.12 on ubuntu-latest` | runs | runs |
+| `py3.13 on ubuntu-latest`, `py3.14 on ubuntu-latest` | not created | run |
+| `real ComfyUI compatibility` | skipped | runs |
+| `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
+| `frontend coverage (shard N/3)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 3) | run | run |
+| `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
+| `all tests`, `viewerjs` (gates) | run | run |
+| `perf budget` | skipped | push and dispatch only (not in the queue) |
+| `py3.12-3.14 on windows-latest/macos-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
+
+GitHub has one required set for pull requests and the queue. A job skipped by
+its `if:` reports Success. A dropped matrix leg never reports, so it would stay
+pending. That is why `all tests` (in `test.yml`) and `viewerjs` carry the
+guarantee:
+- On a pull request they require the subset to succeed and the queue-only jobs
+  to be skipped.
+- On every other event they require every job to succeed.
+
+So a merge group cannot turn green unless all three Linux Python legs, real
+ComfyUI and the four browser shards passed.
+
+Windows and macOS (Python 3.12-3.14) are out of the blocking path for now
+(maintainer, 2026-10-28). They run in `portability.yml` on every push to `main`,
+nightly and on demand, and no context there is required. A red portability run
+is still a failure: fix it at its cause, not by rerunning, and have every one
+green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
+event split and runs both gate scripts for each event.
+
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks: all twelve Python/OS
-combinations, Python coverage, formatting, frontend modules, `viewerjs`, `real ComfyUI compatibility`,
-and `bandit (high severity)`.
-The branch must be current with main, and administrators follow the same checks.
+`.github/branch-protection.json` records the required checks:
+`py3.12 on ubuntu-latest`, `coverage gate (85%)`, `black and flake8`,
+`frontend modules`, `all tests`, `viewerjs`, `real ComfyUI compatibility` and
+`bandit (high severity)`. Each one reports on a pull request.
+The same set lives in two places, and both must change together: the `main`
+ruleset (25960526, which also holds the merge queue) and the classic branch
+protection on `main`, which the manifest mirrors. GitHub requires the union of
+the two, so a context left in either one blocks every PR that does not report it.
 It does not require an additional human approval.
 
 A repository administrator applies the configuration after the new workflow is
 passing, then verifies it:
 
 ```sh
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 \
+  | jq '.rules[] | select(.type == "required_status_checks") | [.parameters.required_status_checks[].context]'
+```
+
+A PUT replaces the whole `rules` array, so edit the current ruleset in place.
+Keep the `deletion`, `non_fast_forward` and `merge_queue` rules, and give every
+context `integration_id` 15368 (GitHub Actions), so no other integration can
+post a required check. Save the current ruleset first; it is the rollback:
+
+```sh
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 > ruleset-before.json
+jq '{name, target, enforcement, conditions, bypass_actors, rules: [.rules[]
+     | if .type == "required_status_checks"
+       then .parameters.required_status_checks = [$ARGS.positional[] | {context: ., integration_id: 15368}]
+       else . end]}' ruleset-before.json --args "py3.12 on ubuntu-latest" "..." > ruleset-new.json
+gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 --input ruleset-new.json
+```
+
+Afterwards, read it back. Check that the `merge_queue` rule is still there and
+that every context keeps its `integration_id`. Then apply the manifest to the
+classic protection and read both back:
+
+```sh
 gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection \
   --input .github/branch-protection.json
 gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required_status_checks
+gh api repos/ComfyAssets/ComfyUI_PromptManager/rules/branches/main
 ```
-
-Update the manifest whenever required job names change. Keep the frontend check
+ Update the manifest whenever
+required job names change. Keep the frontend check
 free of path filters so a required check is never silently skipped.
 
 ## Unified workspace
@@ -2478,6 +2553,14 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
+System is the home for settings and maintenance (#330 System S13). The legacy pages keep
+their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
+Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
+thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
+System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
+keeps only its own settings in Page options. What left the legacy pages is listed in
+"Legacy System UI removed by S13".
+
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
 `expected_revision`, #220), then the runtime fields. A failed domain keeps its drafts and
@@ -4092,6 +4175,9 @@ auto-tag / review", which the Images selection bar owns, not a System section. A
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
 file. Anchors are line numbers on `main` at this PR.
 
+S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
+"Legacy System UI removed by S13" below lists every removed element against its row.
+
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
 - no owner, or a status outside the three;
 - a malformed Native control cell;
@@ -4172,7 +4258,11 @@ opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a ca
 only when its row above is `covered`. One row per removed capability: Capability is the
 exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
 Removed methods list what went (`—` for none), and Native test copies that row's Test
-cell. An id that stays on a System link is not listed, only its handler.
+cell. An id that stays on a System link is not listed, only its handler. The gallery's
+Default View Mode left Page options too: System › Appearance's Default layout is the one
+default-layout control. Nothing writes the legacy `defaultViewMode` any more; a stored
+value still picks the view the legacy gallery opens in (grid otherwise), and Page options
+Save and Reset keep it.
 
 `tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
 `covered` or copies another test, when an id or method is listed twice for one page, or
@@ -4204,6 +4294,18 @@ legacy page workflows), not by this check.
 | Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
 | Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
 | Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
+| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
+| Default view mode, image quality | gallery | `#defaultViewModeSelect`, `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
+| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
+| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
+| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
+| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
+| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
+| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
+| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
+| Auto-tag model download | admin | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Auto-tag model download | gallery | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
+| Unload model | gallery | — | `unloadModel()` | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -4222,17 +4324,15 @@ page writes a key that is neither a preference nor inventoried, writes one it ca
 CacheStorage or IndexedDB; `the storage scan reports every way of writing browser
 storage` pins those patterns. It skips `web/lib` (third-party builds) and the pinned
 Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
-its storage belongs to the Toolkit repository and a new pin is reviewed on its own). The
-gallery's server thumbnail clear stays its own request and runs first: refused or
-unreachable, it changes nothing and says so (the old code toasted success when the
-request failed); refused browser storage is reported, never hidden
-(`tests/js/legacy-refusals.test.js`; the browser case `the gallery cache clear keeps
-preferences and other tools caches` in `workflows.spec.mjs`).
+its storage belongs to the Toolkit repository and a new pin is reviewed on its own). Since
+System S13 (#330) the legacy gallery no longer offers Clear cache: System › Maintenance's
+Metadata cache and Thumbnail cache reviews own both parts (removal table above), and
+`cache-ownership.js` serves the native review.
 
-The legacy duplicates dialog's View Full now names its source (`?root=<index>`, with the
-path URL-encoded) when the gallery's output folder is a listed source; before, the serve
-route opened the first source holding a file at that path
-(`test_view_full_names_the_gallery_folder_source`).
+The duplicates dialog's View Full named its source (`?root=<index>`, with the path
+URL-encoded) when the gallery's output folder is a listed source
+(`test_view_full_names_the_gallery_folder_source`); S13 removed the legacy dialog, and the
+route keeps that behaviour for System › Maintenance's duplicate review.
 
 ### Library location contract (#249 System S6b)
 

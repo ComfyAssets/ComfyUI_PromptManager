@@ -15,6 +15,22 @@ const LABELS = Object.freeze({
     diagnostics: 'Diagnostics & logs',
 });
 
+async function openPageOptions(page) {
+    await page.locator('#pageOptionsBtn').click();
+    await expect(page.locator('#settingsModal')).toBeVisible();
+}
+
+/** The auto-tag modal with its model rows read from /autotag/models. */
+async function openAutoTag(page) {
+    const read = page.waitForResponse(item => item.url().endsWith('/prompt_manager/autotag/models'));
+    await page.locator('#autoTagBtn').click();
+    await read;
+    await expect(page.locator('#autoTagModal')).toBeVisible();
+}
+
+const notDownloaded = (page, request) => post(request, '/__test__/tagging/models', { unavailable: ['gguf'] });
+const modelLoaded = (page, request) => post(request, '/__test__/tagging/loaded', { model: 'wd14-vit' });
+
 // One row per System link of the design's §2 map: the page, the control's label, how to find it, the section it opens
 // and what a test must arrange before the control shows.
 const LINKS = Object.freeze([
@@ -22,6 +38,17 @@ const LINKS = Object.freeze([
     { page: 'admin', label: 'Maintenance', locate: page => page.locator('#maintenanceBtn'), section: 'maintenance' },
     { page: 'admin', label: 'Backup DB', locate: page => page.locator('#backupBtn'), section: 'backups' },
     { page: 'admin', label: 'Restore DB', locate: page => page.locator('#restoreBtn'), section: 'backups' },
+    { page: 'gallery', label: 'Settings', locate: page => page.locator('#settingsBtn'), section: 'appearance' },
+    { page: 'admin', label: 'Manage in System (model row)', arrange: notDownloaded, reveal: openAutoTag,
+        locate: page => page.locator('#ggufModelStatus a'), section: 'tagging' },
+    { page: 'gallery', label: 'Manage in System (model row)', arrange: notDownloaded, reveal: openAutoTag,
+        locate: page => page.locator('#ggufModelStatus a'), section: 'tagging' },
+    { page: 'gallery', label: 'Manage in System (Unload Model)', arrange: modelLoaded, reveal: openAutoTag,
+        locate: page => page.locator('#unloadModelBtn'), section: 'tagging' },
+    { page: 'gallery', label: 'Page options Maintenance', reveal: openPageOptions,
+        locate: page => page.locator('#pageOptionsMaintenanceLink'), section: 'maintenance' },
+    { page: 'gallery', label: 'Page options Sources & scans', reveal: openPageOptions,
+        locate: page => page.locator('#pageOptionsSourcesLink'), section: 'sources' },
     { page: 'admin', label: 'Diagnostics', locate: page => page.locator('#diagnosticsBtn'), section: 'diagnostics' },
     { page: 'admin', label: 'View Logs', locate: page => page.locator('#logsBtn'), section: 'diagnostics' },
 ]);
@@ -58,17 +85,31 @@ async function openLink(page, request, link) {
     return control;
 }
 
+// Each row opens its section in a new tab and sends no request from the legacy page (the design's `a System link sends
+// no request from the legacy page`, checked per row so one slow page never times out the whole table).
 for (const link of LINKS) {
     test(`legacy ${link.page} ${link.label} opens System ${link.section}`, async ({ page, context, request }) => {
+        // The gallery's thumbnail startup check (K9) reads its status on a timer of its own; it is off here.
+        await page.addInitScript(() => {
+            localStorage.setItem('gallerySettings', JSON.stringify({ checkThumbnailsAtStartup: false }));
+        });
         const control = await openLink(page, request, link);
         const legacyUrl = page.url();
         await expect(control).toHaveAttribute('href', `workspace#/system/${link.section}`);
         await expect(control).toHaveAttribute('target', '_blank');
         await expect(control).toHaveAttribute('rel', 'noopener');
+        // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
+        // Lazy thumbnails may still load whenever the layout changes; they are not the click's.
+        await page.waitForLoadState('networkidle');
+        const sent = [];
+        const record = item => { if (item.resourceType() !== 'image') sent.push(`${item.method()} ${item.url()}`); };
+        page.on('request', record);
         const opened = context.waitForEvent('page');
         await control.click();
         const system = await opened;
         await expect(system).toHaveURL(new RegExp(`/prompt_manager/workspace#/system/${link.section}$`));
+        page.off('request', record);
+        expect(sent, 'a System link sends no request from the legacy page').toEqual([]);
         // System's page heading is "System"; the open section is the pressed button of its section switcher.
         const main = system.locator('#workspace-main');
         await expect(main.getByRole('heading', { level: 1, name: 'System', exact: true })).toBeVisible();
@@ -78,25 +119,6 @@ for (const link of LINKS) {
         await system.close();
     });
 }
-
-test('a System link sends no request from the legacy page', async ({ page, context, request }) => {
-    for (const link of LINKS) {
-        const control = await openLink(page, request, link);
-        // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
-        await page.waitForLoadState('networkidle');
-        const sent = [];
-        // Lazy thumbnails may still load whenever the layout changes; they are not the click's.
-        const record = item => { if (item.resourceType() !== 'image') sent.push(`${item.method()} ${item.url()}`); };
-        page.on('request', record);
-        const opened = context.waitForEvent('page');
-        await control.click();
-        const system = await opened;
-        await system.waitForLoadState('domcontentloaded');
-        page.off('request', record);
-        expect(sent, `${link.page} ${link.label}`).toEqual([]);
-        await system.close();
-    }
-});
 
 test('kept admin flows still work', async ({ page, context }) => {
     await page.goto(PAGES.admin);
@@ -193,4 +215,72 @@ test('Page options keeps the page-only settings admin', async ({ page, request }
     await expect(page.locator('#infiniteScrollSession')).toBeChecked();
     await page.locator('#pageOptionsBtn').click();
     await expect(page.locator('#infiniteScrollDefault')).toBeChecked();
+});
+
+test('Page options keeps the page-only settings gallery', async ({ page }) => {
+    // Native Appearance keys and the startup prompt's own keys are in the shared object before the page opens.
+    const stored = { imageQuality: 'high', showImageInfo: false, videoMute: false,
+        autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
+        checkThumbnailsAtStartup: false, defaultViewMode: 'list' };
+    await page.addInitScript(value => {
+        if (!sessionStorage.getItem('seeded')) {
+            sessionStorage.setItem('seeded', '1');
+            localStorage.setItem('gallerySettings', value);
+        }
+    }, JSON.stringify(stored));
+    const listed = page.waitForResponse(item => item.url().includes('/prompt_manager/images/output?'));
+    await page.goto(PAGES.gallery);
+    await listed;
+    // With no Page options control, a stored default view still opens the page in it.
+    await expect(page.locator('#listViewBtn')).toHaveClass(/bg-pm-accent/);
+    await openPageOptions(page);
+    const dialog = page.locator('#settingsModal');
+    await expect(dialog.locator('h3')).toHaveText('Page options');
+    // Exactly the page-only settings (G5); the default view is System › Appearance's Default layout.
+    expect(await dialog.locator('input, select, textarea').evaluateAll(fields => fields.map(field => field.id))).toEqual([
+        'checkThumbnailsAtStartup', 'lazyLoadingToggle', 'defaultLimitSelect', 'gridColumnsSelect',
+        'infiniteScrollToggle', 'debugModeToggle', 'apiTimeoutInput']);
+    await expect(dialog.getByText('Default View Mode')).toHaveCount(0);
+    await page.locator('#defaultLimitSelect').selectOption('50');
+    await page.locator('#debugModeToggle').check();
+    await page.locator('#saveSettingsBtn').click();
+    await expect(dialog).toBeHidden();
+    const read = () => page.evaluate(() => JSON.parse(localStorage.getItem('gallerySettings')));
+    let saved = await read();
+    expect(saved).toMatchObject({ ...stored, defaultLimit: 50, debugMode: true });
+
+    // Reset puts back only the page options' defaults; the Appearance, startup-prompt and default-view keys stay.
+    await openPageOptions(page);
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#resetSettingsBtn').click();
+    await expect(page.getByText('Page options reset to defaults')).toBeVisible();
+    await expect(page.locator('#defaultLimitSelect')).toHaveValue('100');
+    saved = await read();
+    expect(saved).toMatchObject({ defaultViewMode: 'list', imageQuality: 'high', showImageInfo: false, videoMute: false,
+        autoLoadMetadata: false, workspaceLayout: 'masonry', thumbnailPromptDismissed: 'sig', thumbnailsGenerated: true,
+        defaultLimit: 100, debugMode: false, checkThumbnailsAtStartup: true, lazyLoading: true, gridColumns: 8,
+        infiniteScroll: false, apiTimeout: 30 });
+});
+
+test('the legacy auto-tag modal stays open after Manage in System', async ({ page, context, request }) => {
+    for (const legacy of ['admin', 'gallery']) {
+        await post(request, '/__test__/tagging/models', { unavailable: ['gguf'] });
+        await page.goto(PAGES[legacy]);
+        await openAutoTag(page);
+        const link = page.locator('#ggufModelStatus').getByRole('link', { name: 'Manage in System', exact: true });
+        await expect(link).toHaveAttribute('title', 'Opens System › Auto-tagging in a new tab');
+        // A downloaded model keeps its status text.
+        await expect(page.locator('#wd14VitModelStatus')).toHaveText('\u2713 Downloaded');
+        const opened = context.waitForEvent('page');
+        await link.click();
+        const system = await opened;
+        await expect(system).toHaveURL(/#\/system\/tagging$/);
+        await expect(page.locator('#autoTagModal')).toBeVisible();
+        await system.close();
+        // Downloaded in System meanwhile: reopening the modal reads the models again (CUJ 4).
+        await post(request, '/__test__/tagging/models', { unavailable: [] });
+        await page.goto(PAGES[legacy]);
+        await openAutoTag(page);
+        await expect(page.locator('#ggufModelStatus')).toHaveText('\u2713 Downloaded');
+    }
 });
