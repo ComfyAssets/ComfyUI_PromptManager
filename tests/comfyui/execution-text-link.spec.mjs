@@ -16,8 +16,8 @@ installHostHooks(test, ['PromptManager', 'PromptManagerText', 'PromptManagerFocu
 // `primitive`: a core string node the queue-time resolver follows. `legacy`: the frontend's virtual Primitive node,
 // whose value is queued as literal text. `preview`: PrimitiveString -> PreviewAny, the shape of the maintainer's
 // TextGenerate -> PreviewAny chain, whose text is only known when the node runs.
-function build(page, { kind, positive, negative, prefix }) {
-    return page.evaluate(async ({ kind, positive, negative, prefix }) => {
+function build(page, { kind, positive, negative, prefix, saveToLibrary }) {
+    return page.evaluate(async ({ kind, positive, negative, prefix, saveToLibrary }) => {
         const { app } = await import('/scripts/app.js');
         app.graph.clear();
         const add = (type, x, y) => { const node = LiteGraph.createNode(type); app.graph.add(node); node.pos = [x, y]; return node; };
@@ -28,6 +28,7 @@ function build(page, { kind, positive, negative, prefix }) {
         const set = (name, value) => { const widget = prompt.widgets.find(item => item.name === name); widget.value = value; if (widget.inputEl) widget.inputEl.value = value; };
         set('text', positive.typed);
         if (negative) set('negative_text', negative.typed);
+        if (saveToLibrary !== undefined) prompt.widgets.find(item => item.name === 'save_to_library').value = saveToLibrary;
         const drive = (name, side, y) => {
             if (!side.via) return;
             if (side.via === 'legacy') {
@@ -73,7 +74,7 @@ function build(page, { kind, positive, negative, prefix }) {
         await prompt._pmTextSerializerReady;
         const { output, workflow } = await app.graphToPrompt();
         return { output, workflow, promptNode: String(prompt.id) };
-    }, { kind, positive, negative, prefix });
+    }, { kind, positive, negative, prefix, saveToLibrary });
 }
 
 async function run(execution, page, testCase, built) {
@@ -192,6 +193,47 @@ for (const [label, linked, negativeVia] of [['positive', ['text'], 'primitive'],
         const pair = await (await execution.request.get(`/prompt_manager/pairs/${evidence.context.pair_id}`)).json();
         expect(pair.pair).toMatchObject({ positive_text: expected('text'), negative_text: expected('negative_text') });
         await expectImagesLinked(execution, evidence, sides.text.via === 'preview');
+    });
+}
+
+// #90: with Save to library off the run still produces its image, but PromptManager saves, counts and links nothing,
+// and the run's history records no prompt text for it.
+for (const kind of ['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']) {
+    test(`${kind} with Save to library off saves, counts and links nothing (#90)`, async ({ execution, page }) => {
+        test.setTimeout(90000);
+        const text = unique(`Not saved ${kind}`);
+        const negative = kind === 'PromptManagerPair' ? { typed: unique('Not saved negative') } : undefined;
+        const prefix = `notsaved/${randomUUID()}`;
+        const { output, workflow, promptNode } = await build(page, { kind, positive: { typed: text }, negative, prefix, saveToLibrary: false });
+        expect(output[promptNode].inputs.save_to_library).toBe(false);
+        const id = randomUUID();
+        const response = await execution.request.post('/prompt', { data: { prompt: output, prompt_id: id, extra_data: { extra_pnginfo: { workflow } } } });
+        expect(response.ok(), await response.text()).toBe(true);
+        let item;
+        await expect.poll(async () => {
+            item = (await (await execution.request.get(`/history/${id}`)).json())[id];
+            return item?.status?.status_str ?? null;
+        }, { timeout: 20000 }).toBe('success');
+        let result;
+        await expect.poll(async () => {
+            result = await readExecutionRuns(execution.databasePath, id);
+            const run = result.rows[0];
+            return Boolean(run && result.captures[run.run_id]);
+        }, { timeout: 10000, message: 'the run reaches SQLite' }).toBe(true);
+        const run = result.rows[0];
+        for (const context of result.captures[run.run_id].contexts || []) {
+            expect(context.positive_prompt_id ?? null).toBeNull();
+            expect(context.pair_id ?? null).toBeNull();
+        }
+        expect((result.usage[run.run_id] || []).every(entry => entry.run_count === 0)).toBe(true);
+        const files = Object.values(item.outputs).flatMap(value => value.images || []).map(image => image.filename);
+        expect(files.length).toBeGreaterThan(0);
+        await scan(execution);
+        expect(Object.values(await linkedPrompts(execution, files))).toEqual(files.map(() => null));
+        for (const query of [text, negative?.typed].filter(Boolean)) {
+            const found = await (await execution.request.get(`/prompt_manager/search?text=${encodeURIComponent(query)}`)).json();
+            expect(found.results ?? [], query).toEqual([]);
+        }
     });
 }
 

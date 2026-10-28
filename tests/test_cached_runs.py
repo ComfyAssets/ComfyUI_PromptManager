@@ -210,13 +210,24 @@ class JobCase(unittest.TestCase):
         node = self.node(kind)
         self.context = (self.context[0], index)
         clip = mock.Mock()
+        # The node receives its switch as the queued graph holds it (#90)
+        save = g[node_id]["inputs"].get("save_to_library", True)
         if kind == "PromptManagerText":
-            return node.process_text(text, prompt=g, unique_id=node_id)
+            return node.process_text(
+                text, prompt=g, unique_id=node_id, save_to_library=save
+            )
         if kind == "PromptManagerPair":
             return node.encode_prompt(
-                clip, text, negative_text=negative, prompt=g, unique_id=node_id
+                clip,
+                text,
+                negative_text=negative,
+                prompt=g,
+                unique_id=node_id,
+                save_to_library=save,
             )
-        return node.encode_prompt(clip, text, prompt=g, unique_id=node_id)
+        return node.encode_prompt(
+            clip, text, prompt=g, unique_id=node_id, save_to_library=save
+        )
 
     def cache(self, node_id, *results):
         """Store executed results (one per list index) as ComfyUI's cache entry."""
@@ -312,6 +323,35 @@ class TestCachedJobsCount(JobCase):
         self.first(g, text="")
         self.job(g, cached=["pm"])
         self.assertEqual(self.db.search_prompts(), [])
+
+    def test_disabled_node_then_cached_jobs_counts_0(self):
+        # #90 x #347: a node with Save to library off records no receipt and is
+        # no run prompt, so its cached jobs replay nothing. The prompt exists
+        # (an enabled run saved it), so any replayed count would show.
+        for kind in (
+            "PromptManager",
+            "PromptManagerFocused",
+            "PromptManagerSplit",
+            "PromptManagerText",
+            "PromptManagerPair",
+        ):
+            with self.subTest(kind=kind):
+                text = f"{LLM} not saved by {kind}"
+                negative = "blurry" if kind == "PromptManagerPair" else ""
+                self.first(graph(kind, negative_text=negative), text, negative)
+                before = (self.count(text), self.pair_count(text, negative))
+
+                def off(seed):
+                    g = graph(kind, negative_text=negative, seed=seed)
+                    g["pm"]["inputs"]["save_to_library"] = False
+                    return g
+
+                self.first(off(1), text, negative)
+                self.job(off(2), cached=["pm"])
+                self.job(off(3), cached=["pm"])
+                after = (self.count(text), self.pair_count(text, negative))
+                self.assertEqual(before[0], 1)
+                self.assertEqual(after, before)
 
     def test_alternating_upstream_values_each_count_their_own_prompt(self):
         g = graph()

@@ -19,7 +19,7 @@ test.beforeEach(async ({page, browserName}) => {
         await import('/extensions/promptmanager/prompt_manager.js');
         class Node {
             constructor(){
-                this.widgets=['text','category','tags','search_text'].map(name=>({name,value:'',inputEl:document.createElement('textarea')}));
+                this.widgets=[...['text','category','tags','search_text'].map(name=>({name,value:'',inputEl:document.createElement('textarea')})),{name:'save_to_library',type:'toggle',value:true}];
                 this.widgets_values=[]; this.inputs=[];
             }
             addDOMWidget(name,type,element){document.body.append(element);return {element};}
@@ -34,6 +34,14 @@ test.beforeEach(async ({page, browserName}) => {
 test.afterEach(async ({page,browserName}) => {
     await saveCoverage(page,browserName);
     expect(page.classicErrors).toEqual([]);
+});
+
+test('Classic loads an older workflow with Save to library on and keeps a saved off (#90)',async({page})=>{
+    // A workflow saved before the switch held the search UI's slot ('') at the switch's index
+    const loaded=await page.evaluate(()=>{const widget=node.widgets.find(w=>w.name==='save_to_library');widget.value='';node.configure({});return widget.value;});
+    expect(loaded).toBe(true);
+    const off=await page.evaluate(()=>{const widget=node.widgets.find(w=>w.name==='save_to_library');widget.value=false;node.configure({});return [widget.value,node.serialize().widgets_values[4]];});
+    expect(off).toEqual([false,false]);
 });
 
 test('Classic keeps immediate selection, search query and metadata serialization',async({page})=>{

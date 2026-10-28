@@ -6,6 +6,7 @@ const { installClassicControls } = await import(api.fileURL('/prompt_manager/js/
 const { installFocusedNode, installSplitNode, installPairNode } = await import(api.fileURL('/prompt_manager/js/focused-node.js'));
 const { installPromptBridge } = await import(api.fileURL('/prompt_manager/js/prompt-bridge-host.js'));
 const { collapseLinkedWidget, isLinked, linkNoteText, primitiveTextValue, storedWidgetValue } = await import(api.fileURL('/prompt_manager/js/text-links.js'));
+const { normalizeSaveWidget } = await import(api.fileURL('/prompt_manager/js/save-to-library.js'));
 const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
@@ -525,6 +526,8 @@ app.registerExtension({
           if (originalConfigure) {
             originalConfigure.call(this, data);
           }
+          // #90: an older workflow loads with Save to library on
+          normalizeSaveWidget(this);
           if (data._userHasResized) {
             this._userHasResized = data._userHasResized;
           }
