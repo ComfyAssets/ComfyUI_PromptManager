@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     from tests.open_handles import assert_closed
@@ -175,7 +176,7 @@ class ImageCollectionOperationsTests(unittest.TestCase):
         self.require()
         made = self.add([(ROOT, "a.png")], name="  LoRa \t testing\n ")["collection"]
         self.assertEqual(made["name"], "LoRa testing")
-        for bad in ("", "   ", "x" * 101, "bell\x07", 5, None):
+        for bad in ("", "   ", "x" * 101, "bell\x07", "c1\x81", "del\x7f", 5, None):
             with self.subTest(name=bad):
                 with self.assertRaises(CollectionInvalid):
                     self.add([(ROOT, "a.png")], name=bad)
@@ -198,6 +199,50 @@ class ImageCollectionOperationsTests(unittest.TestCase):
             with self.subTest(items=items):
                 with self.assertRaises(CollectionInvalid):
                     self.add(items, collection_id=made["id"])
+
+    def test_a_failure_after_the_membership_move_rolls_it_back(self):
+        self.require()
+        made = self.add([(ROOT, "b.png")], name="Grids")["collection"]
+        move = {
+            "removed": [],
+            "kept": [],
+            "targets": {},
+            "kept_path": "/real/output/a.png",
+            "favorites": [(ROOT, "b.png", ROOT, "a.png")],
+            "removed_locator": "/real/output/b.png",
+            "kept_locator": "/real/output/a.png",
+            "sha256": "0" * 64,
+            "kept_size": 1,
+            "kept_mtime_ns": 1,
+        }
+        with patch.object(
+            type(self.db), "_move_copy_tags", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                self.db.move_copy_records(move)
+        self.assertEqual(self.db.file_collections(ROOT, "b.png"), [made["id"]])
+        self.assertEqual(self.db.file_collections(ROOT, "a.png"), [])
+        # Without the failure the same move succeeds.
+        self.assertEqual(self.db.move_copy_records(move)["collections"], 1)
+        self.assertEqual(self.db.file_collections(ROOT, "a.png"), [made["id"]])
+
+    def test_count_snapshot_reads_in_one_transaction(self):
+        self.require()
+        made = self.add([(ROOT, "a.png"), (OTHER, "b.png")], name="Set")["collection"]
+        statements = []
+        conn = self.db.model.get_connection()
+        conn.set_trace_callback(statements.append)
+        try:
+            members, stored = self.db.collection_count_snapshot([ROOT, OTHER, ROOT])
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(
+            members, {ROOT: {made["id"]: {"a.png"}}, OTHER: {made["id"]: {"b.png"}}}
+        )
+        self.assertEqual(stored, {made["id"]: 2})
+        self.assertEqual(statements[0], "BEGIN")
+        self.assertEqual(statements[-1], "ROLLBACK")
+        self.assertFalse(conn.in_transaction)
 
     def test_reads_use_an_index(self):
         self.require()

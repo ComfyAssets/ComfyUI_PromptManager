@@ -390,7 +390,8 @@ class ImageCollectionsSchemaTests(unittest.TestCase):
         )
 
     def test_restore_refuses_a_non_text_name(self):
-        self.assert_refused("int-name", f"UPDATE {COLLECTIONS} SET name = 5")
+        # Column affinity turns a number into text; a blob stays a blob.
+        self.assert_refused("blob-name", f"UPDATE {COLLECTIONS} SET name = x'61'")
 
     def test_restore_refuses_an_empty_name(self):
         self.assert_refused("empty", f"UPDATE {COLLECTIONS} SET name = '', name_key=''")
@@ -420,8 +421,43 @@ class ImageCollectionsSchemaTests(unittest.TestCase):
                     ),
                 )
 
-    def test_restore_refuses_a_wrong_name_key(self):
-        self.assert_refused("key", f"UPDATE {COLLECTIONS} SET name_key = 'Good'")
+    def test_restore_accepts_a_name_key_from_other_case_tables(self):
+        # Python versions fold some characters differently; a key written
+        # by another version must never make a backup unrestorable.
+        self.require_module()
+        path = self.closed_current(
+            "other-key.db",
+            (
+                f"INSERT INTO {COLLECTIONS} (id, name, name_key, created_at) "
+                "VALUES (1, 'Good', 'Good', ?)",
+                (NOW,),
+            ),
+        )
+        self.assertEqual(
+            PromptModel.verify_database_file(path, require_library_state=True),
+            (True, "ok"),
+        )
+
+    def test_restore_refuses_an_empty_or_non_text_name_key(self):
+        self.assert_refused("empty-key", f"UPDATE {COLLECTIONS} SET name_key = ''")
+        self.assert_refused(
+            "blob-name-key", f"UPDATE {COLLECTIONS} SET name_key = x'61'"
+        )
+        self.assert_refused(
+            "long-name-key",
+            (f"UPDATE {COLLECTIONS} SET name_key = ?", ("k" * 1201,)),
+        )
+
+    def test_restore_refuses_a_c1_control_character(self):
+        for name in ("a\x81b", "a\x7fb"):
+            with self.subTest(name=repr(name)):
+                self.assert_refused(
+                    f"c1-{ord(name[1])}",
+                    (
+                        f"UPDATE {COLLECTIONS} SET name = ?, name_key = ?",
+                        (name, key(name)),
+                    ),
+                )
 
     def test_restore_refuses_a_non_text_key(self):
         # Column affinity turns a number into text; a blob stays a blob.
