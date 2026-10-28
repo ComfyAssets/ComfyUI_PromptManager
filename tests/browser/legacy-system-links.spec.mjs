@@ -78,6 +78,8 @@ for (const link of LINKS) {
 test('a System link sends no request from the legacy page', async ({ page, context, request }) => {
     for (const link of LINKS) {
         const control = await openLink(page, request, link);
+        // The page's own start-up reads (list, film strips, settings) finish first; then the click must add none.
+        await page.waitForLoadState('networkidle');
         const sent = [];
         const record = item => sent.push(`${item.method()} ${item.url()}`);
         page.on('request', record);
@@ -96,17 +98,29 @@ test('kept admin flows still work', async ({ page, context }) => {
     const texts = page.locator('#resultsList .prompt-text');
     await expect(texts.first()).toBeVisible();
 
-    // K1: sorting reorders the list, a search narrows it, and a selection enables the bulk buttons.
+    // K1: sorting reorders the list.
     for (const [value, order] of [['text_asc', 1], ['text_desc', -1]]) {
         const listed = page.waitForResponse(item => /\/prompt_manager\/(recent|search)\?/.test(item.url()) && item.url().includes(`sort=${value}`));
         await page.locator('#sortBy').selectOption(value);
         await listed;
         await expect.poll(async () => {
             const shown = await texts.allTextContents();
-            const sorted = [...shown].sort((a, b) => order * a.localeCompare(b));
+            // The server sorts case-insensitively (SQLite NOCASE), not by locale.
+            const key = text => text.toLowerCase();
+            const sorted = [...shown].sort((a, b) => order * (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
             return shown.length > 1 && shown.join('\n') === sorted.join('\n');
         }).toBe(true);
     }
+    // K3: Add Prompt saves a prompt the list then shows.
+    await page.locator('#addPromptBtn').click();
+    await page.locator('#addPromptText').fill('Kept flow lighthouse');
+    const saved = page.waitForResponse(item => item.request().method() === 'POST' && item.url().endsWith('/prompt_manager/save'));
+    await page.locator('#saveNewPromptBtn').click();
+    expect((await saved).ok()).toBe(true);
+    await expect(page.locator('#addPromptModal')).toBeHidden();
+    await expect(texts.filter({ hasText: 'Kept flow lighthouse' })).toBeVisible();
+
+    // K1: a search narrows the list, and a selection enables the bulk buttons.
     const all = await texts.allTextContents();
     const word = all[0].trim().split(/\s+/)[0];
     const searched = page.waitForResponse(item => item.url().includes('/prompt_manager/search?') && item.url().includes('text='));
@@ -120,14 +134,6 @@ test('kept admin flows still work', async ({ page, context }) => {
     await expect(page.locator('#bulkDeleteBtn')).toBeDisabled();
     await page.locator('#resultsList .prompt-checkbox').first().check();
     for (const id of ['#bulkDeleteBtn', '#bulkTagBtn', '#bulkCategoryBtn']) await expect(page.locator(id)).toBeEnabled();
-
-    // K3: Add Prompt saves a prompt the list then shows.
-    await page.locator('#addPromptBtn').click();
-    await page.locator('#addPromptText').fill('Kept flow lighthouse');
-    const saved = page.waitForResponse(item => item.request().method() === 'POST' && item.url().endsWith('/prompt_manager/save'));
-    await page.locator('#saveNewPromptBtn').click();
-    expect((await saved).ok()).toBe(true);
-    await expect(page.locator('#addPromptModal')).toBeHidden();
 
     // K4: Stats reads the statistics again; Export downloads the prompts.
     const stats = page.waitForResponse(item => item.url().endsWith('/prompt_manager/stats') && item.ok());
