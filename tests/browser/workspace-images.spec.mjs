@@ -1988,70 +1988,284 @@ test('Export metadata downloads nothing when no image can be read', async ({ pag
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
 });
 
-// #249 D8 follow-up (image selection, Task 3): Set category sets the linked positives' category (app.js simpleInput).
+// #332 (D140, MC6, MC7): Set category writes each selected image's own category (PUT /prompt_manager/images/category);
+// "Use prompt category" removes it after a confirmation (DELETE). It never writes a prompt: Images no longer posts
+// /prompt_manager/bulk/category (#259's prompt action is retired from Images).
 const categoryButton = page => bulkbar(page).getByRole('button', { name: 'Set category', exact: true });
 const categoryDialog = page => page.getByRole('dialog', { name: 'Categorize selected images', exact: true });
-const categoryRoute = '**/prompt_manager/bulk/category';
-/** Unlink the input root's card by deleting its prompt; returns the output card's positive id. */
-async function unlinkInputCard(request) {
-    const { images } = await (await request.get('/prompt_manager/images/output?mode=workspace')).json();
-    const byKey = Object.fromEntries(images.map(image => [`${image.root_index}:${image.path}`, image]));
-    const [output, input] = [byKey['0:shared/same.png'], byKey['1:shared/same.png']];
-    expect([output.linked.status, input.linked.status]).toEqual(['linked', 'linked']);
-    await expect(await request.delete(`/prompt_manager/delete/${input.linked.positive_id}`)).toBeOK();
-    return output.linked.positive_id;
+const removeDialog = page => page.getByRole('dialog', { name: 'Use prompt category', exact: true });
+const categoryFilter = page => page.getByRole('combobox', { name: 'Filter by category', exact: true });
+const categoryRoute = '**/prompt_manager/images/category';
+const IMAGE_CATEGORY = '/prompt_manager/images/category';
+const cardOf = (page, key) => page.locator(`article[data-image-key="${key}"]`);
+const keyOf = image => `${image.root_index}:${image.path}`;
+const cardKeys = page => cards(page).evaluateAll(nodes => nodes.map(node => node.dataset.imageKey).sort());
+// The four outputs of "Cat portrait" (CUJ 1's batch); the input root's same.png is linked to "Dog landscape".
+const BATCH = ['0:bulk/0000.png', '0:bulk/0001.png', '0:bulk/0002.png', '0:shared/same.png'];
+/** Every category write the page sends, Images' own route and #259's prompt route alike. */
+function categoryWrites(page) {
+    const writes = [];
+    page.on('request', item => {
+        const path = new URL(item.url()).pathname;
+        if (item.method() === 'GET' || !['/prompt_manager/images/category', '/prompt_manager/bulk/category'].includes(path)) return;
+        writes.push({ method: item.method(), path, body: item.postDataJSON() });
+    });
+    return writes;
+}
+async function listedImages(request, query = '') {
+    const response = await request.get(`/prompt_manager/images/output?mode=workspace&limit=40${query}`);
+    await expect(response).toBeOK();
+    return (await response.json()).images;
+}
+async function targetsOf(request, keys) {
+    const images = await listedImages(request);
+    return keys.map(key => {
+        const image = images.find(item => keyOf(item) === key);
+        return { root_index: image.root_index, root_scope: image.root_scope, path: image.path };
+    });
+}
+async function putOwnCategory(request, keys, category) {
+    const response = await request.put(IMAGE_CATEGORY, { data: { items: await targetsOf(request, keys), category } });
+    await expect(response).toBeOK();
+}
+const filteredKeys = async (request, category) => (await listedImages(request, `&category=${encodeURIComponent(category)}`)).map(keyOf).sort();
+async function positiveOf(request, id) {
+    const response = await request.get(`/prompt_manager/library/${id}`);
+    await expect(response).toBeOK();
+    const { positive } = await response.json();
+    return { id: positive.id, text: positive.text, category: positive.category };
+}
+/** CUJ 1's Given: four images linked to the positive "Cat portrait", whose category is "Landscapes". */
+async function seedBatch(request) {
+    await expect(await request.post('/__test__/reset', { data: { extra_images: 3 } })).toBeOK();
+    const response = await request.post('/prompt_manager/save', { data: { text: 'Cat portrait', category: 'Landscapes' } });
+    await expect(response).toBeOK();
+    const id = (await response.json()).prompt_id;
+    expect(await filteredKeys(request, 'Landscapes')).toEqual(BATCH);
+    return id;
+}
+async function openSetCategory(page) {
+    await categoryButton(page).click();
+    await expect(categoryDialog(page)).toBeVisible();
+    return categoryDialog(page);
+}
+async function applyCategory(page, category) {
+    const dialog = await openSetCategory(page);
+    await dialog.getByLabel('Category', { exact: true }).fill(category);
+    await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(dialog).toBeHidden();
 }
 
-test('Set category applies the category to the linked positives and the category filter then matches', async ({ page, request }) => {
-    const outputPositive = await unlinkInputCard(request);
+test('Set category overrides one image of a batch and never writes its prompt (#332 CUJ 1)', async ({ page, request }) => {
+    const positiveId = await seedBatch(request);
+    const before = await positiveOf(request, positiveId);
+    const writes = categoryWrites(page);
     await page.goto(workspace);
-    await checkBoth(page);
-    const opener = categoryButton(page);
-    await opener.click();
-    const dialog = categoryDialog(page);
-    await expect(dialog).toBeVisible();
-    // The concept's simpleInput: one field and Cancel / Apply (primary).
+    await expect(cards(page)).toHaveCount(5);
+    await checkbox(cardOf(page, '0:bulk/0001.png'), '0001.png').check();
+    const dialog = await openSetCategory(page);
+    // The concept's simpleInput plus "Use prompt category" between Cancel and Apply (primary).
     await expect(dialog.locator('#modal-body > .field > label[for="action-input"]')).toHaveText('Category');
     await expect(dialog.locator('#modal-body > .field > input#action-input')).toHaveValue('');
-    await expect(dialog.locator('#modal-body > .dialog-actions > button')).toHaveText(['Cancel', 'Apply']);
+    await expect(dialog.locator('#modal-body > .dialog-actions > button')).toHaveText(['Cancel', 'Use prompt category', 'Apply']);
     await expect(dialog.getByRole('button', { name: 'Apply', exact: true })).toHaveClass(/ca-primary/);
     await expect(dialog.getByLabel('Category', { exact: true })).toBeFocused();
+    await expect(dialog.getByLabel('Category', { exact: true })).toHaveAttribute('maxlength', '100');
     // An empty value applies nothing and keeps the dialog open.
-    const posts = [];
-    page.on('request', item => { if (item.method() === 'POST' && item.url().endsWith('/prompt_manager/bulk/category')) posts.push(item.postDataJSON()); });
     await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel('Category', { exact: true }).fill('  Landscapes ');
+    await dialog.getByLabel('Category', { exact: true }).fill('  Portraits ');
     const listings = [];
     page.on('request', item => { if (imagePages(new URL(item.url()))) listings.push(item.url()); });
     await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
     await expect(dialog).toBeHidden();
-    await expect(toast(page)).toHaveText('Category set on 1 prompt. 1 selected image had no linked prompt and was skipped.');
-    expect(posts).toEqual([{ prompt_ids: [outputPositive], category: 'Landscapes' }]);
+    await expect(toast(page)).toHaveText('Category “Portraits” set on 1 image.');
+    expect(writes).toEqual([{ method: 'PUT', path: IMAGE_CATEGORY,
+        body: { items: await targetsOf(request, ['0:bulk/0001.png']), category: 'Portraits' } }]);
     // The listing and the category options reload; the reload clears the selection.
     await expect.poll(() => listings.length).toBeGreaterThan(0);
     await expect(bulkbar(page)).toBeEmpty();
-    await expect(page.locator('#workspace-main h1')).toBeFocused();
-    await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(0);
-    const filter = page.getByRole('combobox', { name: 'Filter by category', exact: true });
-    await expect(filter.locator('option')).toContainText(['Landscapes']);
-    await filter.selectOption('Landscapes');
+    await expect(categoryFilter(page).locator('option')).toHaveText(['All categories', 'Landscapes', 'Portraits']);
+    await categoryFilter(page).selectOption('Portraits');
     await expect(cards(page)).toHaveCount(1);
-    await expect(cards(page)).toHaveAttribute('data-image-key', '0:shared/same.png');
+    await expect(cards(page)).toHaveAttribute('data-image-key', '0:bulk/0001.png');
+    await categoryFilter(page).selectOption('Landscapes');
+    await expect(cards(page)).toHaveCount(3);
+    expect(await cardKeys(page)).toEqual(BATCH.filter(key => key !== '0:bulk/0001.png'));
+    // The prompt keeps its category: only the image carries "Portraits".
+    expect(await positiveOf(request, positiveId)).toEqual(before);
+    expect(before.category).toBe('Landscapes');
+    expect(writes.filter(write => write.path === '/prompt_manager/bulk/category')).toEqual([]);
 });
 
-test('Set category without a linked image posts nothing and opens no dialog', async ({ page, request }) => {
-    await unlinkInputCard(request);
+test('Set category categorizes unlinked images and lists the value in the toolbar and the suggestions (#332 CUJ 2)', async ({ page, request }) => {
+    // Unlink both images by deleting their prompts.
+    for (const image of await listedImages(request)) {
+        await expect(await request.delete(`/prompt_manager/delete/${image.linked.positive_id}`)).toBeOK();
+    }
+    expect((await listedImages(request)).filter(image => image.linked.status === 'linked')).toEqual([]);
+    const writes = categoryWrites(page);
     await page.goto(workspace);
+    await checkBoth(page);
+    await applyCategory(page, 'Scans');
+    await expect(toast(page)).toHaveText('Category “Scans” set on 2 images.');
+    expect(writes).toEqual([{ method: 'PUT', path: IMAGE_CATEGORY,
+        body: { items: await targetsOf(request, ['0:shared/same.png', '1:shared/same.png']), category: 'Scans' } }]);
+    await expect(categoryFilter(page).locator('option')).toHaveText(['All categories', 'Scans']);
+    await categoryFilter(page).selectOption('Scans');
     await expect(cards(page)).toHaveCount(2);
-    let posted = 0;
-    await page.route(categoryRoute, route => { posted += 1; return route.continue(); });
-    await checkbox(cards(page).last(), 'same.png').check();
-    await categoryButton(page).click();
-    await expect(toast(page)).toHaveText("None of the selected images is linked to a saved prompt, so there is no prompt category to set.");
+    expect(await cardKeys(page)).toEqual(['0:shared/same.png', '1:shared/same.png']);
+    // The field suggests the toolbar's categories through its own datalist.
+    await checkbox(cards(page).first(), 'same.png').check();
+    const dialog = await openSetCategory(page);
+    await expect(dialog.getByLabel('Category', { exact: true })).toHaveAttribute('list', 'workspace-input-suggestions');
+    expect(await dialog.locator('datalist#workspace-input-suggestions option').evaluateAll(nodes => nodes.map(node => node.value))).toEqual(['Scans']);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('dialog[open]')).toHaveCount(0);
-    expect(posted).toBe(0);
-    await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
+    expect(writes).toHaveLength(1);
+});
+
+test('Use prompt category removes the own category only after Remove in its confirmation (#332 CUJ 3)', async ({ page, request }) => {
+    const positiveId = await seedBatch(request);
+    await putOwnCategory(request, ['0:bulk/0001.png'], 'Portraits');
+    const writes = categoryWrites(page);
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(5);
+    await expect(categoryFilter(page).locator('option')).toHaveText(['All categories', 'Landscapes', 'Portraits']);
+    await checkbox(cardOf(page, '0:bulk/0001.png'), '0001.png').check();
+    // Cancel in the confirmation sends nothing and keeps the selection.
+    await (await openSetCategory(page)).getByRole('button', { name: 'Use prompt category', exact: true }).click();
+    await expect(categoryDialog(page)).toHaveCount(0);
+    const confirm = removeDialog(page);
+    await expect(confirm).toBeVisible();
+    await expect(confirm.locator('p').first()).toHaveText("Remove the image category from the 1 selected image? Each one then shows its prompt's category, or none if it has no linked prompt. This cannot be undone.");
+    await expect(confirm.locator('.dialog-actions > button')).toHaveText(['Cancel', 'Remove']);
+    await expect(confirm.getByRole('button', { name: 'Remove', exact: true })).toHaveClass(/danger/);
+    await expect(confirm.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+    await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect(selectedCount(page)).toHaveText('1 selected');
+    expect(writes).toEqual([]);
+    expect(await filteredKeys(request, 'Portraits')).toEqual(['0:bulk/0001.png']);
+    // Remove sends exactly one DELETE naming the selected image.
+    await (await openSetCategory(page)).getByRole('button', { name: 'Use prompt category', exact: true }).click();
+    await removeDialog(page).getByRole('button', { name: 'Remove', exact: true }).click();
+    await expect(toast(page)).toHaveText('Removed the image category from 1 image.');
+    expect(writes).toEqual([{ method: 'DELETE', path: IMAGE_CATEGORY, body: { items: await targetsOf(request, ['0:bulk/0001.png']) } }]);
+    await expect(bulkbar(page)).toBeEmpty();
+    // The image shows its prompt's category again: "Landscapes" lists all four, and "Portraits" is gone.
+    await expect(categoryFilter(page).locator('option')).toHaveText(['All categories', 'Landscapes']);
+    await categoryFilter(page).selectOption('Landscapes');
+    await expect(cards(page)).toHaveCount(4);
+    expect(await cardKeys(page)).toEqual(BATCH);
+    expect((await positiveOf(request, positiveId)).category).toBe('Landscapes');
+});
+
+test('a saved view filtered by a category lists an image categorized after it was saved (#332 CUJ 8)', async ({ page, request }) => {
+    await seedBatch(request);
+    await putOwnCategory(request, ['0:bulk/0001.png'], 'Portraits');
+    await page.goto(workspace);
+    await categoryFilter(page).selectOption('Portraits');
+    await expect(cards(page)).toHaveCount(1);
+    await page.locator('#workspace-main search.toolbar').getByRole('button', { name: 'Save view', exact: true }).click();
+    const save = page.getByRole('dialog', { name: 'Save this view', exact: true });
+    await save.getByRole('textbox', { name: 'View name', exact: true }).fill('Portraits');
+    await save.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(toast(page)).toHaveText('Saved view added to the sidebar.');
+    // Another image gets "Portraits" through Set category.
+    await categoryFilter(page).selectOption('');
+    await expect(cards(page)).toHaveCount(5);
+    await checkbox(cardOf(page, '0:bulk/0002.png'), '0002.png').check();
+    await applyCategory(page, 'Portraits');
+    await expect(toast(page)).toHaveText('Category “Portraits” set on 1 image.');
+    // Reopening the view lists both.
+    await page.getByRole('navigation', { name: 'Saved views', exact: true }).getByRole('link', { name: 'Portraits', exact: true }).click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Portraits');
+    await expect(categoryFilter(page)).toHaveValue('Portraits');
+    await expect(cards(page)).toHaveCount(2);
+    expect(await cardKeys(page)).toEqual(['0:bulk/0001.png', '0:bulk/0002.png']);
+});
+
+test('at 390px in light theme the Set category dialog and the category chip fit (#332 CUJ 10)', async ({ page, request }) => {
+    const LONG = 'Portraits taken on a phone at the end of a long walk through the old harbour at dusk';
+    await page.addInitScript(() => { try { localStorage.setItem('pm_workspace_theme', 'light'); } catch { /* the default theme */ } });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await seedBatch(request);
+    await putOwnCategory(request, ['0:bulk/0001.png'], LONG);
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(5);
+    await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
+    const card = cardOf(page, '0:bulk/0001.png');
+    // The chip wraps inside the side panel; its origin never splits.
+    await card.getByRole('button', { name: 'Inspect 0001.png', exact: true }).click();
+    const chip = details(page).locator('span.chip', { has: page.locator('span.chip-source') });
+    await expect(chip).toHaveText(`Image category: ${LONG} · this image`);
+    const fit = await chip.evaluate(node => {
+        const panel = node.closest('aside, [role="complementary"]').getBoundingClientRect(), box = node.getBoundingClientRect();
+        const source = node.querySelector('.chip-source');
+        const line = parseFloat(getComputedStyle(source).lineHeight) || source.getBoundingClientRect().height;
+        return { inside: box.left >= panel.left - 0.5 && box.right <= panel.right + 0.5, sourceLines: source.getClientRects().length,
+            wrapped: box.height > line * 1.5, pageScroll: document.documentElement.scrollWidth - window.innerWidth };
+    });
+    expect(fit).toEqual({ inside: true, sourceLines: 1, wrapped: true, pageScroll: 0 });
+    // The dialog fits the width with no horizontal scroll, and its three buttons wrap without overlap.
+    await checkbox(card, '0001.png').check();
+    const dialog = await openSetCategory(page);
+    const geometry = await dialog.evaluate(node => {
+        const box = node.getBoundingClientRect();
+        const buttons = [...node.querySelectorAll('.dialog-actions > button')].map(button => button.getBoundingClientRect())
+            .map(({ left, right, top, bottom }) => ({ left, right, top, bottom }));
+        const overlaps = buttons.some((a, i) => buttons.some((b, j) => j > i && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom));
+        const scrollers = [node, ...node.querySelectorAll('*')].filter(item => item.scrollWidth > item.clientWidth + 1 && getComputedStyle(item).overflowX !== 'visible');
+        return { fits: box.left >= 0 && box.right <= window.innerWidth, scrollers: scrollers.length, count: buttons.length, overlaps,
+            inside: buttons.every(b => b.left >= box.left && b.right <= box.right), pageScroll: document.documentElement.scrollWidth - window.innerWidth };
+    });
+    expect(geometry).toEqual({ fits: true, scrollers: 0, count: 3, overlaps: false, inside: true, pageScroll: 0 });
+});
+
+test('Set category of more than 500 images says so before any dialog or request (#332)', async ({ page, request }) => {
+    await page.route(url => url.pathname === '/prompt_manager/images/output' && url.searchParams.get('limit') !== '1', async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({ response, json: { ...body, total: 501 } });
+    });
+    await bulkReset(page, request);
+    await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await bulkbar(page).getByRole('button', { name: 'Select all 501 matching', exact: true }).click();
+    await expect(selectedCount(page)).toHaveText('All 501 matching selected');
+    const writes = categoryWrites(page);
+    await categoryButton(page).click();
+    await expect(toast(page)).toHaveText('Select at most 500 images.');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    expect(writes).toEqual([]);
+    await expect(selectedCount(page)).toHaveText('All 501 matching selected');
+});
+
+test('a changed source says so and reloads the listing (#332)', async ({ page }) => {
+    await page.goto(workspace);
+    await checkBoth(page);
+    await page.route(categoryRoute, route => route.fulfill({ status: 409,
+        json: { success: false, code: 'source-changed', error: 'The output sources changed. Refresh the images and try again.' } }));
+    const reloaded = page.waitForRequest(item => imagePages(new URL(item.url())));
+    await applyCategory(page, 'Landscapes');
+    await expect(toast(page)).toHaveText('The sources changed. Refresh the images and try again.');
+    await reloaded;
+    await expect(cards(page)).toHaveCount(2);
+});
+
+test('a recipe-linked image is listed under its recipe\'s category (#332 D142)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/reset', { data: { native_library: true } })).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(3);
+    await expect(categoryFilter(page).locator('option')).toHaveText(['All categories', 'Animals', 'Experiments', 'Portraits']);
+    // The output same.png is linked to recipe "Portrait variant 1" (Portraits), the input copy to variant 2 (Experiments);
+    // only the image without a recipe shows its positive's "Animals".
+    for (const [category, keys] of [['Portraits', ['0:shared/same.png']], ['Experiments', ['1:shared/same.png']], ['Animals', ['0:legacy-unassigned.png']]]) {
+        await categoryFilter(page).selectOption(category);
+        await expect(cards(page)).toHaveCount(keys.length);
+        expect(await cardKeys(page)).toEqual(keys);
+    }
 });
 
 test('Set category reports a failure, keeps the selection and ignores a second press while it runs', async ({ page }) => {
@@ -2059,9 +2273,7 @@ test('Set category reports a failure, keeps the selection and ignores a second p
     await checkBoth(page);
     const held = [];
     await page.route(categoryRoute, route => { held.push(route); });
-    await categoryButton(page).click();
-    await categoryDialog(page).getByLabel('Category', { exact: true }).fill('Landscapes');
-    await categoryDialog(page).getByRole('button', { name: 'Apply', exact: true }).click();
+    await applyCategory(page, 'Landscapes');
     await expect.poll(() => held.length).toBe(1);
     await expect(categoryButton(page)).toHaveAttribute('aria-disabled', 'true');
     // Playwright waits on an aria-disabled control, so the second press is a dispatched click.
@@ -2098,14 +2310,12 @@ test('leaving Images during Set category finishes the write, and the return relo
     await checkBoth(page);
     const held = [];
     await page.route(categoryRoute, route => { held.push(route); });
-    await categoryButton(page).click();
-    await categoryDialog(page).getByLabel('Category', { exact: true }).fill('Landscapes');
-    await categoryDialog(page).getByRole('button', { name: 'Apply', exact: true }).click();
+    await applyCategory(page, 'Landscapes');
     await expect.poll(() => held.length).toBe(1);
     await page.evaluate(() => { window.location.hash = '/overview'; });
     await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     // The write is not aborted with the page: the server still receives and answers it.
-    const answered = page.waitForResponse(response => response.url().endsWith('/prompt_manager/bulk/category'));
+    const answered = page.waitForResponse(response => new URL(response.url()).pathname === IMAGE_CATEGORY);
     await held[0].continue();
     expect((await answered).ok()).toBe(true);
     await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
@@ -2116,23 +2326,25 @@ test('leaving Images during Set category finishes the write, and the return relo
     await expect(cards(page)).toHaveCount(2);
     await expect(bulkbar(page)).toBeEmpty();
     await expect(cards(page).getByRole('checkbox', { checked: true })).toHaveCount(0);
-    await expect(page.getByRole('combobox', { name: 'Filter by category', exact: true }).locator('option')).toContainText(['Landscapes']);
+    await expect(categoryFilter(page).locator('option')).toContainText(['Landscapes']);
 });
 
-test('Set category limits the field to the server length, shows the server count, and a rejection keeps the selection', async ({ page }) => {
+test('Set category shows the server counts and coded refusals, and a rejection keeps the selection', async ({ page }) => {
     await page.goto(workspace);
     await checkBoth(page);
     const answers = [
         { status: 400, json: { success: false, error: 'Category cannot exceed 100 characters' } },
-        { status: 200, json: { success: true, updated_count: 0 } },
+        { status: 404, json: { success: false, code: 'files-not-found', error: 'None of the images could be found.' } },
+        { status: 200, json: { success: true, category: 'Landscapes', updated: 1, unchanged: 0, not_found: 1 } },
     ];
     await page.route(categoryRoute, route => route.fulfill(answers.shift()));
-    for (const expected of ['Category could not be set. Try again.', 'Category set on 0 prompts.']) {
-        await categoryButton(page).click();
-        const field = categoryDialog(page).getByLabel('Category', { exact: true });
-        await expect(field).toHaveAttribute('maxlength', '100');
-        await field.fill('Landscapes');
-        await categoryDialog(page).getByRole('button', { name: 'Apply', exact: true }).click();
+    for (const expected of ['Category could not be set. Try again.',
+        'None of the selected images could be found. Refresh the images and try again.',
+        'Category “Landscapes” set on 1 image. 1 could not be found.']) {
+        const dialog = await openSetCategory(page);
+        await expect(dialog.getByLabel('Category', { exact: true })).toHaveAttribute('maxlength', '100');
+        await dialog.getByLabel('Category', { exact: true }).fill('Landscapes');
+        await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
         await expect(toast(page)).toHaveText(expected);
         if (answers.length) await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('2 selected');
     }
@@ -2381,24 +2593,20 @@ test('all matching sets the category through the listing filter and survives a r
     // Export metadata waits for loaded images: a press does nothing.
     const exportButton = bulkbar(page).getByRole('button', { name: 'Export metadata', exact: true });
     await expect(exportButton).toHaveAttribute('title', 'Export metadata reads each image in the browser, so it works on loaded images only.');
-    // No match linked (a stubbed answer): the nothing-linked sentence, and the selection stays.
-    await page.route('**/prompt_manager/bulk/category', route => route.fulfill({ json: { success: true, updated_count: 0, prompt_count: 0, skipped: 202 } }), { times: 1 });
-    const categorize = page.getByRole('dialog', { name: 'Categorize selected images', exact: true });
-    await bulkbar(page).getByRole('button', { name: 'Set category', exact: true }).click();
-    await categorize.getByRole('textbox', { name: 'Category', exact: true }).fill('Bulk392');
-    await categorize.getByRole('button', { name: 'Apply', exact: true }).click();
-    await expect(toast(page)).toHaveText("None of the selected images is linked to a saved prompt, so there is no prompt category to set.");
+    // No match listed any more (a stubbed answer): the not-found sentence, and the selection stays.
+    await page.route(categoryRoute, route => route.fulfill({ status: 404, json: { success: false, code: 'files-not-found', error: 'None of the images could be found.' } }), { times: 1 });
+    await applyCategory(page, 'Bulk392');
+    await expect(toast(page)).toHaveText('None of the selected images could be found. Refresh the images and try again.');
     await expect(selectedCount(page)).toHaveText('All 202 matching selected');
-    // The real write: one request with the filter, every matching image's positive changes.
-    await bulkbar(page).getByRole('button', { name: 'Set category', exact: true }).click();
-    await categorize.getByRole('textbox', { name: 'Category', exact: true }).fill('Bulk392');
-    const posted = page.waitForRequest(item => item.method() === 'POST' && new URL(item.url()).pathname === '/prompt_manager/bulk/category');
-    await categorize.getByRole('button', { name: 'Apply', exact: true }).click();
-    expect((await posted).postDataJSON()).toEqual({ images_filter: { sort: 'newest' }, category: 'Bulk392' });
-    await expect(toast(page)).toHaveText(/^Category set on \d+ prompts?\.$/);
+    // The real write: one PUT with the listing filter sets every matching image's own category; no prompt changes.
+    const writes = categoryWrites(page);
+    await applyCategory(page, 'Bulk392');
+    await expect(toast(page)).toHaveText('Category “Bulk392” set on 202 images.');
+    expect(writes).toEqual([{ method: 'PUT', path: IMAGE_CATEGORY, body: { filter: { sort: 'newest' }, category: 'Bulk392' } }]);
     await expect(bulkbar(page)).toBeEmpty();
     const filtered = await (await request.get('/prompt_manager/images/output?mode=workspace&limit=1&category=Bulk392')).json();
     expect(filtered.total).toBe(202);
+    expect((await (await request.get('/prompt_manager/library/options')).json()).categories).not.toContain('Bulk392');
     // A return visit keeps "all matching" as the loaded images, and the offer shows again.
     await cardAt(page, 0).getByRole('button', { name: /^Open / }).focus();
     await page.keyboard.press('ControlOrMeta+a');
@@ -2426,10 +2634,12 @@ test('all matching over 10,000 images says so before any dialog or request', asy
     await bulkbar(page).getByRole('button', { name: 'Select all 20,002 matching', exact: true }).click();
     await expect(selectedCount(page)).toHaveText('All 20,002 matching selected');
     let posted = 0;
-    page.on('request', item => { if (item.method() === 'POST') posted += 1; });
-    for (const action of ['Set category', 'Add tags', 'Auto-tag selected']) {
+    page.on('request', item => { if (item.method() !== 'GET') posted += 1; });
+    // Set category names at most 500 images (#332); the tagging jobs take up to 10,000.
+    for (const [action, sentence] of [['Set category', 'Select at most 500 images.'], ['Add tags', 'Narrow the view to at most 10,000 images.'],
+        ['Auto-tag selected', 'Narrow the view to at most 10,000 images.']]) {
         await bulkbar(page).getByRole('button', { name: action, exact: true }).click();
-        await expect(toast(page)).toHaveText('Narrow the view to at most 10,000 images.');
+        await expect(toast(page)).toHaveText(sentence);
         await expect(page.locator('dialog[open]')).toHaveCount(0);
     }
     expect(posted).toBe(0);
