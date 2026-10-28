@@ -13,7 +13,9 @@ NFC name) is UNIQUE, so names are unique ignoring case and Unicode form.
 The two tables install like ``image_favorites`` and ``saved_views``: optional
 in old backups, required once a database is current, created empty with no
 backfill. Startup checks only the structure, so a value saved under older
-rules never stops the library from opening; restore checks the values too.
+rules never stops the library from opening; restore checks the values too,
+but never recomputes ``name_key`` (case tables differ between Python
+versions).
 """
 
 import re
@@ -29,7 +31,9 @@ FILE_INDEX = "idx_image_collection_items_file"
 TABLES = (COLLECTIONS_TABLE, ITEMS_TABLE)
 MAX_NAME_LENGTH = 100
 _TIMESTAMP_BYTES = 64
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# A name key's byte bound: case folding expands a character to at most
+# three, each at most 4 UTF-8 bytes.
+_MAX_KEY_BYTES = MAX_NAME_LENGTH * 3 * 4
 _WHITESPACE = re.compile(r"\s+")
 
 _TABLE_DDL = {
@@ -72,6 +76,11 @@ class CollectionInvalid(ValueError):
     """A name, id or target breaks the write rules (a 400)."""
 
 
+def _has_control(text: str) -> bool:
+    """Any Unicode control character (category Cc: C0, DEL and C1)."""
+    return any(unicodedata.category(char) == "Cc" for char in text)
+
+
 def normalize_collection_name(name: object) -> str:
     """The stored spelling of *name*: trimmed, whitespace collapsed, checked.
 
@@ -83,7 +92,7 @@ def normalize_collection_name(name: object) -> str:
     collapsed = _WHITESPACE.sub(" ", name).strip()
     if not 1 <= len(collapsed) <= MAX_NAME_LENGTH:
         raise CollectionInvalid(f"Name must be 1 to {MAX_NAME_LENGTH} characters")
-    if _CONTROL.search(collapsed):
+    if _has_control(collapsed):
         raise CollectionInvalid("Name contains control characters")
     return collapsed
 
@@ -148,17 +157,19 @@ def _value_error(conn: sqlite3.Connection) -> Optional[str]:
         "typeof(id) != 'integer' OR typeof(name) != 'text' "
         "OR typeof(name_key) != 'text' OR typeof(created_at) != 'text' "
         f"OR length(CAST(name AS BLOB)) > {MAX_NAME_LENGTH * 4} "
+        "OR length(CAST(name_key AS BLOB)) = 0 "
+        f"OR length(CAST(name_key AS BLOB)) > {_MAX_KEY_BYTES} "
         f"OR length(CAST(created_at AS BLOB)) > {_TIMESTAMP_BYTES} LIMIT 1"
     ).fetchone():
         return "Image collections contains invalid values"
-    for name, name_key in conn.execute(
-        f"SELECT name, name_key FROM {COLLECTIONS_TABLE}"  # nosec B608
-    ):
+    # The key is not recomputed: Unicode case tables differ between Python
+    # versions, and a key written by another version must stay restorable.
+    # Its UNIQUE constraint keeps names distinct; writes compute it.
+    for (name,) in conn.execute(f"SELECT name FROM {COLLECTIONS_TABLE}"):  # nosec B608
         if (
             not 1 <= len(name) <= MAX_NAME_LENGTH
-            or _CONTROL.search(name)
+            or _has_control(name)
             or name != name.strip()
-            or name_key != collection_name_key(name)
         ):
             return "Image collections contains invalid names"
     limit = MAX_KEY_LENGTH * 4
@@ -351,6 +362,26 @@ class ImageCollectionOperations:
         ):
             found.setdefault(collection_id, set()).add(path)
         return found
+
+    def collection_count_snapshot(self, root_keys: list) -> tuple[dict, dict]:
+        """``({root key: {id: relative keys}}, {id: stored rows})`` read in
+        one read transaction, so a write between the reads cannot skew them.
+        """
+        conn = self.model.get_connection()
+        if conn.in_transaction:
+            raise RuntimeError("Collection counts require their own transaction")
+        conn.execute("BEGIN")
+        try:
+            members = {}
+            for root_key in dict.fromkeys(root_keys):
+                found: dict[int, set[str]] = {}
+                for collection_id, path in conn.execute(ROOT_MEMBERS_SQL, (root_key,)):
+                    found.setdefault(collection_id, set()).add(path)
+                members[root_key] = found
+            stored = {cid: count for cid, count in conn.execute(COUNTS_SQL)}
+        finally:
+            conn.rollback()  # it only read
+        return members, stored
 
     def collection_counts(self) -> dict[int, int]:
         """``{collection id: stored rows}`` for every collection."""

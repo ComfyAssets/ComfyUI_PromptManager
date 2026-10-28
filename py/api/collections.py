@@ -49,7 +49,7 @@ BASE = "/prompt_manager/collections"
 # The most files one add or remove names (the bulk tagging cap, MC12).
 MAX_ITEMS = 500
 MAX_ID = 999_999_999
-_PATH_ID = re.compile(r"[0-9]{1,9}")
+_PATH_ID = re.compile(r"[1-9][0-9]{0,8}")
 _ROOT_INDEX = re.compile(r"[0-9]{1,9}")
 _ADD_TARGETS = (frozenset({"collection_id", "items"}), frozenset({"name", "items"}))
 _REMOVE_FIELDS = frozenset({"collection_id", "items"})
@@ -113,7 +113,7 @@ def _collection_response(failure: str) -> Callable:
 
 def _path_id(request: web.Request) -> int:
     raw = request.match_info["collection_id"]
-    if not raw.isascii() or _PATH_ID.fullmatch(raw) is None or int(raw) < 1:
+    if not raw.isascii() or _PATH_ID.fullmatch(raw) is None:
         raise _Refused(bad_request("Invalid collection id"))
     return int(raw)
 
@@ -170,53 +170,66 @@ class CollectionRoutesMixin:
         for collection in collections:
             listed, stored = (None, None) if counts is None else counts
             count = None if listed is None else listed.get(collection["id"], 0)
-            missing = None if stored is None else stored.get(collection["id"], 0)
+            stored_rows = None if stored is None else stored.get(collection["id"], 0)
             rows.append(
                 {
                     **collection,
                     "count": count,
-                    "missing": None if count is None else missing - count,
+                    # Clamped: never below zero, whatever the snapshot saw.
+                    "missing": None if count is None else max(0, stored_rows - count),
                 }
             )
         return web.json_response({"success": True, "collections": rows})
 
     async def _collection_counts(self) -> tuple[dict, dict]:
-        """``({id: listed members}, {id: stored rows})`` over every source."""
+        """``({id: listed members}, {id: stored rows})`` over every source.
+
+        The scans come from the gallery cache; the root keys (realpath), the
+        listings and one read snapshot of every member and stored count run
+        in the executor, so a write between two reads cannot skew them.
+        """
+        roots = list(self._get_all_output_dirs())
+        root_keys = await self._run_in_executor(
+            lambda: [_favorite_root_key(root) for root in roots]
+        )
+        distinct = {}  # one folder configured twice counts once
+        for root, root_key in zip(roots, root_keys):
+            distinct.setdefault(root_key, root)
+        scans = {
+            root_key: await self._get_gallery_files(root)
+            for root_key, root in distinct.items()
+        }
+        return await self._run_in_executor(self._count_members, distinct, scans)
+
+    def _count_members(self, roots: dict, scans: dict) -> tuple[dict, dict]:
+        """Blocking: match one snapshot's members against each listing."""
+        members, stored = self.db.collection_count_snapshot(list(roots))
         listed: dict[int, int] = {}
-        seen = set()
-        for root in self._get_all_output_dirs():
-            root_key = _favorite_root_key(root)
-            if root_key in seen:  # one folder configured twice counts once
-                continue
-            seen.add(root_key)
-            files = await self._get_gallery_files(root)
-            listing = await self._run_in_executor(self._favorite_listing, root, files)
-            members = await self._run_in_executor(
-                self.db.root_collection_members, root_key
-            )
-            for collection_id, keys in members.items():
+        for root_key, root in roots.items():
+            listing = self._favorite_listing(root, scans[root_key])
+            for collection_id, keys in members.get(root_key, {}).items():
                 found = sum(1 for key in keys if key in listing)
                 listed[collection_id] = listed.get(collection_id, 0) + found
-        stored = await self._run_in_executor(self.db.collection_counts)
         return listed, stored
 
     @_collection_response(READ_FAILED)
     async def collection_membership(self, request: web.Request) -> web.Response:
         """GET ``?root_index&root_scope&path``: the ids holding that file."""
         query = request.query
-        if set(query) != {"root_index", "root_scope", "path"}:
-            return bad_request("Query must name root_index, root_scope and path")
+        if len(query) != 3 or set(query) != {"root_index", "root_scope", "path"}:
+            # len() counts a repeated key (?path=a&path=b) twice.
+            return bad_request("Query must name root_index, root_scope and path once")
         raw_index = query["root_index"]
         if not raw_index.isascii() or _ROOT_INDEX.fullmatch(raw_index) is None:
             return bad_request("Invalid gallery root")
         roots = list(self._get_all_output_dirs())
-        root_key, key = self._collection_key(
-            {
-                "root_index": int(raw_index),
-                "root_scope": query["root_scope"],
-                "path": query["path"],
-            },
-            roots,
+        target = {
+            "root_index": int(raw_index),
+            "root_scope": query["root_scope"],
+            "path": query["path"],
+        }
+        root_key, key = await self._run_in_executor(
+            self._collection_key, target, roots, {}
         )
         ids = await self._run_in_executor(self.db.file_collections, root_key, key)
         return web.json_response({"success": True, "collection_ids": ids})
@@ -238,7 +251,7 @@ class CollectionRoutesMixin:
         else:
             target["collection_id"] = _body_id(data["collection_id"])
         roots = list(self._get_all_output_dirs())
-        keys = self._collection_items(data["items"], roots)
+        keys = await self._run_in_executor(self._collection_items, data["items"], roots)
         found, not_found = [], 0
         listings = {}
         for index, root_key, key in keys:
@@ -263,7 +276,7 @@ class CollectionRoutesMixin:
         data = await _body(request, (_REMOVE_FIELDS,))
         collection_id = _body_id(data["collection_id"])
         roots = list(self._get_all_output_dirs())
-        keys = self._collection_items(data["items"], roots)
+        keys = await self._run_in_executor(self._collection_items, data["items"], roots)
         result = await self._run_in_executor(
             self.db.remove_from_collection,
             collection_id,
@@ -294,30 +307,42 @@ class CollectionRoutesMixin:
     def _collection_items(self, items: object, roots: list) -> list[tuple]:
         """``(index, root key, relative key)`` per distinct file, in order.
 
+        Blocking (realpath per root, once per request): run in the executor.
         Every item is checked before anything is written: 400 for a malformed
         shape, 403 for an unsafe path, 409 for a stale scope. Two spellings
         that fold to one key (Windows) count once.
         """
         if not isinstance(items, list) or not 1 <= len(items) <= MAX_ITEMS:
             raise _Refused(bad_request(f"items must list 1 to {MAX_ITEMS} images"))
-        keys = {}
+        keys, sources = {}, {}
         for item in items:
             index = item.get("root_index") if isinstance(item, dict) else None
-            root_key, key = self._collection_key(item, roots)
+            root_key, key = self._collection_key(item, roots, sources)
             keys.setdefault((root_key, key), index)
         return [(index, root_key, key) for (root_key, key), index in keys.items()]
 
-    def _collection_key(self, item: object, roots: list) -> tuple[str, str]:
-        """The stored keys of one target, or raise its refusal."""
+    def _collection_key(
+        self, item: object, roots: list, sources: dict
+    ) -> tuple[str, str]:
+        """The stored keys of one target, or raise its refusal (blocking).
+
+        *sources* caches ``{index: (scope, root key)}`` for one request, so
+        each root's realpath runs once however many items name it.
+        """
         target, error = media_target(item, media_message=_MEDIA_MESSAGE)
         if error is not None:
             raise _Refused(error)
         index, scope, relative = target
-        if index >= len(roots) or not hmac.compare_digest(
-            scope, self._gallery_root_scope(roots[index], index)
-        ):
+        if index >= len(roots):
             raise _Refused(_coded(409, "source-changed", SOURCES_CHANGED))
-        root_key = _favorite_root_key(roots[index])
+        if index not in sources:
+            sources[index] = (
+                self._gallery_root_scope(roots[index], index),
+                _favorite_root_key(roots[index]),
+            )
+        current, root_key = sources[index]
+        if not hmac.compare_digest(scope, current):
+            raise _Refused(_coded(409, "source-changed", SOURCES_CHANGED))
         key = _favorite_relative_key(relative)
         if max(len(root_key), len(key)) > MAX_KEY_LENGTH:
             # A stored key past the schema bound would fail the next restore.

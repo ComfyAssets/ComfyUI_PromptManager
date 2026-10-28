@@ -492,3 +492,110 @@ class TestCollectionListingFilter(CollectionRoutesTestCase):
         with self.assertRaises(Exception) as caught:
             await self.api.resolve_listing_filter({"collection": "77"})
         self.assertEqual(type(caught.exception).__name__, "CollectionMissing")
+
+
+class TestReviewFindings(CollectionRoutesTestCase):
+    """PR #400 review: loop work, counts snapshot, id and query rules."""
+
+    async def test_no_realpath_runs_on_the_event_loop(self):
+        import os
+        import threading
+
+        names = [f"img{n}.png" for n in range(20)]
+        self.make(*names)
+        await self.call("GET", BASE)  # warm the listing cache
+        loop_thread = threading.current_thread()
+        on_loop = []
+        real = os.path.realpath
+
+        def watched(*args, **kwargs):
+            if threading.current_thread() is loop_thread:
+                on_loop.append(args[0])
+            return real(*args, **kwargs)
+
+        items = [self.item(name) for name in names]
+        cid = None
+        with patch("os.path.realpath", side_effect=watched):
+            made = await self.add(name="Set", items=items)
+            cid = made["collection"]["id"]
+            await self.call("DELETE", ITEMS, {"collection_id": cid, "items": items[:5]})
+            await self.call(
+                "GET",
+                MEMBERSHIP,
+                root_index="0",
+                root_scope=items[0]["root_scope"],
+                path="img9.png",
+            )
+            await self.call("GET", BASE)
+        self.assertEqual(on_loop, [])
+
+    async def test_missing_is_never_negative(self):
+        self.make("a.png", "b.png")
+        made = await self.add(
+            name="Set", items=[self.item("a.png"), self.item("b.png")]
+        )
+        cid = made["collection"]["id"]
+        real = self.api.db.collection_count_snapshot
+
+        def raced(root_keys):
+            members, stored = real(root_keys)
+            return members, {cid: 1}  # a remove landed between two reads
+
+        with patch.object(self.api.db, "collection_count_snapshot", side_effect=raced):
+            listed = await self.listed()
+        self.assertEqual((listed[0]["count"], listed[0]["missing"]), (2, 0))
+
+    async def test_path_ids_follow_the_listing_rule(self):
+        self.make("a.png")
+        made = await self.add(name="Set", items=[self.item("a.png")])
+        cid = made["collection"]["id"]
+        for raw in ("0", "007", f"0{cid}"):
+            with self.subTest(raw=raw):
+                await self.call("PATCH", f"{BASE}/{raw}", {"name": "x"}, 400)
+                await self.call("DELETE", f"{BASE}/{raw}", None, 400)
+        self.assertEqual(len(await self.listed()), 1)
+
+    async def test_membership_refuses_repeated_query_keys(self):
+        self.make("a.png", "b.png")
+        response = await self.client.get(
+            MEMBERSHIP
+            + f"?root_index=0&root_scope={self.scope()}&path=a.png&path=b.png"
+        )
+        self.assertEqual(response.status, 400)
+        response = await self.client.get(
+            MEMBERSHIP
+            + f"?root_index=0&root_index=0&root_scope={self.scope()}&path=a.png"
+        )
+        self.assertEqual(response.status, 400)
+
+    async def test_deleting_a_collection_leaves_everything_else(self):
+        from py.api.images import _favorite_root_key
+
+        try:
+            from tests.test_annotation_schema import insert_group_rows, table_rows
+        except ImportError:
+            from test_annotation_schema import insert_group_rows, table_rows
+
+        self.make("a.png")
+        db = self.api.db
+        db.set_image_favorite(_favorite_root_key(self.output_dir), "a.png")
+        prompt = self._save_prompt("Linked")
+        db.link_image_to_prompt(prompt, str(self.output_dir / "a.png"))
+        with db.model.get_connection() as conn:
+            insert_group_rows(conn, locator=str(self.output_dir / "a.png"))
+        made = await self.add(name="Set", items=[self.item("a.png")])
+        tables = (
+            "image_favorites",
+            "generated_images",
+            "prompts",
+            "tags",
+            "media_annotation_files",
+            "media_annotation_bytes",
+            "media_image_tags",
+        )
+        before = table_rows(db.model.get_connection(), tables)
+        file_bytes = (self.output_dir / "a.png").read_bytes()
+        await self.call("DELETE", f"{BASE}/{made['collection']['id']}")
+        self.assertEqual(table_rows(db.model.get_connection(), tables), before)
+        self.assertEqual((self.output_dir / "a.png").read_bytes(), file_bytes)
+        self.assertTrue(all(before[t] for t in tables))
