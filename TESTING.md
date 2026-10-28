@@ -5383,7 +5383,7 @@ which used to save `null` under a link.
   Primitive or through `PreviewAny`, for PromptManager, PromptManagerText, Focused, Split
   and the Pair (positive, negative, both, neither linked, and a Primitive negative). A
   wildcard Primitive on PromptManager (queued as written) and Focused (one choice) saves
-  and counts what was queued. The linked text is saved, counted once, recorded as
+  and counts what was queued. The linked text is saved, counted once per job, recorded as
   the run's raw positive/negative, and after a scan the run's image links to it. Text
   only known at run time (`PreviewAny`) cannot be read from the image; the case only
   requires that it is never linked to another prompt (its attribution from the recorded
@@ -5395,6 +5395,39 @@ npm run --prefix tools/vendor test:workflows -- classic-node.spec.mjs focused-no
   --project chromium --project touch --project firefox --project webkit
 PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:comfyui -- text-link
 PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:executions -- execution-text-link
+```
+
+## Cached runtime-linked runs (#347)
+
+Text only known at run time (a `PreviewAny` or LLM link, a list node) is counted by the
+node when it executes; the queue hook cannot read it. When ComfyUI serves such a node from
+its output cache, `utils/cached_runs.py` counts the job instead: every execution records
+a receipt (digests of its STRING outputs and hashes of the text it stores, per run key and
+queue item), and on `execution_cached` the receipt whose digests equal the cache entry's
+text is replayed once. The role (positive, negative, which Pair outputs are used) and what
+the hook already saw are recomputed from the job's own graph, and the node and replay
+decide through the same `own_counts`.
+
+- Fail closed: no receipt in this process (after a restart, an external cache provider),
+  changed cached text, more than 64 list values, a node the job's outputs do not need, or
+  a host without the queue/executor interfaces: nothing is counted, as before #347.
+- A cached node counts at job start like the hook: a job failing later still counts it.
+  A node that executes after its replay in the same job (RAM-pressure freed the entry)
+  skips its own count but still consumes the pending first-use catch-up.
+- No backfill: earlier cached jobs keep their counts. The history page's "tracked runs"
+  can stay below the Library count for these prompts (#403).
+- Tests: `tests/test_cached_runs.py` (whole jobs with the real nodes, a real database,
+  fake host caches); `tests/comfyui/execution-text-link.spec.mjs` "#347" cases on the
+  managed host: PreviewAny into each node kind, 3 jobs changing only the sampler seed,
+  count 3 in both renderers; in one renderer the Classic, LRU, RAM-pressure and no-cache
+  modes, A, B, A from the owned `PMCycledText` under LRU, typed text, a downstream
+  failure, a "run selected output" job that does not need the node, and a rewire to the
+  negative input. The RAM-pressure eviction path cannot be forced on a real host and is
+  covered by the Python tests.
+
+```sh
+python3 -m unittest discover -s tests -p "test_cached_runs.py"
+PM_COMFY_ROOT=... PM_TEST_PYTHON=... npm run --prefix tools/vendor test:executions -- execution-text-link --grep "#347"
 ```
 
 ## Durable execution ledger
