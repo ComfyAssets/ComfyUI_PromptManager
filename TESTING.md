@@ -5170,8 +5170,10 @@ settle lookup, a newer due reference kept, evictions logged, one link per file),
 `tests/test_settings_sources.py` `TestSaveForeignRunsSetting`, and the real-host
 `tests/comfyui/image-attribution.spec.mjs` case "an output of a workflow without a
 PromptManager node creates and links its prompt; a second run reuses it" (ComfyUI's
-own `CLIPTextEncode`, `KSampler` and `SaveImage`; the fixture route's GET also lists
-`foreign`, the waiting foreign files).
+own `CLIPTextEncode`, `KSampler` and `SaveImage`), and "each branch of a
+shared-prefix workflow without a PromptManager node links to its own prompt after the
+run" (two branches, one save prefix: the recorded saver names each file's branch).
+The fixture route's GET also lists `foreign`, the waiting foreign files.
 
 ## Linked prompt text (#343)
 

@@ -168,3 +168,38 @@ test('an output of a workflow without a PromptManager node creates and links its
     // Decided from the graph at settle: nothing waits for the run's recorded outputs.
     expect((await (await execution.request.get('/pm_execution_fixture/monitor')).json()).foreign).toEqual([]);
 });
+
+// CUJ 1: two branches saved under one prefix, so neither the graph nor the file name
+// names a file's branch; the run's recorded saver does, once its outputs are sealed.
+function sharedPrefixGraph(texts) {
+    const nodes = {
+        '10': { class_type: 'PMHistoryInputs', inputs: {} },
+        '30': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['10', 0] } },
+    };
+    texts.forEach((text, index) => {
+        const base = (index + 1) * 100;
+        nodes[String(base)] = { class_type: 'CLIPTextEncode', inputs: { text, clip: ['10', 0] } };
+        nodes[String(base + 1)] = { class_type: 'KSampler', inputs: { model: ['10', 1], latent_image: ['10', 2],
+            positive: [String(base), 0], negative: ['30', 0], seed: index + 1, steps: 1, cfg: 1, sampler_name: 'euler',
+            scheduler: 'normal', denoise: 1 } };
+        nodes[String(base + 2)] = { class_type: 'PMHistoryImages', inputs: { value: 64, batch: 1, latent: [String(base + 1), 0] } };
+        nodes[String(base + 3)] = { class_type: 'SaveImage', inputs: { images: [String(base + 2), 0], filename_prefix: 'foreign/dataset' } };
+    });
+    return nodes;
+}
+
+test('each branch of a shared-prefix workflow without a PromptManager node links to its own prompt after the run', async ({ execution }, testInfo) => {
+    const tag = `${testInfo.project.name} ${randomUUID()}`;
+    const texts = [`dataset branch one harbor ${tag}`, `dataset branch two meadow ${tag}`];
+    const id = randomUUID();
+    const response = await execution.request.post('/prompt', { data: { prompt: sharedPrefixGraph(texts), prompt_id: id } });
+    expect(response.ok()).toBe(true);
+    let item;
+    await expect.poll(async () => {
+        item = (await (await execution.request.get(`/history/${id}`)).json())[id];
+        return item?.status?.messages?.some(([kind]) => kind === 'execution_success') || false;
+    }, { timeout: 15000 }).toBe(true);
+    const files = ['103', '203'].map(node => item.outputs[node].images[0].filename);
+    for (const [index, file] of files.entries()) await linkedTo(execution, file, texts[index]);
+    expect((await (await execution.request.get('/pm_execution_fixture/monitor')).json()).foreign).toEqual([]);
+});
