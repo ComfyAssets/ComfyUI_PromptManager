@@ -92,6 +92,11 @@ try:
 except ImportError:  # tests import the package top-level
     from utils.parallel import map_parallel, note_refusal, refused_at_shutdown
 
+try:
+    from ...utils.exit_signal import ExitRequested
+except ImportError:  # tests import the package top-level
+    from utils.exit_signal import ExitRequested
+
 # The placeholder frame a video without a preview is answered with (JPEG
 # bytes, never written to disk); written previews follow the settings.
 PLACEHOLDER_SIZE = (thumbnail_settings.DEFAULT_EDGE, thumbnail_settings.DEFAULT_EDGE)
@@ -460,6 +465,8 @@ class AutoThumbnailer:
     def _run(self):
         try:
             self._drain()
+        except ExitRequested:
+            pass  # #376: the interpreter is exiting; queued files are dropped
         except Exception:
             self._logger.warning("The automatic preview worker stopped", exc_info=True)
         finally:
