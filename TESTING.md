@@ -5508,8 +5508,26 @@ decide through the same `own_counts`.
 - A cached node counts at job start like the hook: a job failing later still counts it.
   A node that executes after its replay in the same job (RAM-pressure freed the entry)
   skips its own count but still consumes the pending first-use catch-up.
-- No backfill: earlier cached jobs keep their counts. The history page's "tracked runs"
-  can stay below the Library count for these prompts (#403).
+- No backfill: earlier cached jobs keep their counts.
+- History (#403): the receipt also keeps the raw, prepend and append text the node gave
+  the history capture. For a cached node whose graph inference leaves a field unknown,
+  the capture takes it from the receipt matching the cache entry
+  (`CachedRuns.recorded_fields`), as `inferred` / `graph_semantics`: the node did not run
+  in this job, the value follows from the run key (the whole upstream closure) plus the
+  cache proof. The job then joins the prompt's history scope, gets the
+  `positive_prompt_id` (and Pair) hint, and an image of it can be attributed through its
+  run, so the history page's "tracked runs" equals the Library count from the restart on.
+  Fail closed (fields stay unknown, as before): no matching receipt, a receipt that
+  disagrees with a field the graph knows, executions with equal outputs that recorded
+  different fields (a conflict that stays for that run key), a field over 64 KiB or
+  invalid Unicode, more than one run's history (1 MiB) in one receipt, or a full 8 MiB
+  field budget (least recently used receipts give up their fields first; their counting
+  stays). No new evidence vocabulary, so older builds still open the database.
+- Still different: jobs before the restart (no backfill); list batches (per item in the
+  Library, once per job in history); text with leading or trailing whitespace (the
+  Library stores it stripped, history matches the exact raw text); a job in which the
+  node executes after its replay (RAM-pressure freed the entry: two samples, an
+  ambiguous capture); jobs while the history writer is fenced (restore, library move).
 - Tests: `tests/test_cached_runs.py` (whole jobs with the real nodes, a real database,
   fake host caches); `tests/comfyui/execution-text-link.spec.mjs` "#347" cases on the
   managed host: PreviewAny into each node kind, 3 jobs changing only the sampler seed,
@@ -5517,7 +5535,10 @@ decide through the same `own_counts`.
   modes, A, B, A from the owned `PMCycledText` under LRU, typed text, a downstream
   failure, a "run selected output" job that does not need the node, and a rewire to the
   negative input. The RAM-pressure eviction path cannot be forced on a real host and is
-  covered by the Python tests.
+  covered by the Python tests. Since #403 these cases also check the history page's
+  tracked runs equal the Library count, and `tests/test_execution_history_hooks.py`
+  (`CachedRuntimeHistoryTests`) runs the real history hook and writer with a real
+  `CachedRuns`.
 
 ```sh
 python3 -m unittest discover -s tests -p "test_cached_runs.py"
@@ -5616,10 +5637,12 @@ Context cases verify A,A,B as three jobs/two combinations/one positive snapshot
 when every positive field matches; all five registered PM variants; exact raw
 whitespace and Unicode; known empty negatives; Text negative roles and crossed
 pairs; fully cached repeats after trigger configuration changes; successful source
-text before downstream failure/interruption; unknown cached dynamic raw; unsupported
+text before downstream failure/interruption; cached dynamic raw from the reused execution (#403); unsupported
 transforms and duplicate list invocation ambiguity. Fresh values use
 `runtime_return`, cached effective STRING outputs use `host_cache_output`, and
-submitted literals use graph inference. SQL NULL means unknown; empty text is
+submitted literals use graph inference. A cached dynamic raw is unknown unless the
+#347 receipt of the execution the cache entry comes from proves it; it is then
+`inferred` / `graph_semantics` (graph identity plus a same-process cache receipt, #403). SQL NULL means unknown; empty text is
 known. Text is never trimmed or normalized by capture. Cache availability and
 inferred sampler roles prove neither sampler execution nor consumption, and list
 indices do not identify generated images. External trigger configuration changes
