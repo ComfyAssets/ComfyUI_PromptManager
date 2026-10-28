@@ -567,6 +567,36 @@ test('an input dialog with a fallback applies it for an empty value', async () =
     }
 });
 
+// #331 D138: Add to collection offers the existing names through a datalist linked to the field.
+test('an input dialog with suggestions links a datalist that leaves with the dialog', async () => {
+    const { openInputDialog, closeWorkspaceDialog } = await dialogsModule;
+    const dom = fakeDOM();
+    const scope = (await coreModule).createScope();
+    try {
+        openInputDialog({ scope, title: 'Add selected images to collection', label: 'Collection name', action: 'Add',
+            maxLength: 100, suggestions: ['Landscapes', 'Experiments'], onApply() {} });
+        const [field] = byId(dom, 'modal-body').children;
+        assert.deepEqual(tags(field), ['label', 'input', 'datalist']);
+        const [, input, list] = field.children;
+        assert.equal(list.id, 'action-input-suggestions');
+        assert.equal(input.getAttribute('list'), 'action-input-suggestions');
+        assert.deepEqual(list.children.map(option => [option.tagName, option.value]), [['OPTION', 'Landscapes'], ['OPTION', 'Experiments']]);
+        // The next dialog without suggestions has no list: the datalist went with the replaced body.
+        openInputDialog({ scope, title: 'Save this view', label: 'View name', action: 'Save', onApply() {} });
+        assert.equal(dom.all(node => node.tagName === 'DATALIST').length, 0);
+        assert.equal(byId(dom, 'action-input').getAttribute('list'), null);
+        // An empty list adds nothing either; a non-text suggestion is refused.
+        openInputDialog({ scope, title: 'T', label: 'L', action: 'A', suggestions: [], onApply() {} });
+        assert.equal(dom.all(node => node.tagName === 'DATALIST').length, 0);
+        assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', suggestions: [1], onApply() {} }), TypeError);
+        assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', suggestions: 'A', onApply() {} }), TypeError);
+    } finally {
+        closeWorkspaceDialog();
+        scope.dispose();
+        dom.restore();
+    }
+});
+
 test('dialogs restore focus to the trigger on Escape', async () => {
     const { openRefineDialog, openImportDialog, openCopyFallback, closeWorkspaceDialog } = await dialogsModule;
     const dom = fakeDOM();

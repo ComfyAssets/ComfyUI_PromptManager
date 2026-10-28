@@ -321,10 +321,11 @@ export function openCopyFallback(text, { scope, trigger = null, title = 'Copy pr
  * `action`. The action reports the trimmed value and closes; an empty value keeps the dialog open on its field, or
  * reports `fallback` when one is given (Save view's "Saved view", a1339). A positive `maxLength` limits the field.
  * `validate(value)` may refuse a value with a message: the dialog then stays open with the typed text and the field
- * reports the message (its native validity) until it is edited.
+ * reports the message (its native validity) until it is edited. `suggestions` (text) adds a `datalist` the field
+ * lists, as Add to collection offers the existing names (#331 D138); the field still takes any text.
  */
 export function openInputDialog({ scope, title, label, action, value = '', maxLength, fallback, onApply, trigger = null,
-    validate = null }) {
+    validate = null, suggestions = [] }) {
     requireScope(scope);
     requireCallbacks({ onApply });
     if (validate !== null) requireCallbacks({ validate });
@@ -333,6 +334,9 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
     }
     if (fallback !== undefined && (typeof fallback !== 'string' || !fallback.trim())) {
         throw new TypeError('The input dialog fallback must be text');
+    }
+    if (!Array.isArray(suggestions) || suggestions.some(item => typeof item !== 'string')) {
+        throw new TypeError('The input dialog suggestions must be text');
     }
     const input = el('input');
     input.value = typeof value === 'string' ? value : '';
@@ -356,7 +360,15 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
     });
     const actions = el('div', undefined, 'dialog-actions');
     actions.append(cancel, apply);
-    show(title, [field(label, input, 'action-input'), actions], { scope, trigger, focusTarget: input });
+    const row = field(label, input, 'action-input');
+    if (suggestions.length) {
+        const list = el('datalist');
+        list.id = 'action-input-suggestions';
+        list.append(...suggestions.map(text => Object.assign(el('option'), { value: text })));
+        input.setAttribute('list', list.id);
+        row.append(list);
+    }
+    show(title, [row, actions], { scope, trigger, focusTarget: input });
 }
 
 /**

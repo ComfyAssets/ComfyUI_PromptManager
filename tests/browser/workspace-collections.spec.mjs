@@ -330,3 +330,193 @@ test('renaming a collection deleted in another tab says so and shows the deleted
     await expect(description(page)).toHaveText('This collection no longer exists.');
     await expect(rows(page)).toHaveCount(1);
 });
+
+// #331 D138 (design §7): the selection bar's Add to collection and Remove from collection.
+const bar = page => page.locator('#bulkbar > .bulkbar');
+const barButton = (page, name) => bar(page).getByRole('button', { name, exact: true });
+const addDialog = page => page.getByRole('dialog', { name: 'Add selected images to collection', exact: true });
+const addField = page => addDialog(page).getByRole('combobox', { name: 'Collection name', exact: true });
+const check = (page, file) => page.getByRole('checkbox', { name: `Select ${file}`, exact: true }).check();
+const card = (page, path) => page.locator(`article[data-image-key$=":${path}"]`);
+
+/** Add the checked images under `name` through the bar's dialog. */
+async function addChecked(page, name) {
+    await barButton(page, 'Add to collection').click();
+    await expect(addDialog(page)).toBeVisible();
+    await addField(page).fill(name);
+    await addDialog(page).getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(addDialog(page)).toHaveCount(0);
+}
+
+test('Add to collection creates a collection and adds to it ignoring case (CUJ 1–3)', async ({ page, request }) => {
+    await seed(request);
+    await page.goto(`${workspace}#/images`);
+    await expect(imageCards(page)).toHaveCount(21);
+    for (const file of ['loose.png', 'landscape_01.png', 'experiment_01.png']) await check(page, file);
+    await expect(bar(page).locator('button')).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection',
+        'Export metadata', 'Clear']);
+    await barButton(page, 'Add to collection').click();
+    // The concept's simpleInput with Add (D138) and the existing names as suggestions.
+    await expect(addDialog(page).locator('label')).toHaveText('Collection name');
+    await expect(addField(page)).toHaveValue('');
+    await expect(addField(page)).toHaveAttribute('maxlength', '100');
+    await expect(addDialog(page).locator('datalist option')).toHaveCount(2);
+    expect(await addDialog(page).locator('datalist option').evaluateAll(options => options.map(option => option.value)))
+        .toEqual(['Experiments', 'Landscapes']);
+    await expect(addDialog(page).locator('.dialog-actions button')).toHaveText(['Cancel', 'Add']);
+    // An empty name keeps the dialog on its field.
+    await addDialog(page).getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(addField(page)).toBeFocused();
+    await addField(page).fill('  LoRa   testing ');
+    await addDialog(page).getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(toast(page)).toHaveText('Added 3 images to “LoRa testing”.');
+    await expect(bar(page).locator('strong')).toHaveText('3 selected');
+    await expect(row(page, 'LoRa testing').locator('.nav-count')).toHaveText('3');
+    await expect(rows(page)).toHaveCount(3);
+
+    // CUJ 2: one of two already in it.
+    await bar(page).getByRole('button', { name: 'Clear', exact: true }).click();
+    await check(page, 'loose.png');
+    await check(page, 'landscape_02.png');
+    await addChecked(page, 'LoRa testing');
+    await expect(toast(page)).toHaveText('Added 1 image to “LoRa testing”. 1 was already in it.');
+    await expect(row(page, 'LoRa testing').locator('.nav-count')).toHaveText('4');
+
+    // CUJ 3: a case variant joins the same collection.
+    await bar(page).getByRole('button', { name: 'Clear', exact: true }).click();
+    await check(page, 'landscape_03.png');
+    await addChecked(page, 'lora TESTING');
+    await expect(toast(page)).toHaveText('Added 1 image to “LoRa testing”.');
+    await expect(rows(page)).toHaveCount(3);
+    await expect(row(page, 'LoRa testing').locator('.nav-count')).toHaveText('5');
+    const created = (await listed(request)).find(item => item.name === 'LoRa testing');
+    expect(created).toMatchObject({ count: 5, missing: 0 });
+
+    // Everything already in it.
+    await addChecked(page, 'LoRa testing');
+    await expect(toast(page)).toHaveText('All selected images were already in “LoRa testing”.');
+});
+
+test('Remove from collection takes the checked images off the open collection (CUJ 5)', async ({ page, request }) => {
+    const manifest = await seed(request);
+    const { id } = manifest.collections.Landscapes;
+    await page.goto(`${workspace}#/collection/${id}`);
+    await expect(imageCards(page)).toHaveCount(12);
+    await check(page, 'landscape_01.png');
+    await check(page, 'landscape_02.png');
+    await expect(bar(page).locator('button')).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection',
+        'Remove from collection', 'Export metadata', 'Clear']);
+    await barButton(page, 'Remove from collection').click();
+    await expect(toast(page)).toHaveText('Removed 2 images from “Landscapes”.');
+    await expect(imageCards(page)).toHaveCount(10);
+    await expect(card(page, 'collections/landscape_01.png')).toHaveCount(0);
+    // The removed files left the listing, so the bar has nothing checked.
+    await expect(bar(page)).toHaveCount(0);
+    await expect(row(page, 'Landscapes').locator('.nav-count')).toHaveText('10');
+    // A checked file still listed stays checked across the reload.
+    await check(page, 'landscape_03.png');
+    await check(page, 'landscape_04.png');
+    await page.route(`**${API}/items`, async route => {
+        if (route.request().method() !== 'DELETE') return route.fallback();
+        // Remove only landscape_04; landscape_03 stays listed and checked.
+        const body = route.request().postDataJSON();
+        await route.continue({ postData: JSON.stringify({ ...body, items: body.items.filter(item => item.path.endsWith('_04.png')) }) });
+    });
+    await barButton(page, 'Remove from collection').click();
+    await expect(toast(page)).toHaveText('Removed 1 image from “Landscapes”.');
+    await expect(imageCards(page)).toHaveCount(9);
+    await expect(bar(page).locator('strong')).toHaveText('1 selected');
+    await expect(page.getByRole('checkbox', { name: 'Select landscape_03.png', exact: true })).toBeChecked();
+    // No file changed: the plain Images page still lists all of them.
+    await page.goto(`${workspace}#/images`);
+    await expect(imageCards(page)).toHaveCount(21);
+});
+
+test('Images without a collection filter has no Remove from collection', async ({ page, request }) => {
+    const manifest = await seed(request);
+    await page.goto(`${workspace}#/images`);
+    await check(page, 'loose.png');
+    await expect(barButton(page, 'Add to collection')).toBeVisible();
+    await expect(barButton(page, 'Remove from collection')).toHaveCount(0);
+    // A saved view on a collection has its filter active: Remove shows (design §5).
+    await page.goto(`${workspace}#/saved/${manifest.saved_view.id}`);
+    await expect(imageCards(page)).toHaveCount(8);
+    await check(page, 'experiment_01.png');
+    await barButton(page, 'Remove from collection').click();
+    await expect(toast(page)).toHaveText('Removed 1 image from “Experiments”.');
+    await expect(imageCards(page)).toHaveCount(7);
+});
+
+test('a failed add keeps the selection; a stale source reloads the images', async ({ page, request }) => {
+    await seed(request);
+    await page.goto(`${workspace}#/images`);
+    await expect(imageCards(page)).toHaveCount(21);
+    let reply = { status: 500, body: { success: false, error: 'The collection could not be changed.' } };
+    await page.route(`**${API}/items`, route => route.fulfill({ status: reply.status, contentType: 'application/json',
+        body: JSON.stringify(reply.body) }));
+    await check(page, 'loose.png');
+    await check(page, 'landscape_05.png');
+    await addChecked(page, 'Grids');
+    await expect(toast(page)).toHaveText('The images could not be added. Try again.');
+    await expect(bar(page).locator('strong')).toHaveText('2 selected');
+    await expect(rows(page)).toHaveCount(2);
+
+    reply = { status: 404, body: { success: false, code: 'files-not-found', error: 'x' } };
+    await addChecked(page, 'Grids');
+    await expect(toast(page)).toHaveText('None of the selected images could be found. Refresh the images and try again.');
+    await expect(bar(page).locator('strong')).toHaveText('2 selected');
+
+    reply = { status: 409, body: { success: false, code: 'source-changed', error: 'x' } };
+    const reloaded = page.waitForRequest(request => request.url().includes('/prompt_manager/gallery/subfolders'));
+    await addChecked(page, 'Grids');
+    await expect(toast(page)).toHaveText('The sources changed. Refresh the images and try again.');
+    await reloaded;
+    await expect(imageCards(page)).toHaveCount(21);
+    await expect(bar(page)).toHaveCount(0);
+});
+
+test('more than 500 or an unloaded "all matching" selection is refused with the cap', async ({ page, request }) => {
+    await seed(request);
+    await page.goto(`${workspace}#/images`);
+    await expect(imageCards(page)).toHaveCount(21);
+    // Every loaded image checked and the listing says more match: "Select all N matching" (#392, D135).
+    await page.route('**/prompt_manager/images/output?*', async route => {
+        // A next page never answers, so the listing stays at its loaded 21 of 900.
+        if (new URL(route.request().url()).searchParams.has('cursor')) return;
+        const response = await route.fetch();
+        const data = await response.json();
+        await route.fulfill({ response, json: { ...data, total: 900, has_more: true, next_cursor: 'more' } });
+    });
+    await page.reload();
+    await expect(imageCards(page)).toHaveCount(21);
+    await page.locator('#image-grid .image-open').first().focus();
+    await page.keyboard.press('ControlOrMeta+a');
+    await bar(page).getByRole('button', { name: 'Select all 900 matching', exact: true }).click();
+    await expect(bar(page).locator('strong')).toHaveText('All 900 matching selected');
+    await barButton(page, 'Add to collection').click();
+    await expect(toast(page)).toHaveText('Select at most 500 images.');
+    await expect(addDialog(page)).toHaveCount(0);
+});
+
+for (const theme of ['dark', 'light']) {
+    test(`the Add to collection dialog fits 390x844 ${theme}`, async ({ page, request }) => {
+        await seed(request);
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${workspace}#/images`);
+        await page.getByRole('combobox', { name: 'Theme', exact: true }).selectOption(theme);
+        await check(page, 'loose.png');
+        await expect(barButton(page, 'Add to collection')).toBeVisible();
+        await barButton(page, 'Add to collection').click();
+        await expect(addDialog(page)).toBeVisible();
+        const fits = await addDialog(page).evaluate(dialog => {
+            const box = dialog.getBoundingClientRect();
+            return box.left >= 0 && box.right <= window.innerWidth && dialog.scrollWidth <= dialog.clientWidth;
+        });
+        expect(fits).toBe(true);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await addField(page).fill('Phone');
+        await addDialog(page).getByRole('button', { name: 'Add', exact: true }).click();
+        await expect(toast(page)).toHaveText('Added 1 image to “Phone”.');
+        await expect(row(page, 'Phone')).toBeVisible();
+    });
+}

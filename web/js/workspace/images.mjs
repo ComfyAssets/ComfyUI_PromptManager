@@ -102,10 +102,12 @@ export function selectedImage() {
  * Images last visit. `collection` (an id) is a collection page (#331 D137): only its members are listed, favorites is
  * off, and it neither restores nor replaces the last visit either. A listing that answers `collection-not-found` calls
  * `onCollectionMissing()` when given (the shell shows its deleted-collection page); otherwise (a saved view on a
- * deleted collection, D140) the page lists nothing and says so.
+ * deleted collection, D140) the page lists nothing and says so. `collections` (the shell's client store) adds the
+ * selection bar's Add to collection, and Remove from collection while a collection is open (D138).
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
-    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null} = {}) {
+    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null,
+    collections = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -271,7 +273,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         getFilter:() => {
             const filter = listingFilter(filters), scope = state?.items[0]?.root_scope;
             return filter.root !== undefined && typeof scope === 'string' ? {...filter, root_scope:scope} : filter;
-        }});
+        },
+        // #331 D138: Add to collection, and Remove from collection on an open collection, which then lists it again.
+        collections, collection:filters.collection || null, onCollectionsChanged:collectionChanged,
+        onSourceChanged:refreshInspectionCollection});
     if (bar) main.append(bar.element);
     main.append(body);
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
@@ -681,6 +686,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const {top, bottom} = optionsStatus.getBoundingClientRect();
         const band = parseFloat(getComputedStyle(optionsStatus).scrollMarginBlockEnd) || 0;
         if (bottom > innerHeight - band && top < innerHeight) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
+    }
+    /**
+     * A confirmed collection change that may change this listing (a remove from the open collection): the loaded range
+     * is read again in place, keeping the scroll and the checked files still listed. A failed re-read lists the page
+     * again from its start, whose failure shows the usual Retry (or the deleted-collection page).
+     */
+    async function collectionChanged() {
+        if (scope.signal.aborted || !filters.collection || recovering) return;
+        try {
+            await stream.refresh();
+        } catch {
+            if (!scope.signal.aborted) reset();
+        }
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;

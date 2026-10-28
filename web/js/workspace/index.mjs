@@ -381,7 +381,7 @@ function mountWorkspace() {
         if (route.id === 'images' || route.id === 'favorites' || route.id === 'collection') {
             mountNewPromptAction(main, api, view);
             images = mountImages(main, api, view, {savedState:saved?.state, favorites:route.id === 'favorites',
-                collection, onCollectionMissing, onSaveView:saveView('images', view), activity});
+                collection, onCollectionMissing, onSaveView:saveView('images', view), activity, collections});
             return;
         }
         if (route.id === 'library') {

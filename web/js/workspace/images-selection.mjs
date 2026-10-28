@@ -7,6 +7,7 @@ import { openInputDialog } from './workspace-dialogs.mjs';
 import { MAX_FILTER_IMAGES, TOO_MANY_MATCHING, openAddTags, openAutoTag } from './images-tagging-bulk.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { applyKeys, createLongPress, matchingLabel, matchingOffer, offersAllMatching, rangeKeys } from './images-multiselect.mjs';
+import { openAddToCollection, removeFromCollection } from './images-collections.mjs';
 
 const CHECKBOX = '.image-overlays input[type="checkbox"]';
 const CHECKBOX_LABEL = '.image-overlays > label';
@@ -41,9 +42,14 @@ function el(tag, text, className) {
  * `clear` serve the grid's keys (images.mjs). `getListing()` gives `{total, hasMore, positiveCount}` and
  * `getFilter()` the listing filter: once every loaded image is checked and more match, the bar offers "Select all N
  * matching", whose actions send that filter to the server.
+ *
+ * Collections (#331 D138, design §7): with the client store `collections`, Add to collection follows Set category;
+ * while a collection filter is active (`collection`, its id) Remove from collection follows it, and a confirmed remove
+ * calls `onCollectionsChanged()` to reload the listing. A stale source on either calls `onSourceChanged()`.
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
-    getListing, getFilter, checked: initial = Object.freeze(new Set()) }) {
+    getListing, getFilter, checked: initial = Object.freeze(new Set()), collections = null, collection = null,
+    onCollectionsChanged = () => {}, onSourceChanged = () => {} }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     // D135: the range anchor, "all N matching" mode, touch selection mode and a pending Shift+click on a checkbox.
@@ -74,7 +80,19 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
             ...matchingTarget() }));
         bulk.append(addTags, autoTag);
     }
-    bulk.append(setCategory, exportMetadata, clearButton);
+    bulk.append(setCategory);
+    if (collections) {
+        const addToCollection = createButton('Add to collection');
+        scope.listen(addToCollection, 'click', () => openAddToCollection({ scope, collections, images: checkedImages(),
+            trigger: addToCollection, ...collectionSelection(), onSourceChanged }));
+        bulk.append(addToCollection);
+    }
+    if (collections && collection) {
+        const removeButton = createButton('Remove from collection');
+        scope.listen(removeButton, 'click', () => removeChecked(removeButton));
+        bulk.append(removeButton);
+    }
+    bulk.append(exportMetadata, clearButton);
 
     /** The count updates in place: the same bar and `strong`, its text written only when it changes. */
     function render() {
@@ -141,6 +159,24 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     /** The actions' images for "all N matching": the listing filter and its total, which the server resolves. */
     function matchingTarget() {
         return allMatching ? { filter: getFilter(), count: getListing().total } : {};
+    }
+    /** The collection actions' view of "all N matching" (#331 ruling): the loaded images and the match count. */
+    function collectionSelection() {
+        return { allMatching, total: allMatching ? getListing().total : checked.size };
+    }
+    /** Remove from collection: one write at a time; the selection stays (a reload keeps what is still listed). */
+    let removing = false;
+    async function removeChecked(button) {
+        if (removing) return;
+        removing = true;
+        const release = busy(button);
+        try {
+            await removeFromCollection({ scope, collections, collectionId: Number(collection), images: checkedImages(),
+                ...collectionSelection(), onChanged: onCollectionsChanged, onSourceChanged });
+        } finally {
+            removing = false;
+            release();
+        }
     }
     /** Toggle one image on its own; it becomes the anchor. */
     function toggle(key, on = !isChecked(key)) {
