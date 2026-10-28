@@ -278,6 +278,7 @@ test('record rejects root path media and invalid versioned fields with retryable
         data => { data.resolution.sampler_id = {}; },
         data => { data.library.tags_scope = 'recipe'; },
         data => { data.library.category_scope = 'recipe'; },
+        data => { data.library.tags_scope = 'image'; },
         data => { delete data.library.category_scope; },
         data => { delete data.library.tags_scope; },
     ]) {
@@ -941,4 +942,15 @@ test("names the server quotes (parentheses, '!*') still match their original and
     const record = toRecord(envelope(entry), entry, extractGenerationFacts);
     assert.equal(record.download.url, entry.url);
     assert.deepEqual(record.preview, { url: entry.thumbnail_url });
+});
+
+test('record accepts an image\'s own category on any link status (#332)', () => {
+    const toRecord = contract('toInspectionRecord');
+    for (const status of ['linked', 'none', 'ambiguous', 'unavailable']) {
+        const data = envelope();
+        Object.assign(data.library, { status, category: 'Scans', category_scope: 'image' });
+        const record = toRecord(data, image(), extractGenerationFacts);
+        assert.equal(record.library.category, 'Scans');
+        assert.equal(record.library.category_scope, 'image');
+    }
 });

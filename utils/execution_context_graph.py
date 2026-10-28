@@ -3,7 +3,12 @@
 import re
 from dataclasses import dataclass
 from .execution_contexts import PromptSnapshot, TextEvidence, text_size
+from .prompt_graph import save_setting
 from .prompt_pair_resolver import _DEFAULT_ADAPTERS
+
+# A role whose PromptManager source has save_to_library off, or wired from a
+# node the graph cannot read: no text is recorded for it (#90)
+NOT_SAVED = "not_saved"
 
 
 @dataclass(frozen=True)
@@ -332,6 +337,11 @@ class _Projector:
             self.transformed = False
             # Only the capture-source-to-consumer path determines transforms.
             sources = self.discover_sources(value, "conditioning")
+            if any(
+                save_setting(self.graph, source.node_id) is not True
+                for source in sources
+            ):
+                return GraphRole((), None, NOT_SAVED)
             snapshot, _ = self.text(value, "conditioning")
             return GraphRole(
                 sources, snapshot, "source-transformed" if self.transformed else ""

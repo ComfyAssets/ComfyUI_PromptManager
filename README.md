@@ -312,6 +312,12 @@ Both nodes support the same metadata fields:
 
 Both nodes will automatically save prompts to the database and link any generated images to the prompt.
 
+- **Save to library** (`save_to_library`, on by default; "Save to library" in the Focused, Split and Pair editors):
+  turn it off while iterating and PromptManager ignores that node's runs. The prompt is not saved, the run is not
+  counted and its images are not linked (a scan skips them too), while the node's output is unchanged. Workflows
+  saved before this switch existed load with it on. If any PromptManager node feeding a sampler's positive input
+  has it off, none of that run's images are linked, because the image cannot show which sampler produced it.
+
 ### 🖼️ Using the Output-Wide Gallery
 
 The comprehensive gallery system provides complete access to all your ComfyUI output:
