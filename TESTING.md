@@ -4510,7 +4510,11 @@ category; without one it shows the category its link supplies.
   - 409 `source-changed`: a stale `root_scope`;
   - 413: a body over 1 MiB.
   Any invalid item fails the whole request before a write. Targets that fold to one
-  key are written and counted once.
+  key are written and counted once. Instead of `items` a request may send `filter`,
+  the Images listing's own query ("Select all N matching", #392, keys as in
+  `parse_listing_filter`), resolved now: over 500 matches is a 400
+  `too-many-images` ("Select at most 500 images."), a renumbered source a 409
+  `source-changed`.
 - PUT writes only files the source's listing holds and counts the rest in
   `not_found`; when none is listed it answers 404 `files-not-found` and writes
   nothing. A file that already has the value counts as `unchanged` and keeps its

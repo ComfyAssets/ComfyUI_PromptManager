@@ -6,6 +6,8 @@ category can still be removed); ``GET /prompt_manager/images/categories``
 lists the own-category values of files the sources list. Targets are the
 Images listing identity (``{root_index, root_scope, path}``, checked by
 ``media_target``) of an output source; LoRA folders are not sources here.
+Instead of ``items`` a request may name ``filter``, the Images listing's own
+query ("Select all N matching", #392), resolved now up to 500 images.
 Each file is stored under its file key (``images.image_category_key``).
 These routes never read or write prompts, recipes or image links.
 """
@@ -33,8 +35,9 @@ except ImportError:
     from utils.validators import validate_category
 
 CATEGORY_MEDIA_MESSAGE = "Only media files can have a category"
-_PUT_FIELDS = frozenset({"items", "category"})
-_DELETE_FIELDS = frozenset({"items"})
+_PUT_FIELDS = frozenset({"category"})
+_DELETE_FIELDS = frozenset()
+TOO_MANY = f"Select at most {MAX_JOB_TARGETS} images."
 SOURCE_CHANGED_MESSAGE = "The sources changed. Refresh the images and try again."
 WRITE_FAILED = "The category could not be changed."
 READ_FAILED = "Image categories could not be read."
@@ -196,20 +199,53 @@ class ImageCategoryRoutesMixin:
 
     # -- writing ---------------------------------------------------------------
 
+    async def _filter_targets(self, raw):
+        """``(targets, None)`` for an Images listing filter, else ``(None, error)``.
+
+        "Select all N matching" (#392) sends the listing's own query; it is
+        resolved now, up to 500 images (a 400 ``too-many-images`` above).
+        """
+        from .images import ListingSourceChanged, parse_listing_filter
+
+        try:
+            selection = await self.resolve_listing_filter(
+                parse_listing_filter(raw), MAX_JOB_TARGETS
+            )
+        except ListingSourceChanged:
+            return None, _coded(409, "source-changed", SOURCE_CHANGED_MESSAGE)
+        except ValueError as exc:
+            return None, bad_request(str(exc))
+        if selection.truncated:
+            return None, _coded(400, "too-many-images", TOO_MANY)
+        return tuple(selection.targets), None
+
     async def _category_request(self, request, fields: frozenset):
-        """``(data, targets, roots, None)`` or ``(None, None, None, error)``."""
+        """``(data, targets, roots, None)`` or ``(None, None, None, error)``.
+
+        The images are ``items`` (1 to 500 targets) or ``filter`` (all images
+        an Images listing filter admits), besides *fields*.
+        """
         data, error = await _json_body_or_error(request)
         if error is not None:
             return None, None, None, error
-        if set(data) != fields:
+        names = set(data) - fields
+        if set(data) & fields != fields or names not in ({"items"}, {"filter"}):
             return (
                 None,
                 None,
                 None,
                 bad_request(
-                    "Request must contain exactly " + ", ".join(sorted(fields))
+                    "Request must contain "
+                    + ", ".join(sorted(fields))
+                    + (" and " if fields else "")
+                    + "either items or filter"
                 ),
             )
+        if "filter" in data:
+            targets, error = await self._filter_targets(data["filter"])
+            if error is not None:
+                return None, None, None, error
+            return data, targets, list(self._get_all_output_dirs()), None
         items = data["items"]
         if not isinstance(items, list) or not 1 <= len(items) <= MAX_JOB_TARGETS:
             return (
