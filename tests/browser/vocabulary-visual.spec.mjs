@@ -150,6 +150,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
     const manifest=await seed(request,{image_categories:true});
     expect(manifest.image_categories).toEqual(IMAGE_CATEGORIES.images);
     await openConceptRoute(page,'tags',theme);await expect(page.locator('#main h1')).toHaveText('Tags & categories');
+    await page.mouse.move(0,0);
     const reference=await pageOf(page,false);
     await conceptWithImageCounts(page);
     const oracle=await pageOf(page,false);
@@ -161,6 +162,8 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
 
     await open(page,theme,manifest.tags.length);
     await expect(categoryOperation(page,'Portraits')).toHaveCount(1);
+    // The pointer still rests where the concept's Review was pressed: park it so no row is hovered.
+    await page.mouse.move(0,0);
     const actual=await pageOf(page,true);
     await captureCanonicalState(page,testInfo,`production-image-categories-${width}-${theme}`,'#workspace-main');
     const box=await openDialog(page,categoryOperation(page,'Manage category').getByRole('button',{name:'Review',exact:true}));
