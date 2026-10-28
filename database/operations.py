@@ -2597,11 +2597,14 @@ class PromptDatabase(
         grows with the database's matching linked rows (about 530 bytes each,
         freed on return); the result is bounded by *wanted* (the listing's
         normalized paths) when given. Where the JSON step fails (no JSON
-        functions, a BLOB value) the rows are streamed as before.
+        functions, a BLOB value, a JSON text over SQLite's length limit) the
+        rows are streamed as before.
         """
         sql, params = link_filter_query(q, category, tags, every_link=every_link)
         with self.model.get_connection() as conn:
-            rows = None if _one_step_unsupported else self._link_rows(conn, sql, params)
+            rows = None
+            if not _one_step_unsupported:
+                rows = self._one_step_link_rows(conn, sql, params)
             if rows is None:
                 return _streamed_link_matches(conn, sql, params, wanted)
         return {
@@ -2610,10 +2613,14 @@ class PromptDatabase(
             if wanted is None or path in wanted
         }
 
-    def _link_rows(
+    def _one_step_link_rows(
         self, conn: sqlite3.Connection, sql: str, params: Dict[str, Any]
     ) -> Optional[List[List[Any]]]:
-        """*sql*'s rows from one JSON value, or None when this read must stream."""
+        """*sql*'s rows from one JSON value, or None when this read must stream.
+
+        An interrupted read (Move library retiring the connection) is raised
+        as before, never retried row by row.
+        """
         global _one_step_unsupported, _one_step_warned
         error: Optional[str] = None
         try:
@@ -2622,8 +2629,11 @@ class PromptDatabase(
                 ((document,),) = cursor.fetchall()
             finally:
                 cursor.close()  # resets the statement: its snapshot ends now
-        except sqlite3.OperationalError as failure:
+        except (sqlite3.OperationalError, sqlite3.DataError) as failure:
+            # DataError: the JSON text is longer than SQLITE_LIMIT_LENGTH.
             error = str(failure)
+            if error == "interrupted":
+                raise
             if error.startswith("no such function"):
                 _one_step_unsupported = True
         else:

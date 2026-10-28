@@ -9,6 +9,7 @@ the fallback, on every filter and on odd values.
 
 import itertools
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -209,8 +210,8 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
                 )
                 self.assertEqual(actual, expected)
                 self.assertEqual(
-                    [type(value) for row in actual.values() for value in row],
-                    [type(value) for row in expected.values() for value in row],
+                    {path: tuple(map(type, row)) for path, row in actual.items()},
+                    {path: tuple(map(type, row)) for path, row in expected.items()},
                 )
                 found = self.selects()
                 self.assertEqual(len(found), 1, found)
@@ -237,6 +238,23 @@ class TestOneStepLinkRead(LinkMatchesTestCase):
             self.db.get_image_link_matches("", None, [], every_link=True, wanted=set()),
             {},
         )
+
+    def test_read_releases_its_snapshot(self):
+        # A statement left open after the read would pin its WAL snapshot, and
+        # a TRUNCATE checkpoint from another connection would report busy.
+        self.seed()
+        self.assertTrue(self.db.get_image_link_matches("", None, [], every_link=True))
+        other = sqlite3.connect(str(self.root / "prompts.db"))
+        try:
+            other.execute("UPDATE prompts SET rating=2 WHERE id=1")
+            other.commit()
+            busy, _log, _done = other.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+        finally:
+            other.close()
+        self.assertEqual(busy, 0)
+        self.assertEqual(os.path.getsize(self.root / "prompts.db-wal"), 0)
 
     def test_wrapped_query_keeps_the_ambiguity_probe_an_index_search(self):
         self.seed()
@@ -330,13 +348,51 @@ class TestStreamedFallback(LinkMatchesTestCase):
                 self.db.get_image_link_matches("", None, [], every_link=True), expected
             )
 
+    def test_json_text_over_the_length_limit_streams(self):
+        self.seed()
+        expected = self.streamed("", None, [], True)
+        conn = self.db.model.get_connection()
+        limit = conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 200)
+        try:
+            with self.assertLogs(LOGGER, "WARNING") as logged:
+                actual = self.db.get_image_link_matches("", None, [], every_link=True)
+        finally:
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limit)
+        self.assertEqual(actual, expected)
+        self.assertIn("too big", logged.output[0])
+        self.assertFalse(operations._one_step_unsupported)
+
+    def test_an_interrupted_read_raises_without_a_fallback(self):
+        # Move library interrupts a retired connection: the read fails as
+        # before, and the one warning is kept for a real fallback.
+        self.seed()
+        conn = self.db.model.get_connection()
+        conn.set_progress_handler(lambda: 1, 1)
+        self.statements.clear()
+        try:
+            with (
+                self.assertNoLogs(LOGGER, "WARNING"),
+                self.assertRaisesRegex(sqlite3.OperationalError, "^interrupted$"),
+            ):
+                self.db.get_image_link_matches("", None, [], every_link=True)
+        finally:
+            conn.set_progress_handler(None, 1)
+        self.assertFalse(operations._one_step_warned)
+        self.assertFalse(operations._one_step_unsupported)
+        self.assertFalse([s for s in self.statements if "json_group_array" not in s])
+
+    def test_the_maintenance_link_rows_reader_is_not_shadowed(self):
+        from database.maintenance import MaintenanceOperations
+
+        self.assertIs(PromptDatabase._link_rows, MaintenanceOperations._link_rows)
+
     def test_a_failed_streamed_read_still_raises(self):
         with (
             patch.object(operations, "_LINK_MATCHES_JSON_SQL", MISSING_FUNCTION_SQL),
             patch.object(operations, "_LINK_FILTER_SQL", "SELECT broken FROM nowhere"),
             self.assertLogs(LOGGER, "WARNING"),
         ):
-            with self.assertRaises(operations.sqlite3.OperationalError):
+            with self.assertRaises(sqlite3.OperationalError):
                 self.db.get_image_link_matches("", None, [], every_link=True)
 
 
