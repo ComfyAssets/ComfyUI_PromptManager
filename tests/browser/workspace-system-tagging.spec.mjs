@@ -123,6 +123,32 @@ test('model options are the four real engines with size and the description show
     await expect(actionOf(page, 'Unload')).toBeDisabled();
 });
 
+const NEEDS_LLAMA = 'GGUF JoyCaption needs llama-cpp-python. Install it into ComfyUI\'s Python: pip install llama-cpp-python. '
+    + 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python';
+
+test('a downloaded model whose backend package is missing says so and is not offered as ready (#424)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/models', { data: { unavailable: ['wd14-vit'],
+        missing_packages: { gguf: ['llama-cpp-python'], 'wd14-vit': ['onnxruntime'] } } })).toBeOK();
+    await openTagging(page);
+    const line = modelRow(page).locator('p').first();
+    await page.locator('#tag-model').selectOption('gguf');
+    await expect(line).toHaveText('Downloaded. Needs llama-cpp-python: pip install llama-cpp-python. '
+        + 'For a CUDA build: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python');
+    // Files and packages are separate: Download (again) stays offered.
+    await expect(actionOf(page, 'Download again')).not.toHaveAttribute('aria-disabled', 'true');
+    // Review explains instead of reviewing; nothing is previewed.
+    await expect(reviewButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await reviewButton(page).dispatchEvent('click');
+    await expect(toast(page)).toHaveText(NEEDS_LLAMA);
+    expect(page.modelCalls.filter(call => call.endsWith('/autotag/batch/preview'))).toEqual([]);
+    // Not downloaded reads differently and still names what it will need.
+    await page.locator('#tag-model').selectOption('wd14-vit');
+    await expect(line).toHaveText('Not downloaded. Download size ~400 MB. Also needs onnxruntime.');
+    await page.locator('#tag-model').selectOption('wd14-swinv2');
+    await expect(line).toHaveText('Downloaded. Not loaded.');
+    await expect(reviewButton(page)).not.toHaveAttribute('aria-disabled', 'true');
+});
+
 test('entering the section makes no model call besides status', async ({ page }) => {
     await openTagging(page);
     await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Integrations', exact: true }).click();

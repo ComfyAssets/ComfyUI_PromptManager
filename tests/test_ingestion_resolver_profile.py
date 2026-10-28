@@ -1,9 +1,11 @@
-"""Ingestion keeps the default resolver profile; only inspection routes moved (D1).
+"""Ingestion decides with the default resolver profile first (D1, #247 D-Q1).
 
 The live monitor and the admin scan write pairs and links to the user's
-database, so their resolver semantics stay byte-for-byte today's. f03 (506
-executable nodes) separates the profiles: the default profile's 500-node gate
-leaves it unresolved, while the inspection profile resolves it.
+database, so the default profile decides every file it can, byte-for-byte as
+before. f03 (506 executable nodes) separates the profiles: the default
+profile's 500-node gate leaves it unresolved, while the inspection profile
+resolves it. Only such an undecided file reaches the inspector's resolve
+(``inspection_resolution``), and only its positive is stored (#247).
 """
 
 import logging
@@ -68,24 +70,26 @@ class TestIngestionKeepsDefaultProfile(unittest.TestCase):
         spy.assert_default_and_gated(self)
         handler.db_manager.link_image_to_prompt_or_raise.assert_called_once()
 
-    def test_admin_scan_ingestion_uses_the_default_profile(self):
+    def test_admin_scan_ingestion_uses_the_default_profile_first(self):
         from py.api import admin
+        from utils import file_prompt
 
         mixin = admin.AdminRoutesMixin.__new__(admin.AdminRoutesMixin)
         mixin.db = Mock()
-        mixin.db.get_prompt_by_hash.return_value = None
-        mixin.db.save_prompt.return_value = 7
         spy = _Spy()
-        with patch.object(admin, "resolve_prompt_pair", spy):
+        with (
+            patch.object(file_prompt, "resolve_prompt_pair", spy),
+            patch.object(
+                admin, "store_scanned_prompt", return_value=("added", 7)
+            ) as store,
+        ):
             status = mixin._ingest_scanned_file(Path("/out/f03.png"), _f03_metadata())
         spy.assert_default_and_gated(self)
-        # The resolver leaves f03 unresolved; the scan links the prompt the
-        # browser parser traces, as the inspector shows it.
+        # The default profile leaves f03 unresolved; the inspector's resolve
+        # names the prompt the inspector shows, and the scan stores it.
         self.assertEqual(status, "added")
-        self.assertEqual(
-            mixin.db.save_prompt.call_args.args[0], "a red fox in snow, detailed fur"
-        )
-        mixin.db.link_image_to_prompt.assert_called_once()
+        self.assertEqual(store.call_args.args[3], "a red fox in snow, detailed fur")
+        mixin.db.link_image_to_prompt.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -5342,6 +5342,75 @@ same as a file the scan could not attribute, so the file stays on disk and in th
 gallery as unlinked, and its favorite and tags (kept by file) are untouched. Every
 run prints this. Queue-linked batch images can't be proven after the fact and read
 `unlink`, so review before applying. Stop ComfyUI first.
+
+### Foreign workflows (#247): the shared per-file decision
+
+The output scan decides each file through `utils/file_prompt.py`
+(`decide_file_prompt`, the ladder), which the monitor will share for outputs of
+workflows without a PromptManager node. It does no file or database I/O.
+
+- **Save to library (#90).** Before anything else, a file whose PromptManager
+  node had Save to library off is `not_saved`, and one whose switch is wired
+  from a node the file cannot show is `not_saved_wired`: nothing is written, no
+  recorded-run fallback, no Needs review item. A resolved pair whose negative's
+  node is off stores the positive alone (source `opted-out-negative`). The
+  #90 graph walk follows only prompt-like inputs, so the ladder also walks
+  every input upstream of each sampler or guider positive (not negative, model,
+  clip, latent or image inputs; every PromptManager node of a graph without a
+  sampler) and checks the text later steps name: a resolved or inspected
+  positive whose path passes such a node (`side_opted_out`), or a legacy answer
+  that is such a node's text (resolved, else literal). A switch that is off
+  makes the file `not_saved`; one wired from a node the graph cannot read makes
+  it `not_saved_wired`, as #90's direct check does.
+- **Order.** The default profile decides first, exactly as before (resolved
+  pair, A1111, sampler-less). Only a graph it leaves ambiguous or unresolved
+  reaches the inspector's resolve (`inspection_resolution` in
+  `utils/prompt_inspector.py`, the inspection profile, then the recorded saver
+  anchor of #386; `name_anchor=False`: the file-name anchor never decides a
+  link; the scan's legacy floor may still link the file, as before #247, and a
+  file nothing links is queued with the anchor's choice per #390), and only that positive's `storage_text` is stored (never
+  prepend or append text, never `recorded_texts`). Then the #170 browser parser
+  (`graph_prompt_text`), the legacy floor, then the recorded run's stored
+  prompt. The legacy answer is refused when a PromptManager-family node has a
+  prepend or append part and the answer is not that node's own `text` (the
+  parser joins the parts, so the stored text cannot be told from it). History is asked once per file and only at that step; the scan's
+  batch lookup stays lazy and makes one `recorded_runs` pass for the stored
+  prompt and the saver (`_BatchHistory`).
+- **Policies.** `SCAN` keeps the legacy floor for every undecided file.
+  `MONITOR` waits for history inside the output folder (`history`) and stores
+  nothing for a file the inspector calls ambiguous; an untraceable or
+  malformed one still gets the legacy floor.
+- **Junk.** `junk_text` refuses `blank`, `number` (the #252 `_numeric` rule),
+  `lora-only` (only `<lora:...>` tags and separators) and `model-file` (one
+  token ending in a model extension) at whichever step found the text and
+  nothing later is tried; the file reports `found`, except at the undecided
+  graph step, which keeps its own status (an ambiguous file is still queued).
+- **One prompt per file.** `database/scanned_prompts.py` stores a positive in
+  one `BEGIN IMMEDIATE` transaction: a file already linked to another prompt
+  (either spelling, `file_link_rows`/`link_conflict`, the pair ingester's rule)
+  is `conflict` and nothing is written; a failed link rolls the new prompt back
+  (`found`); two writers of one text store one prompt. A recorded run's stored
+  prompt links the same way (`link_stored_prompt_or_raise`). A rescan therefore
+  never adds a second link to a file an older scan linked to the legacy answer;
+  the row reads "Kept: already linked to a different prompt". Link rows are
+  matched under the path and its `realpath` spelling (`file_link_rows`), so a
+  file the scan stored through the resolved folder is found when it arrives
+  through a symlinked or junction folder. The reverse order (a row stored under
+  the watcher's raw spelling, then a scan whose root resolves differently) is
+  matched only when that raw spelling equals the realpath. Every scan write
+  runs through `survive_library_switch`, so a library move reruns it.
+- **Marks.** Every prompt ingestion creates, pair components included, carries
+  category `scanned`, tag `auto-scanned` and the note `Auto-scanned from
+  <file>` (`SCAN_MARKS`); a reused prompt keeps its fields. Run counts are
+  never touched.
+
+Tests: `tests/test_file_prompt.py` (one test per ladder step and junk class),
+`tests/test_scanned_prompts.py` (store, conflict, rollback, concurrency with
+`FirstWriterHold`, pair marks), `tests/test_pair_scan.py` `TestScanDecision`,
+`tests/test_run_attribution.py` (dataset branches linked by the recorded
+saver, a legacy-linked file left as it is, `_BatchHistory.recorded`) and
+`tests/test_recorded_saver_anchor.py` `TestInspectionResolution`.
+
 ## Linked prompt text (#343)
 
 A link drives `text` on every PromptManager node, and `negative_text` on the Pair,

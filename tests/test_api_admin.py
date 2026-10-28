@@ -2205,24 +2205,30 @@ class TestOutputScanInternals(AdminAPITestCase):
         self.assertEqual(self.api._ingest_scanned_file(f, meta), "unchanged")
 
     def test_ingest_link_failures_are_tolerated(self):
+        """A failed link rolls the new prompt back: found, nothing left behind."""
         f = Path("gen.png")
         meta = {"prompt": json.dumps(_wired_prompt("a dog"))}
-        self.api.db.link_image_to_prompt = _raise
-        self.assertEqual(self.api._ingest_scanned_file(f, meta), "added")
-        self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+        self.api.db._insert_image_link = _raise
+        with self.assertLogs("prompt_manager.database.scanned_prompts", "ERROR"):
+            self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+            self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+        self.assertEqual(self.api.db.get_recent_prompts()["prompts"], [])
 
     def test_ingest_save_failure_counts_as_found(self):
         f = Path("gen.png")
         meta = {"prompt": json.dumps(_wired_prompt("a bird"))}
-        self.api.db.save_prompt = lambda *a, **k: None
-        self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+        with patch(
+            "py.api.admin.store_scanned_prompt", return_value=("found", None)
+        ) as store:
+            self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
+        self.assertEqual(store.call_args.args[3], "a bird")
 
     def test_batch_counts_and_per_file_errors(self):
         meta = {"prompt": json.dumps(_wired_prompt("a fish"))}
-        self.api.db.get_prompt_by_hash = _raise
-        counts = self.api._ingest_scan_batch_sync(
-            [(Path("a.png"), meta), (Path("b.png"), {})]
-        )
+        with patch("py.api.admin.store_scanned_prompt", side_effect=_raise):
+            counts = self.api._ingest_scan_batch_sync(
+                [(Path("a.png"), meta), (Path("b.png"), {})]
+            )
         self.assertEqual(
             counts,
             {
