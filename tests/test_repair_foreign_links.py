@@ -734,6 +734,125 @@ class BlockerTests(RepairFixture):
             conn.close()
 
 
+def _off_text_node(text, save=False):
+    return {
+        "class_type": "PromptManagerText",
+        "inputs": {"text": text, "save_to_library": save},
+    }
+
+
+def _encode_from(source):
+    return {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"text": source, "clip": ["1", 1]},
+    }
+
+
+def off_behind_pass_through(branch=2):
+    """The dataset graph with ``branch``'s text coming from a switched-off
+    PromptManagerText through a pass-through the #90 walk does not follow."""
+    graph = shapes.shared_prefix()
+    graph["50"] = _off_text_node(TEXTS[branch - 1])
+    graph["51"] = {"class_type": "MyNode", "inputs": {"value": ["50", 0]}}
+    graph[str(branch * 10)] = _encode_from(["51", 0])
+    return graph
+
+
+def off_target(branch=2, save=False):
+    """``branch``'s text straight from a PromptManagerText whose switch is
+    ``save`` (False, or a link to a node the graph cannot read)."""
+    graph = shapes.shared_prefix()
+    graph["50"] = _off_text_node(TEXTS[branch - 1], save)
+    graph[str(branch * 10)] = _encode_from(["50", 0])
+    if isinstance(save, list):
+        graph["52"] = {"class_type": "SomeBoolNode", "inputs": {}}
+    return graph
+
+
+def off_negative_only():
+    """Every branch's negative from a switched-off PromptManagerText."""
+    graph = shapes.shared_prefix()
+    graph["50"] = _off_text_node(shapes.NEGATIVE)
+    graph["3"] = _encode_from(["50", 0])
+    return graph
+
+
+class SaveToLibraryTests(RecordedRuns, unittest.TestCase):
+    """#90: the repair never relinks a file to a switched-off node's text.
+
+    The plan decides each file through ``decide_file_prompt``; every answer
+    but a positive from the recorded saver or the inspector is a skip, so a
+    ``not_saved`` or ``not_saved_wired`` file is never written. Each file is
+    reported by a run without contexts (as a cached or unrecorded run is),
+    so only the ladder can stop it. Saver "23" is branch 2.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.addCleanup(assert_closed, self, self.tmp)
+        self.addCleanup(PromptModel.reset_schema_cache)
+        self.output = os.path.join(self.tmp, "output")
+        os.makedirs(os.path.join(self.output, "dataset"))
+        self.db_path = os.path.join(self.tmp, "prompts.db")
+
+    def plan_for(self, graph):
+        path = os.path.join(self.output, "dataset", NAME.format(1))
+        png(path, graph)
+        db = PromptDatabase(self.db_path)
+        try:
+            wrong = db.save_prompt(
+                text=TEXTS[0], prompt_hash=generate_prompt_hash(TEXTS[0])
+            )
+            db.link_image_to_prompt(wrong, path, metadata={})
+            self.record_run(
+                db, self.output, [("dataset", NAME.format(1))], [], nodes=["23"]
+            )
+            plan = tool.build_plan(db, self.output, self.db_path)
+        finally:
+            db.close_all()
+        (item,) = plan["rows"]
+        return item
+
+    def test_an_off_node_behind_a_pass_through_is_skipped(self):
+        item = self.plan_for(off_behind_pass_through())
+        self.assertEqual(item["action"], "skip")
+        self.assertEqual(item["decision"], "not_saved/none")
+        self.assertNotIn("target_text", item)
+
+    def test_an_off_node_in_the_recorded_run_target_is_skipped(self):
+        cases = {
+            "off": (False, "not_saved/none"),
+            "wired": (["52", 0], "not_saved_wired/none"),
+        }
+        for name, (save, decision) in cases.items():
+            with self.subTest(name):
+                if os.path.exists(self.db_path):
+                    os.remove(self.db_path)
+                item = self.plan_for(off_target(save=save))
+                self.assertEqual(item["action"], "skip")
+                self.assertEqual(item["decision"], decision)
+
+    def test_an_off_node_on_another_branch_still_skips_the_file(self):
+        """The ladder judges the file's whole graph: any switched-off text
+        upstream of a positive makes the file not saved."""
+        item = self.plan_for(off_target(branch=3))
+        self.assertEqual(item["action"], "skip")
+        self.assertEqual(item["decision"], "not_saved/none")
+
+    def test_an_off_node_wired_only_to_the_negative_still_repairs(self):
+        item = self.plan_for(off_negative_only())
+        self.assertEqual(item["action"], "relink")
+        self.assertEqual(item["source"], "recorded-run")
+        self.assertEqual(item["target_text"], TEXTS[1])
+
+    def test_a_switched_on_node_in_the_target_still_repairs(self):
+        """Regression guard: a switch that is on is no reason to skip."""
+        item = self.plan_for(off_target(save=True))
+        self.assertEqual(item["action"], "relink")
+        self.assertEqual(item["target_text"], TEXTS[1])
+
+
 class ActionTests(unittest.TestCase):
     """Only the recorded saver relinks; a certain step naming the linked
     prompt keeps it; the legacy floor and the rest are skipped."""
@@ -748,6 +867,9 @@ class ActionTests(unittest.TestCase):
             (Decision("positive", "linked", source="legacy-parser"), "skip"),
             (Decision("pair", "linked", source="resolver"), "skip"),
             (Decision("never"), "skip"),
+            (Decision("not_saved"), "skip"),
+            (Decision("not_saved_wired"), "skip"),
+            (Decision("positive", "other", source="opted-out-negative"), "skip"),
         ]
         for decision, action in cases:
             with self.subTest(decision.source, text=decision.text):
