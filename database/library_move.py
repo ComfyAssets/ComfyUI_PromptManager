@@ -56,9 +56,11 @@ from .models import BUSY_TIMEOUT_SECONDS, PromptModel
 try:
     from ..utils import library_location as ll
     from ..utils.logging_config import get_logger
+    from ..utils.workspace_keys import KEY_FILE_NAME
 except ImportError:
     from utils import library_location as ll
     from utils.logging_config import get_logger
+    from utils.workspace_keys import KEY_FILE_NAME
 
 logger = get_logger("prompt_manager.database.library_move")
 
@@ -491,7 +493,8 @@ class _Move:
         sweep_move_temps(target)
         if ll.read_marker(target).get("state") == ll.MARKER_PENDING:
             # An earlier move stopped before it switched: its files are ours.
-            for name in (ll.DATABASE_NAME, ll.CONFIG_NAME) + self.plan.backups:
+            names = (ll.DATABASE_NAME, ll.CONFIG_NAME, KEY_FILE_NAME)
+            for name in names + self.plan.backups:
                 _remove(os.path.join(target, name))
             for suffix in ("-wal", "-shm", "-journal"):
                 _remove(os.path.join(target, ll.DATABASE_NAME + suffix))
@@ -536,6 +539,7 @@ class _Move:
                 raise MoveFailed("copy-failed") from error
             _check_copies([(self.plan.config_path, temp, expected)])
             copies = copies + [(self.plan.config_path, temp, expected, ll.CONFIG_NAME)]
+        copies = copies + self._key_copy()
         self.marker = write_marker(
             target, ll.MARKER_PENDING, self.plan.db_path, self.plan.config_path
         )
@@ -555,6 +559,28 @@ class _Move:
         self.moved = True
         self.checkpoint("marked")
         return files
+
+    def _key_copy(self) -> list:
+        """The workspace key's verified copy (#430), or none: it is re-creatable.
+
+        Without it the moved library starts with a new key, so pages left open
+        across the restart refresh once; that never fails the move.
+        """
+        source = os.path.join(self.plan.source_dir, KEY_FILE_NAME)
+        if not os.path.isfile(source):
+            return []
+        temp = self.temp(".key")
+        try:
+            expected = _hash_copy(source, temp)
+            _check_copies([(source, temp, expected)])
+        except (OSError, MoveFailed) as error:
+            _remove(temp)
+            logger.warning(
+                f"Library move: the workspace key was not copied ({error}); "
+                "open workspace pages refresh once after the restart"
+            )
+            return []
+        return [(source, temp, expected, KEY_FILE_NAME)]
 
     def cleanup(self) -> None:
         if self.moved:

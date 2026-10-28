@@ -2556,9 +2556,10 @@ class TestRootScopeServing(ImageAPITestCase):
         listing = await self.client.get("/prompt_manager/images/output?mode=workspace")
         descriptor = (await listing.json())["images"][0]
         self.assertRegex(descriptor.get("root_scope", ""), r"^[0-9a-f]{64}$")
-        with patch.object(
-            images_module, "_WORKSPACE_CURSOR_SECRET", b"different-process-key"
-        ):
+        from utils.workspace_keys import WorkspaceKeys
+
+        rotated = WorkspaceKeys(b"n" * 32, b"m" * 32, False)
+        with patch.object(self.api, "_workspace_keys", return_value=rotated):
             await self.assert_no_access("image.png", scope=descriptor["root_scope"])
         self.api._get_all_output_dirs = lambda: []
         await self.assert_no_access("image.png", scope=descriptor["root_scope"])

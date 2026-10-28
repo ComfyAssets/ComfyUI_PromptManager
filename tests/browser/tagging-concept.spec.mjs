@@ -231,6 +231,8 @@ test('paired Tag dialog captures', async ({ page, request }, testInfo) => {
     await expect(await request.post('/__test__/tagging/suggestions', { data: { scored: ALPINE } })).toBeOK();
     const save = () => tagDialog(page).locator('.dialog-actions .ca-primary').click();
     const status = () => tagDialog(page).locator('#tag-generation-status');
+    // D147: a state that blocks Save shows its reason beside the actions, not in the status line.
+    const notice = () => tagDialog(page).locator('.dialog-actions > .tag-action-notice');
 
     // Unavailable model.
     await expect(await request.post('/__test__/tagging/models', { data: { unavailable: ['wd14-swinv2'] } })).toBeOK();
@@ -269,7 +271,8 @@ test('paired Tag dialog captures', async ({ page, request }, testInfo) => {
     await saveImageTags(request, path, CONCEPT_TAGS);
     await openTagDialog(page, 'production', 'dark');
     await save();
-    await expect(status()).not.toHaveText('');
+    await expect(notice()).toHaveText('The file changed since it was previewed. Reopen the Tag dialog.');
+    await expect(status()).toHaveText('');
     await shot('production-file-changed');
     await page.unroute(writes);
     await page.keyboard.press('Escape');
@@ -278,7 +281,7 @@ test('paired Tag dialog captures', async ({ page, request }, testInfo) => {
     await page.route(writes, route => route.fulfill({ status: 504, body: 'Gateway Timeout' }));
     await openTagDialog(page, 'production', 'dark');
     await save();
-    await expect(status()).toHaveText('The save could not be confirmed. Retry sends the same tags again.');
+    await expect(notice()).toHaveText('The save could not be confirmed. Retry sends the same tags again.');
     expect((await inventory(page)).actions.buttons.map(button => [button.text, button.primary, button.disabled])).toEqual(
         [['Retry', false, false], ['Cancel', false, false], ['Save manual tags', true, true]]);
     await shot('production-unknown-outcome');
