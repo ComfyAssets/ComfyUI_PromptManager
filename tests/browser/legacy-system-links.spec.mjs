@@ -18,6 +18,8 @@ const LABELS = Object.freeze({
 // One row per System link of the design's §2 map: the page, the control's label, how to find it, the section it opens
 // and what a test must arrange before the control shows.
 const LINKS = Object.freeze([
+    { page: 'admin', label: 'Diagnostics', locate: page => page.locator('#diagnosticsBtn'), section: 'diagnostics' },
+    { page: 'admin', label: 'View Logs', locate: page => page.locator('#logsBtn'), section: 'diagnostics' },
 ]);
 
 async function post(request, url, data) {
@@ -63,8 +65,11 @@ for (const link of LINKS) {
         await control.click();
         const system = await opened;
         await expect(system).toHaveURL(new RegExp(`/prompt_manager/workspace#/system/${link.section}$`));
-        await expect(system.locator('#workspace-main').getByRole('heading', { level: 1, name: LABELS[link.section], exact: true }))
-            .toBeVisible();
+        // System's page heading is "System"; the open section is the pressed button of its section switcher.
+        const main = system.locator('#workspace-main');
+        await expect(main.getByRole('heading', { level: 1, name: 'System', exact: true })).toBeVisible();
+        await expect(main.getByRole('group', { name: 'System sections', exact: true })
+            .getByRole('button', { name: LABELS[link.section], exact: true })).toHaveAttribute('aria-pressed', 'true');
         expect(page.url()).toBe(legacyUrl);
         await system.close();
     });
