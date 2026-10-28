@@ -4595,17 +4595,20 @@ pending, undecided item of bytes now untraced leaves the queue
 (`settle_stale_review_items`), so an item never stays stuck at 409.
 Saver anchor (#390, `tests/test_review_saver_anchor.py`): the scan and Apply
 resolve with the file's name as the workspace inspector does, so the one saver
-whose `filename_prefix` names the file anchors its branch. A file whose branch
-that anchor resolves is never queued: from the inspection profile it offers no
-choice; a default-ambiguous file with a choice asks `saver_anchored` (the named
-run resolves, the unnamed one does not) and is reported `unresolved`, never
-linked. Its pending, undecided items leave on the next scan
-(`REVIEW_RULE_VERSION` is folded into inspection item versions; a default item
-is settled directly). No match, several matches or an unfinished walk anchor
-nothing, and the file stays queued as before. Apply refuses a choice the anchor
-contradicts. Measured on the maintainer's 40,890 outputs: the queue is
-unchanged (249 files); the 242 `gpu_unlock_bench` files the inspector resolves
-are linked by the parser floor, so they were never queued. The 16-candidate limited
+whose `filename_prefix` names the file anchors its branch. A file is never both
+unlinked and unqueued (maintainer ruling): when only that anchor resolves it
+(the named inspection run resolves, the unnamed one does not) and neither the
+default profile nor the parser floor links it, the scan queues it with the
+anchor's pair as its one candidate (evidence `anchor: "saver"`; the page
+preselects it), never linking it. Such an item counts as a choice for the
+untraced settle. Files already linked or resolved by the default path are
+unchanged. No match, several matches or an unfinished walk anchor nothing, and
+the file is queued as before. `REVIEW_RULE_VERSION` is folded into inspection
+item versions, so older inspection items are recorded again once. Apply accepts
+the anchored pair and refuses a choice the anchor contradicts. Measured on the
+maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
+`gpu_unlock_bench` files the inspector resolves are linked by the parser
+floor. The 16-candidate limited
 rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links

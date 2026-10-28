@@ -19,6 +19,7 @@ try:
     from tests.test_review import unlinkable_graph, write_png
     from tests.test_review_inspection import (
         PROMPTS,
+        _counted,
         InspectionTestCase,
         qwen_edit_graph,
     )
@@ -26,6 +27,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_review import unlinkable_graph, write_png
     from test_review_inspection import (
         PROMPTS,
+        _counted,
         InspectionTestCase,
         qwen_edit_graph,
     )
@@ -264,6 +266,47 @@ class TestDefaultItemsAnchor(InspectionTestCase):
         self.assertEqual(status, 409, data)
         self.assertEqual(data["code"], "review-conflict", data)
         self.assertIsNone(self._linked_text(path))
+
+    async def test_old_default_item_is_replaced_by_the_anchor_choice(self):
+        self._roots()
+        write_png(
+            self.output_dir / "side_0_00001_.png",
+            prompt=saved_unlinkable_graph("cat", "dog"),
+        )
+        with patch.object(review_capture, "_captured_inspection", return_value=None):
+            await self._scan()  # queued from the default profile, as before #390
+        (old,) = self._items()
+        self.assertEqual(old["resolver_version"], review_capture.RESOLVER_VERSION)
+
+        await self._scan("all")
+
+        (item,) = self._items()
+        self.assertNotEqual(item["id"], old["id"])
+        self.assertEqual(_only_candidate(self, item), "cat")
+
+        with _counted(review_capture, "resolve_inspection") as calls:
+            await self._scan("all")  # now queued under its version: no re-read
+        self.assertEqual(calls, [])
+        self.assertEqual([i["id"] for i in self._items()], [item["id"]])
+
+    async def test_decided_anchored_item_is_kept(self):
+        self._require_routes()
+        self._roots()
+        write_png(
+            self.output_dir / "side_0_00001_.png",
+            prompt=saved_unlinkable_graph("cat", "dog"),
+        )
+        await self._scan()
+        item, detail, observed = await self._open()
+        status, data = await self._decide(
+            item["id"], self._body(detail, observed, "unresolved")
+        )
+        self.assertEqual(status, 200, data)
+        before = (self._items(), self._decisions())
+
+        await self._scan("all")
+
+        self.assertEqual((self._items(), self._decisions()), before)
 
     async def test_apply_accepts_an_old_default_choice_the_anchor_names(self):
         self._require_routes()
