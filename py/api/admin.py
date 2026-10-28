@@ -257,6 +257,10 @@ SCAN_DETAILS = {
     "error": "Error: the file could not be processed (see the server log)",
     "found": "Metadata found, but no prompt text to store",
     "not_saved": "Skipped · its PromptManager node does not save to the library",
+    "not_saved_wired": (
+        "Skipped · its Save to library switch is wired from another node, so only "
+        "the run itself can link it"
+    ),
     None: "No prompt metadata in the file",
 }
 
@@ -1710,10 +1714,14 @@ class AdminRoutesMixin:
                 except (ValueError, TypeError):
                     # Preserve malformed metadata for conservative resolver rejection.
                     pass
-        if metadata_opted_out(canonical, unreadable=True):
-            # Save to library was off (or unreadable) for the run's prompt: no
-            # prompt, link, recorded-run fallback or Needs review item (#90)
+        if metadata_opted_out(canonical):
+            # Save to library was off for the run's prompt: no prompt, link,
+            # recorded-run fallback or Needs review item (#90)
             return "not_saved"
+        if metadata_opted_out(canonical, unreadable=True):
+            # The switch is wired from a node the file cannot show: only the
+            # live run (the node saw the value) can link it, never a scan
+            return "not_saved_wired"
         if not canonical.get("prompt") and not canonical.get("parameters"):
             return self._link_recorded_run(media_file, canonical, detailed, history)
         _with_file_size(canonical, media_file)

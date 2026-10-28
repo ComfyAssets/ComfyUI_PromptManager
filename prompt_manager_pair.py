@@ -108,7 +108,7 @@ class PromptManagerPair(PromptManagerFocused):
         )
         result = positive_conditioning, negative_conditioning, positive, negative_text
         if not save_to_library:
-            self._skip_not_saved()
+            self._skip_not_saved(prompt, unique_id)
             return result
         record_pair_execution(
             extra_pnginfo,

@@ -133,6 +133,8 @@ def _workflow_node_opted_out(node: Any) -> bool:
         return False
     if (node.get("type") or node.get("class_type")) not in PROMPT_MANAGER_TYPES:
         return False
+    if node.get("mode") in (2, 4):
+        return False  # muted or bypassed: it did not run
     values = node.get("widgets_values")
     return isinstance(values, list) and any(value is False for value in values)
 
@@ -160,7 +162,16 @@ def metadata_opted_out(metadata: Any, *, unreadable: bool = False) -> bool:
     nodes = list(metadata.get("text_encoder_nodes") or [])
     if isinstance(workflow, dict) and isinstance(workflow.get("nodes"), list):
         nodes.extend(workflow["nodes"])
-    return any(_workflow_node_opted_out(node) for node in nodes)
+        definitions = workflow.get("definitions")
+        subgraphs = (
+            definitions.get("subgraphs") if isinstance(definitions, dict) else None
+        )
+        for subgraph in subgraphs if isinstance(subgraphs, list) else []:
+            inner = subgraph.get("nodes") if isinstance(subgraph, dict) else None
+            nodes.extend(inner if isinstance(inner, list) else [])
+    # Without the executed graph the node's role is unknown: any opted-out
+    # PromptManager node opts the file out (never a guessed link).
+    return any(_workflow_node_opted_out(node) for node in nodes[:MAX_VISITS])
 
 
 def _positive_roots(graph: Dict[str, Any]) -> List[Any]:

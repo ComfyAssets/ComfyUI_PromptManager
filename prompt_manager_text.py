@@ -188,7 +188,7 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         prompt_id = None
         extended_tags = []
         if not save_to_library:
-            self._skip_not_saved()
+            self._skip_not_saved(prompt, unique_id)
         elif storage_text and storage_text.strip():
             self.logger.debug(f"Processing prompt text: {storage_text[:100]}...")
 

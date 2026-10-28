@@ -151,7 +151,8 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
         const preview = document.createElement('p'); preview.className = 'pm-editor-preview'; preview.dataset.composedPreview = ''; composed.append(preview);
         const footer = document.createElement('p'); footer.className = 'pm-editor-status'; footer.setAttribute('role','status');
         const SAVE_OFF = 'Save to library is off: runs of this node are not added to the library.';
-        function runNote(saved) { return savesToLibrary(thisNode) ? saved : SAVE_OFF; }
+        const SAVE_LINKED = 'Save to library comes from a link: runs are added to the library only while it is on.';
+        function runNote(saved) { return isConnected(SAVE_WIDGET) ? SAVE_LINKED : savesToLibrary(thisNode) ? saved : SAVE_OFF; }
         footer.textContent = runNote(pair ? 'The prompt pair is saved when this node runs, or use Save pair.' : 'Main prompt is saved when this node runs.');
         const saveConnectionNotice = pair ? document.createElement('p') : null;
         if (saveConnectionNotice) {

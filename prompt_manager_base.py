@@ -208,16 +208,23 @@ class PromptManagerBase:
             "run_id": executing_run_id(),
         }
 
-    def _skip_not_saved(self) -> None:
+    def _skip_not_saved(self, prompt_graph: Any = None, unique_id: Any = None) -> None:
         """``save_to_library`` is off: nothing is saved, counted or tracked (#90).
 
-        Nothing is marked on the tracker either: a node with its switch off is
-        no run prompt (``utils.prompt_graph``), so no image looks up its run key.
+        A literal off makes the node no run prompt (``utils.prompt_graph``), so
+        no image looks up its run key. A switch wired from a node the graph
+        cannot read keeps the node a run prompt: its run key is marked like an
+        empty editor's, so an earlier run's entry of that key never links this
+        run's images.
         """
-        self.logger.info(
+        message = (
             "Save to library is off for this node: its prompt is not saved, the "
             "run is not counted and its images are not linked"
         )
+        if isinstance(prompt_graph, dict) and unique_id is not None:
+            self._mark_untracked(prompt_graph, unique_id, message)
+        else:
+            self.logger.info(message)
 
     def _skip_empty_prompt(self, prompt_graph: Any, unique_id: Any) -> None:
         """The ``text`` editor is empty: save and track nothing (#342).

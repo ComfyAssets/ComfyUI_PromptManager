@@ -281,6 +281,39 @@ class TestNodesSaveNothing(NodeCase):
         self.assertEqual(self.db.get_prompt_by_id(prompt_id)["run_count"], 1)
 
 
+class TestWiredSwitchOffMarksItsRun(NodeCase):
+    """Review finding: a wired switch off at run time keeps the node a run prompt."""
+
+    def wired_graph(self):
+        graph = run_graph(save=["9", 0])
+        graph["9"] = {"class_type": "SomeCustomSwitch", "inputs": {}}
+        return graph
+
+    def test_an_earlier_entry_of_the_key_never_stands_in(self):
+        graph = self.wired_graph()
+        key = prompt_node_key(graph, "1")
+        node = self.node(PromptManager)
+        node.encode_prompt(
+            self.clip(), POSITIVE, prompt=graph, unique_id="1", save_to_library=True
+        )
+        node.encode_prompt(
+            self.clip(), POSITIVE, prompt=graph, unique_id="1", save_to_library=False
+        )
+        latest, _run, _count = self.tracker.keyed_snapshot()[key]
+        self.assertTrue(latest.get("placeholder"))
+
+    def test_literal_off_marks_nothing(self):
+        node = self.node(PromptManager)
+        node.encode_prompt(
+            self.clip(),
+            POSITIVE,
+            prompt=run_graph(save=False),
+            unique_id="1",
+            save_to_library=False,
+        )
+        self.assertEqual(self.tracker.keyed_snapshot(), {})
+
+
 class TestMonitorLeavesOptedOutFilesUnlinked(MonitorCase):
     def test_existing_prompt_is_not_linked_from_metadata(self):
         self.save(POSITIVE)
@@ -324,6 +357,27 @@ class TestMonitorLeavesOptedOutFilesUnlinked(MonitorCase):
         }
         state, _prompt = self.handler._find_prompt_from_metadata(metadata)
         self.assertEqual(state, "opted_out")
+
+    def test_workflow_only_ignores_muted_nodes_and_reads_subgraphs(self):
+        from utils.prompt_graph import metadata_opted_out
+
+        node = {
+            "type": "PromptManager",
+            "widgets_values": [POSITIVE, "", "", "", "", "", False],
+        }
+        self.assertFalse(
+            metadata_opted_out({"workflow": {"nodes": [{**node, "mode": 4}]}})
+        )
+        self.assertTrue(
+            metadata_opted_out(
+                {
+                    "workflow": {
+                        "nodes": [],
+                        "definitions": {"subgraphs": [{"nodes": [node]}]},
+                    }
+                }
+            )
+        )
 
     def test_unknown_setting_is_left_to_the_run(self):
         self.save(POSITIVE)
@@ -409,6 +463,13 @@ class TestScanSkipsOptedOutFiles(NodeCase):
         self.assertIsNotNone(self.db.get_prompt_by_hash(generate_prompt_hash(POSITIVE)))
         self.assertIsNone(self.db.get_prompt_by_hash(generate_prompt_hash(NEGATIVE)))
         self.assertEqual(self.count_rows("prompt_pairs"), 0)
+
+    def test_wired_switch_is_left_to_the_live_run(self):
+        graph = run_graph(save=["9", 0])
+        graph["9"] = {"class_type": "SomeCustomSwitch", "inputs": {}}
+        status = self.mixin._ingest_scanned_file(self.file, {"prompt": graph})
+        self.assertEqual(status, "not_saved_wired")
+        self.assertEqual(self.count_rows("prompts"), 0)
 
     def test_status_has_a_scan_detail(self):
         from py.api import admin
