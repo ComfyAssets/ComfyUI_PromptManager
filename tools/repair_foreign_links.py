@@ -16,18 +16,28 @@ PromptManager context:
             the legacy floor or another step decided)
 
 Dry run (the default) judges a copy of the database (SQLite backup from a
-read-only connection) and writes a JSON plan and a Markdown list beside it.
-It also rehearses the apply on that copy, to list the prompts that would
-lose every link with their remaining references. Deleting those is OFF
-unless the dry run is given ``--delete-orphans``; the choice is recorded in
-the plan. The library is never written.
+read-only connection) and writes a JSON plan and a Markdown list beside it
+(``<plan stem>.list.md``). It also rehearses the apply on a second copy, to
+list the prompts that would lose every link with their remaining
+references. Deleting those is OFF unless the dry run is given
+``--delete-orphans``; the choice is recorded in the plan and rehearsed on a
+third copy. The library is never written.
 
-``--apply <plan.json>`` (ComfyUI stopped):
+``--apply <plan.json>`` (ComfyUI stopped), only on the library the plan was
+made from (its real path, recorded in the plan):
 
-1. refuses while a ``main.py`` runs from ``--comfyui-dir`` or anything listens
-   on ``--port`` (``--rehearsal`` skips this, never for the library of that
-   ComfyUI folder);
-2. saves ``<db>.pre-247-repair_<stamp>`` (or into ``--backup-dir``);
+1. refuses unless ``--comfyui-dir`` holds ``main.py``; refuses while a
+   ``main.py`` runs from it, anything listens on ``--port``, or any other
+   process holds the library, its ``-wal`` or ``-shm`` open
+   (``tools/comfyui_stopped.py``; without /proc only with
+   ``--i-stopped-comfyui``). ``--rehearsal`` skips the process and port
+   check, never the open-file check, and never for that folder's library;
+2. saves ``<db>.pre-247-repair_<stamp>`` (or into ``--backup-dir``), never
+   over an existing file, and refuses unless the backup passes
+   ``integrity_check`` with the library's counts. Opening the library must
+   not change its schema (a newer checkout's migration): run the tool from a
+   checkout at the live code version. The running check runs once more just
+   before writing;
 3. in ONE ``BEGIN IMMEDIATE`` transaction: re-judges every planned row and
    refuses on any drift (row moved, prompt text changed, file changed, target
    stored since), creates the target prompts that do not exist (category
@@ -45,8 +55,8 @@ counts, ``integrity_check`` and ``foreign_key_check`` are printed.
     python3 tools/repair_foreign_links.py <db> --apply repair_plan.json \\
         --comfyui-dir <ComfyUI folder>
 
-Run from this repository with its venv. The process check reads /proc
-(Linux); elsewhere only the port is checked, so stop ComfyUI first.
+Run from a checkout at the live code version (after the merge: main) with
+its venv.
 """
 
 import argparse
@@ -55,7 +65,6 @@ import hashlib
 import json
 import logging
 import os
-import socket
 import sqlite3
 import sys
 import tempfile
@@ -75,6 +84,11 @@ from database.pair_ingestion import (  # noqa: E402
 )
 from database.run_attribution import recorded_output  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
+from tools.comfyui_stopped import (  # noqa: E402
+    NO_PROC,
+    comfyui_running,
+    open_by_others,
+)
 from tools.review_image_links import backup_database  # noqa: E402
 from utils.execution_outputs import snapshot_output_roots  # noqa: E402
 from utils.file_prompt import POSITIVE, Policy, decide_file_prompt  # noqa: E402
@@ -105,6 +119,7 @@ DRIFT_KEYS = (
     "current_text_sha256",
     "file_size",
     "file_mtime_ns",
+    "target_text",
     "target_hash",
     "target_prompt_id",
 )
@@ -125,29 +140,6 @@ class Refused(Exception):
 
 def sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def comfyui_running(comfyui_dir, port):
-    """What shows ComfyUI is running: ``main.py`` processes of that folder
-    (Linux /proc) and a listener on ``port``."""
-    found = []
-    folder = os.path.realpath(comfyui_dir)
-    proc = Path("/proc")
-    for pid in filter(str.isdigit, os.listdir(proc) if proc.is_dir() else ()):
-        try:
-            parts = (proc / pid / "cmdline").read_bytes().split(b"\0")
-            cwd = os.readlink(proc / pid / "cwd")
-        except OSError:
-            continue
-        if any(part.endswith(b"main.py") for part in parts) and (
-            cwd == folder or any(folder.encode() in part for part in parts)
-        ):
-            found.append(f"process {pid} (main.py in {cwd})")
-    with socket.socket() as probe:
-        probe.settimeout(1)
-        if probe.connect_ex(("127.0.0.1", port)) == 0:
-            found.append(f"something listens on port {port}")
-    return found
 
 
 def metadata_reader():
@@ -193,9 +185,10 @@ class Judge:
         """The plan entry of one ``generated_images`` row."""
         conn = self.db.model.get_connection()
         path = row["image_path"]
-        text, prompt_hash = conn.execute(
-            "SELECT text, hash FROM prompts WHERE id = ?", (row["prompt_id"],)
+        (text,) = conn.execute(
+            "SELECT text FROM prompts WHERE id = ?", (row["prompt_id"],)
         ).fetchone()
+        prompt_hash = generate_prompt_hash(text)
         item = {
             "row_id": row["id"],
             "file": path,
@@ -244,11 +237,21 @@ def action_of(decision, linked_hash):
     return "relink" if decision.source == "recorded-run" else "skip"
 
 
-def build_plan(db, output_dir, read=None):
+def library_identity(path):
+    """How a plan names its library: the case-normalized real path."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def build_plan(db, output_dir, source_db, read=None):
+    """The plan for ``db`` (a copy of ``source_db``)."""
     judge = Judge(db, output_dir, read)
+    conn = db.model.get_connection()
+    (max_row_id,) = conn.execute("SELECT MAX(id) FROM generated_images").fetchone()
     return {
         "version": PLAN_VERSION,
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "source_db": library_identity(source_db),
+        "max_row_id": max_row_id,
         "output_dir": output_dir,
         "rows": [judge.row(row) for row in foreign_rows(db, output_dir)],
         "orphans": [],
@@ -300,6 +303,10 @@ def _rejudge(conn, judge, plan):
         ).fetchone()
         if row is None:
             raise Refused(f"row {item['row_id']}: gone")
+        if generate_prompt_hash(item.get("target_text") or "") != item.get(
+            "target_hash"
+        ):
+            raise Refused(f"row {item['row_id']}: target_text does not match its hash")
         fresh = judge.row(row)
         for key in DRIFT_KEYS:
             if fresh.get(key) != item.get(key):
@@ -397,13 +404,16 @@ def _delete_orphans(conn, plan):
     return len(ids)
 
 
-def apply_plan(db, plan, read=None):
+def apply_plan(db, plan, read=None, before_write=None):
     """Write ``plan`` in one transaction; returns ``(result, orphan audit)``.
 
-    Raises ``Refused`` (and rolls back) on any drift or failed check.
+    ``before_write()`` runs just before ``BEGIN IMMEDIATE`` (the running
+    check). Raises ``Refused`` (and rolls back) on any drift or failed check.
     """
     judge = Judge(db, plan["output_dir"], read)
     relinks = [item for item in plan["rows"] if item["action"] == "relink"]
+    if before_write is not None:
+        before_write()
     with db._pair_transaction() as conn:
         _rejudge(conn, judge, plan)
         targets = _targets(conn, db, relinks)
@@ -426,9 +436,13 @@ def apply_plan(db, plan, read=None):
     return result, audit
 
 
-def counts(path):
-    """Table counts plus the integrity and foreign-key checks (read-only)."""
-    uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+def counts(path, readonly=True):
+    """Table counts plus the integrity and foreign-key checks.
+
+    Read-only for a library; the tool's own backup is opened read-write so
+    a WAL file leaves no side files behind once it closes.
+    """
+    uri = Path(os.path.abspath(path)).as_uri() + ("?mode=ro" if readonly else "")
     conn = sqlite3.connect(uri, uri=True)
     try:
         found = {
@@ -463,10 +477,17 @@ def _cell(text, limit=EXCERPT):
     return (folded if limit is None else folded[:limit]).replace("|", "\\|")
 
 
+def _relative(path, root):
+    try:
+        return os.path.relpath(path, root)
+    except ValueError:  # another drive on Windows
+        return path
+
+
 def markdown(plan, prompt_texts):
     """The maintainer's list of the plan."""
     root = plan["output_dir"]
-    rel = lambda path: os.path.relpath(path, root)  # noqa: E731
+    rel = lambda path: _relative(path, root)  # noqa: E731
     rows = plan["rows"]
     lines = [
         "# #247 repair plan (dry run)",
@@ -529,34 +550,49 @@ def markdown(plan, prompt_texts):
     return "\n".join(lines) + "\n"
 
 
+def _texts(db):
+    return dict(
+        db.model.get_connection().execute(
+            "SELECT id, text FROM prompts WHERE id IN (SELECT prompt_id "
+            "FROM generated_images)"
+        )
+    )
+
+
+def _rehearse(source, scratch, name, plan):
+    """``apply_plan`` on a fresh backup of ``source``: (counts, result, audit)."""
+    copy = os.path.join(scratch, name)
+    backup_database(source, copy)
+    db = PromptDatabase(copy)
+    try:
+        before = counts(copy)
+        result, audit = apply_plan(db, plan)
+    finally:
+        db.close_all()
+    return {"before": before, "after": counts(copy), "result": result}, audit
+
+
 def dry_run(args, out):
     with tempfile.TemporaryDirectory() as scratch:
-        copy = os.path.join(scratch, "repair.db")
+        copy = os.path.join(scratch, "judge.db")
         backup_database(args.database, copy)
         db = PromptDatabase(copy)
         try:
-            plan = build_plan(db, os.path.abspath(args.output_dir))
-            texts = dict(
-                db.model.get_connection().execute(
-                    "SELECT id, text FROM prompts WHERE id IN (SELECT prompt_id "
-                    "FROM generated_images)"
-                )
-            )
-            before = counts(copy)
-            result, audit = apply_plan(db, plan)
+            plan = build_plan(db, os.path.abspath(args.output_dir), args.database)
+            texts = _texts(db)
         finally:
             db.close_all()
-        after = counts(copy)
-    plan.update(
-        orphans=audit,
-        delete_orphans=bool(args.delete_orphans),
-        simulated={"before": before, "after": after, "result": result},
-    )
+        simulated, audit = _rehearse(args.database, scratch, "relinks.db", plan)
+        plan.update(orphans=audit, delete_orphans=bool(args.delete_orphans))
+        if plan["delete_orphans"]:
+            # The plan as the apply will write it, deletes included
+            simulated, _audit = _rehearse(args.database, scratch, "deletes.db", plan)
+    plan["simulated"] = simulated
     plan_path = Path(args.plan)
     plan_path.write_text(
         json.dumps(plan, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    list_path = plan_path.with_suffix(".md")
+    list_path = plan_path.with_name(plan_path.stem + ".list.md")
     list_path.write_text(markdown(plan, texts), encoding="utf-8")
     out.write(f"{_summary(plan)}\n")
     out.write(
@@ -571,40 +607,119 @@ def dry_run(args, out):
 
 def _is_live(database, comfyui_dir):
     live = os.path.join(comfyui_dir, *LIVE_LIBRARY)
-    return os.path.realpath(database) == os.path.realpath(live)
+    return library_identity(database) == library_identity(live)
 
 
-def apply(args, out, probe):
+def _stamp():
+    return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def schema_of(path):
+    """``sqlite_master`` and ``user_version`` from a read-only connection."""
+    uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        master = conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+        return master, conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def running_reasons(args, probe, handles):
+    """Why writing must not start now (empty: go ahead).
+
+    Another process holding the library open always counts, also in a
+    rehearsal; ComfyUI's processes and port count unless rehearsing.
+    """
+    held = [
+        reason
+        for reason in handles(args.database)
+        if not (reason == NO_PROC and args.i_stopped_comfyui)
+    ]
+    return held + ([] if args.rehearsal else probe(args.comfyui_dir, args.port))
+
+
+def _preflight(args, plan, probe, handles):
+    """The refusals before any backup or write, as a message (None: go on)."""
+    if plan.get("version") != PLAN_VERSION:
+        return "not a plan of this tool"
+    if args.rehearsal and _is_live(args.database, args.comfyui_dir):
+        return f"--rehearsal is for a copy; this is the library of {args.comfyui_dir}"
+    if plan.get("source_db") != library_identity(args.database):
+        return f"this plan was made for {plan.get('source_db')}"
+    if not os.path.isfile(os.path.join(args.comfyui_dir, "main.py")):
+        return f"no main.py in {args.comfyui_dir}: not a ComfyUI folder"
+    reasons = running_reasons(args, probe, handles)
+    if reasons:
+        return "ComfyUI may be running: " + "; ".join(reasons)
+    return None
+
+
+def _backup(args, before):
+    """The verified backup's path; raises ``Refused``."""
+    folder = args.backup_dir or os.path.dirname(os.path.abspath(args.database))
+    name = f"{os.path.basename(args.database)}.pre-247-repair_{_stamp()}"
+    backup = os.path.join(folder, name)
+    if os.path.exists(backup):
+        raise Refused(f"the backup {backup} already exists")
+    backup_database(args.database, backup)
+    saved = counts(backup, readonly=False)
+    if saved != before or saved["integrity_check"] != "ok":
+        raise Refused(f"the backup {backup} does not match the library")
+    return backup
+
+
+def _open_unchanged(path):
+    """``PromptDatabase(path)``; raises ``Refused`` when opening it changed
+    its schema (a migration of a newer checkout, committed on open)."""
+    schema = schema_of(path)
+    db = PromptDatabase(path)
+    db.model.get_connection()
+    if schema_of(path) != schema:
+        db.close_all()
+        raise Refused(
+            "opening the library with this checkout changed its schema (that "
+            "change is committed); run the tool from a checkout at the live "
+            "code version"
+        )
+    return db
+
+
+def apply(args, out, probe, handles):
     with open(args.apply, encoding="utf-8") as stream:
         plan = json.load(stream)
-    if plan.get("version") != PLAN_VERSION:
-        out.write("REFUSED: not a plan of this tool\n")
-        return 2
-    if args.rehearsal and _is_live(args.database, args.comfyui_dir):
-        out.write(
-            "REFUSED: --rehearsal is for a copy; this is the library of "
-            f"{args.comfyui_dir}\n"
-        )
-        return 2
-    running = probe(args.comfyui_dir, args.port)
-    if running and not args.rehearsal:
-        out.write("REFUSED: ComfyUI is running: " + "; ".join(running) + "\n")
+    refusal = _preflight(args, plan, probe, handles)
+    if refusal:
+        out.write(f"REFUSED: {refusal}\n")
         return 2
     if args.rehearsal:
-        out.write(f"(rehearsal on a copy; running check: {running or 'nothing'})\n")
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    folder = args.backup_dir or os.path.dirname(os.path.abspath(args.database))
-    backup = os.path.join(
-        folder, f"{os.path.basename(args.database)}.pre-247-repair_{stamp}"
-    )
-    backup_database(args.database, backup)
-    out.write(f"Backup: {backup}\n")
+        out.write("(rehearsal on a copy: ComfyUI's process and port not checked)\n")
     before = counts(args.database)
-    db = PromptDatabase(args.database)
     try:
-        result, _audit = apply_plan(db, plan)
-    except (Refused, sqlite3.Error) as error:
-        out.write(f"REFUSED (rolled back, nothing changed): {error}\n")
+        backup = _backup(args, before)
+    except Refused as error:
+        out.write(f"REFUSED: {error}\n")
+        return 2
+    out.write(f"Backup: {backup}\n")
+
+    def still_stopped():
+        reasons = running_reasons(args, probe, handles)
+        if reasons:
+            raise Refused("ComfyUI may be running: " + "; ".join(reasons))
+
+    try:
+        db = _open_unchanged(args.database)
+    except Refused as error:
+        out.write(f"REFUSED: {error}. Backup: {backup}\n")
+        return 2
+    try:
+        result, _audit = apply_plan(db, plan, before_write=still_stopped)
+    except Exception as error:
+        out.write(
+            f"REFUSED (rolled back, nothing changed): {error}. Backup: {backup}\n"
+        )
         return 2
     finally:
         db.close_all()
@@ -617,7 +732,7 @@ def apply(args, out, probe):
     return 0
 
 
-def main(argv=None, out=sys.stdout, probe=comfyui_running):
+def main(argv=None, out=sys.stdout, probe=comfyui_running, handles=open_by_others):
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("database", help="the library database (prompts.db)")
     parser.add_argument("--output-dir", help="ComfyUI's output folder (dry run)")
@@ -638,15 +753,22 @@ def main(argv=None, out=sys.stdout, probe=comfyui_running):
         action="store_true",
         help="apply to a copy while ComfyUI runs (never its own library)",
     )
+    parser.add_argument(
+        "--i-stopped-comfyui",
+        action="store_true",
+        help="without /proc: say ComfyUI is stopped (the port is still checked)",
+    )
     args = parser.parse_args(argv)
     if not os.path.isfile(args.database):
         parser.error(f"no database at {args.database}")
     if args.apply:
         if not args.comfyui_dir:
             parser.error("--apply needs --comfyui-dir (the running check)")
-        return apply(args, out, probe)
+        return apply(args, out, probe, handles)
     if not args.output_dir:
         parser.error("the dry run needs --output-dir")
+    if Path(args.plan).suffix.lower() == ".md":
+        parser.error("--plan is the JSON plan; the list is written beside it")
     return dry_run(args, out)
 
 
