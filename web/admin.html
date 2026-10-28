@@ -168,10 +168,11 @@
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Settings
                         </button>
-                        <button id="diagnosticsBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="diagnosticsBtn" href="workspace#/system/diagnostics" target="_blank" rel="noopener"
+                           title="Opens System › Diagnostics &amp; logs in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Diagnostics
-                        </button>
+                        </a>
                         <button id="maintenanceBtn"
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Maintenance
@@ -192,10 +193,11 @@
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Auto Tag
                         </button>
-                        <button id="logsBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="logsBtn" href="workspace#/system/diagnostics" target="_blank" rel="noopener"
+                           title="Opens System › Diagnostics &amp; logs in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             View Logs
-                        </button>
+                        </a>
                         <button id="metadataBtn"
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Metadata
@@ -641,37 +643,6 @@
         </div>
     </div>
 
-    <!-- Diagnostics Modal -->
-    <div id="diagnosticsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
-            <div class="p-4 border-b border-pm">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-pm">Gallery System Diagnostics</h3>
-                    <button onclick="window.admin.closeDiagnostics()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
-                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div class="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
-                <div class="flex items-center justify-between mb-3">
-                    <button id="runDiagnosticsBtn" class="px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
-                        Run Diagnostics
-                    </button>
-                    <button id="testImageLinkBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                        Test Image Link
-                    </button>
-                </div>
-                <div id="diagnosticsContent" class="space-y-3">
-                    <div class="text-center py-6 text-pm-secondary text-xs">
-                        Click "Run Diagnostics" to check the gallery system status
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Maintenance Modal -->
     <div id="maintenanceModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
@@ -863,130 +834,6 @@
             class="hidden fixed bottom-4 right-4 z-40 px-3 py-1.5 bg-pm-surface border border-pm shadow-pm rounded-pm-md text-xs text-pm hover:bg-pm-hover transition-colors">
         <span class="inline-block w-1.5 h-1.5 rounded-full bg-pm-accent mr-1.5 align-middle animate-pulse"></span><span id="scanPillText" class="align-middle">Scanning...</span>
     </button>
-
-    <!-- Logs Modal -->
-    <div id="logsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg max-w-6xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
-            <div class="p-4 border-b border-pm">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-pm">System Logs</h3>
-                    <button onclick="window.admin.closeLogs()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
-                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Log Controls -->
-            <div class="p-4 border-b border-pm">
-                <div class="grid grid-cols-1 md:grid-cols-5 gap-3 mb-3">
-                    <div>
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Log Level</label>
-                        <select id="logLevel" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                            <option value="">All Levels</option>
-                            <option value="DEBUG">Debug</option>
-                            <option value="INFO">Info</option>
-                            <option value="WARNING">Warning</option>
-                            <option value="ERROR">Error</option>
-                            <option value="CRITICAL">Critical</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Limit</label>
-                        <select id="logLimit" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                            <option value="50">Last 50</option>
-                            <option value="100" selected>Last 100</option>
-                            <option value="200">Last 200</option>
-                            <option value="500">Last 500</option>
-                        </select>
-                    </div>
-                    <div class="flex items-end">
-                        <button id="refreshLogsBtn" class="w-full px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
-                            Refresh
-                        </button>
-                    </div>
-                    <div class="flex items-end">
-                        <button id="downloadLogsBtn" class="w-full px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                            Download
-                        </button>
-                    </div>
-                    <div class="flex items-end">
-                        <button id="clearLogsBtn" class="w-full px-2.5 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
-                            Clear Logs
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Log Stats -->
-                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
-                    <div class="bg-pm-input rounded-pm-md p-2">
-                        <div class="text-[11px] text-pm-secondary">Total Logs</div>
-                        <div class="text-sm font-semibold text-pm-accent" id="logStatsTotal">-</div>
-                    </div>
-                    <div class="bg-pm-input rounded-pm-md p-2">
-                        <div class="text-[11px] text-pm-secondary">Errors</div>
-                        <div class="text-sm font-semibold text-pm-error" id="logStatsErrors">-</div>
-                    </div>
-                    <div class="bg-pm-input rounded-pm-md p-2">
-                        <div class="text-[11px] text-pm-secondary">Warnings</div>
-                        <div class="text-sm font-semibold text-pm-warning" id="logStatsWarnings">-</div>
-                    </div>
-                    <div class="bg-pm-input rounded-pm-md p-2">
-                        <div class="text-[11px] text-pm-secondary">Current Level</div>
-                        <div class="text-sm font-semibold text-pm-success" id="logStatsLevel">-</div>
-                    </div>
-                    <div class="bg-pm-input rounded-pm-md p-2">
-                        <div class="text-[11px] text-pm-secondary">Log Size</div>
-                        <div class="text-sm font-semibold text-pm" id="logStatsSize">-</div>
-                    </div>
-                </div>
-
-                <!-- Log Settings -->
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div>
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Set Log Level</label>
-                        <select id="setLogLevel" class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                            <option value="DEBUG">Debug</option>
-                            <option value="INFO" selected>Info</option>
-                            <option value="WARNING">Warning</option>
-                            <option value="ERROR">Error</option>
-                            <option value="CRITICAL">Critical</option>
-                        </select>
-                    </div>
-                    <div class="flex items-center">
-                        <label class="flex items-center gap-1.5 text-pm">
-                            <input type="checkbox" id="consoleLogging" checked class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <span class="text-xs">Console Logging</span>
-                        </label>
-                    </div>
-                    <div class="flex items-end">
-                        <button id="updateLogConfigBtn" class="w-full px-2.5 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
-                            Update Config
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Log Viewer -->
-            <div class="flex-1 overflow-hidden">
-                <div class="h-96 overflow-y-auto bg-pm-primary font-mono text-xs">
-                    <div id="logsContainer" class="p-3 space-y-0.5">
-                        <div class="text-center py-6 text-pm-muted text-xs">
-                            Click "Refresh" to load logs
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Log Files -->
-            <div class="p-4 border-t border-pm">
-                <h4 class="text-xs font-semibold text-pm-secondary uppercase tracking-wide mb-3">Log Files</h4>
-                <div id="logFilesList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Add Prompt Modal -->
     <div id="addPromptModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
@@ -1187,14 +1034,13 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 <div class="space-y-1.5">
                     <label class="flex items-center p-2.5 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
                         <input type="radio" name="autoTagMode" value="skip" checked class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                        <span class="ml-2.5 text-pm text-xs">Skip images with existing tags</span>
+                        <span class="ml-2.5 text-pm text-xs">Skip images already auto-tagged</span>
                     </label>
                     <label class="flex items-center p-2.5 bg-pm-input rounded-pm-md cursor-pointer hover:bg-pm-hover border border-pm">
                         <input type="radio" name="autoTagMode" value="retag" class="w-3.5 h-3.5 accent-[var(--pm-accent)]">
                         <span class="ml-2.5 text-pm text-xs">Re-tag all images</span>
                     </label>
                 </div>
-                <p class="text-pm-muted text-[11px] mt-1">Note: "auto-scanned" is not counted as a real tag</p>
             </div>
 
             <!-- Action Buttons -->
@@ -1293,6 +1139,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 <div class="w-full bg-pm-input rounded-full h-1.5">
                     <div id="autoTagProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
+                <p id="autoTagCloseNote" class="text-pm-muted text-[11px] mt-1.5">Closing this window stops tagging. Tags already added are kept. Prompt Manager's Activity page shows the time left.</p>
             </div>
 
             <div class="grid grid-cols-3 gap-3 mb-4">
@@ -1332,7 +1179,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
     <!-- Re-tag Confirmation Modal -->
     <div id="retagConfirmModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-3">Image Already Tagged</h3>
+            <h3 class="text-sm font-semibold text-pm mb-3">Image Already Auto-tagged</h3>
 
             <div class="mb-3">
                 <img id="retagPreviewImage" src="" alt="Preview" class="w-full h-40 object-contain bg-pm-primary rounded-pm-md">
@@ -1345,7 +1192,7 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                 </div>
             </div>
 
-            <p class="text-pm-secondary text-xs mb-4">This image already has tags. Would you like to generate new tags?</p>
+            <p class="text-pm-secondary text-xs mb-4">A tagging model already tagged this image. Generate new tags?</p>
 
             <div class="flex gap-2 justify-end">
                 <button id="retagSkipBtn"

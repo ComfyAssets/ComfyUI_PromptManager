@@ -2,7 +2,9 @@
 
 ``POST /prompt_manager/jobs/image-tags`` starts one ``image-tags`` job over
 1..500 listed images, named by the listing identity ``{root_index,
-root_scope, path}``. The job is record-changing (it writes image tag sets and
+root_scope, path}``, or over every image a listing ``filter`` admits (at most
+10,000, resolved at start in the listing's order; "Select all N matching",
+#392). The job is record-changing (it writes image tag sets and
 new vocabulary names), so it never runs beside the metadata scan.
 
 - **Add tags** (``mode: "add"``) hashes each current file and unions a fixed
@@ -54,7 +56,14 @@ from .annotations import (
     _target,
 )
 from .autotag_routes import BATCH_CANCELLED, MODEL_BUSY_ERROR, model_busy_response
-from .images import _current_fingerprint, _listing_posix, _public_path
+from .images import (
+    MAX_LISTING_SELECTION,
+    ListingSourceChanged,
+    _current_fingerprint,
+    _listing_posix,
+    _public_path,
+    parse_listing_filter,
+)
 from .job_routes import busy_response
 from .jobs import (
     AUTOTAG_BATCH_JOB_KIND,
@@ -90,6 +99,11 @@ except ImportError:
     from utils.video_metadata import is_video_path
 
 MAX_JOB_TARGETS = 500
+# A filter start resolves on the server, so the request body does not bound it.
+MAX_FILTER_TARGETS = MAX_LISTING_SELECTION
+NO_IMAGES = "No images match this view."
+FILTER_LISTING_FAILED = "The matching images could not be listed. Try again."
+TOO_MANY_IMAGES = "Narrow the view to at most {cap:,} images."
 # 500 maximal targets plus the options: a path of MAX_TARGET_PATH code points
 # takes at most 6 bytes each on the wire (a \uXXXX escape; raw UTF-8 is at most
 # 4), and the root index and scope fit in 256. The annotation routes' 64 KiB
@@ -103,9 +117,10 @@ ADD_TITLE = "Add tags to images"
 AUTO_TITLE = "Auto-tag images"
 GATE_OWNER_KIND = "image-tag-job"
 
+# Each mode's fields besides the images, named by ``targets`` or ``filter``.
 _FIELDS = {
-    "add": frozenset({"mode", "targets", "tags"}),
-    "auto": frozenset({"mode", "targets", "model_type", "options"}),
+    "add": frozenset({"mode", "tags"}),
+    "auto": frozenset({"mode", "model_type", "options"}),
 }
 _VERBS = {"add": "Add tags", "auto": "Auto-tag"}
 _LOG_PREFIXES = {"tagged": "+", "unchanged": "=", "skipped": "-", "errors": "!"}
@@ -164,6 +179,8 @@ class _Spec:
     tags: tuple = ()
     model_type: str | None = None
     options: dict | None = None
+    # A listing filter the start resolves into ``targets`` (#392).
+    filter: dict | None = None
 
     @property
     def title(self) -> str:
@@ -222,21 +239,35 @@ def parse_image_tag_request(data: dict):
     """A :class:`_Spec` for a start body, or ``(None, error response)``.
 
     ``{mode:"add", targets, tags}`` or ``{mode:"auto", targets, model_type,
-    options}`` exactly; options follow the Tag dialog's Generate rules.
+    options}`` exactly; options follow the Tag dialog's Generate rules. A
+    ``filter`` (a listing query object, parse_listing_filter) may stand in for
+    ``targets``; the start resolves it.
     """
     fields = _FIELDS.get(data.get("mode"))
     if fields is None:
         return None, bad_request('mode must be "add" or "auto"')
+    fields = fields | {"filter" if "filter" in data else "targets"}
     if set(data) != fields:
         return None, bad_request(
             "Request must contain exactly " + ", ".join(sorted(fields))
         )
-    targets, error = _parse_targets(data["targets"])
-    if error is not None:
-        return None, error
+    listing_filter, targets = None, ()
+    if "filter" in data:
+        try:
+            listing_filter = parse_listing_filter(data["filter"])
+        except ValueError as exc:
+            return None, bad_request(str(exc))
+    else:
+        targets, error = _parse_targets(data["targets"])
+        if error is not None:
+            return None, error
     if data["mode"] == "add":
-        return _parse_add(targets, data)
-    return _parse_auto(targets, data)
+        spec, error = _parse_add(targets, data)
+    else:
+        spec, error = _parse_auto(targets, data)
+    if spec is not None and listing_filter is not None:
+        spec = dataclasses.replace(spec, filter=listing_filter)
+    return spec, error
 
 
 def _capture_outcome(exc: CaptureError, root, relative: str):
@@ -398,6 +429,10 @@ class ImageTagJobsMixin:
         spec, error = parse_image_tag_request(data)
         if error is not None:
             return error
+        if spec.filter is not None:
+            spec, error = await self._resolve_job_filter(spec)
+            if error is not None:
+                return error
         roots = await self._run_in_executor(self._job_roots, spec.targets)
         if any(root is None for root, _label in roots.values()):
             return _coded("source-changed")
@@ -638,6 +673,36 @@ class ImageTagJobsMixin:
         if skipped:
             job.log_line(f"Skipped {_plural(skipped, 'image')} before tagging")
         return remaining
+
+    async def _resolve_job_filter(self, spec: _Spec):
+        """``spec`` with its filter resolved into targets, or ``(None, error)``.
+
+        The listing's own identities, in its order, kept only where a target
+        could have named them (a media path the job can tag).
+        """
+        cap = MAX_FILTER_TARGETS
+        try:
+            selection = await self.resolve_listing_filter(spec.filter, cap)
+        except ListingSourceChanged:
+            return None, _coded("source-changed")
+        except ValueError as exc:
+            return None, bad_request(str(exc))
+        except Exception:
+            # Never echo it: it can carry SQL or database text.
+            self.logger.error("A tagging filter could not be resolved", exc_info=True)
+            return None, _error(500, "listing-failed", FILTER_LISTING_FAILED)
+        if selection.truncated:
+            return None, _error(400, "too-many-images", TOO_MANY_IMAGES.format(cap=cap))
+        targets = []
+        for index, scope, relative in selection.targets:
+            target, error = _target(
+                {"root_index": index, "root_scope": scope, "path": relative}
+            )
+            if error is None:
+                targets.append(target)
+        if not targets:
+            return None, _error(400, "no-images", NO_IMAGES)
+        return dataclasses.replace(spec, targets=tuple(targets)), None
 
     # -- runner ----------------------------------------------------------------
 

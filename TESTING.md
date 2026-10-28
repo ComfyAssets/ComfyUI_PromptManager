@@ -1264,7 +1264,8 @@ Recorded deviations on this page (spec §8):
   `#bulkbar` shows "N selected" and only the real actions in the concept's order (Add
   tags, then D85's Auto-tag selected, Set category, Export metadata, Clear). Add to
   collection waits for collections; "Remove links…" is dropped. (Amended by #249 PR D:
-  Add tags ships, see "Bulk tagging from the selection bar".) The selection survives Load more and
+  Add tags ships, see "Bulk tagging from the selection bar"; #392 adds range, keyboard,
+  touch and "all N matching" selection, see "Selecting many images", D135.) The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
   category, sort, Filters, source change, rescan, reload). A return to Images restores
   the saved collection unreplaced and keeps its selection; a full page reload starts
@@ -1740,6 +1741,65 @@ busy". Units:
 | Suggestions count in the bulk dialog | D91 |
 | Copy without a concept line: no tags, start fallbacks, the panel heading | D118 |
 | Activity item and job view for image tagging jobs | D89 (plan D66) |
+
+### Selecting many images (#392)
+
+**D135** (beyond the concept, which draws only the per-card checkbox): Images selects
+like a file manager, in Grid, List (where the concept hides the checkbox) and Masonry,
+over every loaded batch. The selection is a set of image keys in display order, so
+ranges include cards that bounded rendering has unmounted.
+
+- Clicking a checkbox toggles it, and that image becomes the anchor. Ctrl/Cmd+click
+  anywhere on a card (image, star, Info, Tag) also toggles it and makes it the anchor;
+  nothing opens, inspects or changes the favorite.
+- Shift+click on a card selects the range from the anchor to it. Shift+click on a
+  checkbox gives its range the box's new state, so it can clear a range. The anchor
+  stays where it is. Without an anchor, the clicked image becomes the anchor.
+- In the grid, Ctrl/Cmd+A selects every loaded image; in the search box it keeps its
+  text meaning. Shift+Arrow, Shift+Home and Shift+End move focus as the plain keys do,
+  then select from the anchor (the starting card when there is none) to the new card.
+  Escape in the grid clears the selection. Escape in the bar clears it too, and focus
+  moves to the heading, as after Clear.
+- Touch: a 500 ms long-press (at most 10 px of movement) selects the card and turns on
+  touch selection mode. The context menu during the press and the click after it are
+  swallowed, and the card has no image callout. Taps then toggle cards until the
+  selection is empty. A keyboard Enter or Space keeps its plain meaning.
+- A plain click keeps its meaning: the image opens the viewer, and Info inspects.
+- When every loaded image is checked and the listing has more, the bar offers
+  **Select all N matching** right after the count. Pressing it gives **All N matching
+  selected**: later batches arrive checked, and unchecking any image goes back to the
+  loaded images minus that one. Clear, Escape, and a new search, filter, sort or rescan
+  end it. A refresh after a tag save keeps it. Return visits keep the loaded images,
+  and the offer shows again.
+- In that mode, Add tags and Auto-tag selected start the `image-tags` job with
+  `filter` (the listing's own query as an object: `q`, `subfolder`, `category`,
+  `tags`, `root`, `media`, `sort`, `favorites`, and with a Source the loaded root's
+  `root_scope`) instead of `targets`. The server resolves the filter at start, in
+  listing order, using the listing's own admission code (`_admitted_entries`). That
+  means "all matching" when the action starts: an output written since then that
+  matches is included. A `root_scope` that no longer names its root (the sources were
+  renumbered) answers 409 `source-changed`. The limit is 10,000 images (`MAX_LISTING_SELECTION`).
+  Over the limit, the client toasts "Narrow the view to at most 10,000 images." and the
+  server answers 400 `too-many-images`. No match is 400 `no-images`. Auto-tag in this
+  mode does not offer Review each image, because the review walks images in the
+  browser. Set category posts `{images_filter, category}` to `/prompt_manager/bulk/category`.
+  The server sets the category on the distinct linked positives and answers
+  `prompt_count` and `skipped`. A listing whose `positive_count` is 0 toasts the
+  nothing-linked sentence and opens no dialog, and over 10,000 matches it toasts the
+  limit sentence. Export metadata reads every image in
+  the browser, so it is `aria-disabled` in this mode, and its `title` says why.
+
+Tests: `tests/browser/workspace-images.spec.mjs` ("Shift+click selects a range across
+an appended batch in Grid, List and Masonry", "Ctrl/Cmd+click toggles a card without
+opening it, and a plain click still opens the viewer", "Ctrl/Cmd+A, Select all N
+matching and Add tags tag every matching image on the server", "Shift+arrow keys extend
+the selection from the focused card, and Escape in the bar clears it", "a touch
+long-press starts selection mode, taps then toggle, and an empty selection ends it");
+units `tests/js/workspace-images-multiselect.test.js`,
+`tests/js/workspace-images-tagging-bulk.test.js` ("all matching sends the listing
+filter instead of targets"), `tests/js/workspace-images-state.test.js`
+(`listingFilter`); Python `tests/test_image_tag_jobs.py` (`TestFilterStart`) and
+`tests/test_api_workspace_images.py` (`TestListingFilterSelection`).
 
 Native image tagging (#249 PR B routes, PR C UI): `POST
 /prompt_manager/image-annotations/observe` (capture one listed file, its saved set and
@@ -3159,12 +3219,16 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   again"; an Unload that found nothing loaded only reads the status again. At phone width
   the concept's 120px select cap cuts every engine label, so `#tag-model` alone keeps its
   natural width there and its row wraps the select under the text (`workspace.css`
-  `/* D132 */`); Existing tags stays as the concept draws it, cut at 390 as there. The
-  comparison maps `selectsFit` only for the engine select and measures each row's
-  `flexWrap` and whether its control sits under the text. Pinned by `auto-tagging matches
-  the concept` (both themes and sizes), `auto-tagging at 390 wraps only the engine row`,
-  `auto-tagging engine select fits at 320 wide` and the mutation check (it includes a
-  wrapped row) (system-tagging-concept.spec), and the model, Download, Unload and Preview
+  `/* D132 */`). The concept's cap cuts Existing tags too ("Replace after review"); by the
+  maintainer's decision (#398) that parity is not kept: `#tag-existing` never shrinks for
+  its row text and at phone width keeps its natural width beside the text (its row does
+  not wrap; the text column narrows). 1600 is as the concept draws it. The comparison
+  expects `selectsFit` true for every select and measures each row's `flexWrap` and
+  whether its control sits under the text. Pinned by `auto-tagging matches the concept`
+  (both themes and sizes), `auto-tagging at 390 wraps only the engine row`, `auto-tagging
+  selects fit every option at 390/320 wide` (every option of both selects, both themes, no
+  page scroll) and the mutation check (a wrapped row, a squeezed engine and Existing tags
+  select) (system-tagging-concept.spec), and the model, Download, Unload and Preview
   tests of workspace-system-tagging.spec.
 - **D133** (Auto-tagging, S11): a "Suggestions per image" row (`#tag-suggestions`,
   number 1–100, host key `autotag_suggestion_limit`) follows the two confidence rows:
@@ -3785,7 +3849,9 @@ threshold off that grid is refused ("General-tag confidence must be a multiple o
 0.05.", `validate_saved_threshold`; `draftProblem` holds back Preview tagging review and
 the batch Review with the same sentence) and falls back on load; an accepted one is
 stored exactly on the grid (#369). A per-request threshold keeps its own check: `/image-annotations/suggest` and
-`/jobs/autotag` take 0–1; the legacy `/autotag/single` and `/autotag/start` only require a number. `GET /autotag/models` reports the
+`/jobs/autotag` take 0–1; the legacy `/autotag/start` passes its options through
+`validate_options` and starts the `autotag` job titled "Tag output images (legacy page)";
+the legacy `/autotag/single` only requires a number. `GET /autotag/models` reports the
 saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
 `default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
 dialogs start from them; a preset (the bulk review, Preview tagging review) wins.
@@ -3851,6 +3917,57 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
   table, optional in old backups, refused without the annotation group).
 
+- **The legacy pages (#379, PR 2)** write image tags, never prompt tags.
+  `POST /autotag/start` (the admin and gallery batch) reads `model_type`, `prompt`,
+  `skip_tagged` (Skip or Merge), `keep_in_memory` and the thresholds (else the saved
+  ones), checks them with `validate_options` (WD14: both thresholds; GGUF/HF:
+  `instructions` = the non-blank `prompt`, else the saved template; the saved
+  "Suggestions per image") and starts the `autotag` job "Tag output images (legacy
+  page)" (gate owner `legacy-batch`) through the native start, so the safety backup and
+  the disk check apply. A second legacy batch answers JSON 409 `{success: false, error:
+  "Auto-tagging is already running"}` (also when another legacy start wins the race past
+  that check); `SseStream` hands a non-2xx JSON `error` to `onerror` as `serverMessage`,
+  which both pages show instead of "Connection lost during auto tagging". Any other refusal (a job in the way: "<title>
+  already running", `model-unavailable`, `insufficient-space`, `model-busy`, a bad
+  option) is one `{type: "error", status: "error", message}` frame. The stream relays
+  the job: the phases as `{type: "progress", progress: 0 | 5 | 8, status: "Taking a
+  safety backup…" | "Loading model…" | "Listing output images…"}`, each image as
+  `{type: "progress", progress: 10 + progress × 85 / 100, status, processed, tagged,
+  skipped}` (at most every 0.5 s; `processed` = Tagged + Unchanged + Errors), and the end
+  as `complete` (`processed`, `tagged`, `skipped`, `errors`, `skipped_outside_roots: 0`,
+  `status` "Complete" or "No still images found", `model_status`, `model_loaded`),
+  `{type: "cancelled", message: "Cancelled. Tags already added were kept."}` or an
+  `error` frame with the job's status line. A job quiet for 5 s repeats its last frame,
+  and a closed stream cancels the job (the legacy pages have no other stop).
+  `POST /autotag/single` takes `existing` (`"skip"` or `"merge"`, default merge). Under
+  Skip, an image whose current bytes are auto-tagged answers `{success, already_tagged:
+  true, image_tags, prompt_id, filename}` after one stat, without the model gate.
+  Otherwise the image is captured and the model runs on the capture under the gate with
+  the saved cap; the answer adds `tags`, `sha256` (the captured bytes) and `image_tags`,
+  and `service.custom_prompt` is never set. Refusals: `409 model-unavailable`, `413
+  too-large`, `404 file-not-found`, `409 file-changed`, `503 busy`, `415 not-a-still`
+  (the image is marked), `409 model-busy`. `POST /autotag/apply` takes exactly
+  `{image_id, sha256, tags}` or `{path, root_index?, sha256, tags}` (64 KiB), re-hashes
+  the file and unions the tags into that image (`add_image_tags`, marked): `{success,
+  added_tags, total_tags}`; an empty list only marks the image. A body with `prompt_id`
+  is `400` "This page is out of date. Reload it."; a changed file `409 file-changed`
+  ("The image changed since its tags were generated."); a full set `409 tag-limit`; a
+  restore `409 storage-changed`. The admin review asks each image with Skip first: an
+  auto-tagged one shows "Image Already Auto-tagged" / "A tagging model already tagged
+  this image. Generate new tags?" with its image tags (Skip, Skip All Tagged, Re-tag asks
+  again with Merge); the gallery review always merges. Apply & Next sends the image and
+  its `sha256` (linked or not). The batch copy: "Skip images already auto-tagged",
+  "Auto tagging complete! Tagged N images." ("1 image"), and under both progress bars
+  "Closing this window stops tagging. Tags already added are kept. Prompt Manager's
+  Activity page shows the time left.". Pinned by `tests/test_autotag_legacy.py`,
+  `tests/js/image-helpers.test.js` and `legacy-autotag.spec`.
+- **Tag image dialog marks (DEC4).** A save after Generate suggestions ran on that
+  capture marks the image auto-tagged (also a replayed save, and a saved retry after
+  `tag-conflict`); a save without Generate does not. The API keeps the suggested capture
+  tokens; each new one drops the tokens whose capture is gone (`expires_in`, which never
+  resets a capture's idle clock), a release or a saved receipt drops its own, and
+  closing the captures clears them (`TestDialogMarks`).
+
 No browser test downloads or runs a model: the injected `TestModel` answers, its
 `download_model` raises unless `/__test__/tagging/download {mode: hold | succeed |
 fail}` installs a fake that waits on a fixture event, and every tagging reset releases
@@ -3885,7 +4002,30 @@ modals use the same routes and keep working.
   other: each file's identity is checked just before its unlink.
 - **Clear all logs** (`POST /logs/truncate`, also the admin page's Clear) empties the
   active log through its handler, deletes the rotated copies (Rule R) and clears the
-  buffer; other files and links are kept. Response keys are unchanged.
+  buffer; other files and links are kept. Response keys are unchanged. It deletes or
+  empties no more than its confirmation showed (#389):
+  - `/logs/files` rows carry `identity`, the string `"<size>:<mtime_ns>:<ino>"` (a
+    string: `mtime_ns` and many inodes are beyond a browser's exact integers). The
+    workspace sends `{"expected": [{name, identity}]}` with the active and rotated rows
+    its dialog was built from. Under the files lock and every handler lock each listed
+    rotated copy must still match (`_matches_review`) and the listed active log must be
+    the same inode, or nothing changes: 409 `logs-changed`. Only listed copies are
+    deleted; one that appeared after the confirmation is kept. A malformed list is 400.
+  - Without a body (the legacy admin page, whose confirm lists nothing; also the
+    workspace when the file list could not be read and the dialog said "deletes its
+    rotated copies") every rotated copy present at the locked rescan is deleted.
+  - Either way, before anything changes (best effort, not a cross-process lock: a
+    write before our own last write, or any while file logging is off here, is not
+    seen): a second writer of the active log (our
+    handler's flushed stream is behind the file's size, or its file is now a rotated
+    copy: another ComfyUI sharing the folder) is 409 `logs-foreign-writer`; an active
+    log with more than one name (`st_nlink > 1` by `lstat` or the handler's `fstat`,
+    NTFS included) is 409 `logs-hard-link`, never truncated (replacing it instead would
+    rename a file our handler holds open, which Windows refuses). Each copy is
+    `lstat`-checked again just before its unlink; one that changed stops the clear there
+    and keeps it, the copies after it and the active log, which is emptied last.
+  - The browser fixture grows the active log through the handler's own stream, since a
+    second handle appending to it is exactly what Clear refuses.
 - **Runtime settings** (`GET/POST /logs/config`): the level (DEBUG…CRITICAL) and console
   logging apply until the server restarts; the retention values are shown read-only in
   the workspace and the API keeps accepting them.
@@ -4004,6 +4144,33 @@ list stay unscoped: any row's control proves them.
 | Client debug output `debugMode` | `gallery-settings.js:36` | Legacy gallery (S12-10) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
 | API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
+
+### Legacy System UI removed by S13
+
+System S13 (#330) points the legacy pages' System buttons at native System (a link that
+opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
+only when its row above is `covered`. One row per removed capability: Capability is the
+exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
+Removed methods list what went (`—` for none), and Native test copies that row's Test
+cell. An id that stays on a System link is not listed, only its handler.
+
+`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
+`covered` or copies another test, when an id or method is listed twice for one page, or
+when a listed id is still on its page (`id="…"` in the markup or the script, a
+`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
+method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
+kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
+legacy page workflows), not by this check.
+
+| Capability | Page | Removed ids | Removed methods | Native test |
+| --- | --- | --- | --- | --- |
+| Diagnostics run | admin | `#diagnosticsModal`, `#runDiagnosticsBtn`, `#diagnosticsContent` | `showDiagnosticsModal()`, `closeDiagnostics()`, `runDiagnostics()`, `renderDiagnostics()` | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
+| Synthetic image-link test | admin | `#testImageLinkBtn` | `testImageLink()` | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
+| View logs with level and limit | admin | `#logsModal`, `#logLevel`, `#logLimit`, `#refreshLogsBtn`, `#logsContainer` | `showLogsModal()`, `closeLogs()`, `refreshLogs()`, `displayLogs()` | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
+| Log statistics | admin | `#logStatsTotal`, `#logStatsErrors`, `#logStatsWarnings`, `#logStatsLevel`, `#logStatsSize` | `loadLogStats()`, `formatBytes()` | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
+| Log files list and download | admin | `#downloadLogsBtn`, `#logFilesList` | `loadLogFiles()`, `downloadLogs()`, `downloadLogFile()` | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
+| Clear/truncate logs | admin | `#clearLogsBtn` | `clearLogs()` | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
+| Set log level (incl. CRITICAL), console logging | admin | `#updateLogConfigBtn`, `#setLogLevel`, `#consoleLogging` | `loadLogConfig()`, `updateLogConfig()` | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -4498,7 +4665,23 @@ files, oldest forgotten first, keyed by 16-byte digests: 8.6 MiB measured at
 the cap). A file whose inspection raises is logged, counted in
 `review_errors` and reported `unresolved`; the scan goes on. An older version's
 pending, undecided item of bytes now untraced leaves the queue
-(`settle_stale_review_items`), so an item never stays stuck at 409. The 16-candidate limited
+(`settle_stale_review_items`), so an item never stays stuck at 409.
+Saver anchor (#390, `tests/test_review_saver_anchor.py`): the scan and Apply
+resolve with the file's name as the workspace inspector does, so the one saver
+whose `filename_prefix` names the file anchors its branch. A file is never both
+unlinked and unqueued (maintainer ruling): when only that anchor resolves it
+(the named inspection run resolves, the unnamed one does not) and neither the
+default profile nor the parser floor links it, the scan queues it with the
+anchor's pair as its one candidate (evidence `anchor: "saver"`; the page
+preselects it), never linking it. Such an item counts as a choice for the
+untraced settle. Files already linked or resolved by the default path are
+unchanged. No match, several matches or an unfinished walk anchor nothing, and
+the file is queued as before. `REVIEW_RULE_VERSION` is folded into inspection
+item versions, so older inspection items are recorded again once. Apply accepts
+the anchored pair and refuses a choice the anchor contradicts. Measured on the
+maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
+`gpu_unlock_bench` files the inspector resolves are linked by the parser
+floor. The 16-candidate limited
 rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links

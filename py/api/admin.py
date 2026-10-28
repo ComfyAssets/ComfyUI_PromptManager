@@ -47,7 +47,7 @@ try:
         extract_generation_params,
         parse_page_json,
     )
-    from ...utils.prompt_pair_resolver import resolve_prompt_pair
+    from ...utils.prompt_pair_resolver import resolve_prompt_pair, sampler_less_prompt
     from ...utils.review_capture import reviewable
 except ImportError:
     from database.pair_ingestion import blank_positive, ingest_resolved_pair
@@ -62,7 +62,7 @@ except ImportError:
         extract_generation_params,
         parse_page_json,
     )
-    from utils.prompt_pair_resolver import resolve_prompt_pair
+    from utils.prompt_pair_resolver import resolve_prompt_pair, sampler_less_prompt
     from utils.review_capture import reviewable
 
 
@@ -1630,7 +1630,14 @@ class AdminRoutesMixin:
                 if self._review_file_linked(media_file, roots):
                     outcome = "unchanged"  # already linked: not a review case
                 else:
-                    self._record_scanned_review(media_file, roots, review)
+                    # The records name the item versions that count; the
+                    # saver anchor (#390) is checked on the captured bytes.
+                    self._record_scanned_review(
+                        media_file,
+                        roots,
+                        review,
+                        scanned=(records.get("canonical"), None),
+                    )
             elif untraced and outcome == "unresolved":
                 # Untraced by the default profile: the inspection profile may
                 # still offer a choice (queued for review, never linked).
@@ -1691,9 +1698,9 @@ class AdminRoutesMixin:
         ``"ambiguous"`` (nothing linked it) is a Needs review case. An
         ambiguous result with nothing to choose (``reviewable`` is False: fewer
         than two candidates carry a prompt) that nothing links returns
-        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``;
-        its parsed records go to ``records["canonical"]`` when ``records`` is
-        a dict.
+        ``"unresolved"`` instead, and ``media_file`` goes to ``untraced``.
+        The parsed records of either ambiguous file go to
+        ``records["canonical"]`` when ``records`` is a dict.
         """
         if not metadata:
             # No prompt metadata (--disable-metadata, bare savers): only the
@@ -1723,6 +1730,8 @@ class AdminRoutesMixin:
                 records["canonical"] = canonical
         elif resolution["state"] == "ambiguous" and ambiguous is not None:
             ambiguous.append(media_file)
+            if records is not None:
+                records["canonical"] = canonical
         if resolution["state"] == "resolved":
             result = ingest_resolved_pair(
                 self.db, str(media_file), canonical, resolution
@@ -1754,13 +1763,24 @@ class AdminRoutesMixin:
             canonical.get("parameters"), str
         ):
             return resolution["state"]
+        elif canonical.get("prompt"):
+            # No node takes a positive or negative input (a guider or wrapper
+            # graph): the one wired text, never a guess (#252).
+            found = sampler_less_prompt(canonical["prompt"])
+            prompt_text = found["text"]
+            if prompt_text is None and isinstance(canonical.get("parameters"), str):
+                # A metadata saver also wrote A1111 text: its positive prompt.
+                parsed = self._parse_comfyui_prompt(metadata)["positive_prompt"]
+                prompt_text = parsed.strip() if parsed and parsed.strip() else None
+            if prompt_text is None:
+                linked = self._link_recorded_run(
+                    media_file, canonical, detailed, history
+                )
+                if linked is not None:
+                    return linked
+                return "unresolved" if found["state"] == "ambiguous" else "found"
         else:
-            parsed = self._parse_comfyui_prompt(metadata)
-            if not (parsed.get("prompt") or parsed.get("parameters")):
-                return None
-            prompt_text = self._extract_readable_prompt(parsed)
-            if prompt_text is not None and not isinstance(prompt_text, str):
-                prompt_text = str(prompt_text)
+            prompt_text = self._parse_comfyui_prompt(metadata)["positive_prompt"]
             if not (prompt_text and prompt_text.strip()):
                 return "found"
             prompt_text = prompt_text.strip()

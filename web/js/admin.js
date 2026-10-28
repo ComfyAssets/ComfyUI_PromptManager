@@ -47,7 +47,6 @@
                     edit: ({ promptId }) => this.editPrompt(promptId),
                     delete: ({ promptId }) => this.deletePrompt(promptId),
                     "open-film": ({ promptId, index }) => this.openFilmStripViewer(promptId, index),
-                    "download-log": ({ filename }) => this.downloadLogFile(filename),
                     "remove-review-tag": ({ index }) => this.removeReviewTag(index),
                     "pick-tag-suggestion": ({ tag }) => this.pickTagSuggestion(tag),
                 };
@@ -128,14 +127,12 @@
                 document.getElementById("exportBtn").addEventListener("click", () => this.exportPrompts());
                 document.getElementById("settingsBtn").addEventListener("click", () => this.showSettingsModal());
                 document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
-                document.getElementById("diagnosticsBtn").addEventListener("click", () => this.showDiagnosticsModal());
                 document.getElementById("maintenanceBtn").addEventListener("click", () => this.showMaintenanceModal());
                 document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
                 document.getElementById("autoTagBtn").addEventListener("click", () => this.showAutoTagModal());
                 document.getElementById("addPromptBtn").addEventListener("click", () => this.showAddPromptModal());
-                document.getElementById("logsBtn").addEventListener("click", () => this.showLogsModal());
                 document.getElementById("metadataBtn").addEventListener("click", () => this.openMetadataViewer());
                 document.getElementById("galleryBtn").addEventListener("click", () => this.openGallery());
 
@@ -215,10 +212,6 @@
                 document.getElementById("confirmRestore").addEventListener("click", () => this.confirmRestore());
                 document.getElementById("cancelRestore").addEventListener("click", () => this.hideModal("restoreModal"));
 
-                // Diagnostics modal
-                document.getElementById("runDiagnosticsBtn").addEventListener("click", () => this.runDiagnostics());
-                document.getElementById("testImageLinkBtn").addEventListener("click", () => this.testImageLink());
-
                 // Maintenance modal
                 document.getElementById("runMaintenanceBtn").addEventListener("click", () => this.runMaintenance());
                 document.getElementById("selectAllMaintenanceBtn").addEventListener("click", () => this.selectAllMaintenance());
@@ -229,12 +222,6 @@
                 document.getElementById("cancelScan").addEventListener("click", () => this.dismissScanModal());
                 document.getElementById("scanPill").addEventListener("click", () => this.showScanModal());
                 document.getElementById("quickBackupBtn").addEventListener("click", () => this.quickBackup());
-
-                // Logs modal
-                document.getElementById("refreshLogsBtn").addEventListener("click", () => this.refreshLogs());
-                document.getElementById("downloadLogsBtn").addEventListener("click", () => this.downloadLogs());
-                document.getElementById("clearLogsBtn").addEventListener("click", () => this.clearLogs());
-                document.getElementById("updateLogConfigBtn").addEventListener("click", () => this.updateLogConfig());
 
                 // Auto Tag modals
                 document.getElementById("startAutoTagBtn").addEventListener("click", () => this.startAutoTag());
@@ -1801,15 +1788,6 @@
                 return `${size.toFixed(1)} ${units[unitIndex]}`;
             }
 
-            // Diagnostics functionality
-            showDiagnosticsModal() {
-                this.showModal("diagnosticsModal");
-            }
-
-            closeDiagnostics() {
-                this.hideModal("diagnosticsModal");
-            }
-
             // Maintenance functionality
             showMaintenanceModal() {
                 this.showModal("maintenanceModal");
@@ -1979,160 +1957,6 @@
                 
                 html += '</div>';
                 resultsContainer.innerHTML = html;
-            }
-
-            async runDiagnostics() {
-                const content = document.getElementById("diagnosticsContent");
-                content.innerHTML = `
-                    <div class="text-center py-4">
-                        <div class="w-12 h-12 border-4 border-orange-500/30 border-t-orange-500 rounded-full animate-spin mx-auto mb-4"></div>
-                        <p class="text-pm-secondary">Running diagnostics...</p>
-                    </div>
-                `;
-
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/diagnostics');
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.renderDiagnostics(data.diagnostics);
-                        } else {
-                            throw new Error(data.error || 'Diagnostics failed');
-                        }
-                    } else {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                } catch (error) {
-                    console.error('Diagnostics error:', error);
-                    content.innerHTML = `
-                        <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
-                            <h4 class="text-pm-error font-medium mb-2">❌ Diagnostics Failed</h4>
-                            <p class="text-pm-secondary">${escapeHtml(error.message)}</p>
-                        </div>
-                    `;
-                }
-            }
-
-            renderDiagnostics(diagnostics) {
-                const content = document.getElementById("diagnosticsContent");
-                
-                let html = '<div class="space-y-4">';
-                
-                // Summary
-                html += '<div class="bg-pm-surface rounded-pm-sm p-4">';
-                html += '<h4 class="text-pm font-medium mb-3">📋 Diagnostic Summary</h4>';
-                html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
-
-                for (const [category, result] of Object.entries(diagnostics)) {
-                    const status = result.status === 'ok' ? '✅ PASS' : (result.status === 'warning' ? '⚠️ WARNING' : '❌ FAIL');
-                    const statusColor = result.status === 'ok' ? 'text-pm-success' : (result.status === 'warning' ? 'text-pm-warning' : 'text-pm-error');
-
-                    html += `
-                        <div class="flex justify-between items-center p-2 bg-pm-input rounded">
-                            <span class="text-pm-secondary capitalize">${escapeHtml(category)}</span>
-                            <span class="${statusColor} font-mono text-sm">${status}</span>
-                        </div>
-                    `;
-                }
-                
-                html += '</div></div>';
-                
-                // Detailed results
-                for (const [category, result] of Object.entries(diagnostics)) {
-                    const bgColor = result.status === 'ok' ? 'bg-pm-success-tint border-pm-success' :
-                                   (result.status === 'warning' ? 'bg-pm-warning/20 border-pm-warning' : 'bg-pm-error-tint border-pm-error');
-
-                    html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
-                    html += `<h4 class="text-pm font-medium mb-2 capitalize">${escapeHtml(category)}</h4>`;
-
-                    if (result.message) {
-                        html += `<p class="text-pm-secondary mb-2">${escapeHtml(result.message)}</p>`;
-                    }
-
-                    // Show specific details based on category
-                    if (category === 'database' && result.status === 'ok') {
-                        html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Prompts: ${escapeHtml(result.prompt_count || 0)}</p>`;
-                        html += `<p>Images table: ${result.has_images_table ? 'Yes' : 'No'}</p>`;
-                        html += `</div>`;
-                    }
-
-                    if (category === 'images_table' && result.status === 'ok') {
-                        html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Images: ${escapeHtml(result.image_count || 0)}</p>`;
-                        if (result.recent_images && result.recent_images.length > 0) {
-                            html += `<p>Recent images:</p>`;
-                            html += `<ul class="ml-4 list-disc">`;
-                            result.recent_images.slice(0, 3).forEach(img => {
-                                html += `<li>${escapeHtml(img.filename)} → Prompt ${escapeHtml(img.prompt_id)}</li>`;
-                            });
-                            html += `</ul>`;
-                        }
-                        html += `</div>`;
-                    }
-
-                    if (category === 'comfyui_output' && result.output_dirs) {
-                        html += `<div class="text-sm text-pm-secondary">`;
-                        html += `<p>Output directories found:</p>`;
-                        html += `<ul class="ml-4 list-disc">`;
-                        result.output_dirs.forEach(dir => {
-                            html += `<li>${escapeHtml(dir)}</li>`;
-                        });
-                        html += `</ul>`;
-                        html += `</div>`;
-                    }
-
-                    if (category === 'dependencies' && result.dependencies) {
-                        html += `<div class="text-sm text-pm-secondary">`;
-                        for (const [dep, available] of Object.entries(result.dependencies)) {
-                            const status = available ? '✅' : '❌';
-                            html += `<p>${status} ${escapeHtml(dep)}</p>`;
-                        }
-                        html += `</div>`;
-                    }
-                    
-                    html += '</div>';
-                }
-                
-                html += '</div>';
-                content.innerHTML = html;
-            }
-
-            async testImageLink() {
-                if (this.prompts.length === 0) {
-                    this.showNotification('No prompts available for testing', 'warning');
-                    return;
-                }
-                
-                // Use the first prompt for testing
-                const testPrompt = this.prompts[0];
-                
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/diagnostics/test-link', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            prompt_id: testPrompt.id,
-                            image_path: '/test/fake/image.png'
-                        })
-                    });
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.showNotification('✅ Test image link created successfully!', 'success');
-                            // Refresh the gallery to show the test image
-                            setTimeout(() => this.refreshList(), 1000);
-                        } else {
-                            throw new Error(data.result?.message || 'Test failed');
-                        }
-                    } else {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                } catch (error) {
-                    console.error('Test link error:', error);
-                    this.showNotification(`❌ Test failed: ${error.message}`, 'error');
-                }
             }
 
             // Database backup and restore functionality
@@ -2495,273 +2319,6 @@
             failScan(state) {
                 document.getElementById("scanPill").classList.add("hidden");
                 this.showNotification(`Scan failed: ${state.message}`, "error");
-            }
-
-            // Logs functionality
-            showLogsModal() {
-                this.showModal("logsModal");
-                this.loadLogStats();
-                this.loadLogFiles();
-                this.loadLogConfig();
-            }
-
-            closeLogs() {
-                this.hideModal("logsModal");
-            }
-
-            async loadLogStats() {
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/stats');
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        const stats = data.stats;
-                        document.getElementById("logStatsTotal").textContent = stats.buffer_count || 0;
-                        document.getElementById("logStatsErrors").textContent = stats.level_counts?.ERROR || 0;
-                        document.getElementById("logStatsWarnings").textContent = stats.level_counts?.WARNING || 0;
-                        document.getElementById("logStatsLevel").textContent = stats.current_level || "INFO";
-                        document.getElementById("logStatsSize").textContent = this.formatBytes(stats.total_log_size || 0);
-                    }
-                } catch (error) {
-                    console.error("Failed to load log stats:", error);
-                }
-            }
-
-            async loadLogConfig() {
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/config');
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        const config = data.config;
-                        document.getElementById("setLogLevel").value = config.level || "INFO";
-                        document.getElementById("consoleLogging").checked = config.console_logging !== false;
-                    }
-                } catch (error) {
-                    console.error("Failed to load log config:", error);
-                }
-            }
-
-            async loadLogFiles() {
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/files');
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        const container = document.getElementById("logFilesList");
-                        
-                        if (data.files.length === 0) {
-                            container.innerHTML = '<div class="col-span-full text-center text-pm-muted">No log files found</div>';
-                            return;
-                        }
-                        
-                        container.innerHTML = data.files.map(file => `
-                            <div class="bg-pm-surface rounded-pm-sm p-3">
-                                <div class="flex items-center justify-between mb-2">
-                                    <span class="text-sm font-medium text-pm">${escapeHtml(file.filename)}</span>
-                                    ${file.is_main ? '<span class="bg-pm-accent text-xs px-2 py-1 rounded">Active</span>' : ''}
-                                </div>
-                                <div class="text-xs text-pm-secondary mb-2">
-                                    Size: ${this.formatBytes(file.size)} | Modified: ${new Date(file.modified).toLocaleString()}
-                                </div>
-                                <button data-action="download-log" data-filename="${escapeHtml(file.filename)}"
-                                        class="w-full px-3 py-1 bg-pm-success hover:bg-pm-success text-pm text-xs rounded transition-colors">
-                                    📥 Download
-                                </button>
-                            </div>
-                        `).join('');
-                    }
-                } catch (error) {
-                    console.error("Failed to load log files:", error);
-                }
-            }
-
-            async refreshLogs() {
-                const level = document.getElementById("logLevel").value;
-                const limit = parseInt(document.getElementById("logLimit").value);
-                
-                try {
-                    const url = new URL(ApiClient.resolveUrl('/prompt_manager/logs'), window.location.origin);
-                    if (level) url.searchParams.set('level', level);
-                    url.searchParams.set('limit', limit.toString());
-                    
-                    const response = await ApiClient.fetchUrl(url);
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.displayLogs(data.logs);
-                        this.showNotification(`Loaded ${data.logs.length} log entries`, "success");
-                    } else {
-                        this.showNotification(`Failed to load logs: ${data.error}`, "error");
-                    }
-                } catch (error) {
-                    console.error("Failed to refresh logs:", error);
-                    this.showNotification("Failed to refresh logs", "error");
-                }
-            }
-
-            displayLogs(logs) {
-                const container = document.getElementById("logsContainer");
-                
-                if (logs.length === 0) {
-                    container.innerHTML = '<div class="text-center py-4 text-pm-muted">No logs found</div>';
-                    return;
-                }
-
-                container.innerHTML = logs.map(log => {
-                    const levelColors = {
-                        DEBUG: 'text-pm-secondary',
-                        INFO: 'text-pm-accent',
-                        WARNING: 'text-pm-warning',
-                        ERROR: 'text-pm-error',
-                        CRITICAL: 'text-pm-error'
-                    };
-
-                    const levelColor = levelColors[log.level] || 'text-pm-secondary';
-                    const timestamp = new Date(log.timestamp).toLocaleString();
-
-                    return `
-                        <div class="border-l-2 border-pm pl-3 py-1 hover:bg-pm-surface transition-colors">
-                            <div class="flex items-start space-x-2 text-sm">
-                                <span class="text-pm-muted text-xs font-mono w-24 flex-shrink-0">${escapeHtml(timestamp.split(' ')[1])}</span>
-                                <span class="${levelColor} font-semibold w-16 flex-shrink-0">${escapeHtml(log.level)}</span>
-                                <span class="text-pm-accent text-xs w-32 flex-shrink-0">${escapeHtml(log.logger)}</span>
-                                <span class="text-pm-secondary flex-1">${escapeHtml(log.message)}</span>
-                            </div>
-                            <div class="text-xs text-pm-muted ml-44">
-                                ${escapeHtml(log.filename)}:${escapeHtml(log.lineno)}
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-                
-                // Auto-scroll to bottom
-                container.scrollTop = container.scrollHeight;
-            }
-
-            async downloadLogs() {
-                const level = document.getElementById("logLevel").value;
-                const limit = parseInt(document.getElementById("logLimit").value);
-                
-                try {
-                    const url = new URL(ApiClient.resolveUrl('/prompt_manager/logs'), window.location.origin);
-                    if (level) url.searchParams.set('level', level);
-                    url.searchParams.set('limit', limit.toString());
-                    
-                    const response = await ApiClient.fetchUrl(url);
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        const logText = data.logs.map(log => 
-                            `${log.timestamp} [${log.level}] ${log.logger}: ${log.message} (${log.filename}:${log.lineno})`
-                        ).join('\n');
-                        
-                        const blob = new Blob([logText], { type: 'text/plain' });
-                        const url2 = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url2;
-                        a.download = `prompt_manager_logs_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url2);
-                        
-                        this.showNotification("Logs downloaded successfully", "success");
-                    } else {
-                        this.showNotification(`Failed to download logs: ${data.error}`, "error");
-                    }
-                } catch (error) {
-                    console.error("Failed to download logs:", error);
-                    this.showNotification("Failed to download logs", "error");
-                }
-            }
-
-            async downloadLogFile(filename) {
-                try {
-                    const response = await ApiClient.fetchUrl(`/prompt_manager/logs/download/${encodeURIComponent(filename)}`);
-                    
-                    if (response.ok) {
-                        const blob = await response.blob();
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = filename;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                        
-                        this.showNotification(`Downloaded ${filename}`, "success");
-                    } else {
-                        this.showNotification(`Failed to download ${filename}`, "error");
-                    }
-                } catch (error) {
-                    console.error("Failed to download log file:", error);
-                    this.showNotification("Failed to download log file", "error");
-                }
-            }
-
-            async clearLogs() {
-                if (!confirm("Are you sure you want to clear all log files? This cannot be undone.")) {
-                    return;
-                }
-                
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/truncate', {
-                        method: 'POST'
-                    });
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.showNotification(data.message, "success");
-                        this.refreshLogs();
-                        this.loadLogStats();
-                        this.loadLogFiles();
-                    } else {
-                        this.showNotification(`Failed to clear logs: ${data.error}`, "error");
-                    }
-                } catch (error) {
-                    console.error("Failed to clear logs:", error);
-                    this.showNotification("Failed to clear logs", "error");
-                }
-            }
-
-            async updateLogConfig() {
-                const level = document.getElementById("setLogLevel").value;
-                const consoleLogging = document.getElementById("consoleLogging").checked;
-                
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/logs/config', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            level: level,
-                            console_logging: consoleLogging
-                        })
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.showNotification("Log configuration updated", "success");
-                        this.loadLogStats();
-                    } else {
-                        this.showNotification(`Failed to update config: ${data.error}`, "error");
-                    }
-                } catch (error) {
-                    console.error("Failed to update log config:", error);
-                    this.showNotification("Failed to update log configuration", "error");
-                }
-            }
-
-            formatBytes(bytes) {
-                if (bytes === 0) return '0 B';
-                const k = 1024;
-                const sizes = ['B', 'KB', 'MB', 'GB'];
-                const i = Math.floor(Math.log(bytes) / Math.log(k));
-                return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
             }
 
             // Pagination methods
@@ -3801,7 +3358,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         } else if (data.type === 'complete') {
                             this.autoTagState.eventSource.close();
                             this.hideModal("autoTagProgressModal");
-                            this.showNotification(`Auto tagging complete! Applied tags to ${data.tagged || 0} prompts.`, 'success');
+                            this.showNotification(ImageHelpers.autotagCompleteMessage(data.tagged), 'success');
                             this.refreshList(); // Refresh the prompt list
                         } else if (data.type === 'error') {
                             this.autoTagState.eventSource.close();
@@ -3819,7 +3376,7 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                         console.error('EventSource readyState:', this.autoTagState.eventSource.readyState);
                         this.autoTagState.eventSource.close();
                         this.hideModal("autoTagProgressModal");
-                        this.showNotification('Connection lost during auto tagging', 'error');
+                        this.showNotification((error && error.serverMessage) || 'Connection lost during auto tagging', 'error');
                     };
                 } catch (error) {
                     console.error('Auto tag error:', error);
@@ -3894,10 +3451,14 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 }
             }
 
-            // Check if tags array has "real" tags (excluding auto-scanned and prepend:* metadata)
-            getRealTags(tags) {
-                if (!tags || !Array.isArray(tags)) return [];
-                return tags.filter(tag => tag !== 'auto-scanned' && !tag.startsWith('prepend:') && !tag.startsWith('append:'));
+            /** POST /autotag/single for `image` (#379: `existing` "skip" answers already_tagged for an auto-tagged image). */
+            async requestReviewTags(image, existing) {
+                const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(ImageHelpers.autotagSingleBody(image, { ...this.autoTagState, existing }))
+                });
+                return response.json();
             }
 
             // Show the re-tag confirmation modal
@@ -3949,26 +3510,48 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 // always provides a servable url; never rebuild it from the path.
                 const imageUrl = this.getImageUrl(image);
 
-                // Check if image already has real tags (excluding auto-scanned)
-                const realTags = this.getRealTags(image.prompt_tags);
+                this.autoTagState.currentImage = image;
+                this.autoTagState.currentSha256 = null;
+                this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
 
-                if (realTags.length > 0) {
-                    // Skip if "Skip All Tagged" was selected
-                    if (this.autoTagState.skipAllTagged) {
-                        this.autoTagState.reviewIndex++;
-                        return this.loadNextReviewImage();
+                let data;
+                try {
+                    // Each image is first asked with "skip": an image a tagging model already tagged answers
+                    // already_tagged (its image tags, never its prompt's) without running the model (#379).
+                    data = await this.requestReviewTags(image, 'skip');
+                    if (data.success && data.already_tagged) {
+                        if (this.autoTagState.skipAllTagged) {
+                            this.autoTagState.reviewIndex++;
+                            return this.loadNextReviewImage();
+                        }
+                        const choice = await this.showRetagConfirmation(image, imageUrl, data.image_tags || []);
+                        if (choice === 'skip' || choice === 'skipAll') {
+                            this.autoTagState.reviewIndex++;
+                            return this.loadNextReviewImage();
+                        }
+                        // choice === 'retag': generate new tags for it
+                        this.showReviewImage(image, imageUrl);
+                        data = await this.requestReviewTags(image, 'merge');
+                    } else {
+                        this.showReviewImage(image, imageUrl);
                     }
-
-                    // Show confirmation modal
-                    const choice = await this.showRetagConfirmation(image, imageUrl, realTags);
-
-                    if (choice === 'skip' || choice === 'skipAll') {
-                        this.autoTagState.reviewIndex++;
-                        return this.loadNextReviewImage();
+                    if (data.success) {
+                        this.autoTagState.currentTags = data.tags;
+                        this.autoTagState.currentSha256 = data.sha256 || null;
+                        this.renderReviewTags();
+                    } else {
+                        document.getElementById('reviewTagsVisible').innerHTML =
+                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
                     }
-                    // choice === 'retag' - continue with tagging
+                } catch (error) {
+                    console.error('Error generating tags:', error);
+                    this.showReviewImage(image, imageUrl);
+                    document.getElementById('reviewTagsVisible').innerHTML =
+                        '<div class="text-pm-error">Failed to generate tags</div>';
                 }
+            }
 
+            showReviewImage(image, imageUrl) {
                 document.getElementById('reviewImage').src = imageUrl;
                 // The record's file name, else the last segment of its path (#328: `filename` was never declared).
                 const filename = image.filename || String(image.image_path || image.path || '').split(/[\\/]/).pop();
@@ -3977,37 +3560,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                 document.getElementById('reviewTagsHidden').innerHTML = '';
                 document.getElementById('reviewTagsAccordion').classList.add('hidden');
                 document.getElementById('reviewTagsToggle').classList.add('hidden');
-
-                // Store prompt_id from database for applying tags later
-                this.autoTagState.currentPromptId = image.prompt_id;
-                this.autoTagState.tagsExpanded = false;  // Reset accordion for new image
-
-                try {
-                    // Review rows come from /images/all (database ids), so this resolves to image_id
-                    const requestBody = ImageHelpers.autotagSingleBody(image, this.autoTagState);
-
-                    const response = await ApiClient.fetchUrl('/prompt_manager/autotag/single', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(requestBody)
-                    });
-
-                    const data = await response.json();
-
-                    if (data.success) {
-                        this.autoTagState.currentTags = data.tags;
-                        // Use prompt_id from database, fallback to API response
-                        this.autoTagState.currentPromptId = image.prompt_id || data.prompt_id;
-                        this.renderReviewTags();
-                    } else {
-                        document.getElementById('reviewTagsVisible').innerHTML =
-                            `<div class="text-pm-error">Error: ${escapeHtml(data.error)}</div>`;
-                    }
-                } catch (error) {
-                    console.error('Error generating tags:', error);
-                    document.getElementById('reviewTagsVisible').innerHTML =
-                        '<div class="text-pm-error">Failed to generate tags</div>';
-                }
             }
 
             /** /prompt_manager/images/all is capped per call; collect every page. */
@@ -4126,15 +3678,9 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
             }
 
             async applyReviewTags() {
-                if (this.autoTagState.currentTags.length === 0) {
-                    this.skipReviewImage();
-                    return;
-                }
-
-                const promptId = this.autoTagState.currentPromptId;
-
-                if (!promptId) {
-                    this.showNotification('No linked prompt found for this image', 'warning');
+                // #379: the reviewed tags go to this image (linked or not), never its prompt; an empty
+                // list still marks the image as reviewed by a tagging model.
+                if (!this.autoTagState.currentSha256) {
                     this.skipReviewImage();
                     return;
                 }
@@ -4143,10 +3689,8 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     const response = await ApiClient.fetchUrl('/prompt_manager/autotag/apply', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            prompt_id: promptId,
-                            tags: this.autoTagState.currentTags
-                        })
+                        body: JSON.stringify(ImageHelpers.autotagApplyBody(
+                            this.autoTagState.currentImage, this.autoTagState.currentSha256, this.autoTagState.currentTags))
                     });
 
                     const data = await response.json();

@@ -1101,37 +1101,94 @@ def _workspace_filters(query: Mapping) -> dict:
     }
 
 
+# The listing parameters a bulk request may name as its filter (#392): the
+# workspace query without mode, limit, cursor and the Activity-only ``path``,
+# plus the chosen root's ``root_scope`` (a renumbered source is refused).
+LISTING_FILTER_KEYS = frozenset(
+    {
+        "q",
+        "subfolder",
+        "category",
+        "tags",
+        "root",
+        "root_scope",
+        "media",
+        "sort",
+        "favorites",
+    }
+)
+MAX_LISTING_FILTER_VALUE = 2048
+# The most images "Select all N matching" acts on in one request (#392).
+MAX_LISTING_SELECTION = 10_000
+
+
+def parse_listing_filter(raw: object) -> dict:
+    """A bulk request's listing filter (#392): the listing's own query as an object.
+
+    Keys are a subset of LISTING_FILTER_KEYS, each value a string of at most
+    MAX_LISTING_FILTER_VALUE characters, validated as the listing validates its
+    query. The root's bounds need the current roots, so resolve_listing_filter
+    checks those. Raises ValueError.
+    """
+    if not isinstance(raw, dict) or not set(raw) <= LISTING_FILTER_KEYS:
+        raise ValueError("filter must be an object of listing parameters")
+    if any(
+        not isinstance(value, str) or len(value) > MAX_LISTING_FILTER_VALUE
+        for value in raw.values()
+    ):
+        raise ValueError("filter values must be short strings")
+    if "root_scope" in raw and "root" not in raw:
+        raise ValueError("root_scope needs root")
+    _workspace_filters(raw)
+    return dict(raw)
+
+
+class ListingSourceChanged(Exception):
+    """A listing filter's ``root_scope`` no longer names its root (#392)."""
+
+
+class ListingSelection(NamedTuple):
+    """Every image a listing filter admits, in the listing's order (#392).
+
+    ``targets`` are listing identities ``(root_index, root_scope, path)``;
+    ``positive_ids`` the distinct linked positives (first seen), ``unlinked``
+    the admitted images without one, and ``truncated`` that more than the cap
+    matched (the lists then stop at the cap).
+    """
+
+    targets: list
+    positive_ids: list
+    unlinked: int
+    truncated: bool
+
+
 # A plain listing's cursor page leaves positive_count out (see
 # _select_workspace_page); None instead means the count could not be read.
 _COUNT_OMITTED = object()
 
 
-def _filtered_page(
+def _admitted_entries(
     entries: list,
-    start: int,
-    size: int,
     filters: dict,
     links: dict | None,
     favorites: frozenset | None = None,
     image_tags: dict | None = None,
-) -> tuple[int, list, int | None]:
-    """Count the *entries* the filters admit and take *size* from *start* on.
+):
+    """Yield ``(position, entry, link match)`` for each entry the filters admit.
 
     *links* maps normalized paths to (hit, rating, positive id) for every
     unambiguously linked image (see PromptDatabase.get_image_link_matches); a
     category or tag filter admits only those, and ``q`` admits a filename match
-    or a linked-positive hit. Returns the total, the page and the number of
-    distinct linked positives among all admitted entries (None without links).
-    *favorites*, when given, admits only those listed paths (``favorites=1``).
-    *image_tags* maps normalized paths to their _ImageTagMatch: a tag filter
-    also admits a file whose current image tags (with its linked positive's
-    tags) carry every tag, and ``q`` also admits an image tag name hit.
+    or a linked-positive hit. *favorites*, when given, admits only those listed
+    paths (``favorites=1``). *image_tags* maps normalized paths to their
+    _ImageTagMatch: a tag filter also admits a file whose current image tags
+    (with its linked positive's tags) carry every tag, and ``q`` also admits an
+    image tag name hit.
     """
     query, media, folder = filters["query"], filters["media"], filters["folder"]
     members_only = filters["category"] is not None or bool(filters["tags"])
     native_folder = folder.replace("/", os.sep)
     nested = native_folder + os.sep
-    total, page, positives = 0, [], set()
     exact = filters.get("path", "")
     for position, entry in enumerate(entries):
         if exact and entry.folded != exact:
@@ -1155,6 +1212,28 @@ def _filtered_page(
             and not (image and image.query)
         ):
             continue
+        yield position, entry, match
+
+
+def _filtered_page(
+    entries: list,
+    start: int,
+    size: int,
+    filters: dict,
+    links: dict | None,
+    favorites: frozenset | None = None,
+    image_tags: dict | None = None,
+) -> tuple[int, list, int | None]:
+    """Count the *entries* the filters admit and take *size* from *start* on.
+
+    Admission is _admitted_entries'. Returns the total, the page and the number
+    of distinct linked positives among all admitted entries (None without
+    links).
+    """
+    total, page, positives = 0, [], set()
+    for position, entry, match in _admitted_entries(
+        entries, filters, links, favorites, image_tags
+    ):
         total += 1
         if match is not None:
             positives.add(match[2])
@@ -2133,35 +2212,23 @@ class ImageRoutesMixin:
             )
         return matches
 
-    def _select_workspace_page(
-        self,
-        listings: list[tuple],
-        filters: dict,
-        after: tuple | None,
-        limit: int,
-        scope: str,
+    def _workspace_admission(
+        self, listings: list[tuple], filters: dict, *, read_links: bool, strict=False
     ) -> tuple:
-        """One keyset page of the filtered listing (blocking; run in executor).
+        """The ordered entries and what admits them (blocking; run in executor).
 
-        One SELECT (get_image_link_matches) reads every linked positive of the
-        listing: the filters, the rating sort and the positive count share it.
-        A plain listing (no ``q``, category, tags or rating sort) reads it only
-        for its first page; its cursor pages read no links and the returned
-        count is _COUNT_OMITTED, so the response leaves ``positive_count`` out
-        and the frontend keeps the first page's value. On that plain first
-        page a failed read leaves the listing usable and the count unknown
-        (None); so does a failed read under ``q`` alone, whose search then
-        matches filenames only (as before the linked search existed).
+        Returns ``(entries, key, links, image_tags, favorites)``: the listing in
+        the filters' order, its keyset key, and the link, image-tag and favorite
+        maps _admitted_entries reads. One SELECT (get_image_link_matches) reads
+        every linked positive when *read_links*. A failed read raises when the
+        filters need it (category, tags, the rating sort) or *strict*; else the
+        listing stays usable without links (a search then matches filenames
+        only). A failed image-tag read raises under a Tags filter; a search then
+        matches without image tags.
         """
         order, category, tags = filters["order"], filters["category"], filters["tags"]
-        needed = (
-            bool(filters["query"])
-            or category is not None
-            or bool(tags)
-            or order == "rating"
-        )
         links = None
-        if needed or after is None:
+        if read_links:
             try:
                 links = self.db.get_image_link_matches(
                     filters["text"],
@@ -2171,10 +2238,7 @@ class ImageRoutesMixin:
                     wanted=self._workspace_wanted(listings),
                 )
             except Exception:
-                # Category, tags and the rating sort cannot be served without
-                # the links. A plain listing and a filename search can: the
-                # search then matches filenames only, and the count is None.
-                if category is not None or tags or order == "rating":
+                if strict or category is not None or tags or order == "rating":
                     raise
                 self.logger.warning(
                     "Workspace prompt links could not be read; %s",
@@ -2190,8 +2254,6 @@ class ImageRoutesMixin:
             try:
                 image_tags = self._image_tag_matches(listings, filters)
             except Exception:
-                # A Tags filter cannot be served without them (as without the
-                # links); a search then matches without image tags.
                 if tags:
                     raise
                 self.logger.warning(
@@ -2230,6 +2292,41 @@ class ImageRoutesMixin:
             def key(entry):
                 return _workspace_key(entry, order)
 
+        favorites = (
+            self._workspace_favorite_paths(listings) if filters["favorites"] else None
+        )
+        return entries, key, links, image_tags, favorites
+
+    def _select_workspace_page(
+        self,
+        listings: list[tuple],
+        filters: dict,
+        after: tuple | None,
+        limit: int,
+        scope: str,
+    ) -> tuple:
+        """One keyset page of the filtered listing (blocking; run in executor).
+
+        The filters, the rating sort and the positive count share one link
+        read (_workspace_admission). A plain listing (no ``q``, category, tags
+        or rating sort) reads it only for its first page; its cursor pages read
+        no links and the returned count is _COUNT_OMITTED, so the response
+        leaves ``positive_count`` out and the frontend keeps the first page's
+        value. On that plain first page a failed read leaves the listing usable
+        and the count unknown (None); so does a failed read under ``q`` alone,
+        whose search then matches filenames only (as before the linked search
+        existed).
+        """
+        order = filters["order"]
+        needed = (
+            bool(filters["query"])
+            or filters["category"] is not None
+            or bool(filters["tags"])
+            or order == "rating"
+        )
+        entries, key, links, image_tags, favorites = self._workspace_admission(
+            listings, filters, read_links=needed or after is None
+        )
         start = 0
         if after is not None:
             if order == "name-desc":
@@ -2237,9 +2334,6 @@ class ImageRoutesMixin:
                 start = len(entries) - bisect_left(ascending, after, key=key)
             else:
                 start = bisect_right(entries, after, key=key)
-        favorites = (
-            self._workspace_favorite_paths(listings) if filters["favorites"] else None
-        )
         total, page, positive_count = _filtered_page(
             entries, start, limit + 1, filters, links, favorites, image_tags
         )
@@ -2254,6 +2348,61 @@ class ImageRoutesMixin:
             has_more,
             next_cursor,
             positive_count,
+        )
+
+    def _select_workspace_matches(
+        self, listings: list[tuple], filters: dict, cap: int
+    ) -> ListingSelection:
+        """Every admitted entry, up to *cap*, as a ListingSelection (blocking).
+
+        The links are read strictly: the positives must be the listing's own.
+        """
+        entries, _key, links, image_tags, favorites = self._workspace_admission(
+            listings, filters, read_links=True, strict=True
+        )
+        targets, positives, unlinked, scopes = [], {}, 0, {}
+        for _position, entry, match in _admitted_entries(
+            entries, filters, links, favorites, image_tags
+        ):
+            if len(targets) == cap:
+                return ListingSelection(targets, list(positives), unlinked, True)
+            scope = scopes.get(entry.index)
+            if scope is None:
+                scope = scopes[entry.index] = self._gallery_root_scope(
+                    entry.root, entry.index
+                )
+            relative = entry.path.relative_to(entry.root).as_posix()
+            targets.append((entry.index, scope, relative))
+            if match is None or match[2] is None:
+                unlinked += 1
+            else:
+                positives.setdefault(match[2])
+        return ListingSelection(targets, list(positives), unlinked, False)
+
+    async def resolve_listing_filter(
+        self, params: Mapping, cap: int = MAX_LISTING_SELECTION
+    ) -> ListingSelection:
+        """The images a parse_listing_filter result admits right now (#392).
+
+        Raises ValueError for a root outside the current roots, and
+        ListingSourceChanged when the filter's ``root_scope`` no longer names
+        its root (the sources were renumbered since the listing).
+        """
+        output_dirs = list(self._get_all_output_dirs())
+        root_index = _workspace_root(params, output_dirs)
+        error = self._gallery_scope_error(params, output_dirs)
+        if error is not None:
+            if error.status == 409:
+                raise ListingSourceChanged()
+            raise ValueError("Invalid gallery root scope")
+        filters = _workspace_filters(params)
+        listings = [
+            (index, root, await self._get_gallery_files(root))
+            for index, root in enumerate(output_dirs)
+            if root_index is None or index == root_index
+        ]
+        return await self._run_in_executor(
+            self._select_workspace_matches, listings, filters, cap
         )
 
     async def serve_image(self, request):

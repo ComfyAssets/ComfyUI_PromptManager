@@ -1808,37 +1808,6 @@ class PromptDatabase(
             reader = DocumentReader(conn)
             return [self._image_row_to_dict(row, reader) for row in cursor]
 
-    def autotag_batch_candidates(self) -> List[Dict[str, Any]]:
-        """The images a Tag output images batch looks at (#328).
-
-        ``{id, image_path, prompt_id, prompt_tags}`` for every image with a
-        stored path that is linked to a prompt, newest first (the
-        ``get_all_images`` order, ties newest row first). Never reads
-        ``workflow_data`` or the other documents: a batch needs none of them.
-        """
-        sql = (
-            "SELECT gi.id, gi.image_path, gi.prompt_id, "
-            "(SELECT GROUP_CONCAT(t.name, '|||') FROM prompt_tags pt "
-            "JOIN tags t ON pt.tag_id = t.id WHERE pt.prompt_id = gi.prompt_id) "
-            "AS prompt_tags "
-            "FROM generated_images gi "
-            "INNER JOIN prompts p ON gi.prompt_id = p.id "
-            "WHERE gi.image_path IS NOT NULL AND gi.image_path != '' "
-            "ORDER BY gi.generation_time DESC, gi.id DESC"
-        )
-        with self.model.get_connection() as conn:
-            return [
-                {
-                    "id": row["id"],
-                    "image_path": row["image_path"],
-                    "prompt_id": row["prompt_id"],
-                    "prompt_tags": (
-                        row["prompt_tags"].split("|||") if row["prompt_tags"] else []
-                    ),
-                }
-                for row in conn.execute(sql)
-            ]
-
     def get_all_images(
         self,
         limit: int = 0,

@@ -535,7 +535,9 @@ class TestHeldJobStates(_LegacyHoldCase):
         self.assertIn("event: error", text)
         self.assertEqual(await self._listed(), [("thumbnails", "failed")])
 
-    async def test_legacy_autotag_that_ends_in_error_is_failed(self):
+    async def test_legacy_autotag_refused_at_start_leaves_no_job(self):
+        # #379: the legacy batch is the autotag job; a model that is not
+        # downloaded refuses the start (one error frame) and registers nothing.
         service = MagicMock()
         service.get_models_status.return_value = {}  # model not downloaded
         with patch("py.autotag.get_autotag_service", return_value=service):
@@ -545,7 +547,7 @@ class TestHeldJobStates(_LegacyHoldCase):
             text = await resp.text()
         self.assertEqual(resp.status, 200)
         self.assertIn('"type": "error"', text)
-        self.assertEqual(await self._listed(), [("autotag", "failed")])
+        self.assertEqual(await self._listed(), [])
 
 
 if __name__ == "__main__":

@@ -846,6 +846,14 @@ class TestSettingsReadMonitorThroughModule(AdminAPITestCase):
         self.assertEqual(data["settings"]["gallery_root_paths"], ["output"])
 
 
+def _wired_prompt(text):
+    """A sampler-less graph whose one encoder feeds a guider (#252)."""
+    return {
+        "1": {"class_type": "CLIPTextEncode", "inputs": {"text": text}},
+        "2": {"class_type": "BasicGuider", "inputs": {"conditioning": ["1", 0]}},
+    }
+
+
 def _raise(*args, **kwargs):
     raise RuntimeError("boom")
 
@@ -2186,11 +2194,7 @@ class TestOutputScanInternals(AdminAPITestCase):
 
     def test_ingest_outcomes(self):
         f = Path("gen.png")
-        meta = {
-            "prompt": json.dumps(
-                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}}}
-            )
-        }
+        meta = {"prompt": json.dumps(_wired_prompt("a cat"))}
         self.assertIsNone(self.api._ingest_scanned_file(f, {}))
         self.assertIsNone(self.api._ingest_scanned_file(f, {"prompt": "{}"}))
         self.assertEqual(
@@ -2202,31 +2206,19 @@ class TestOutputScanInternals(AdminAPITestCase):
 
     def test_ingest_link_failures_are_tolerated(self):
         f = Path("gen.png")
-        meta = {
-            "prompt": json.dumps(
-                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a dog"}}}
-            )
-        }
+        meta = {"prompt": json.dumps(_wired_prompt("a dog"))}
         self.api.db.link_image_to_prompt = _raise
         self.assertEqual(self.api._ingest_scanned_file(f, meta), "added")
         self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
 
     def test_ingest_save_failure_counts_as_found(self):
         f = Path("gen.png")
-        meta = {
-            "prompt": json.dumps(
-                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a bird"}}}
-            )
-        }
+        meta = {"prompt": json.dumps(_wired_prompt("a bird"))}
         self.api.db.save_prompt = lambda *a, **k: None
         self.assertEqual(self.api._ingest_scanned_file(f, meta), "found")
 
     def test_batch_counts_and_per_file_errors(self):
-        meta = {
-            "prompt": json.dumps(
-                {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fish"}}}
-            )
-        }
+        meta = {"prompt": json.dumps(_wired_prompt("a fish"))}
         self.api.db.get_prompt_by_hash = _raise
         counts = self.api._ingest_scan_batch_sync(
             [(Path("a.png"), meta), (Path("b.png"), {})]
@@ -2915,7 +2907,7 @@ class TestScanReadsVideos(AdminAPITestCase):
         shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg not installed"
     )
     async def test_scan_adds_prompts_found_in_videos(self):
-        graph = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat"}}}
+        graph = _wired_prompt("a cat")
         _write_mp4(
             self.output_dir / "clip.mp4", json.dumps({"prompt": json.dumps(graph)})
         )

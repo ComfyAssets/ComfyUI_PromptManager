@@ -6,7 +6,6 @@ import functools
 import json
 import os
 import re
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -33,6 +32,8 @@ AUTOTAG_JOB_TITLE = "Tag output images"
 AUTOTAG_PREVIEW_LEASE = "Tag output images review"
 AUTOTAG_OWNER_KIND = "autotag-job"
 BATCH_PREVIEW_BODY_MAX = 1024
+APPLY_BODY_MAX = 64 * 1024  # POST /autotag/apply: one image and its tags
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 BATCH_JOB_BODY_MAX = 32 * 1024
 REVIEW_REQUIRED = (
     "Replacing tags needs a review of each image. Use Preview tagging review, "
@@ -133,16 +134,6 @@ _MEDIA_EXTENSIONS = frozenset(
 _SCAN_MAX_FILES = 50_000
 _SCAN_MAX_DEPTH = 12
 
-# One batch run at a time; a second autotag/start gets 409 while this is held.
-_autotag_batch_lock = threading.Lock()
-
-
-def _file_exists(path) -> bool:
-    try:
-        return Path(str(path)).exists()
-    except (OSError, ValueError):
-        return False
-
 
 def path_is_within(candidate, root) -> bool:
     """True when ``candidate`` is strictly inside ``root`` on the real filesystem.
@@ -178,25 +169,37 @@ async def _single(event):
 
 _monotonic = time.monotonic  # the legacy frames' throttle clock (patched in tests)
 
-# What one image came to in a batch (``on_item``): fixed strings, never an
-# exception's text.
-SKIP_DETAILS = {
-    "unlinked": "File not found",
-    "prompt already processed": "Prompt handled by another image",
-    "outside allowed directories": "Outside the output folders",
-    "file missing": "File not found",
-    "already tagged": "Prompt already tagged",
+# The legacy pages' batch (#379): the ``autotag`` job, relayed as their frames.
+LEGACY_BATCH_TITLE = "Tag output images (legacy page)"
+LEGACY_FRAME_INTERVAL = 0.5  # progress frames at most this often
+LEGACY_REPEAT_AFTER = 5.0  # a quiet job repeats its last frame (notices a closed page)
+_LEGACY_PHASES = {
+    "backup": (0, "Taking a safety backup…"),
+    "model": (5, "Loading model…"),
+    "listing": (8, "Listing output images…"),
 }
 
 
-def _added(count):
-    return f"Added {count} tag" if count == 1 else f"Added {count} tags"
+def _legacy_busy():
+    """The JSON 409 a legacy start gets while another legacy batch runs."""
+    return web.json_response({"success": False, "error": _BUSY_ERROR}, status=409)
 
 
-async def _refusal(title):
-    """The single error event of an auto-tag batch refused by another job."""
-    message = f"{title} already running"
+async def _error_frame(message):
+    """The single error frame of a legacy batch that could not start."""
     yield {"type": "error", "status": "error", "message": message}
+
+
+def _legacy_counts(job) -> dict:
+    """Legacy counters: ``processed`` = images the model ran on."""
+    counters = job.counters
+    return {
+        "processed": counters.get("tagged", 0)
+        + counters.get("unchanged", 0)
+        + counters.get("errors", 0),
+        "tagged": counters.get("tagged", 0),
+        "skipped": counters.get("skipped", 0),
+    }
 
 
 def wd14_device(service) -> str:
@@ -476,303 +479,181 @@ class AutotagRoutesMixin:
             params.update(body)
         return params
 
-    @staticmethod
-    def _real_tags(tags) -> list:
-        """Normalise a tag field to a list without bookkeeping markers."""
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",") if t.strip()]
-        return [
-            t
-            for t in (tags or [])
-            if t != "auto-scanned"
-            and not t.startswith("prepend:")
-            and not t.startswith("append:")
-        ]
-
-    async def _apply_tags_to_prompt(self, prompt_id, tags) -> int:
-        """Merge ``tags`` into the prompt; how many new tags were added."""
-        existing_prompt = await self._run_in_executor(
-            self.db.get_prompt_by_id, prompt_id
-        )
-        if not existing_prompt:
-            return 0
-        existing_tags = existing_prompt.get("tags", [])
-        if isinstance(existing_tags, str):
-            existing_tags = [t.strip() for t in existing_tags.split(",") if t.strip()]
-        new_tags = list(dict.fromkeys(t for t in tags if t not in existing_tags))
-        if not new_tags:
-            return 0
-        await self._run_in_executor(
-            self.db.update_prompt_metadata, prompt_id, tags=existing_tags + new_tags
-        )
-        return len(new_tags)
-
-    async def _autotag_batch_events(self, service, opts: dict):
-        """Yield SSE progress dicts while tagging every image linked to a prompt.
-
-        Both batches run here: the legacy page's (its frames unchanged) and
-        the ``autotag`` job's. ``opts``: ``model_type``, ``keep_in_memory``,
-        ``existing`` (``skip`` leaves prompts with real tags alone, ``merge``
-        adds to them), the two thresholds, and optionally ``gate_owner``,
-        ``prompt`` (the template, passed to each call; the legacy page sets
-        ``custom_prompt`` instead), ``cancelled`` (checked before each image:
-        a cancelled run returns without a ``complete`` frame) and
-        ``on_item(index, total, group, image_path, detail)`` (one outcome per
-        image, ``SKIP_DETAILS`` for the skips).
-        """
-        model_type = opts["model_type"]
-        keep_in_memory = opts["keep_in_memory"]
-        cancelled = opts.get("cancelled") or (lambda: False)
-        on_item = opts.get("on_item") or (lambda *_args: None)
-        status = await self._run_in_executor(service.get_models_status)
-        if not status.get(model_type, {}).get("downloaded"):
-            yield {"type": "error", "message": f"Model {model_type} not downloaded"}
-            return
-
-        if cancelled():
-            return
-        yield {"type": "progress", "progress": 0, "status": "Loading model..."}
-        run = self._gated_runner(opts.get("gate_owner"))
-        try:
-            await run(service.load_model, model_type, True)
-        except Exception:
-            self.logger.exception("Failed to load model")
-            yield {
-                "type": "error",
-                "message": "Failed to load model. Check server logs for details.",
-            }
-            return
-
-        if opts.get("custom_prompt"):
-            service.custom_prompt = opts["custom_prompt"]
-        tag_kwargs = {
-            "general_threshold": opts["general_threshold"],
-            "character_threshold": opts["character_threshold"],
-        }
-        if opts.get("prompt"):
-            tag_kwargs["prompt"] = opts["prompt"]
-
-        yield {
-            "type": "progress",
-            "progress": 5,
-            "status": "Model loaded. Fetching all images from database...",
-        }
-        images = await self._run_in_executor(self.db.autotag_batch_candidates)
-        total = len(images)
-        if total == 0:
-            yield {
-                "type": "complete",
-                "processed": 0,
-                "tagged": 0,
-                "skipped": 0,
-                "errors": 0,
-                "skipped_outside_roots": 0,
-                "status": "No images with linked prompts found",
-            }
-            if not keep_in_memory:
-                service.unload_model()
-            return
-
-        yield {
-            "type": "progress",
-            "progress": 10,
-            "status": f"Found {total} images. Processing...",
-        }
-
-        counts = {
-            "processed": 0,
-            "tagged": 0,
-            "skipped": 0,
-            "errors": 0,
-            "skipped_outside_roots": 0,
-        }
-        tagged_prompt_ids = set()
-        last_update = _monotonic()
-        finished = False
-
-        def progress_event(i, message):
-            return {
-                "type": "progress",
-                "progress": 10 + int((i + 1) / total * 85),
-                "status": message,
-                "processed": counts["processed"],
-                "tagged": counts["tagged"],
-                "skipped": counts["skipped"],
-                "skipped_outside_roots": counts["skipped_outside_roots"],
-            }
-
-        try:
-            for i, image_data in enumerate(images):
-                if cancelled():
-                    return
-                image_path = image_data.get("image_path")
-                prompt_id = image_data.get("prompt_id")
-                skip_reason = None
-                allowed_path = None
-                if not image_path or not prompt_id:
-                    skip_reason = "unlinked"
-                elif prompt_id in tagged_prompt_ids:
-                    skip_reason = "prompt already processed"
-                else:
-                    # Rows can point anywhere (restored DB, hand edits): only
-                    # media files inside the served output roots are tagged.
-                    allowed_path = self._resolve_allowed_image_path(str(image_path))
-                    if allowed_path is None:
-                        if _file_exists(image_path):
-                            skip_reason = "outside allowed directories"
-                            counts["skipped_outside_roots"] += 1
-                        else:
-                            skip_reason = "file missing"
-                    elif opts["existing"] == "skip" and self._real_tags(
-                        image_data.get("prompt_tags", [])
-                    ):
-                        tagged_prompt_ids.add(prompt_id)
-                        skip_reason = "already tagged"
-
-                if skip_reason is not None:
-                    counts["skipped"] += 1
-                    on_item(i, total, "skipped", image_path, SKIP_DETAILS[skip_reason])
-                    now = _monotonic()
-                    if (now - last_update) >= 0.5 or i == total - 1:
-                        yield progress_event(
-                            i, f"Skipping {i + 1}/{total} ({skip_reason})..."
-                        )
-                        await asyncio.sleep(0.01)
-                        last_update = now
-                    continue
-
-                try:
-                    tags = await run(service.generate_tags, allowed_path, **tag_kwargs)
-                    counts["processed"] += 1
-                    added = 0
-                    if tags:
-                        added = await self._apply_tags_to_prompt(prompt_id, tags)
-                    if added:
-                        counts["tagged"] += 1
-                        on_item(i, total, "tagged", image_path, _added(added))
-                    else:
-                        counts["skipped"] += 1
-                        on_item(i, total, "unchanged", image_path, "No new tags")
-                    tagged_prompt_ids.add(prompt_id)
-                except Exception as img_err:
-                    self.logger.error(
-                        f"Error processing {os.path.basename(str(image_path))}: "
-                        f"{img_err}"
-                    )
-                    counts["errors"] += 1
-                    counts["processed"] += 1
-                    on_item(i, total, "errors", image_path, "Tagging failed")
-
-                yield progress_event(i, f"Processing {i + 1}/{total}...")
-                await asyncio.sleep(0.01)
-                last_update = _monotonic()
-
-            finished = True
-            if not keep_in_memory:
-                service.unload_model()
-            yield {
-                "type": "complete",
-                "progress": 100,
-                **counts,
-                "status": "Complete",
-                "model_status": (
-                    "Model kept in memory" if keep_in_memory else "Model unloaded"
-                ),
-                "model_loaded": keep_in_memory,
-            }
-        finally:
-            if not finished and not keep_in_memory:
-                service.unload_model()
-
     async def start_autotag(self, request):
-        """Start batch auto-tagging with streaming progress (POST only)."""
+        """The legacy pages' batch (POST only): the ``autotag`` job as frames.
+
+        Its parameters (``model_type``, ``prompt``, ``skip_tagged``,
+        ``keep_in_memory``, the thresholds or the saved ones) become the job's
+        options, checked by ``validate_options``. The job, titled "Tag output
+        images (legacy page)", tags each output image and never a prompt
+        (#379). A second legacy batch answers JSON 409; every other refusal is
+        one ``error`` frame (both pages read this route as a stream). Closing
+        the stream cancels the job.
+        """
+        from ..autotag import MODELS
+        from ..config import MAX_SUGGESTION_LIMIT, AutotagConfig
+        from .annotation_suggest import OptionError, validate_options
+
         params = await self._read_start_params(request)
         if params is None:
             return self._bad_request("Request body must be a JSON object")
-
-        opts = {
-            "model_type": params.get("model_type", "gguf"),
-            "custom_prompt": params.get("prompt", ""),
-            "existing": (
-                "skip"
-                if str(params.get("skip_tagged", "true")).lower() == "true"
-                else "merge"
-            ),
-            "keep_in_memory": str(params.get("keep_in_memory", "true")).lower()
-            == "true",
-            "general_threshold": params.get("general_threshold"),
-            "character_threshold": params.get("character_threshold"),
-        }
+        model_type = params.get("model_type", "gguf")
         try:
-            opts["general_threshold"], opts["character_threshold"] = (
-                _thresholds_or_saved(
-                    opts["general_threshold"], opts["character_threshold"]
-                )
+            general, character = _thresholds_or_saved(
+                params.get("general_threshold"), params.get("character_threshold")
             )
         except (ValueError, TypeError):
             return self._bad_request(
                 "general_threshold and character_threshold must be numeric"
             )
-
-        errors = []  # an error event ends the run; Activity lists it failed
-
-        async def events():
-            try:
-                from ..autotag import get_autotag_service
-
-                async for event in self._autotag_batch_events(
-                    get_autotag_service(), opts
-                ):
-                    if event.get("type") == "error":
-                        errors.append(event)
-                    yield event
-            except Exception:
-                self.logger.exception("AutoTag error")
-                errors.append(_INTERNAL_ERROR)
-                yield {
-                    "type": "error",
-                    "message": _INTERNAL_ERROR,
-                }
-
-        # The batch writes prompt tags: a records hold on the registry, so it
-        # never runs beside a scan, restore or the workspace tagging job.
+        existing = (
+            "skip"
+            if str(params.get("skip_tagged", "true")).lower() == "true"
+            else "merge"
+        )
+        keep_in_memory = str(params.get("keep_in_memory", "true")).lower() == "true"
+        if not isinstance(model_type, str) or model_type not in MODELS:
+            return await self._stream_sse(
+                request, _error_frame(f"Invalid model type: {model_type}")
+            )
+        if model_type.startswith("wd14"):
+            options = {"general_threshold": general, "character_threshold": character}
+        else:
+            prompt = params.get("prompt")
+            template = prompt if isinstance(prompt, str) and prompt.strip() else None
+            options = {"instructions": template or AutotagConfig.TEMPLATE}
+        try:
+            _model, options = validate_options(
+                model_type,
+                options,
+                default_limit=AutotagConfig.suggestion_limit(),
+                max_limit=MAX_SUGGESTION_LIMIT,
+            )
+        except OptionError as error:
+            return await self._stream_sse(request, _error_frame(str(error)))
+        running = self._jobs.active(AUTOTAG_BATCH_JOB_KIND)
+        if running is not None and running.title == LEGACY_BATCH_TITLE:
+            return _legacy_busy()
+        # A job in the way is named before the engine is asked anything.
         busy = self._jobs.blocker(AUTOTAG_BATCH_JOB_KIND, admission="records")
         if busy is not None:
-            # A second legacy batch keeps its JSON 409; the workspace's Tag
-            # output images job is named in a stream frame.
-            if busy.kind == AUTOTAG_BATCH_JOB_KIND and busy.title != AUTOTAG_JOB_TITLE:
-                return web.json_response(
-                    {"success": False, "error": _BUSY_ERROR}, status=409
-                )
-            # Both legacy pages read this route as a stream, where a 409 reads
-            # as a lost connection: refuse with one error frame instead (the
-            # admin page keys on ``type``, the gallery on ``status``).
-            return await self._stream_sse(request, _refusal(busy.title))
-        async with self._jobs.hold(
-            AUTOTAG_BATCH_JOB_KIND,
-            OWNER_LABELS["legacy-batch"],
-            admission="records",
-        ) as job:
-            response = await self._start_autotag_batch(request, opts, events)
-            if response.status >= 400 or errors:
-                job.finish("failed")
-            return response
-
-    async def _start_autotag_batch(self, request, opts, events):
-        if not _autotag_batch_lock.acquire(blocking=False):
-            return web.json_response(
-                {"success": False, "error": _BUSY_ERROR}, status=409
+            return await self._stream_sse(
+                request, _error_frame(f"{busy.title} already running")
             )
         try:
-            opts["gate_owner"] = model_gate.new_owner("legacy-batch")
-            if not model_gate.try_acquire(opts["gate_owner"]):
-                return model_busy_response()
-            try:
-                return await self._stream_sse(request, events())
-            finally:
-                model_gate.release(opts["gate_owner"])
+            job, refusal = await self._start_autotag(
+                model_type=model_type,
+                existing=existing,
+                options=options,
+                keep_in_memory=keep_in_memory,
+                title=LEGACY_BATCH_TITLE,
+                owner_kind="legacy-batch",
+            )
+        except Exception:
+            self.logger.exception("AutoTag error")
+            return await self._stream_sse(request, _error_frame(_INTERNAL_ERROR))
+        if refusal is not None:
+            if refusal.message == f"{LEGACY_BATCH_TITLE} already running":
+                # Another legacy start won the race past the check above.
+                return _legacy_busy()
+            return await self._stream_sse(request, _error_frame(refusal.message))
+        return await self._stream_sse(
+            request, self._legacy_batch_frames(job, keep_in_memory)
+        )
+
+    async def _legacy_batch_frames(self, job, keep_in_memory):
+        """The legacy frames of a running ``autotag`` job, then its end frame.
+
+        Phases map to fixed frames; progress frames come at most every 0.5 s;
+        a job quiet for 5 s repeats the last frame, so a closed page is noticed
+        (aiohttp sees a disconnect only on a write). A stream closed before the
+        job ended cancels it.
+        """
+        events = job.events()
+        pending = None
+        last = None
+        last_progress = None
+        try:
+            while True:
+                if pending is None:
+                    pending = asyncio.ensure_future(events.__anext__())
+                done, _ = await asyncio.wait({pending}, timeout=LEGACY_REPEAT_AFTER)
+                if not done:
+                    if last is not None:
+                        yield last
+                    continue
+                try:
+                    payload = pending.result()
+                except StopAsyncIteration:
+                    pending = None
+                    break
+                pending = None
+                frame = self._legacy_frame(job, payload)
+                if frame is None:
+                    continue
+                if frame.get("phase") is None:
+                    now = _monotonic()
+                    if (
+                        last_progress is not None
+                        and now - last_progress < LEGACY_FRAME_INTERVAL
+                    ):
+                        continue
+                    last_progress = now
+                frame.pop("phase", None)
+                last = frame
+                yield frame
+            yield self._legacy_end_frame(job, keep_in_memory)
         finally:
-            _autotag_batch_lock.release()
+            if pending is not None:
+                pending.cancel()
+                with contextlib.suppress(BaseException):
+                    await pending
+            with contextlib.suppress(BaseException):
+                await events.aclose()
+            if job.running:
+                self._jobs.cancel(job.id)
+
+    @staticmethod
+    def _legacy_frame(job, payload):
+        """One job event as a legacy progress frame, or None (an end event)."""
+        kind = payload.get("type")
+        if kind == "phase":
+            progress, status = _LEGACY_PHASES.get(payload.get("phase"), (0, ""))
+            if not status:
+                return None
+            return {
+                "type": "progress",
+                "progress": progress,
+                "status": status,
+                "phase": True,
+            }
+        if kind != "progress" or not job.total:
+            return None
+        return {
+            "type": "progress",
+            "progress": 10 + job.progress * 85 // 100,
+            "status": job.status_line,
+            **_legacy_counts(job),
+        }
+
+    @staticmethod
+    def _legacy_end_frame(job, keep_in_memory):
+        if job.state == "finished":
+            return {
+                "type": "complete",
+                "progress": 100,
+                **_legacy_counts(job),
+                "errors": job.counters.get("errors", 0),
+                "skipped_outside_roots": 0,
+                "status": "Complete" if job.total else "No still images found",
+                "model_status": (
+                    "Model kept in memory" if keep_in_memory else "Model unloaded"
+                ),
+                "model_loaded": keep_in_memory,
+            }
+        if job.state == "cancelled":
+            return {"type": "cancelled", "message": BATCH_CANCELLED}
+        return {"type": "error", "status": "error", "message": job.status_line}
 
     # ── Tag output images (#328) ────────────────────────────────────────
 
@@ -969,59 +850,69 @@ class AutotagRoutesMixin:
             status=403,
         )
 
-    async def _select_autotag_target(self, data: dict):
-        """Pick the image to tag from an autotag/single body.
+    def _root_of(self, resolved: str):
+        """``(root_index, root, relative)`` of a resolved file inside a root.
 
-        Returns ``(image_path, prompt_id, None)`` on success or
-        ``(None, None, error_response)`` when the request must be rejected.
+        The first output root that holds it (as ``path_is_within`` checks);
+        ``relative`` is ``/``-separated below the root's real path, so the
+        capture store's alias check holds. None when no root holds it.
+        """
+        for index, root in enumerate(self._get_all_output_dirs()):
+            if path_is_within(resolved, root):
+                real_root = os.path.realpath(str(root))
+                relative = os.path.relpath(resolved, real_root).replace(os.sep, "/")
+                return index, root, relative
+        return None
+
+    async def _select_autotag_target(self, data: dict):
+        """Pick the image a legacy single/apply body names.
+
+        Returns ``(target, None)`` with ``target`` = ``{path, prompt_id,
+        root_index, root, relative}``, or ``(None, error_response)``.
         """
         image_id = data.get("image_id")
         if image_id is not None:
             if isinstance(image_id, bool) or not isinstance(image_id, (int, str)):
-                return None, None, self._bad_request("image_id must be an integer")
+                return None, self._bad_request("image_id must be an integer")
             try:
                 image_id = int(image_id)
             except (TypeError, ValueError):
-                return None, None, self._bad_request("image_id must be an integer")
+                return None, self._bad_request("image_id must be an integer")
             record = await self._run_in_executor(self.db.get_image_by_id, image_id)
             if not record or not record.get("image_path"):
-                return (
-                    None,
-                    None,
-                    web.json_response(
-                        {"success": False, "error": f"Image {image_id} not found"},
-                        status=404,
-                    ),
+                return None, web.json_response(
+                    {"success": False, "error": f"Image {image_id} not found"},
+                    status=404,
                 )
             stored_path = record["image_path"]
             resolved = self._resolve_allowed_image_path(stored_path)
             if resolved is None:
-                return None, None, self._forbidden(stored_path)
-            return resolved, record.get("prompt_id"), None
+                return None, self._forbidden(stored_path)
+            return self._target_of(resolved, record.get("prompt_id"), stored_path)
 
         raw_path = data.get("path") or data.get("image_path")
         if not raw_path or not isinstance(raw_path, str):
-            return None, None, self._bad_request("image_id or path is required")
+            return None, self._bad_request("image_id or path is required")
 
         if "root_index" in data:
             root_index = data["root_index"]
             if isinstance(root_index, bool) or not isinstance(root_index, int):
-                return None, None, self._bad_request("root_index must be an integer")
+                return None, self._bad_request("root_index must be an integer")
             roots = self._get_all_output_dirs()
             if not 0 <= root_index < len(roots):
-                return None, None, self._forbidden(raw_path)
+                return None, self._forbidden(raw_path)
             root = roots[root_index]
             if Path(raw_path).is_absolute() or ".." in raw_path.replace(
                 "\\", "/"
             ).split("/"):
-                return None, None, self._forbidden(raw_path)
+                return None, self._forbidden(raw_path)
             raw_path = str(Path(root) / raw_path)
             if not path_is_within(raw_path, root):
-                return None, None, self._forbidden(raw_path)
+                return None, self._forbidden(raw_path)
 
         resolved = self._resolve_allowed_image_path(raw_path)
         if resolved is None:
-            return None, None, self._forbidden(raw_path)
+            return None, self._forbidden(raw_path)
 
         prompt_id = None
         try:
@@ -1034,125 +925,345 @@ class AutotagRoutesMixin:
                 )
         except Exception as e:
             self.logger.warning(f"Could not find linked prompt: {e}")
-        return resolved, prompt_id, None
+        return self._target_of(resolved, prompt_id, raw_path)
+
+    def _target_of(self, resolved, prompt_id, shown):
+        located = self._root_of(resolved)
+        if located is None:
+            return None, self._forbidden(shown)
+        index, root, relative = located
+        return {
+            "path": resolved,
+            "prompt_id": prompt_id,
+            "root_index": index,
+            "root": root,
+            "relative": relative,
+        }, None
 
     @staticmethod
     def _bad_request(message: str):
         return web.json_response({"success": False, "error": message}, status=400)
 
+    @staticmethod
+    def _coded_error(status: int, code: str, message: str):
+        return web.json_response(
+            {"success": False, "code": code, "error": message}, status=status
+        )
+
+    def _capture_refusal(self, exc, target):
+        """The legacy answer for a file the capture store refused (#379)."""
+        from .image_tag_jobs import FILE_CHANGED, FILE_NOT_FOUND, TOO_LARGE
+
+        name = type(exc).__name__
+        if name == "CaptureTooLarge":
+            return self._coded_error(413, "too-large", TOO_LARGE)
+        if name == "CaptureCapacity":
+            return self._coded_error(
+                503, "busy", "The file could not be read now. Try again."
+            )
+        if name == "CaptureChanged" and os.path.lexists(target["path"]):
+            return self._coded_error(409, "file-changed", FILE_CHANGED)
+        if name in ("CaptureDenied", "CaptureChanged"):
+            return self._coded_error(404, "file-not-found", FILE_NOT_FOUND)
+        return self._coded_error(500, "read-failed", "The file could not be read.")
+
+    def _single_options(self, data, model_type):
+        """The validated suggestion options of a legacy single body."""
+        from ..config import MAX_SUGGESTION_LIMIT, AutotagConfig
+        from .annotation_suggest import validate_options
+
+        general, character = _thresholds_or_saved(
+            data.get("general_threshold"), data.get("character_threshold")
+        )
+        if model_type.startswith("wd14"):
+            options = {"general_threshold": general, "character_threshold": character}
+        else:
+            prompt = data.get("prompt")
+            template = prompt if isinstance(prompt, str) and prompt.strip() else None
+            options = {"instructions": template or AutotagConfig.TEMPLATE}
+        use_gpu = data.get("use_gpu", True)
+        options["use_gpu"] = use_gpu if isinstance(use_gpu, bool) else True
+        return validate_options(
+            model_type,
+            options,
+            default_limit=AutotagConfig.suggestion_limit(),
+            max_limit=MAX_SUGGESTION_LIMIT,
+        )[1]
+
     async def autotag_single(self, request):
-        """Generate tags for a single image selected by image_id or gallery path."""
+        """Suggest tags for one image (the legacy review), never writing.
+
+        ``existing: "skip"`` answers ``already_tagged`` without taking the
+        model gate when the image's current bytes are auto-tagged (#379).
+        Otherwise the image is captured and the model runs on the capture
+        under the gate, with at most the saved "Suggestions per image";
+        the answer carries the captured ``sha256`` that ``/autotag/apply``
+        writes against, and the image's current ``image_tags``.
+        """
+        from ..autotag import MODELS
+        from .annotation_suggest import OptionError
+
         try:
             data = await request.json()
-            if not isinstance(data, dict):
-                return self._bad_request("Request body must be a JSON object")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return self._bad_request("Request body must be valid JSON")
+        if not isinstance(data, dict):
+            return self._bad_request("Request body must be a JSON object")
+        try:
             model_type = data.get("model_type", "gguf")
-            custom_prompt = data.get("prompt")
-            use_gpu = data.get("use_gpu", True)
-            general_threshold = data.get("general_threshold")
-            character_threshold = data.get("character_threshold")
-            try:
-                general_threshold, character_threshold = _thresholds_or_saved(
-                    general_threshold, character_threshold
+            if not isinstance(model_type, str) or model_type not in MODELS:
+                return self._bad_request(
+                    "model_type must be one of " + ", ".join(sorted(MODELS))
                 )
+            existing = data.get("existing", "merge")
+            if existing not in ("skip", "merge"):
+                return self._bad_request('existing must be "skip" or "merge"')
+            try:
+                options = self._single_options(data, model_type)
             except (ValueError, TypeError):
                 return self._bad_request(
                     "general_threshold and character_threshold must be numeric"
                 )
-
-            image_path, prompt_id, error = await self._select_autotag_target(data)
+            except OptionError as error:
+                return self._bad_request(str(error))
+            target, error = await self._select_autotag_target(data)
             if error is not None:
                 return error
-
-            from ..autotag import get_autotag_service
-
-            service = get_autotag_service()
-            owner = model_gate.new_owner("legacy-single")
-            if not model_gate.try_acquire(owner):
-                return model_busy_response()
-            try:
-                if (
-                    not service.is_model_loaded()
-                    or service.get_loaded_model_type() != model_type
-                ):
-                    await model_gate.run(owner, service.load_model, model_type, use_gpu)
-
-                if custom_prompt:
-                    service.custom_prompt = custom_prompt
-
-                tags = await model_gate.run(
-                    owner,
-                    service.generate_tags,
-                    image_path,
-                    general_threshold=general_threshold,
-                    character_threshold=character_threshold,
-                )
-            finally:
-                model_gate.release(owner)
-
-            return web.json_response(
-                {
-                    "success": True,
-                    "tags": tags,
-                    "prompt_id": prompt_id,
-                    "filename": os.path.basename(image_path),
-                }
-            )
-
-        except json.JSONDecodeError:
-            return self._bad_request("Request body must be valid JSON")
+            base = {
+                "success": True,
+                "prompt_id": target["prompt_id"],
+                "filename": os.path.basename(target["path"]),
+            }
+            if existing == "skip":
+                marked = await self._run_in_executor(self._marked_tags, target)
+                if marked is not None:
+                    return web.json_response(
+                        {
+                            **base,
+                            "already_tagged": True,
+                            "tags": [],
+                            "image_tags": marked,
+                        }
+                    )
+            return await self._suggest_single(target, model_type, options, base)
         except Exception as e:
             self.logger.error(f"AutoTag single error: {e}")
             return web.json_response(
                 {"success": False, "error": self._public_error(e)}, status=500
             )
 
-    async def apply_autotag(self, request):
-        """Apply selected tags to a prompt."""
+    def _locator_of(self, target) -> str:
+        return os.path.normcase(
+            os.path.join(
+                os.path.realpath(str(target["root"])), *target["relative"].split("/")
+            )
+        )
+
+    def _marked_tags(self, target):
+        """Worker thread: the current image tags when the image is
+        auto-tagged, else None. One stat, no hash."""
+        from .images import _current_fingerprint
+
+        fingerprint = _current_fingerprint(target["path"])
+        if fingerprint is None:
+            return None
+        locator = self._locator_of(target)
+        if not self.db.autotag_state({locator: fingerprint}).get(locator):
+            return None
+        return self.db.current_image_tags({locator: fingerprint}).get(locator, [])
+
+    async def _suggest_single(self, target, model_type, options, base):
+        from ..autotag import MODELS, get_autotag_service
+        from .annotation_suggest import unavailable_message
+        from .annotations import _pinned_suggestions, _settled, _submit
+
         try:
-            data = await request.json()
-            prompt_id = data.get("prompt_id")
-            tags = data.get("tags", [])
+            from ...utils.media_capture import CaptureError
+        except ImportError:
+            from utils.media_capture import CaptureError
 
-            if not prompt_id:
-                return web.json_response(
-                    {"success": False, "error": "prompt_id is required"}, status=400
+        service = get_autotag_service()
+        status = await self._run_in_executor(service.get_models_status)
+        if not (status.get(model_type) or {}).get("downloaded"):
+            message = unavailable_message(MODELS[model_type]["name"])
+            return self._coded_error(409, "model-unavailable", message)
+        owner = model_gate.new_owner("legacy-single")
+        if not model_gate.try_acquire(owner):
+            return model_busy_response()
+        store = self._capture_store()
+        try:
+            epoch = await self._run_in_executor(self.db.get_execution_epoch)
+            scope = self._gallery_root_scope(target["root"], target["root_index"])
+            try:
+                capture = await _settled(
+                    _submit(
+                        store.capture,
+                        target["root"],
+                        target["relative"],
+                        epoch=epoch,
+                        scope=scope,
+                        root_index=target["root_index"],
+                    ),
+                    lambda made: made is not None and store.release(made.token),
                 )
-
-            if not tags:
-                return web.json_response(
-                    {"success": True, "message": "No tags to apply"}
+            except CaptureError as exc:
+                return self._capture_refusal(exc, target)
+            try:
+                if not capture.inferable:
+                    await self._mark_untaggable(capture, epoch)
+                    return self._coded_error(
+                        415, "not-a-still", "Not a supported still image"
+                    )
+                if store.acquire(capture.token) is None:
+                    return self._coded_error(
+                        409,
+                        "storage-changed",
+                        "Prompt storage was restored. Reload the page.",
+                    )
+                pairs = await model_gate.run(
+                    owner,
+                    _pinned_suggestions,
+                    store,
+                    capture.token,
+                    service,
+                    capture,
+                    model_type,
+                    options,
+                    on_skipped=functools.partial(store.release_use, capture.token),
                 )
+            finally:
+                store.release(capture.token)
+        finally:
+            model_gate.release(owner)
+        current = await self._run_in_executor(
+            self.db.read_image_tags, capture.locator, capture.sha256
+        )
+        return web.json_response(
+            {
+                **base,
+                "tags": [str(name) for name, _score in pairs],
+                "sha256": capture.sha256,
+                "image_tags": current["tags"],
+            }
+        )
 
-            prompt = await self._run_in_executor(self.db.get_prompt_by_id, prompt_id)
-            if not prompt:
-                return web.json_response(
-                    {"success": False, "error": f"Prompt {prompt_id} not found"},
-                    status=404,
-                )
-
-            existing_tags = prompt.get("tags", [])
-            if isinstance(existing_tags, str):
-                existing_tags = [
-                    t.strip() for t in existing_tags.split(",") if t.strip()
-                ]
-
-            new_tags = [t for t in tags if t not in existing_tags]
-            all_tags = existing_tags + new_tags
-
+    async def _mark_untaggable(self, facts, epoch):
+        try:
             await self._run_in_executor(
-                self.db.update_prompt_metadata, prompt_id, tags=all_tags
+                functools.partial(
+                    self.db.add_image_tags,
+                    locator=facts.locator,
+                    sha256=facts.sha256,
+                    size=facts.size,
+                    mtime_ns=facts.mtime_ns,
+                    expected_epoch=epoch,
+                    tags=[],
+                    mark_autotagged=True,
+                )
             )
+        except Exception:
+            self.logger.warning("An unsupported image could not be marked")
 
-            return web.json_response(
-                {"success": True, "added_tags": new_tags, "total_tags": len(all_tags)}
+    async def apply_autotag(self, request):
+        """Union reviewed tags into one image's tags and mark it (#379).
+
+        The body names the image (``image_id``, or ``path`` with optional
+        ``root_index``), the ``sha256`` ``/autotag/single`` returned and the
+        ``tags``; it is written only onto those exact bytes. A body with
+        ``prompt_id`` (a page loaded before the update) is refused: no path
+        writes prompt tags.
+        """
+        try:
+            from ...database.annotations import ImageTagLimitError, normalize_image_tags
+            from ...database.library_commands import LibraryCommandError
+            from ...utils.media_capture import CaptureError
+        except ImportError:
+            from database.annotations import ImageTagLimitError, normalize_image_tags
+            from database.library_commands import LibraryCommandError
+            from utils.media_capture import CaptureError
+
+        data, error = await self._read_json_body(request, max_bytes=APPLY_BODY_MAX)
+        if error is not None:
+            return error
+        if "prompt_id" in data:
+            return self._bad_request("This page is out of date. Reload it.")
+        keys = set(data)
+        if keys not in (
+            {"image_id", "sha256", "tags"},
+            {"path", "sha256", "tags"},
+            {"path", "root_index", "sha256", "tags"},
+        ):
+            return self._bad_request(
+                "The body must be {image_id, sha256, tags} or "
+                "{path, root_index?, sha256, tags}"
             )
+        sha256 = data["sha256"]
+        if not isinstance(sha256, str) or not _HEX64.fullmatch(sha256):
+            return self._bad_request(
+                "sha256 must be 64 lowercase hexadecimal characters"
+            )
+        try:
+            tags = normalize_image_tags(data["tags"])
+        except ImageTagLimitError as exc:
+            return self._coded_error(400, "tag-limit", str(exc))
+        except ValueError as exc:
+            return self._bad_request(str(exc))
+        try:
+            epoch = await self._run_in_executor(self.db.get_execution_epoch)
+            target, error = await self._select_autotag_target(data)
+            if error is not None:
+                return error
+            store = self._capture_store()
+            try:
+                facts = await self._run_in_executor(
+                    store.verify, target["root"], target["relative"]
+                )
+            except CaptureError as exc:
+                return self._capture_refusal(exc, target)
+            if facts.sha256 != sha256:
+                return self._coded_error(
+                    409,
+                    "file-changed",
+                    "The image changed since its tags were generated.",
+                )
+            try:
+                receipt = await self._run_in_executor(
+                    functools.partial(
+                        self.db.add_image_tags,
+                        locator=facts.locator,
+                        sha256=facts.sha256,
+                        size=facts.size,
+                        mtime_ns=facts.mtime_ns,
+                        expected_epoch=epoch,
+                        tags=tags,
+                        mark_autotagged=True,
+                    )
+                )
+            except LibraryCommandError as exc:
+                if exc.code == "storage-changed":
+                    return self._coded_error(
+                        409,
+                        "storage-changed",
+                        "Prompt storage was restored. Reload the page.",
+                    )
+                if exc.code == "tag-limit":
+                    from .annotations import _MESSAGES
 
+                    return self._coded_error(409, "tag-limit", _MESSAGES["tag-limit"])
+                raise
         except Exception as e:
             self.logger.error(f"Apply autotag error: {e}")
             return web.json_response(
                 {"success": False, "error": self._public_error(e)}, status=500
             )
+        added = receipt.get("added", 0)
+        return web.json_response(
+            {
+                "success": True,
+                "added_tags": receipt["tags"][-added:] if added else [],
+                "total_tags": len(receipt["tags"]),
+            }
+        )
 
     async def unload_autotag_model(self, request):
         """Manually unload the AutoTag model from memory."""

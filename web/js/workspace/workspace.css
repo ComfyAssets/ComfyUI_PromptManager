@@ -142,6 +142,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    absolute. Columns and gap still come from the concept's `.image-grid` tracks. */
 .image-grid { position: relative; /* D3 */ }
 .image-grid > .media-card { position: absolute; }
+/* #392 D135: a long-press on a card selects it, so no image callout (iOS) takes the press. */
+#image-grid > .media-card { -webkit-touch-callout: none; }
 /* #249 D3: a list row's info keeps its own height so it can be measured; centred, it looks as the stretched concept row.
    #249 D31: it may also shrink below a long nowrap title (the h3 ellipsis then applies, as in the grid). */
 .list-grid .media-info { align-self: center; min-width: 0; /* D3, D31 */ }
@@ -431,10 +433,13 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 }
 /* D132: at phone width the concept's 120px cap cuts every engine label ("WD14 SwinV2 · ~400 MB"); the Tagging model
    select alone keeps its natural width there (its widest engine label) and, with no room beside the row text, wraps
-   under it. */
+   under it. Existing tags (#398) never shrinks for its row text and, past the cap, keeps its natural width beside the
+   text ("Replace after review"), bounded by its row like the engine select. */
+.setting-row #tag-existing { flex-shrink: 0; /* D132 */ }
 @media (max-width: 700px) {
   #workspace-main .setting-row:has(> #tag-model) { flex-wrap: wrap; /* D132 */ }
   #workspace-main .setting-row #tag-model { flex-shrink: 0; max-width: 100% !important; /* D132 */ }
+  #workspace-main .setting-row #tag-existing { max-width: 100% !important; /* D132 */ }
 }
 
 /* D109: System › Diagnostics & logs' added Lines field sits in the concept's toolbar like its Level select, and a value
