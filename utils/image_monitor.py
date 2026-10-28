@@ -35,6 +35,7 @@ from watchdog.events import FileSystemEventHandler
 
 from .hashing import generate_prompt_hash
 from .metadata_extractor import ComfyUIMetadataExtractor
+from .parallel import note_refusal, refused_at_shutdown
 from .logging_config import get_logger
 from .prompt_graph import (
     metadata_opted_out,
@@ -200,8 +201,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         and once its size has stopped changing.
 
         Returns:
-            False when the path is already pending, the pending set is full or
-            the handler is closed
+            False when the path is already pending, the pending set is full,
+            the handler is closed or the interpreter is exiting (its worker
+            cannot start)
         """
         with self._pending_lock:
             if self._closed:
@@ -217,7 +219,15 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 return False
             due = time.monotonic() + self.processing_delay
             self._pending[image_path] = (prompt_snapshot, due)
-            self._ensure_worker()
+            try:
+                self._ensure_worker()
+            except RuntimeError as error:
+                # No worker will ever take it: never leave it pending (#375).
+                self._pending.pop(image_path, None)
+                if not refused_at_shutdown(error):
+                    raise
+                note_refusal(self.logger, "The image worker")
+                return False
             self._work.put(image_path)
         return True
 

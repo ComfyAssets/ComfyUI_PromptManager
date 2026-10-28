@@ -19,16 +19,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
+    from tests.disk_waits import DISK_BOUND_SECONDS
     from tests.open_handles import open_handles_under
     from tests import test_api_duplicate_files as dup_tests
 except ImportError:  # discovered with tests/ as the top-level directory
     import test_api_duplicate_files as dup_tests
+    from disk_waits import DISK_BOUND_SECONDS
     from open_handles import open_handles_under
 
 from py.api import duplicate_files  # noqa: E402
 from py.config import GalleryConfig  # noqa: E402
-
-WAIT = 10
 
 
 def _locator(path):
@@ -49,7 +49,7 @@ class SafetyTestCase(dup_tests.DuplicateFilesTestCase):
     async def apply_plan(self, plan):
         body = await self.apply(plan["token"])
         cleanup = self.api._jobs.get(body["job"]["id"])
-        await asyncio.wait_for(asyncio.shield(cleanup.task), WAIT)
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
         return cleanup
 
 

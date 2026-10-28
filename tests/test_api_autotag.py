@@ -35,6 +35,7 @@ from aiohttp.test_utils import AioHTTPTestCase
 
 from database.operations import PromptDatabase
 from py.api import PromptManagerAPI
+from tests.private_temp import private_temp_db
 from py.api.autotag_routes import MODEL_BUSY_ERROR
 from py.api.jobs import JobBusy
 from utils.hashing import generate_prompt_hash
@@ -143,8 +144,7 @@ class AutotagAPITestCase(AioHTTPTestCase):
     fake engine."""
 
     async def get_application(self):
-        self._temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-        self._temp_db.close()
+        self._temp_db = private_temp_db(self)
         self.tmp_root = Path(tempfile.mkdtemp())
         self.output_dir = self.tmp_root / "output"
         self.output_dir.mkdir()
