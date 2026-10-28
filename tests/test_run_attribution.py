@@ -326,7 +326,7 @@ class TestRecordedOutputNode(RecordedRuns, unittest.TestCase):
             self.assertIsNone(recorded_output_lookup(broken)(self.image))
             with (
                 mock.patch(
-                    "database.run_attribution._recorded_runs",
+                    "database.run_attribution.recorded_runs",
                     side_effect=sqlite3.OperationalError("locked"),
                 ),
                 self.assertLogs("prompt_manager.run_attribution", "WARNING"),
