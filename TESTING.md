@@ -5097,7 +5097,12 @@ workflows without a PromptManager node. It does no file or database I/O.
   (`found`); two writers of one text store one prompt. A recorded run's stored
   prompt links the same way (`link_stored_prompt_or_raise`). A rescan therefore
   never adds a second link to a file an older scan linked to the legacy answer;
-  the row reads "Kept: already linked to a different prompt". Every scan write
+  the row reads "Kept: already linked to a different prompt". Link rows are
+  matched under the path and its `realpath` spelling (`file_link_rows`), so a
+  file the scan stored through the resolved folder is found when it arrives
+  through a symlinked or junction folder. The reverse order (a row stored under
+  the watcher's raw spelling, then a scan whose root resolves differently) is
+  matched only when that raw spelling equals the realpath. Every scan write
   runs through `survive_library_switch`, so a library move reruns it.
 - **Marks.** Every prompt ingestion creates, pair components included, carries
   category `scanned`, tag `auto-scanned` and the note `Auto-scanned from
