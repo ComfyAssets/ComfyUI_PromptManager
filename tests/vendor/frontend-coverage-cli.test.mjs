@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { plan, runCoverage } from '../../tools/vendor/frontend-coverage.mjs';
+import { plan, runCoverage, runNode } from '../../tools/vendor/frontend-coverage.mjs';
 
 const steps = argv => plan(argv).map(({ step, ...options }) => (Object.keys(options).length ? { step, ...options } : step));
 
@@ -90,4 +92,47 @@ test('shard 1 runs the node units into the shared raw dir, then the viewer suite
     assert.equal(calls[0].env.NODE_V8_COVERAGE, paths.raw);
     assert.ok(calls[1].args.includes(join(paths.tools, 'playwright.config.mjs')));
     assert.deepEqual(calls[2].args.slice(-2), ['--shard', '1/3']);
+});
+
+// #425: npm and a CI step timeout signal only frontend-coverage.mjs; its running child must get it.
+function hostWithSignals() {
+    return new EventEmitter();
+}
+
+test('runNode resolves on exit 0, rejects with the exit code otherwise and leaves no signal listener', async () => {
+    const host = hostWithSignals();
+    await runNode(['-e', 'process.exit(0)'], {}, { host });
+    await assert.rejects(runNode(['-e', 'process.exit(3)'], {}, { host }), /Command failed \(3\): -e process\.exit\(3\)/);
+    assert.equal(host.listenerCount('SIGTERM') + host.listenerCount('SIGINT'), 0);
+});
+
+test('runNode forwards SIGTERM to the running child, which can report before it exits', async t => {
+    const root = mkdtempSync(join(tmpdir(), 'pm-coverage-signal-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const ready = join(root, 'ready');
+    const seen = join(root, 'seen');
+    const child = `const fs = require('node:fs');
+process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(seen)}, 'SIGTERM'); process.exit(7); });
+fs.writeFileSync(${JSON.stringify(ready)}, ''); setInterval(() => {}, 1000);`;
+    const host = hostWithSignals();
+    const running = runNode(['-e', child], {}, { host });
+    while (!existsSync(ready)) await delay(20);
+    host.emit('SIGTERM');
+    await assert.rejects(running, /Command failed \(7\)/);
+    assert.equal(readFileSync(seen, 'utf8'), 'SIGTERM', 'the child handled the forwarded signal');
+    assert.equal(host.listenerCount('SIGTERM'), 0);
+});
+
+test('runNode forwards SIGINT and starts the child in its own process group', async () => {
+    const host = hostWithSignals();
+    const kills = [];
+    let options;
+    const fake = new EventEmitter();
+    fake.kill = signal => { kills.push(signal); queueMicrotask(() => fake.emit('exit', null, signal)); };
+    const running = runNode(['x.mjs'], {}, { host, spawnChild: (command, args, spawnOptions) => { options = spawnOptions; return fake; } });
+    assert.equal(options.detached, true, 'a group-wide signal reaches the child only through forwarding, once');
+    host.emit('SIGINT');
+    await assert.rejects(running, /Command failed \(null\): x\.mjs/);
+    assert.deepEqual(kills, ['SIGINT']);
+    assert.equal(host.listenerCount('SIGINT'), 0);
 });

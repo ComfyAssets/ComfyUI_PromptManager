@@ -193,13 +193,17 @@ class _Spec:
         return scope
 
 
-def _parse_targets(raw):
-    """Unique validated targets in request order, or ``(None, error)``."""
+def _parse_targets(raw, **target_options):
+    """Unique validated targets in request order, or ``(None, error)``.
+
+    ``target_options`` reach the target check (the image category routes
+    pass their own ``media_message``, #332).
+    """
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_JOB_TARGETS:
         return None, bad_request(f"targets must list 1 to {MAX_JOB_TARGETS} images")
     seen, targets = set(), []
     for item in raw:
-        target, error = _target(item)
+        target, error = _target(item, **target_options)
         if error is not None:
             return None, error
         if target not in seen:

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { repositoryRoot } from './vendor-viewerjs.mjs';
 
 import { discoverSources, checkCoverage } from '@comfyassets/toolkit/testing/coverage';
@@ -10,10 +10,27 @@ const metrics = ['lines', 'branches', 'functions', 'statements'];
 const SHARD = /^([1-9]\d*)\/([1-9]\d*)$/;
 const USAGE = 'usage: frontend-coverage.mjs [--update-baseline] | --shard I/N | --merge-only [--update-baseline]';
 
-function runNode(args, env = {}) {
-    const result = spawnSync(process.execPath, args, { cwd: repositoryRoot, stdio: 'inherit',
-        env: { ...process.env, ...env } });
-    if (result.status !== 0) throw new Error(`Command failed (${result.status}): ${args.join(' ')}`);
+const FORWARDED_SIGNALS = ['SIGTERM', 'SIGINT'];
+
+// Runs one step's node child and waits for it. npm and a CI step timeout signal only this process,
+// so SIGTERM and SIGINT are forwarded to the running child (#425): Playwright then reports the tests
+// still running and writes its blob. The child gets its own process group, so a signal sent to the
+// whole group (Ctrl-C, `timeout`) still reaches it exactly once, through this forwarding.
+export function runNode(args, env = {}, { spawnChild = spawn, host = process } = {}) {
+    return new Promise((resolve, reject) => {
+        const child = spawnChild(process.execPath, args, { cwd: repositoryRoot, stdio: 'inherit',
+            env: { ...process.env, ...env }, detached: true });
+        const forward = signal => () => child.kill(signal);
+        const handlers = FORWARDED_SIGNALS.map(signal => [signal, forward(signal)]);
+        for (const [signal, handler] of handlers) host.on(signal, handler);
+        const done = () => { for (const [signal, handler] of handlers) host.removeListener(signal, handler); };
+        child.once('error', error => { done(); reject(error); });
+        child.once('exit', code => {
+            done();
+            if (code === 0) resolve();
+            else reject(new Error(`Command failed (${code}): ${args.join(' ')}`));
+        });
+    });
 }
 
 function defaultPaths() {
@@ -112,17 +129,17 @@ export async function runCoverage({ argv = process.argv.slice(2), run = runNode,
         'node-units'() {
             const tests = readdirSync(join(root, 'tests/js')).filter(file => file.endsWith('.test.js'))
                 .map(file => `tests/js/${file}`);
-            run(['--test', ...tests], { NODE_V8_COVERAGE: raw });
+            return run(['--test', ...tests], { NODE_V8_COVERAGE: raw });
         },
         viewer() {
-            run([playwright, 'test', '--config', join(tools, 'playwright.config.mjs')]);
+            return run([playwright, 'test', '--config', join(tools, 'playwright.config.mjs')]);
         },
         workflows({ shard }) {
-            run([playwright, 'test', '--config', join(tools, 'playwright.workflows.config.mjs'),
+            return run([playwright, 'test', '--config', join(tools, 'playwright.workflows.config.mjs'),
                 '--project', 'chromium', '--project', 'touch', ...(shard ? ['--shard', shard] : [])], { PM_JS_COVERAGE: raw });
         },
         report() {
-            run([join(tools, 'node_modules/c8/bin/c8.js'), 'report', '--all', '--src', sourceRoot,
+            return run([join(tools, 'node_modules/c8/bin/c8.js'), 'report', '--all', '--src', sourceRoot,
                 '--include', 'web/js/**/*.js', '--include', 'web/js/**/*.mjs', '--temp-directory', raw, '--reports-dir', reportRoot,
                 '--reporter', 'text', '--reporter', 'json-summary', '--reporter', 'html']);
         },

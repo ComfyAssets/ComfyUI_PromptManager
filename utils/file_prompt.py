@@ -28,6 +28,7 @@ from .generation_params import (
     extract_generation_params,
     parse_page_json,
 )
+from .prompt_graph import metadata_opted_out, side_opted_out
 from .prompt_inspector import inspection_resolution
 from .prompt_pair_resolver import _numeric, resolve_prompt_pair, sampler_less_prompt
 from .review_capture import reviewable
@@ -46,8 +47,10 @@ class Policy(Enum):
 PAIR = "pair"
 POSITIVE = "positive"
 HISTORY = "history"
+NOT_SAVED = "not_saved"
+NOT_SAVED_WIRED = "not_saved_wired"
 NEVER = "never"
-KINDS = (PAIR, POSITIVE, HISTORY, NEVER)
+KINDS = (PAIR, POSITIVE, HISTORY, NOT_SAVED, NOT_SAVED_WIRED, NEVER)
 
 _UNDECIDED = ("ambiguous", "unresolved")
 
@@ -112,10 +115,34 @@ def decide_file_prompt(
     if not metadata:
         return Decision(NEVER, try_recorded_run=True)
     canonical = _parsed(metadata)
+    if metadata_opted_out(canonical):
+        # Save to library was off for the run's prompt: nothing is stored,
+        # no recorded-run fallback, no Needs review item (#90)
+        return Decision(NOT_SAVED, canonical=canonical)
+    if metadata_opted_out(canonical, unreadable=True):
+        # The switch is wired from a node the file cannot show: only the
+        # live run (the node saw the value) can link it
+        return Decision(NOT_SAVED_WIRED, canonical=canonical)
     if not canonical.get("prompt") and not canonical.get("parameters"):
         return Decision(NEVER, canonical=canonical, try_recorded_run=True)
     _with_size(canonical, file_size)
     resolution = resolve_prompt_pair(canonical)
+    if resolution["state"] == "resolved" and side_opted_out(
+        canonical.get("prompt"), resolution["negative"]
+    ):
+        # Only the negative's node is off: the positive alone, never a pair
+        positive = resolution["positive"]
+        text = positive.get("storage_text", positive["text"]).strip()
+        return _gated(
+            Decision(
+                POSITIVE,
+                text=text,
+                canonical=canonical,
+                resolution=resolution,
+                source="opted-out-negative",
+            ),
+            None,
+        )
     if blank_positive(resolution):
         # Only prepend/append text: no stored prompt can own it (#342)
         resolution = {**resolution, "state": "unresolved"}
@@ -235,7 +262,7 @@ def _has_part(inputs: dict) -> bool:
     return False
 
 
-def _gated(decision: Decision, found: _File) -> Decision:
+def _gated(decision: Decision, found: Optional[_File]) -> Decision:
     """Junk text is never stored (step 13).
 
     A junk answer of the undecided-graph step keeps that step's unlinked
@@ -255,7 +282,9 @@ def _gated(decision: Decision, found: _File) -> Decision:
         review=decision.review,
         try_recorded_run=True,
         unlinked_status=(
-            _unlinked(found) if decision.source in _UNDECIDED_SOURCES else "found"
+            _unlinked(found)
+            if found is not None and decision.source in _UNDECIDED_SOURCES
+            else "found"
         ),
     )
 

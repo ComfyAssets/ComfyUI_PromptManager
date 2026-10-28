@@ -51,7 +51,14 @@ try:
         link_stored_prompt_or_raise,
         store_scanned_prompt,
     )
-    from ...utils.file_prompt import NEVER, PAIR, Policy, decide_file_prompt
+    from ...utils.file_prompt import (
+        NEVER,
+        NOT_SAVED,
+        NOT_SAVED_WIRED,
+        PAIR,
+        Policy,
+        decide_file_prompt,
+    )
 except ImportError:
     from database.pair_ingestion import SCAN_MARKS, ingest_resolved_pair
     from database.run_attribution import (
@@ -64,7 +71,14 @@ except ImportError:
         link_stored_prompt_or_raise,
         store_scanned_prompt,
     )
-    from utils.file_prompt import NEVER, PAIR, Policy, decide_file_prompt
+    from utils.file_prompt import (
+        NEVER,
+        NOT_SAVED,
+        NOT_SAVED_WIRED,
+        PAIR,
+        Policy,
+        decide_file_prompt,
+    )
 
 
 try:
@@ -254,6 +268,11 @@ SCAN_DETAILS = {
     "failed": "Error: the prompt could not be stored",
     "error": "Error: the file could not be processed (see the server log)",
     "found": "Metadata found, but no prompt text to store",
+    "not_saved": "Skipped · its PromptManager node does not save to the library",
+    "not_saved_wired": (
+        "Skipped · its Save to library switch is wired from another node, so only "
+        "the run itself can link it"
+    ),
     None: "No prompt metadata in the file",
 }
 
@@ -1719,6 +1738,10 @@ class AdminRoutesMixin:
             lookup=functools.partial(history.recorded, path),
             policy=Policy.SCAN,
         )
+        if decision.kind in (NOT_SAVED, NOT_SAVED_WIRED):
+            # Save to library off (#90): no write, recorded-run fallback or
+            # Needs review item
+            return decision.kind
         self._note_review(media_file, decision, ambiguous, untraced, records)
         if decision.kind == NEVER:
             if decision.try_recorded_run:

@@ -12,6 +12,7 @@ from unittest import mock
 from database.run_attribution import RecordedOutput
 from tests.test_pair_scan import flux_graph, sampled_graph
 from tests.test_prompt_attribution import issue_graph, pair_evidence
+from tests import test_save_to_library as save_tests
 from utils import file_prompt
 from utils.file_prompt import Policy, decide_file_prompt, junk_text
 from utils.prompt_inspector import InspectionResult
@@ -163,6 +164,43 @@ class TestStepsBeforeResolving(unittest.TestCase):
         self.assertEqual(reads, [])
         decision = _decide(_graph(sampled_graph()), file_size=size)
         self.assertEqual((reads, decision.canonical["file_info"]), ([1], {"size": 9}))
+
+
+class TestSaveToLibrarySteps(unittest.TestCase):
+    """#90: a PromptManager node with Save to library off stores nothing."""
+
+    def test_step_2_an_opted_out_file_is_not_saved(self):
+        lookup = _Lookup("9")
+        graph = save_tests.run_graph(save=False)
+        graph["5"] = {**graph["3"], "inputs": {**graph["3"]["inputs"]}}
+        graph["5"]["inputs"]["positive"] = ["2", 0]  # ambiguous otherwise
+        for policy in Policy:
+            decision = _decide(_graph(graph), policy=policy, lookup=lookup)
+            self.assertEqual(decision.kind, "not_saved")
+            self.assertFalse(decision.try_recorded_run)
+            self.assertIsNone(decision.review)
+        self.assertEqual(lookup.calls, 0)
+
+    def test_step_2_a_wired_switch_is_not_saved_wired(self):
+        graph = save_tests.run_graph(save=["9", 0])
+        graph["9"] = {"class_type": "SomeCustomSwitch", "inputs": {}}
+        decision = _decide(_graph(graph))
+        self.assertEqual(decision.kind, "not_saved_wired")
+        self.assertFalse(decision.try_recorded_run)
+
+    def test_step_2_a_workflow_only_opt_out_comes_before_step_3(self):
+        workflow = {
+            "nodes": [{"id": 1, "type": "PromptManager", "widgets_values": [False]}]
+        }
+        decision = _decide({"workflow": json.dumps(workflow)})
+        self.assertEqual(decision.kind, "not_saved")
+
+    def test_step_5_an_opted_out_negative_stores_the_positive_alone(self):
+        graph = save_tests.run_graph(save=True, negative_save=False)
+        decision = _decide(_graph(graph))
+        self.assertEqual(decision.kind, "positive")
+        self.assertEqual(decision.source, "opted-out-negative")
+        self.assertEqual(decision.text, save_tests.POSITIVE)
 
 
 class TestResolvedSteps(unittest.TestCase):
