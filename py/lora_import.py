@@ -44,8 +44,10 @@ from .lora_manager_layout import (
 )
 
 try:
+    from ..utils import exit_signal
     from ..utils.hashing import generate_prompt_hash
 except ImportError:  # pragma: no cover - flat test imports
+    from utils import exit_signal
     from utils.hashing import generate_prompt_hash
 
 LORA_CATEGORY = "lora-manager"
@@ -189,14 +191,15 @@ def stage(
     downloads its CivitAI example images. A sidecar that cannot be read, or
     whose record fails to build, is skipped by its name, as are the
     centralized sidecars discovery could not parse. ``cancelled()`` is asked
-    before each sidecar (raises ImportCancelled); ``on_record(index,
+    before each sidecar, and so is the exit signal (#376: the legacy scan's
+    ``cancelled`` does not read it); either raises ImportCancelled. ``on_record(index,
     record_or_None, staged)`` follows each one.
     """
     sidecars = discovery.sidecars
     staged = StagedImport(total=len(sidecars))
     staged.skipped.extend(discovery.unreadable)
     for index, sidecar in enumerate(sidecars):
-        if cancelled():
+        if cancelled() or exit_signal.requested():
             raise ImportCancelled()
         record = None
         path = sidecar.metadata_path
