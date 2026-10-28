@@ -53,6 +53,14 @@ function queryFor(filters, batchSize) {
     const favorites = filters.favorites ?? false;
     if (typeof favorites !== 'boolean') throw new TypeError('Invalid favorites filter');
     if (favorites) query.set('favorites', '1');
+    // A collection page (#331 D137): the listing keeps only that collection's members; never together with favorites.
+    const collection = filters.collection ?? '';
+    if (collection !== '') {
+        if (favorites || !/^[1-9]\d{0,8}$/.test(typeof collection === 'number' ? String(collection) : collection)) {
+            throw new TypeError('Invalid collection filter');
+        }
+        query.set('collection', String(collection));
+    }
     return query.toString();
 }
 

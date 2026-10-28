@@ -221,14 +221,20 @@ export function openSaveViewDialog({ scope, trigger, q, onSave }) {
 }
 
 /**
- * D51: the open view's Edit dialog. "View name" (Save keeps the dialog open on an empty name; an unchanged one closes it), then Delete… (danger), Cancel
- * and Save. Delete… swaps the same dialog to its confirmation, Cancel / Delete (its Cancel closes the dialog), so nothing is removed by one press and
- * no browser `confirm()` appears. `onRename(name)` and `onDelete()` return the store's promise; the toast reports either
- * outcome, and the shell navigates after a delete.
+ * D51: an open sidebar item's Edit dialog, shared by saved views and collections (#331 D137) with their own nouns. The
+ * name field (Save keeps the dialog open on an empty name; an unchanged one closes it), then Delete… (danger), Cancel
+ * and Save. Delete… swaps the same dialog to its confirmation, Cancel / Delete (its Cancel closes the dialog), so
+ * nothing is removed by one press and no browser `confirm()` appears. `onRename(name)` and `onDelete()` return the
+ * store's promise; the toast reports either outcome, and the shell navigates after a delete.
+ *
+ * `nouns`: `title`, `label`, `deleteTitle`, `deleteText(item)`, `renamed`, `renameFailed`, `deleted`, `deleteFailed`.
+ * By default the dialog closes before the rename is sent (saved views). `renameError(error)` instead keeps it open
+ * while the rename runs and maps a failure: `{field: text}` writes the message under the field and keeps the dialog,
+ * `{toast: text, close}` toasts it and closes the dialog only when `close` is true; null is `renameFailed`, kept open.
  */
-export function openEditViewDialog({ scope, trigger, view, onRename, onDelete }) {
+export function openEditDialog({ scope, trigger, item, nouns, onRename, onDelete, renameError = null }) {
     const input = document.createElement('input');
-    input.value = view.name;
+    input.value = item.name;
     input.maxLength = MAX_NAME_LENGTH;
     const remove = createButton('Delete…', 'danger');
     const cancel = createButton('Cancel');
@@ -236,28 +242,66 @@ export function openEditViewDialog({ scope, trigger, view, onRename, onDelete })
     const actions = document.createElement('div');
     actions.className = 'dialog-actions';
     actions.append(remove, cancel, save);
+    const message = document.createElement('p');
+    message.className = 'small';
+    message.setAttribute('role', 'alert');
+    message.hidden = true;
+    const say = text => { message.textContent = text; message.hidden = !text; };
     cancel.addEventListener('click', () => closeWorkspaceDialog());
     save.addEventListener('click', async () => {
         const name = input.value.trim();
         if (!name) { input.focus(); return; }
-        closeWorkspaceDialog();
-        if (name === view.name) return;
+        if (!renameError || name === item.name) closeWorkspaceDialog();
+        if (name === item.name) return;
+        if (!renameError) {
+            try {
+                await onRename(name);
+                showWorkspaceToast(nouns.renamed);
+            } catch {
+                if (!scope.signal.aborted) showWorkspaceToast(nouns.renameFailed);
+            }
+            return;
+        }
+        // Kept open: one rename at a time, its outcome shown in place.
+        say('');
+        for (const button of [remove, cancel, save]) button.disabled = true;
         try {
             await onRename(name);
-            showWorkspaceToast(RENAMED_TOAST);
-        } catch {
-            if (!scope.signal.aborted) showWorkspaceToast(RENAME_FAILED_TOAST);
+            if (scope.signal.aborted) return;
+            closeWorkspaceDialog();
+            showWorkspaceToast(nouns.renamed);
+        } catch (error) {
+            if (scope.signal.aborted) return;
+            for (const button of [remove, cancel, save]) button.disabled = false;
+            const outcome = renameError(error) ?? { toast: nouns.renameFailed };
+            if (outcome.field) { say(outcome.field); input.focus(); return; }
+            if (outcome.close) closeWorkspaceDialog();
+            showWorkspaceToast(outcome.toast);
         }
     });
-    remove.addEventListener('click', () => confirmDelete({ scope, trigger, view, onDelete }));
-    openContentDialog({ scope, trigger, title: 'Edit saved view', nodes: [field('View name', input, 'action-input'), actions] });
+    remove.addEventListener('click', () => confirmDelete({ scope, trigger, item, nouns, onDelete }));
+    // The message line exists only where a failure keeps the dialog open (the saved views' dialog is unchanged).
+    const nodes = renameError ? [field(nouns.label, input, 'action-input'), message, actions] : [field(nouns.label, input, 'action-input'), actions];
+    openContentDialog({ scope, trigger, title: nouns.title, nodes });
     input.focus();
     input.select();
 }
 
-function confirmDelete({ scope, trigger, view, onDelete }) {
+/** The saved views' nouns for the shared Edit dialog (D51). */
+export const SAVED_VIEW_NOUNS = Object.freeze({
+    title: 'Edit saved view', label: 'View name', deleteTitle: 'Delete saved view',
+    deleteText: view => `Delete “${view.name}”? Only the saved view is removed; its images and prompts stay.`,
+    renamed: RENAMED_TOAST, renameFailed: RENAME_FAILED_TOAST, deleted: DELETED_TOAST, deleteFailed: DELETE_FAILED_TOAST,
+});
+
+/** D51: the open view's Edit dialog. */
+export function openEditViewDialog({ scope, trigger, view, onRename, onDelete }) {
+    openEditDialog({ scope, trigger, item: view, nouns: SAVED_VIEW_NOUNS, onRename, onDelete });
+}
+
+function confirmDelete({ scope, trigger, item, nouns, onDelete }) {
     const text = document.createElement('p');
-    text.textContent = `Delete “${view.name}”? Only the saved view is removed; its images and prompts stay.`;
+    text.textContent = nouns.deleteText(item);
     const actions = document.createElement('div');
     actions.className = 'dialog-actions';
     const cancel = createButton('Cancel');
@@ -268,11 +312,11 @@ function confirmDelete({ scope, trigger, view, onDelete }) {
         closeWorkspaceDialog();
         try {
             await onDelete();
-            showWorkspaceToast(DELETED_TOAST);
+            showWorkspaceToast(nouns.deleted);
         } catch {
-            if (!scope.signal.aborted) showWorkspaceToast(DELETE_FAILED_TOAST);
+            if (!scope.signal.aborted) showWorkspaceToast(nouns.deleteFailed);
         }
     });
-    openContentDialog({ scope, trigger, title: 'Delete saved view', nodes: [text, actions] });
+    openContentDialog({ scope, trigger, title: nouns.deleteTitle, nodes: [text, actions] });
     cancel.focus();
 }

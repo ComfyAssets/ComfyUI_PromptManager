@@ -73,7 +73,8 @@ test('Save view saves the Images toolbar and Refine filters, and its sidebar row
     await page.goto(`${workspace}#/images`);
     await expect(imageCards(page)).toHaveCount(2);
     // The concept's sidebar group: SAVED VIEWS without its PROPOSED badge (D49), empty until a view is saved.
-    await expect(page.locator('aside.sidebar .sidebar-label')).toHaveText(['WORKSPACE', 'SAVED VIEWS']);
+    // D136: the COLLECTIONS label stays hidden while no collection is listed.
+    await expect(page.locator('aside.sidebar .sidebar-label:not([hidden])')).toHaveText(['WORKSPACE', 'SAVED VIEWS']);
     await expect(viewRows(page)).toHaveCount(0);
 
     await search(page).fill('dogs');

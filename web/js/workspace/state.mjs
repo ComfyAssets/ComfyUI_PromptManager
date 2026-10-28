@@ -25,7 +25,8 @@ export const routes = [
         description: 'Configuration, maintenance and recovery—with browsing kept in the workspace.', action: 'Open System' },
 ];
 
-const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'review', 'system']);
+const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'review', 'system',
+    'collection']);
 
 /**
  * System's sections in the concept's order (app.js `systemSections` 635–644); the concept's `general` is production's
@@ -45,6 +46,13 @@ export function isSystemSection(id) {
 /** A saved view (#249 D16): the shell resolves its id to the view's page, name and state. */
 const SAVED_ROUTE = Object.freeze({ id: 'saved', label: 'Saved view' });
 
+/**
+ * A collection (#331 D137): `#/collection/<id>` is Images filtered to its members. Not a `routes` entry (no Overview
+ * card, no WORKSPACE link); the shell names the page after the collection, the breadcrumb and title stay "Collection"
+ * (concept render a1186–1189).
+ */
+export const COLLECTION_ROUTE = Object.freeze({ id: 'collection', label: 'Collection' });
+
 /** Breadcrumb and document title: the concept names a few pages differently from their nav label. */
 export function routeTitle(route) {
     return route.title || route.label;
@@ -58,6 +66,9 @@ export function isHandoff(route) {
 export function resolveRoute(hash) {
     const saved = /^#\/saved\/([1-9]\d*)$/.exec(hash);
     if (saved && Number.isSafeInteger(Number(saved[1]))) return {...SAVED_ROUTE, savedId:Number(saved[1]), hash};
+    // A collection id is the routes' 1 to 9 digits without a leading zero.
+    const collection = /^#\/collection\/([1-9]\d{0,8})$/.exec(hash);
+    if (collection) return {...COLLECTION_ROUTE, collectionId:Number(collection[1]), hash};
     // One job of the Activity page (its id is the registry's uuid4 hex).
     const job = /^#\/activity\/([0-9a-f]{32})$/.exec(hash);
     if (job) return {...routes.find(route => route.id === 'activity'), jobId:job[1], hash};
@@ -151,7 +162,7 @@ export function mountRouter(win, onRoute) {
         const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
         if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
-            current?.jobId === route.jobId && current?.section === route.section) return;
+            current?.collectionId === route.collectionId && current?.jobId === route.jobId && current?.section === route.section) return;
         current = route;
         onRoute(route);
     };

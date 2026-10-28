@@ -26,6 +26,8 @@ EDITOR_METADATA = {
     "notes": "Keep the soft light.",
 }
 _TABLES = (
+    "image_collection_items",
+    "image_collections",
     "saved_views",
     "image_favorites",
     "media_review_decisions",

@@ -174,6 +174,8 @@ _TABLES = (
     "execution_contexts",
     "execution_prompt_snapshots",
     "execution_context_texts",
+    "image_collection_items",
+    "image_collections",
     "saved_views",
     "image_favorites",
     "media_review_decisions",

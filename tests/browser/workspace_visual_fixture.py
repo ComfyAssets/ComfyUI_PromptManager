@@ -112,6 +112,8 @@ def seed_workspace_visual(api: PromptManagerAPI, root: Path) -> None:
     """Replace only the owned browser harness records and media roots."""
     with api.db.model.get_connection() as conn:
         for table in (
+            "image_collection_items",
+            "image_collections",
             "saved_views",
             "image_favorites",
             "media_review_decisions",

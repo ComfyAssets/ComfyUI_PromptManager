@@ -1,9 +1,9 @@
 {
   "admin.js": {
-    "lines": 37,
-    "branches": 61,
-    "functions": 32,
-    "statements": 37
+    "lines": 39,
+    "branches": 62,
+    "functions": 35,
+    "statements": 39
   },
   "api-client.js": {
     "lines": 98,
@@ -49,7 +49,7 @@
   },
   "gallery.js": {
     "lines": 49,
-    "branches": 68,
+    "branches": 69,
     "functions": 50,
     "statements": 49
   },
@@ -61,7 +61,7 @@
   },
   "image-helpers.js": {
     "lines": 96,
-    "branches": 91,
+    "branches": 92,
     "functions": 98,
     "statements": 96
   },
@@ -73,7 +73,7 @@
   },
   "metadata-autocomplete.js": {
     "lines": 98,
-    "branches": 82,
+    "branches": 85,
     "functions": 85,
     "statements": 98
   },
@@ -196,6 +196,12 @@
     "branches": 91,
     "functions": 98,
     "statements": 96
+  },
+  "workspace/collections.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 95,
+    "statements": 98
   },
   "workspace/file-inspector.mjs": {
     "lines": 96,
@@ -355,7 +361,7 @@
   },
   "workspace/library-location.mjs": {
     "lines": 94,
-    "branches": 91,
+    "branches": 92,
     "functions": 93,
     "statements": 94
   },
@@ -403,7 +409,7 @@
   },
   "workspace/local-resolver.mjs": {
     "lines": 96,
-    "branches": 86,
+    "branches": 87,
     "functions": 98,
     "statements": 96
   },

@@ -1,6 +1,6 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigateTo,
+import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigateTo, COLLECTION_ROUTE,
     LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { forgetImagesVisit, mountImages, onFavoriteChange } from './images.mjs';
@@ -11,6 +11,8 @@ import { bindCanvasLink, canvasHref } from './topbar.mjs';
 import { renderHeading, pageHeading } from './heading.mjs';
 import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
 import { createSavedViews, openSaveViewDialog, openEditViewDialog, savedViewHash } from './saved-views.mjs';
+import { createCollections, collectionHash, openEditCollectionDialog, missingNote, DELETED_PAGE_TEXT, OPEN_IMAGES_LINK,
+    LIST_FAILED_TEXT } from './collections.mjs';
 import { createActivityStore } from './activity-store.mjs';
 import { mountActivityPage, mountActivityTopbar } from './activity.mjs';
 import { mountActivityJobView } from './activity-job-view.mjs';
@@ -44,6 +46,7 @@ function mountWorkspace() {
     const main = document.getElementById('workspace-main');
     const primaryNav = document.getElementById('primary-nav');
     const savedNav = document.getElementById('saved-nav');
+    const collectionsNav = document.getElementById('collections-nav');
     const systemNav = document.getElementById('system-nav');
     scope.listen(document.querySelector('.skip'), 'click', event => {
         event.preventDefault();
@@ -83,8 +86,9 @@ function mountWorkspace() {
     // D129: a node-folder library is offered a move (or "Keep it here") above every page.
     mountLibraryBanner(document.getElementById('library-banner'), { api, activity, scope });
     const sidebar = document.querySelector('aside.sidebar');
-    // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`.
-    const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}` : route.id;
+    // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`, a collection's `collection/<id>`.
+    const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}`
+        : route.id === 'collection' ? `collection/${route.collectionId}` : route.id;
     let currentKey = null;
     const markCurrent = () => {
         for (const link of sidebar.querySelectorAll('nav [data-route]')) {
@@ -110,6 +114,24 @@ function mountWorkspace() {
         markCurrent();
     }));
     savedViews.load();
+    // COLLECTIONS (#331 /* D136 */): the concept's collections-nav rows (folder icon, name, the listed-member count once
+    // read), without the "PROPOSED" badge. The label shows only while a collection is listed. A failed read keeps the
+    // last rows; a collection page says the list could not be loaded.
+    const collectionsLabel = collectionsNav.previousElementSibling;
+    const collections = createCollections(api, scope.signal);
+    scope.cleanup(collections.subscribe(({ collections: listed }) => {
+        collectionsLabel.hidden = listed.length === 0;
+        collectionsNav.replaceChildren(...listed.map(item => {
+            const link = element('a');
+            link.append(createWorkspaceIcon('folder'), document.createTextNode(item.name));
+            if (Number.isSafeInteger(item.count)) link.append(element('span', item.count.toLocaleString(), 'nav-count'));
+            link.href = collectionHash(item.id);
+            link.dataset.route = `collection/${item.id}`;
+            return link;
+        }));
+        markCurrent();
+    }));
+    collections.load();
     /** The toolbar's Save view on a page: the concept's name dialog, then the store saves the page's full state. */
     const saveView = (page, view) => (trigger, state) => openSaveViewDialog({ scope: view, trigger, q: state.q,
         onSave: name => savedViews.create(page, name, state) });
@@ -167,6 +189,7 @@ function mountWorkspace() {
         forgetLibraryVisit();
         refreshCounts(NAV_COUNT_ROUTES);
         savedViews.load();
+        collections.load();
         if (currentKey !== 'activity') navigateTo(window.location.hash);
     }));
     // S9 I1: a restore this page started that could not run yet (other requests kept reading) hands its review back:
@@ -213,6 +236,10 @@ function mountWorkspace() {
             openSavedView(route, view);
             return;
         }
+        if (route.id === 'collection') {
+            openCollectionPage(route, view);
+            return;
+        }
         renderPage(route, view);
     }
 
@@ -230,7 +257,7 @@ function mountWorkspace() {
         if (saved) {
             const page = routes.find(item => item.id === saved.page);
             renderPage({...page, label:saved.name, title:saved.name}, view, saved);
-            mountEditAction(saved, view);
+            mountSavedViewEdit(saved, view);
             return;
         }
         if (savedViews.status === 'ready') {
@@ -249,13 +276,19 @@ function mountWorkspace() {
         main.append(retry);
     }
 
-    // /* D51 */ The open view's Edit (maintainer ruling): first in the heading's actions. A rename re-reads the list and
-    // retitles the open page; a delete re-reads it and replaces the dead route with the view's plain page.
-    function mountEditAction(saved, view) {
+    // /* D51 */ An open sidebar item's Edit (maintainer ruling): first in the heading's actions; `open(trigger)` opens
+    // its dialog. Saved views and collections (D137) share it.
+    function mountEditAction(view, open) {
         // renderPage has just written the heading.
         const edit = createButton('Edit');
         pageHeading(main).actions.prepend(edit);
-        view.listen(edit, 'click', () => openEditViewDialog({ scope: view, trigger: edit, view: saved,
+        view.listen(edit, 'click', () => open(edit));
+    }
+
+    // A rename re-reads the list and retitles the open page; a delete re-reads it and replaces the dead route with the
+    // view's plain page.
+    function mountSavedViewEdit(saved, view) {
+        mountEditAction(view, trigger => openEditViewDialog({ scope: view, trigger, view: saved,
             onRename: async name => {
                 const renamed = await savedViews.rename(saved.id, name);
                 if (view.signal.aborted) return;
@@ -268,14 +301,76 @@ function mountWorkspace() {
             } }));
     }
 
-    function retitle(name) {
+    /** `name` becomes the h1; the breadcrumb and title too unless the page keeps its own (a collection's "Collection"). */
+    function retitle(name, title = name) {
         // Only the mounted view retitles (its rename returns once aborted), so its heading is present.
         pageHeading(main).h1.textContent = name;
-        document.getElementById('workspace-breadcrumb').textContent = name;
-        document.title = `${name} · Prompt Manager`;
+        document.getElementById('workspace-breadcrumb').textContent = title;
+        document.title = `${title} · Prompt Manager`;
     }
 
-    function renderPage(route, view, saved = null) {
+    /**
+     * #331 D137: `#/collection/<id>` is Images filtered to the collection, its name the h1, "Collection" the breadcrumb
+     * and title (concept a1186–1189), with Edit and the note about members the sources do not list now. An unknown id
+     * is read once more (another tab may have made it), then shows the deleted-collection page.
+     */
+    async function openCollectionPage(route, view) {
+        main.replaceChildren();
+        await collections.settled();
+        if (view.signal.aborted) return;
+        if (!collections.find(route.collectionId) && collections.status === 'ready') {
+            await collections.load();
+            if (view.signal.aborted) return;
+        }
+        let collection = collections.find(route.collectionId);
+        const showAgain = () => { if (!view.signal.aborted) navigateTo(window.location.hash); };
+        if (collection) {
+            renderPage({...COLLECTION_ROUTE, label:collection.name, title:routeTitle(COLLECTION_ROUTE)}, view, null, {collection:collection.id,
+                // The listing found the collection gone meanwhile: the list is read again and, once it no longer lists
+                // the collection, the page is shown again (the deleted-collection page).
+                onCollectionMissing:() => collections.load().then(() => {
+                    if (!collections.find(route.collectionId)) showAgain();
+                })});
+            const note = missingNote(collection.missing);
+            if (note) pageHeading(main).description.after(element('p', note, 'small'));
+            // The dialog's Delete question uses the latest stored count.
+            mountEditAction(view, trigger => openEditCollectionDialog({ scope: view, trigger,
+                collection: collection = {...collection, ...collections.find(collection.id), name:collection.name},
+                onRename: async name => {
+                    const renamed = await collections.rename(collection.id, name);
+                    if (view.signal.aborted) return;
+                    collection = {...collection, ...renamed};
+                    retitle(renamed.name, routeTitle(COLLECTION_ROUTE));
+                },
+                onDelete: async () => {
+                    await collections.delete(collection.id);
+                    window.location.replace('#/images');
+                },
+                onGone: () => collections.settled().then(showAgain) }));
+            return;
+        }
+        const {description} = renderHeading(main, {title:route.label});
+        document.title = `${routeTitle(route)} · Prompt Manager`;
+        document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
+        if (collections.status === 'ready') {
+            // Deleted, or never existed: say so, with the way back to Images.
+            description.textContent = DELETED_PAGE_TEXT;
+            const link = element('a', OPEN_IMAGES_LINK, 'workspace-link');
+            link.href = '#/images';
+            main.append(link);
+            return;
+        }
+        description.textContent = LIST_FAILED_TEXT;
+        description.setAttribute('role', 'alert');
+        const retry = createButton('Retry');
+        view.listen(retry, 'click', () => {
+            collections.load();
+            openCollectionPage(route, view);
+        });
+        main.append(retry);
+    }
+
+    function renderPage(route, view, saved = null, {collection = null, onCollectionMissing = null} = {}) {
         document.title = `${routeTitle(route)} · Prompt Manager`;
         // The concept's heading(); each view fills its description and actions.
         // The concept focuses its page title on a hashchange navigation (app.js 1168); the skip link focuses `main`.
@@ -283,10 +378,10 @@ function mountWorkspace() {
         if (!firstRender) h1.focus();
         firstRender = false;
         document.getElementById('workspace-breadcrumb').textContent = routeTitle(route);
-        if (route.id === 'images' || route.id === 'favorites') {
+        if (route.id === 'images' || route.id === 'favorites' || route.id === 'collection') {
             mountNewPromptAction(main, api, view);
             images = mountImages(main, api, view, {savedState:saved?.state, favorites:route.id === 'favorites',
-                onSaveView:saveView('images', view), activity});
+                collection, onCollectionMissing, onSaveView:saveView('images', view), activity});
             return;
         }
         if (route.id === 'library') {

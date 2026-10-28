@@ -44,6 +44,8 @@ MODELS = ("wd14-swinv2", "wd14-vit", "gguf", "hf")
 # Unlinked copies enough to virtualize the Images grid (it renders all up to 120).
 MAX_EXTRA_IMAGES = 160
 _TABLES = (
+    "image_collection_items",
+    "image_collections",
     "saved_views",
     "image_favorites",
     "media_review_decisions",
