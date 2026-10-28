@@ -189,20 +189,3 @@ test('admin Page options save posts only infinite_scroll', async () => {
     assert.deepEqual(notifications, [['success', 'Page options saved'], ['hide', 'settingsModal']]);
 });
 
-test('admin maintenance names the job that refused it', async () => {
-    const { page, dom, notifications } = load('admin.js', 'PromptAdmin',
-        async () => jsonResponse(409, { success: false, error: BUSY }), {
-            escapeHtml: text => String(text),
-            document: { readyState: 'loading', addEventListener() {}, getElementById: id => dom.getElementById(id),
-                querySelectorAll: selector => (selector === '.maintenance-option:checked' ? [{ id: 'vacuum' }] : []) },
-        });
-
-    await page.runMaintenance();
-
-    const results = dom.nodes.maintenanceResults.innerHTML;
-    assert.match(results, /Maintenance Failed/);
-    assert.match(results, new RegExp(BUSY));
-    assert.doesNotMatch(results, /HTTP 409/);
-    assert.deepEqual(notifications, [['error', '❌ Maintenance failed']]);
-    assert.equal(dom.nodes.runMaintenanceBtn.disabled, false);
-});

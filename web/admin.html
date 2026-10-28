@@ -174,10 +174,11 @@
                            class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Diagnostics
                         </a>
-                        <button id="maintenanceBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="maintenanceBtn" href="workspace#/system/maintenance" target="_blank" rel="noopener"
+                           title="Opens System › Maintenance in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Maintenance
-                        </button>
+                        </a>
                         <button id="backupBtn"
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Backup DB
@@ -497,107 +498,6 @@
                         class="px-3 py-1.5 bg-pm-warning hover:opacity-80 text-black text-xs font-medium rounded-pm-sm transition-colors">
                     Restore Database
                 </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Maintenance Modal -->
-    <div id="maintenanceModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
-            <div class="p-4 border-b border-pm">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-pm">Database Maintenance</h3>
-                    <button onclick="window.admin.closeMaintenance()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
-                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div class="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
-                <!-- Maintenance Options -->
-                <div class="space-y-3 mb-4">
-                    <h4 class="text-xs font-semibold text-pm-secondary uppercase tracking-wide mb-3">Select Maintenance Operations:</h4>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="cleanup_duplicates" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Remove Duplicates</div>
-                                <div class="text-[11px] text-pm-secondary">Find and remove duplicate prompts based on text content</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="vacuum" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Vacuum Database</div>
-                                <div class="text-[11px] text-pm-secondary">Optimize database file size and performance</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="cleanup_orphaned_images" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Clean Orphaned Images</div>
-                                <div class="text-[11px] text-pm-secondary">Remove image records for files that no longer exist</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="check_hash_duplicates" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Check Hash Duplicates</div>
-                                <div class="text-[11px] text-pm-secondary">Identify prompts with duplicate hash values</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="check_consistency" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Consistency Check</div>
-                                <div class="text-[11px] text-pm-secondary">Verify database integrity and data consistency</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="statistics" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Database Statistics</div>
-                                <div class="text-[11px] text-pm-secondary">Generate detailed database statistics report</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="prune_orphaned_prompts" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Prune Orphaned Prompts</div>
-                                <div class="text-[11px] text-pm-secondary">Remove prompts that have no linked images</div>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Action Buttons -->
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex gap-2">
-                        <button id="runMaintenanceBtn" class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
-                            Run Maintenance
-                        </button>
-                        <button id="selectAllMaintenanceBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                            Select All
-                        </button>
-                        <button id="clearAllMaintenanceBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                            Clear All
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Results -->
-                <div id="maintenanceResults" class="space-y-3">
-                    <div class="text-center py-6 text-pm-secondary text-xs">
-                        Click "Run Maintenance" to perform selected operations
-                    </div>
-                </div>
             </div>
         </div>
     </div>

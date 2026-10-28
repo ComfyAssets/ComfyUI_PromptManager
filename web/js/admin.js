@@ -124,7 +124,6 @@
                 document.getElementById("exportBtn").addEventListener("click", () => this.exportPrompts());
                 document.getElementById("pageOptionsBtn").addEventListener("click", () => this.showSettingsModal());
                 document.getElementById("statsBtn").addEventListener("click", () => this.showStats());
-                document.getElementById("maintenanceBtn").addEventListener("click", () => this.showMaintenanceModal());
                 document.getElementById("backupBtn").addEventListener("click", () => this.backupDatabase());
                 document.getElementById("restoreBtn").addEventListener("click", () => this.showRestoreModal());
                 document.getElementById("scanBtn").addEventListener("click", () => this.showScanModal());
@@ -206,11 +205,6 @@
                 // Restore modal
                 document.getElementById("confirmRestore").addEventListener("click", () => this.confirmRestore());
                 document.getElementById("cancelRestore").addEventListener("click", () => this.hideModal("restoreModal"));
-
-                // Maintenance modal
-                document.getElementById("runMaintenanceBtn").addEventListener("click", () => this.runMaintenance());
-                document.getElementById("selectAllMaintenanceBtn").addEventListener("click", () => this.selectAllMaintenance());
-                document.getElementById("clearAllMaintenanceBtn").addEventListener("click", () => this.clearAllMaintenance());
 
                 // Scan modal
                 document.getElementById("startScan").addEventListener("click", () => this.startScan());
@@ -1491,177 +1485,6 @@
                 }
                 
                 return `${size.toFixed(1)} ${units[unitIndex]}`;
-            }
-
-            // Maintenance functionality
-            showMaintenanceModal() {
-                this.showModal("maintenanceModal");
-            }
-
-            closeMaintenance() {
-                this.hideModal("maintenanceModal");
-            }
-
-            selectAllMaintenance() {
-                document.querySelectorAll('.maintenance-option').forEach(checkbox => {
-                    checkbox.checked = true;
-                });
-            }
-
-            clearAllMaintenance() {
-                document.querySelectorAll('.maintenance-option').forEach(checkbox => {
-                    checkbox.checked = false;
-                });
-            }
-
-            async runMaintenance() {
-                const resultsContainer = document.getElementById("maintenanceResults");
-                const runButton = document.getElementById("runMaintenanceBtn");
-                
-                // Get selected operations
-                const selectedOps = Array.from(document.querySelectorAll('.maintenance-option:checked'))
-                    .map(checkbox => checkbox.id);
-                
-                if (selectedOps.length === 0) {
-                    this.showNotification('Please select at least one maintenance operation', 'warning');
-                    return;
-                }
-                
-                // Show loading state
-                runButton.disabled = true;
-                runButton.innerHTML = '🔄 Running...';
-                resultsContainer.innerHTML = `
-                    <div class="text-center py-4">
-                        <div class="w-12 h-12 border-4 border-teal-500/30 border-t-teal-500 rounded-full animate-spin mx-auto mb-4"></div>
-                        <p class="text-pm-secondary">Running maintenance operations...</p>
-                        <p class="text-sm text-pm-muted mt-2">Operations: ${selectedOps.map(op => op.replace(/_/g, ' ')).join(', ')}</p>
-                    </div>
-                `;
-                
-                try {
-                    const response = await ApiClient.fetchUrl('/prompt_manager/maintenance', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ operations: selectedOps })
-                    });
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.success) {
-                            this.renderMaintenanceResults(data);
-                            
-                            // Show overall success notification
-                            if (data.all_successful) {
-                                this.showNotification('✅ All maintenance operations completed successfully!', 'success');
-                            } else {
-                                this.showNotification('⚠️ Some maintenance operations had issues', 'warning');
-                            }
-                            
-                            // Refresh stats after maintenance
-                            setTimeout(() => this.loadStatistics(), 1000);
-                        } else {
-                            throw new Error(data.error || 'Maintenance failed');
-                        }
-                    } else {
-                        // A refusal names the job that runs ("Scan for metadata already running").
-                        const data = await response.json().catch(() => ({}));
-                        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
-                    }
-                } catch (error) {
-                    console.error('Maintenance error:', error);
-                    resultsContainer.innerHTML = `
-                        <div class="bg-pm-error-tint border border-pm-error rounded-pm-sm p-4">
-                            <h4 class="text-pm-error font-medium mb-2">❌ Maintenance Failed</h4>
-                            <p class="text-pm-secondary">${escapeHtml(error.message)}</p>
-                        </div>
-                    `;
-                    this.showNotification('❌ Maintenance failed', 'error');
-                } finally {
-                    runButton.disabled = false;
-                    runButton.innerHTML = '🔧 Run Maintenance';
-                }
-            }
-
-            renderMaintenanceResults(data) {
-                const resultsContainer = document.getElementById("maintenanceResults");
-                
-                let html = '<div class="space-y-4">';
-                
-                // Summary
-                html += '<div class="bg-pm-surface rounded-pm-sm p-4">';
-                html += '<h4 class="text-pm font-medium mb-3">📋 Maintenance Summary</h4>';
-                html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
-                html += `
-                    <div class="flex justify-between items-center p-2 bg-pm-input rounded">
-                        <span class="text-pm-secondary">Operations Completed</span>
-                        <span class="text-pm-success font-mono text-sm">${escapeHtml(data.operations_completed)}</span>
-                    </div>
-                `;
-                html += `
-                    <div class="flex justify-between items-center p-2 bg-pm-input rounded">
-                        <span class="text-pm-secondary">Overall Success</span>
-                        <span class="${data.all_successful ? 'text-pm-success' : 'text-pm-warning'} font-mono text-sm">
-                            ${data.all_successful ? '✅ ALL PASSED' : '⚠️ SOME ISSUES'}
-                        </span>
-                    </div>
-                `;
-                html += '</div></div>';
-                
-                // Detailed results
-                for (const [operation, result] of Object.entries(data.results)) {
-                    const bgColor = result.success ? 'bg-pm-success-tint border-pm-success' : 'bg-pm-error-tint border-pm-error';
-                    const statusIcon = result.success ? '✅' : '❌';
-                    const statusText = result.success ? 'SUCCESS' : 'FAILED';
-                    
-                    html += `<div class="${bgColor} border rounded-pm-sm p-4">`;
-                    html += `<h4 class="text-pm font-medium mb-2 flex items-center space-x-2">`;
-                    html += `<span>${statusIcon}</span>`;
-                    html += `<span class="capitalize">${escapeHtml(operation.replace(/_/g, ' '))}</span>`;
-                    html += `<span class="text-sm font-mono ${result.success ? 'text-pm-success' : 'text-pm-error'}">${statusText}</span>`;
-                    html += `</h4>`;
-
-                    if (result.message) {
-                        html += `<p class="text-pm-secondary mb-2">${escapeHtml(result.message)}</p>`;
-                    }
-
-                    // Show specific details
-                    if (result.removed_count !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Items removed: ${escapeHtml(result.removed_count)}</div>`;
-                    }
-
-                    if (result.duplicate_hashes !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Duplicate hash groups found: ${escapeHtml(result.duplicate_hashes)}</div>`;
-                    }
-
-                    if (result.issues_found !== undefined) {
-                        html += `<div class="text-sm text-pm-secondary">Issues found: ${escapeHtml(result.issues_found)}</div>`;
-                        if (result.issues && result.issues.length > 0) {
-                            html += `<ul class="ml-4 list-disc text-xs text-pm-muted mt-1">`;
-                            result.issues.forEach(issue => {
-                                html += `<li>${escapeHtml(issue)}</li>`;
-                            });
-                            html += `</ul>`;
-                        }
-                    }
-
-                    if (result.info) {
-                        html += `<div class="text-sm text-pm-secondary mt-2">`;
-                        html += `<p>Total prompts: ${escapeHtml(result.info.total_prompts || 'N/A')}</p>`;
-                        html += `<p>Database size: ${escapeHtml(result.info.database_size_bytes ? this.formatFileSize(result.info.database_size_bytes) : 'N/A')}</p>`;
-                        html += `</div>`;
-                    }
-
-                    if (result.error) {
-                        html += `<div class="text-sm text-pm-error mt-2 font-mono bg-pm-error-tint p-2 rounded">`;
-                        html += `Error: ${escapeHtml(result.error)}`;
-                        html += `</div>`;
-                    }
-                    
-                    html += '</div>';
-                }
-                
-                html += '</div>';
-                resultsContainer.innerHTML = html;
             }
 
             // Database backup and restore functionality

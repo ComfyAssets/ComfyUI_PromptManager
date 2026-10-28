@@ -19,6 +19,7 @@ const LABELS = Object.freeze({
 // and what a test must arrange before the control shows.
 const LINKS = Object.freeze([
     { page: 'admin', label: 'Settings', locate: page => page.locator('#settingsBtn'), section: 'overview' },
+    { page: 'admin', label: 'Maintenance', locate: page => page.locator('#maintenanceBtn'), section: 'maintenance' },
     { page: 'admin', label: 'Diagnostics', locate: page => page.locator('#diagnosticsBtn'), section: 'diagnostics' },
     { page: 'admin', label: 'View Logs', locate: page => page.locator('#logsBtn'), section: 'diagnostics' },
 ]);
