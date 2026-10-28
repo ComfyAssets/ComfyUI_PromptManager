@@ -41,6 +41,8 @@ const FIELDS = Object.freeze({
         folder: text(1024), media: choice(['all', 'image', 'video'], 'all'), tags,
         // A view saved on Favorites (#249 D51) reopens Images filtered to favorites.
         favorites: { fallback: false, accepts: value => typeof value === 'boolean' },
+        // #331 D140: a view saved on a collection page reopens that collection ('' or 1 to 9 digits, no leading zero).
+        collection: { fallback: '', accepts: value => typeof value === 'string' && /^(|[1-9][0-9]{0,8})$/.test(value) },
     }),
     library: Object.freeze({
         q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'rating'], 'newest'), tags,
@@ -54,10 +56,13 @@ export function normalizeViewState(page, state) {
     const fields = FIELDS[page];
     if (!fields) throw new TypeError(`Unknown saved-view page: ${page}`);
     const source = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
-    return Object.fromEntries(Object.entries(fields).map(([key, field]) => {
+    const normalized = Object.fromEntries(Object.entries(fields).map(([key, field]) => {
         const value = field.accepts(source[key]) ? source[key] : field.fallback;
         return [key, Array.isArray(value) ? [...value] : value];
     }));
+    // Favorites and a collection are never both a view's filter: the collection wins, as the listing does (D140).
+    if (normalized.favorites === true && normalized.collection) normalized.favorites = false;
+    return normalized;
 }
 
 /** True when the state's compact JSON fits the API's 4 KB cap (the server's encoding: no spaces, UTF-8). */
@@ -96,11 +101,12 @@ export const savedViewHash = id => `#/saved/${id}`;
 export function imagesFilters(state) {
     const view = normalizeViewState('images', state);
     return { q: view.q, category: view.category, sort: view.sort, root: view.source, subfolder: view.folder, media: view.media,
-        tags: view.tags, favorites: view.favorites };
+        tags: view.tags, favorites: view.favorites, collection: view.collection };
 }
 export function imagesViewState(filters) {
     return normalizeViewState('images', { q: filters.q, category: filters.category, sort: filters.sort, source: filters.root,
-        folder: filters.subfolder, media: filters.media, tags: filters.tags, favorites: filters.favorites === true });
+        folder: filters.subfolder, media: filters.media, tags: filters.tags, favorites: filters.favorites === true,
+        collection: filters.collection == null ? '' : String(filters.collection) });
 }
 
 /** Library shelf filters (library.mjs `filters`) from a saved state, and the state of the current filters. */

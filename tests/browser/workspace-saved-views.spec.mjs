@@ -23,7 +23,7 @@ const heading = page => main(page).getByRole('heading', { level: 1 });
 const saveDialog = page => page.getByRole('dialog', { name: 'Save this view', exact: true });
 const refineDialog = page => page.getByRole('dialog', { name: 'Refine this view', exact: true });
 const toast = page => page.locator('#workspace-toast');
-const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false };
+const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false, collection: '' };
 
 async function refine(page, values) {
     await filtersButton(page).click();

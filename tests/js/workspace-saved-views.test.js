@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 
 const source = import('../../web/js/workspace/saved-views.mjs');
 
-const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false };
+const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false, collection: '' };
 const LIBRARY_DEFAULTS = { q: '', category: '', sort: 'newest', tags: [] };
 
 test('a saved state always holds every page key and keeps only values its page accepts', async () => {
@@ -12,8 +12,17 @@ test('a saved state always holds every page key and keeps only values its page a
     assert.deepEqual(SAVED_VIEW_PAGES, ['images', 'library']);
     assert.deepEqual(normalizeViewState('images', {}), IMAGE_DEFAULTS);
     assert.deepEqual(normalizeViewState('library', null), LIBRARY_DEFAULTS);
-    const full = { q: 'castle', category: 'Portraits', sort: 'name-desc', source: '2', folder: 'a/b', media: 'video', tags: ['moody', 'fog'], favorites: true };
+    const full = { q: 'castle', category: 'Portraits', sort: 'name-desc', source: '2', folder: 'a/b', media: 'video', tags: ['moody', 'fog'], favorites: true, collection: '' };
     assert.deepEqual(normalizeViewState('images', full), full);
+    // #331 D140: a collection id is '' or 1 to 9 digits without a leading zero; an old view without the key reads ''.
+    for (const collection of ['1', '12', '999999999']) {
+        assert.equal(normalizeViewState('images', { collection }).collection, collection);
+    }
+    for (const collection of ['0', 'x', 12, '012', '1234567890', null]) {
+        assert.equal(normalizeViewState('images', { collection }).collection, '');
+    }
+    // Favorites and a collection are never both a view's filter: the collection wins, as the listing's URL does.
+    assert.deepEqual(normalizeViewState('images', { ...full, collection: '4' }), { ...full, favorites: false, collection: '4' });
     // D51: favorites is a boolean; anything else is the whole listing.
     for (const favorites of ['true', 1, null]) assert.equal(normalizeViewState('images', { ...full, favorites }).favorites, false);
     // Each rejected value falls back on its own; the rest of the view still applies.
@@ -63,11 +72,17 @@ test('the listing keeps usable views in order and normalizes their state', async
 
 test('page filters and saved states convert both ways', async () => {
     const { imagesFilters, imagesViewState, libraryFilters, libraryViewState } = await source;
-    const filters = { q: 'castle', category: 'Portraits', sort: 'rating', root: '1', subfolder: 'x', media: 'image', tags: ['fog'], favorites: true };
+    const filters = { q: 'castle', category: 'Portraits', sort: 'rating', root: '1', subfolder: 'x', media: 'image', tags: ['fog'], favorites: true, collection: '' };
     const state = imagesViewState(filters);
-    assert.deepEqual(state, { q: 'castle', category: 'Portraits', sort: 'rating', source: '1', folder: 'x', media: 'image', tags: ['fog'], favorites: true });
+    assert.deepEqual(state, { q: 'castle', category: 'Portraits', sort: 'rating', source: '1', folder: 'x', media: 'image', tags: ['fog'], favorites: true, collection: '' });
     assert.deepEqual(imagesFilters(state), filters);
-    assert.deepEqual(imagesFilters({}), { q: '', category: '', sort: 'newest', root: 'all', subfolder: '', media: 'all', tags: [], favorites: false });
+    assert.deepEqual(imagesFilters({}), { q: '', category: '', sort: 'newest', root: 'all', subfolder: '', media: 'all', tags: [], favorites: false, collection: '' });
+    // #331 D140: the open collection round-trips; a missing one is ''.
+    const inCollection = { ...filters, favorites: false, collection: '7' };
+    assert.equal(imagesViewState(inCollection).collection, '7');
+    assert.deepEqual(imagesFilters(imagesViewState(inCollection)), inCollection);
+    assert.equal(imagesViewState({ ...filters, collection: undefined }).collection, '');
+    assert.equal(imagesViewState({ ...filters, collection: 7 }).collection, '7');
     assert.equal(imagesViewState({ ...filters, favorites: undefined }).favorites, false);
     const shelf = { text: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'] };
     assert.deepEqual(libraryViewState(shelf), { q: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'] });

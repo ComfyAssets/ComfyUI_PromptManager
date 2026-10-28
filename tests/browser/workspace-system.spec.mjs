@@ -472,7 +472,7 @@ async function openImages(page) {
 
 test('defaults apply to a new visit but not to the current view or a saved view', async ({ page, request }) => {
     const created = await request.post('/prompt_manager/saved-views', { data: { page: 'images', name: 'Everything',
-        state: { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false } } });
+        state: { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false, collection: '' } } });
     expect(created.status()).toBe(201);
     const view = (await created.json()).view;
     try {
