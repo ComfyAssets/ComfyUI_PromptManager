@@ -149,3 +149,36 @@ class TestDuplicateCleanupKeepsCategories(DuplicateFilesTestCase):
             kept = image_category_key([link], link / "a.png")
         self.assertFalse((self.output_dir / "b.png").exists())
         self.assertEqual(self.api.db.image_category(*kept), "Portraits")
+
+    async def test_a_copy_with_a_collection_and_a_category_moves_both(self):
+        # #331 + #332: one removed copy carries both records; one cleanup
+        # moves its membership and copies its category onto the kept copy.
+        self.trio()
+        db = self.api.db
+        root_key = duplicate_files.favorite_root_key(self.output_dir)
+        b = self.output_dir / "b.png"
+        grids = db.add_to_collection(name="LoRA grids", items=[(root_key, "b.png")])
+        grids = grids["collection"]["id"]
+        self.set_category(b, "Portraits")
+        seen = {}
+        real_log = duplicate_files.DuplicateFilesMixin._log_moved_records
+
+        def log_moved_records(job, totals):
+            seen.update(totals)
+            real_log(job, totals)
+
+        with patch.object(
+            duplicate_files.DuplicateFilesMixin,
+            "_log_moved_records",
+            staticmethod(log_moved_records),
+        ):
+            cleanup = await self.run_cleanup()
+        self.assertFalse(b.exists())
+        self.assertEqual(db.collection_members(grids, root_key), {"a.png"})
+        self.assertEqual(db.file_collections(root_key, "b.png"), [])
+        self.assertEqual(self.category(self.output_dir / "a.png"), "Portraits")
+        self.assertEqual(seen["collections"], 1)
+        self.assertEqual(seen["categories"], 1)
+        log = "\n".join(cleanup.log)
+        self.assertIn("Moved 1 collection membership to the kept copies", log)
+        self.assertIn("Kept 1 image category on the kept copies", log)
