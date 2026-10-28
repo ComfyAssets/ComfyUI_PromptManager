@@ -614,6 +614,50 @@ class TestRestoreFromFile(BackupTestCase):
             )
         assert_closed(self, str(backups[0]))
 
+    def test_backup_and_restore_keep_collections(self):
+        with self.db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO image_collections (id, name, name_key, created_at) "
+                "VALUES (4, 'LoRa testing', 'lora testing', '2026-10-27T00:00:00Z')"
+            )
+            conn.execute(
+                "INSERT INTO image_collection_items VALUES "
+                "(4, 'root', 'grid.png', '2026-10-27T00:00:00Z')"
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            # The rows still sit in the WAL; a backup must carry them.
+            backup = os.path.join(directory, "backup.db")
+            self.assertTrue(self.db.model.backup_database(backup))
+            self.assertEqual(
+                PromptModel.verify_database_file(backup, require_library_state=True),
+                (True, "ok"),
+            )
+            with self.db.model.get_connection() as conn:
+                conn.execute("DELETE FROM image_collections")
+
+            self.db.model.restore_from_file(backup)
+
+            conn = self.db.model.get_connection()
+            self.assertEqual(
+                [
+                    tuple(r)
+                    for r in conn.execute("SELECT id, name FROM image_collections")
+                ],
+                [(4, "LoRa testing")],
+            )
+            self.assertEqual(
+                [
+                    tuple(r)
+                    for r in conn.execute(
+                        "SELECT collection_id, root_key, relative_path "
+                        "FROM image_collection_items"
+                    )
+                ],
+                [(4, "root", "grid.png")],
+            )
+            PromptModel.close_all_instances()
+            assert_closed(self, directory)
+
     def test_restore_without_a_live_database_returns_empty_backup_path(self):
         src = self._make_source_db(["fresh"])
         self.db.close_all()

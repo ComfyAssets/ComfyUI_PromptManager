@@ -48,6 +48,7 @@ from .review import ReviewRoutesMixin
 from .review_recording import ReviewRecordingMixin
 from .review_events import ReviewEventsMixin
 from .saved_views import SavedViewRoutesMixin
+from .collections import CollectionRoutesMixin
 from .history import HistoryRoutesMixin
 from .images import ImageRoutesMixin
 from .gallery_listing import WALK_STOPPED, RootListing, WalkOutcome
@@ -315,6 +316,7 @@ class PromptManagerAPI(
     ReviewRecordingMixin,
     ReviewEventsMixin,
     SavedViewRoutesMixin,
+    CollectionRoutesMixin,
     HistoryRoutesMixin,
     PromptRoutesMixin,
     ImageRoutesMixin,
@@ -686,6 +688,7 @@ class PromptManagerAPI(
         self._register_review_routes(routes)
         self._register_review_event_routes(routes)
         self._register_saved_view_routes(routes)
+        self._register_collection_routes(routes)
         self._register_history_routes(routes)
         self._register_prompt_routes(routes)
         self._register_image_routes(routes)

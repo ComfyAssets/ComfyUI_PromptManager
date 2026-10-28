@@ -884,6 +884,16 @@ class TestFilterStart(ImageTagJobTestCase):
         self.assertEqual((status, data["code"]), (400, "no-images"))
         self.assertEqual(self.api._jobs.list(), [])
 
+    async def test_filter_with_a_deleted_collection_is_a_404_without_a_job(self):
+        self.png("a.png")
+
+        status, data = await self.start(
+            {"mode": "add", "filter": {"collection": "77"}, "tags": ["x"]}
+        )
+
+        self.assertEqual((status, data["code"]), (404, "collection-not-found"))
+        self.assertEqual(self.api._jobs.list(), [])
+
     async def test_filter_over_the_cap_is_refused_without_a_job(self):
         from py.api import image_tag_jobs
 
