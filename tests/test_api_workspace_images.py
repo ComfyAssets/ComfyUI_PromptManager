@@ -1636,7 +1636,7 @@ class TestWorkspaceImages(ImageAPITestCase):
         import math
 
         from py.api import images as images_module
-        from database.operations import link_filter_query
+        from database.operations import link_filter_query, link_matches_json_query
 
         listed = await asyncio.get_running_loop().run_in_executor(
             None, self._budget_fixture, 5_000, 2_000
@@ -1765,24 +1765,42 @@ class TestWorkspaceImages(ImageAPITestCase):
             self.assertEqual(self.api._workspace_listed_cache, {})
             self.assertEqual(self.api._workspace_order_cache, {})
         # The per-row ambiguity probe is an index search, never a scan.
+        # The read runs it wrapped in one JSON aggregate (#354): same plan.
         sql, params = link_filter_query("lantern", ["tag-1"], every_link=True)
-        with self.api.db.model.get_connection() as conn:
-            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
-        self.assertIn(
-            "SEARCH other USING COVERING INDEX idx_image_file_path (file_path=?)", plan
-        )
-        self.assertFalse([step for step in plan if step.startswith("SCAN other")])
-        # The category's narrowing clause (#332) keeps every join an index search.
+        for query in (sql, link_matches_json_query(sql)):
+            with self.subTest(wrapped=query is not sql):
+                with self.api.db.model.get_connection() as conn:
+                    plan = [
+                        row[3]
+                        for row in conn.execute("EXPLAIN QUERY PLAN " + query, params)
+                    ]
+                self.assertIn(
+                    "SEARCH other USING COVERING INDEX idx_image_file_path "
+                    "(file_path=?)",
+                    plan,
+                )
+                self.assertFalse(
+                    [step for step in plan if step.startswith("SCAN other")]
+                )
+        # The category's narrowing clause (#332) keeps every join an index
+        # search, plain and wrapped with the raw categories.
         sql, params = link_filter_query(
             "", ["tag-1"], every_link=True, category="cat-3"
         )
-        with self.api.db.model.get_connection() as conn:
-            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
-        self.assertIn(
-            "SEARCH other USING COVERING INDEX idx_image_file_path (file_path=?)", plan
-        )
-        scans = [step for step in plan if step.startswith("SCAN")]
-        self.assertTrue(all(step.startswith("SCAN gi") for step in scans), plan)
+        for query in (sql, link_matches_json_query(sql, categories=True)):
+            with self.subTest(category_wrapped=query is not sql):
+                with self.api.db.model.get_connection() as conn:
+                    plan = [
+                        row[3]
+                        for row in conn.execute("EXPLAIN QUERY PLAN " + query, params)
+                    ]
+                self.assertIn(
+                    "SEARCH other USING COVERING INDEX idx_image_file_path "
+                    "(file_path=?)",
+                    plan,
+                )
+                scans = [step for step in plan if step.startswith("SCAN")]
+                self.assertTrue(all(step.startswith("SCAN gi") for step in scans), plan)
 
     @unittest.skipUnless(
         PERF_BUDGET and not TRACED,

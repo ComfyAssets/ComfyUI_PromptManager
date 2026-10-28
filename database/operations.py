@@ -7,7 +7,7 @@ import json
 import math
 import datetime
 import os
-from typing import Optional, List, Dict, Any, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 try:
     from ..utils.inspection_response import inherited_category
@@ -251,8 +251,9 @@ WHERE gi.image_path IN ({marks}) OR gi.file_path IN ({marks}){fallback}"""
 # writer since the 3.2.4 migration stores file_path, so it is the path key.
 # The prompt-level conditions are uncorrelated IN sets SQLite builds once, and
 # the CASE evaluates the per-row ambiguity probe only for admitted rows.
-_LINK_FILTER_SQL = """SELECT gi.file_path, p.rating, {hit}, p.id,
-pp.id IS NOT NULL, pp.category, p.category
+_LINK_FILTER_SQL = """SELECT gi.file_path AS file_path, p.rating AS rating,
+       {hit} AS matched, p.id AS positive, pp.id IS NOT NULL AS has_pair,
+       pp.category AS pair_category, p.category AS category
 FROM generated_images gi
 LEFT JOIN prompt_pairs pp ON pp.id = (
     SELECT CASE WHEN COUNT(DISTINCT ip.pair_id) = 1 THEN MIN(ip.pair_id) END
@@ -261,6 +262,25 @@ JOIN prompts p ON p.id = COALESCE(pp.positive_prompt_id, gi.prompt_id)
 WHERE gi.file_path IS NOT NULL AND CASE WHEN {admit} THEN NOT EXISTS (
     SELECT 1 FROM generated_images other
     WHERE other.file_path = gi.file_path AND other.id <> gi.id) ELSE 0 END"""
+# _LINK_FILTER_SQL's rows as one JSON array, built by SQLite in one step (#354).
+# Python's sqlite3 releases and retakes the GIL around every step, so a read
+# that steps once per linked row waits on a busy ComfyUI thread thousands of
+# times. A BLOB value (no writer stores one) makes the value NULL (or
+# json_array refuses it), and the read streams instead. The raw categories are
+# put in only for a category read (#332), so plain reads stay as small as #354
+# measured them.
+_LINK_MATCHES_JSON_SQL = """SELECT CASE
+    WHEN max({blob}) THEN NULL
+    ELSE json_group_array(json_array({columns})) END
+FROM ({select})"""
+_LINK_PLAIN_COLUMNS = ("file_path", "rating", "matched", "positive")
+_LINK_CATEGORY_COLUMNS = _LINK_PLAIN_COLUMNS + ("has_pair", "pair_category", "category")
+# The columns a BLOB can reach: matched, positive and has_pair are computed.
+_LINK_STORED_COLUMNS = ("file_path", "rating", "pair_category", "category")
+# Set when this SQLite has no JSON functions: every later read streams.
+_one_step_unsupported = False
+# One warning per process when a read falls back to streaming.
+_one_step_warned = False
 # The linked positive of each given path (one unambiguous link, pair scope as
 # in _LINK_FILTER_SQL) with the raw categories of its inherited category; {hit}
 # as in link_filter_query. Used for the few files whose current image tags meet
@@ -337,6 +357,50 @@ def link_filter_query(
         admitted.append(hit)
     sql = _LINK_FILTER_SQL.format(hit=hit, admit=" AND ".join(admitted) or "1")
     return sql, params
+
+
+def link_matches_json_query(sql: str, categories: bool = False) -> str:
+    """*sql* from link_filter_query, wrapped to return its rows as one JSON value.
+
+    With *categories* each row also carries the raw values the inherited
+    category is decided from; otherwise only path, rating, hit and positive.
+    """
+    columns = _LINK_CATEGORY_COLUMNS if categories else _LINK_PLAIN_COLUMNS
+    blob = " OR ".join(
+        f"typeof({name}) = 'blob'" for name in _LINK_STORED_COLUMNS if name in columns
+    )
+    return _LINK_MATCHES_JSON_SQL.format(
+        blob=blob, columns=", ".join(columns), select=sql
+    )
+
+
+def _link_matches_from_rows(
+    rows: Iterable[Sequence[Any]], categories: bool, wanted: Optional[Set[str]]
+) -> Dict[str, LinkMatch]:
+    """LinkMatch per wanted path from link rows (one-step or streamed).
+
+    Without *categories* the inherited category is None, as the caller then
+    never compares it.
+    """
+    matches: Dict[str, LinkMatch] = {}
+    for path, rating, matched, positive, *raw in rows:
+        if wanted is None or path in wanted:
+            if categories:
+                matches[path] = _link_match(rating, matched, positive, *raw[:3])
+            else:
+                matches[path] = (bool(matched), rating, positive, None)
+    return matches
+
+
+def _streamed_link_matches(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: Dict[str, Any],
+    wanted: Optional[Set[str]],
+    categories: bool = False,
+) -> Dict[str, LinkMatch]:
+    """The link read stepped once per row (the fallback of the one-step read)."""
+    return _link_matches_from_rows(conn.execute(sql, params), categories, wanted)
 
 
 _ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -2588,30 +2652,72 @@ class PromptDatabase(
         names its negative variant and is not searched.
         Without tags only hits are returned, unless *every_link*
         asks for every linked image (the rating sort and the positive count).
-        The positive id is the card's linked positive. One SELECT whose rows
-        are streamed; with *wanted* (the listing's normalized paths) only those
-        paths are kept, so memory is bounded by the listing, not the database.
-        With *category* only links whose raw recipe or positive category is
-        that value are read (a superset of the links that inherit it; the
-        caller compares the inherited value) and the inherited category is
-        decided per row; otherwise it is None, which keeps the plain reads
-        cheap.
+        The positive id is the card's linked positive. With *category* only
+        links whose raw recipe or positive category is that value are read (a
+        superset of the links that inherit it; the caller compares the
+        inherited value) and the inherited category is decided per row;
+        otherwise it is None, which keeps the plain reads cheap.
+
+        One SELECT, returned as one JSON value (#354): SQLite steps once, so
+        the read takes the GIL back a constant two or three times instead of
+        once per linked row while ComfyUI generates. Peak memory therefore
+        grows with the database's matching linked rows (about 530 bytes each,
+        more with the raw categories of a category read, freed on return); the
+        result is bounded by *wanted* (the listing's normalized paths) when
+        given. Where the JSON step fails (no JSON functions, a BLOB value, a
+        JSON text over SQLite's length limit) the rows are streamed as before.
         """
         sql, params = link_filter_query(
             q, tags, every_link=every_link, category=category
         )
-        matches: Dict[str, LinkMatch] = {}
+        categories = category is not None
         with self.model.get_connection() as conn:
-            rows = conn.execute(sql, params)
-            if category is not None:
-                for path, *row in rows:
-                    if wanted is None or path in wanted:
-                        matches[path] = _link_match(*row)
-            else:
-                for path, rating, matched, positive, *_categories in rows:
-                    if wanted is None or path in wanted:
-                        matches[path] = (bool(matched), rating, positive, None)
-        return matches
+            rows = None
+            if not _one_step_unsupported:
+                rows = self._one_step_link_rows(conn, sql, params, categories)
+            if rows is None:
+                return _streamed_link_matches(conn, sql, params, wanted, categories)
+        return _link_matches_from_rows(rows, categories, wanted)
+
+    def _one_step_link_rows(
+        self,
+        conn: sqlite3.Connection,
+        sql: str,
+        params: Dict[str, Any],
+        categories: bool = False,
+    ) -> Optional[List[List[Any]]]:
+        """*sql*'s rows from one JSON value, or None when this read must stream.
+
+        An interrupted read (Move library retiring the connection) is raised
+        as before, never retried row by row.
+        """
+        global _one_step_unsupported, _one_step_warned
+        error: Optional[str] = None
+        try:
+            cursor = conn.execute(link_matches_json_query(sql, categories), params)
+            try:
+                ((document,),) = cursor.fetchall()
+            finally:
+                cursor.close()  # resets the statement: its snapshot ends now
+        except (sqlite3.OperationalError, sqlite3.DataError) as failure:
+            # DataError: the JSON text is longer than SQLITE_LIMIT_LENGTH.
+            error = str(failure)
+            if error == "interrupted":
+                raise
+            if error.startswith("no such function"):
+                _one_step_unsupported = True
+        else:
+            if document is not None:
+                return json.loads(document)
+            error = "a BLOB value"
+        if not _one_step_warned:
+            _one_step_warned = True
+            self.logger.warning(
+                "Reading image links row by row (slower while ComfyUI "
+                "generates); the one-step read failed: %s",
+                error,
+            )
+        return None
 
     def get_image_link_facts(
         self, paths: List[str], q: str = ""
