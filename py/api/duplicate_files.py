@@ -591,6 +591,7 @@ class DuplicateFilesMixin:
         totals = dict.fromkeys(
             ("moved", "merged", "favorites", "tags", "review", "collections"), 0
         )
+        totals["categories"] = 0  # image categories kept on the kept copies (#332)
         for done, target in enumerate(targets, start=1):
             if failure is not None:
                 self._record_target(job, "kept", target, NOT_ATTEMPTED)
@@ -642,6 +643,9 @@ class DuplicateFilesMixin:
             job.log_line(
                 f"Added {_plural(totals['tags'], 'image tag')} to the kept copies"
             )
+        if totals.get("categories"):
+            kept = _plural(totals["categories"], "image category", "image categories")
+            job.log_line(f"Kept {kept} on the kept copies")
         if totals["review"]:
             job.log_line(
                 f"Settled {_plural(totals['review'], 'Needs review item')} "

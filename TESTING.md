@@ -4524,6 +4524,70 @@ concept fixture stars the concept's favorites (each other prompt's first image).
   restore. Old backups without the table restore, and backup plus restore keeps
   WAL-resident favorites and closes every handle (`tests/test_database_backup.py`).
 
+Image categories (#332, store and routes): an image file may carry its own
+category; without one it shows the category its link supplies.
+
+- The table is `image_categories(root_key, relative_path, category, updated_at)`
+  with primary key `(root_key, relative_path)` and the index
+  `idx_image_categories_category`. `migrate_image_categories` creates both empty
+  inside a savepoint, with no backfill. It reads only `sqlite_master` and its own
+  table's PRAGMAs, and writes only its two objects. `tests/test_image_categories.py`
+  checks this with an SQLite authorizer on a 23,000-link library, and checks that
+  `prompts` and `prompt_pairs` `(id, category, updated_at)` are byte-for-byte equal
+  afterwards.
+- The **file key** is `image_category_key(sources, absolute path)` in
+  `py/api/images.py`: the deepest output source that contains the path (compared
+  lexically, never resolving the path, so a symlinked subfolder keeps its listed
+  spelling) and the path below it, keyed with the favorites helpers. A source
+  matches by its real path or its configured spelling (a detected output folder
+  can be a symlink). Without nested sources it equals a favorite's key. Every write and read uses it. A path
+  that no source contains has no key, so it has no own category.
+- `image_categories_schema_error` checks the structure at startup (a value saved
+  under older rules never stops the library opening; a table without its index,
+  which this code never leaves, is repaired by the install). Restore also checks the
+  values: text columns, keys within the favorites bound, `category` 1 to 100
+  characters with no character below U+0020 and no leading or trailing space, and
+  `updated_at` of at most 64 bytes. Backups made before #332 restore without the
+  table; a migrated restore stage must have it (`require_library_state`).
+- `PUT /prompt_manager/images/category` `{items, category}` answers
+  `{success, category, updated, unchanged, not_found}`.
+  `DELETE /prompt_manager/images/category` `{items}` answers `{success, cleared}`.
+  `GET /prompt_manager/images/categories` answers `{success, categories}`: the
+  sorted distinct own values whose file is in some source's listing.
+- `items` are 1 to 500 Images targets `{root_index, root_scope, path}`, checked by
+  `py/api/media_target.py` (shared with Collections, #331). Refusals:
+  - 400: a malformed body, a field other than `items` and `category`, a
+    `root_index` outside the output sources (a LoRA folder), or a category that is
+    blank after stripping, over 100 characters, or holds a control character;
+  - 403: traversal, a drive, a backslash, a non-media name ("Only media files can
+    have a category") or a key over the stored bound;
+  - 409 `source-changed`: a stale `root_scope`;
+  - 413: a body over 1 MiB.
+  Any invalid item fails the whole request before a write. Targets that fold to one
+  key are written and counted once. Instead of `items` a request may send `filter`,
+  the Images listing's own query ("Select all N matching", #392, keys as in
+  `parse_listing_filter`), resolved now: over 500 matches is a 400
+  `too-many-images` ("Select at most 500 images."), a renumbered source a 409
+  `source-changed`.
+- PUT writes only files the source's listing holds and counts the rest in
+  `not_found`; when none is listed it answers 404 `files-not-found` and writes
+  nothing. A file that already has the value counts as `unchanged` and keeps its
+  `updated_at`. DELETE accepts any well-formed target, so a missing file's
+  category can still be removed. An unexpected failure is a logged 500 ("The
+  category could not be changed." / "Image categories could not be read.") without
+  the exception text. The routes never read or write `prompts`, `prompt_pairs` or
+  `generated_images`; `POST /prompt_manager/bulk/category` is unchanged.
+- Duplicate cleanup (System › Maintenance): the kept copy's own category wins. A
+  kept copy without one receives the removed copy's (`COPY_SQL`, part of the
+  cleanup's query-plan check). The removed copy's row is never deleted, so a
+  give-back (the kept copy changed) and a failed delete lose nothing. The job log
+  says "Kept N image categories on the kept copies".
+  `tests/test_duplicate_image_categories.py` covers nested sources in both orders.
+- A moved, renamed or deleted file's row stays and is hidden; a file that later
+  appears at the same path shows it. The real-host check is the last test in
+  `tests/comfyui/image-attribution.spec.mjs`: PUT, list, DELETE on a generated
+  output.
+
 Image annotations schema (#249, `database/annotation_schema.py`): the group
 `media_annotation_metadata` (one row: schema version, `image_index_revision`),
 `media_annotation_files` (one private locator per physical file,
