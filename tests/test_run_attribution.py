@@ -982,7 +982,7 @@ class TestMonitorForeignRuns(RecordedRuns, unittest.TestCase):
             )
         self.assertEqual(self.handler.awaiting_history(), [self.key(keyless)])
         self.assertIn(
-            "No recorded run for IMG_GEN_10000_.png; left unlinked",
+            "Too many files wait for their run; IMG_GEN_10000_.png left unlinked",
             "\n".join(logs.output),
         )
 
@@ -1082,6 +1082,145 @@ class TestMonitorForeignRuns(RecordedRuns, unittest.TestCase):
         with mock.patch("utils.foreign_runs.os.path.getsize") as size:
             self.handler.process_new_image(path)
         size.assert_not_called()
+
+    def untraceable(self):
+        """Unresolved and only the legacy parser names a text (an unknown node)."""
+        graph = sampled_graph("unused", "blurry")
+        graph["1"]["inputs"]["text"] = ["30", 0]
+        graph["30"] = {
+            "class_type": "VendorPromptMaker",
+            "inputs": {"prompt": "a misty valley at dawn"},
+        }
+        return {"prompt": graph}
+
+    def test_no_record_at_settle_keeps_the_file_waiting_for_the_legacy_floor(self):
+        """Review: a lookup that found no record is not the run's answer yet."""
+        self.metadata = self.untraceable()
+        path = self.image("vendor_00001_.png")
+        self.handler.process_new_image(path)
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.handler.awaiting_foreign(), [self.key(path)])
+        self.record_run(self.db, self.output, [("dataset", "vendor_00001_.png")], [])
+        self.assertTrue(self.wait_for(lambda: self.linked_text(path)))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.linked_text(path), "a misty valley at dawn")
+
+    def test_a_record_found_at_settle_without_a_certain_prompt_ends_the_wait(self):
+        """Review: sealed before settle, still ambiguous: no seal is coming."""
+        path = self.image("IMG_GEN_00012_.png")
+        # One run reported it from two savers: a record, but no saver
+        reported = [("dataset", "IMG_GEN_00012_.png")] * 2
+        self.record_run(self.db, self.output, reported, [], nodes=["13", "23"])
+        with self.assertLogs("prompt_manager.image_monitor", "INFO") as logs:
+            self.handler.process_new_image(path)
+        self.assertIn(
+            "No certain prompt for IMG_GEN_00012_.png; left unlinked",
+            "\n".join(logs.output),
+        )
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+        self.assertIsNone(self.linked_text(path))
+
+    def test_monitoring_saved_off_stops_foreign_writes_at_settle_and_recheck(self):
+        """Review: the observer runs until a restart; nothing is written."""
+        enabled = GalleryConfig.MONITORING_ENABLED
+        self.addCleanup(setattr, GalleryConfig, "MONITORING_ENABLED", enabled)
+        GalleryConfig.MONITORING_ENABLED = False
+        self.metadata = {"prompt": sampled_graph("a quiet harbor", "blurry")}
+        plain = self.image("plain_00005_.png")
+        self.handler.process_new_image(plain)
+        self.assertIsNone(self.linked_text(plain))
+        GalleryConfig.MONITORING_ENABLED = True
+        self.metadata = {"prompt": shapes.shared_prefix()}
+        waiting = self.image("IMG_GEN_00013_.png")
+        self.handler.process_new_image(waiting)
+        GalleryConfig.MONITORING_ENABLED = False
+        reference = {"folder_type": "output", "subfolder": "dataset"}
+        reference["filename"] = "IMG_GEN_00013_.png"
+        self.record_run(
+            self.db, self.output, [("dataset", reference["filename"])], [], nodes=["13"]
+        )
+        self.assertTrue(self.wait_for(lambda: not self.handler.awaiting_foreign()))
+        self.assertTrue(self.settled())
+        self.handler._recheck_foreign(waiting, reference)
+        self.assertIsNone(self.linked_text(waiting))
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_the_setting_is_read_again_just_before_the_store(self):
+        self.metadata = {"prompt": sampled_graph("a quiet harbor", "blurry")}
+        path = self.image("plain_00006_.png")
+        real = __import__("utils.foreign_runs", fromlist=["x"]).decide_foreign
+
+        def decide_then_switch_off(*args, **kwargs):
+            decision = real(*args, **kwargs)
+            GalleryConfig.SAVE_FOREIGN_RUNS = False
+            return decision
+
+        with mock.patch(
+            "utils.image_monitor.decide_foreign", side_effect=decide_then_switch_off
+        ):
+            self.handler.process_new_image(path)
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_a_seal_between_registering_and_the_settle_lookup_links_once(self):
+        """Regression guard (passes before the review fixes): one link only."""
+        path = self.image("IMG_GEN_00014_.png")
+        real = __import__("utils.foreign_runs", fromlist=["x"]).history_lookup
+
+        def sealed_first(db, image_path, reference=None):
+            lookup = real(db, image_path, reference)
+
+            def run_then_look():
+                if reference is None:  # the settle lookup: the run seals now
+                    self.record_run(
+                        self.db,
+                        self.output,
+                        [("dataset", "IMG_GEN_00014_.png")],
+                        [],
+                        nodes=["13"],
+                    )
+                return lookup()
+
+            return run_then_look
+
+        with mock.patch("utils.image_monitor.history_lookup", side_effect=sealed_first):
+            self.assertTrue(self.handler.schedule(path))
+            self.assertTrue(self.wait_for(lambda: self.linked_text(path)))
+            self.assertTrue(self.settled())
+        self.assertEqual(self.linked_text(path), shapes.BRANCH_TEXTS[0])
+        self.assertEqual(self.link_count(path), 1)
+        self.assertEqual(list(self.handler._foreign_due), [])
+
+    def test_a_drained_recheck_never_drops_a_newer_reference(self):
+        path = self.image("IMG_GEN_00015_.png")
+        older, newer = {"filename": "old"}, {"filename": "new"}
+        self.handler._foreign_due[path] = older
+        real = self.handler.schedule
+
+        def schedule(image_path, snapshot=None):
+            # The run is sealed again while the older one is scheduled
+            self.handler._foreign_due[image_path] = newer
+            return real(image_path, snapshot)
+
+        self.handler.schedule = schedule
+        with mock.patch.object(self.handler, "process_new_image"):
+            self.handler._drain_history_due()
+        self.assertIs(self.handler._foreign_due[path], newer)
+
+    def test_an_evicted_due_recheck_is_logged(self):
+        from utils import image_monitor
+
+        self.handler.schedule = lambda *args, **kwargs: False
+        with (
+            mock.patch.object(image_monitor, "MAX_AWAITING_HISTORY", 1),
+            self.assertLogs("prompt_manager.image_monitor", "INFO") as logs,
+        ):
+            for name in ("a_00001_.png", "b_00001_.png"):
+                self.handler._schedule_recheck(self.image(name), {"filename": name})
+        self.assertIn(
+            "Too many files wait for their run; a_00001_.png left unlinked",
+            "\n".join(logs.output),
+        )
 
     def test_a_failed_store_is_logged_and_leaves_the_file_unlinked(self):
         self.metadata = {"prompt": sampled_graph("a quiet harbor", "blurry")}

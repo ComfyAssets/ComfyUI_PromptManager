@@ -35,6 +35,7 @@ from watchdog.events import FileSystemEventHandler
 
 from .file_prompt import HISTORY
 from .foreign_runs import (
+    ANCHORED_SOURCES,
     CERTAIN,
     ForeignRecheck,
     decide_foreign,
@@ -594,21 +595,28 @@ class ImageGenerationHandler(FileSystemEventHandler):
             resolved = os.path.abspath(image_path)
         return os.path.normcase(resolved)
 
-    def _prune_awaiting(self, store=None) -> None:
+    def _prune_awaiting(self, store=None) -> List[Tuple[str, bool]]:
         """Drop expired and surplus entries of ``store`` (the keyless set by
-        default; ``_awaiting_lock`` held). A dropped foreign file is logged."""
+        default; ``_awaiting_lock`` held). Returns the dropped foreign files
+        as ``(path, evicted)`` for ``_log_dropped`` after the lock."""
         store = self._awaiting if store is None else store
         now = time.monotonic()
-        dropped = [k for k, (_p, due) in store.items() if due <= now]
-        dropped = [store.pop(key)[0] for key in dropped]
+        expired = [k for k, (_p, due) in store.items() if due <= now]
+        dropped = [(store.pop(key)[0], False) for key in expired]
         while len(store) > MAX_AWAITING_HISTORY:
-            dropped.append(store.popitem(last=False)[1][0])
-        if store is self._awaiting_foreign:
-            for image_path in dropped:
+            dropped.append((store.popitem(last=False)[1][0], True))
+        return dropped if store is self._awaiting_foreign else []
+
+    def _log_dropped(self, dropped: List[Tuple[str, bool]]) -> None:
+        """Log foreign files that stopped waiting (outside ``_awaiting_lock``)."""
+        for image_path, evicted in dropped:
+            name = os.path.basename(image_path)
+            if evicted:
                 self.logger.info(
-                    f"No recorded run for {os.path.basename(image_path)}; "
-                    "left unlinked"
+                    f"Too many files wait for their run; {name} left unlinked"
                 )
+            else:
+                self.logger.info(f"No recorded run for {name}; left unlinked")
 
     def _await_history(self, image_path: str, store=None) -> None:
         """Re-check ``image_path`` once, history only, when its run is sealed.
@@ -626,7 +634,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
         with self._awaiting_lock:
             store.pop(key, None)
             store[key] = (image_path, time.monotonic() + AWAIT_HISTORY_SECONDS)
-            self._prune_awaiting(store)
+            dropped = self._prune_awaiting(store)
+        self._log_dropped(dropped)
 
     def _await_foreign(self, image_path: str) -> None:
         self._await_history(image_path, self._awaiting_foreign)
@@ -645,8 +654,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
     def awaiting_foreign(self) -> List[str]:
         """Normalized paths of foreign outputs waiting for their run (#247)."""
         with self._awaiting_lock:
-            self._prune_awaiting(self._awaiting_foreign)
-            return list(self._awaiting_foreign)
+            dropped = self._prune_awaiting(self._awaiting_foreign)
+            waiting = list(self._awaiting_foreign)
+        self._log_dropped(dropped)
+        return waiting
 
     def _on_outputs_sealed(self, run_id: str, references: List[dict]) -> None:
         """A run's outputs were recorded: re-check its waiting images once.
@@ -659,7 +670,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         due = []
         with self._awaiting_lock:
             self._prune_awaiting()
-            self._prune_awaiting(self._awaiting_foreign)
+            dropped = self._prune_awaiting(self._awaiting_foreign)
             for reference in references:
                 if reference.get("folder_type") != "output":
                     continue
@@ -674,6 +685,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 waiting = self._awaiting_foreign.pop(key, None)
                 if waiting is not None:
                     due.append((waiting[0], dict(reference)))
+        self._log_dropped(dropped)
         for image_path, reference in due:
             self._schedule_recheck(image_path, reference)
 
@@ -699,8 +711,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
             due = self._history_due if reference is None else self._foreign_due
             due.pop(image_path, None)
             due[image_path] = reference
+            evicted = []
             while len(due) > MAX_AWAITING_HISTORY:
-                due.popitem(last=False)
+                evicted.append(due.popitem(last=False)[0])
+        if reference is not None:
+            self._log_dropped([(path, True) for path in evicted])
 
     def _drain_history_due(self) -> None:
         """Schedule due re-checks now that a pending slot or path is free."""
@@ -710,7 +725,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         for store, image_path, reference in due:
             if self.schedule(image_path, self._recheck_snapshot(reference)):
                 with self._awaiting_lock:
-                    store.pop(image_path, None)
+                    # A newer seal may have replaced it meanwhile: keep that one
+                    if image_path in store and store[image_path] is reference:
+                        del store[image_path]
 
     def _recheck_history(self, image_path: str) -> None:
         """The one history-only re-check of a keyless image (#342)."""
@@ -748,15 +765,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
             image_path, metadata, in_output=in_output, lookup=None
         )
         if decision.kind == HISTORY:
-            # Registered first, so a run sealed before this lookup is not missed
-            self._await_foreign(image_path)
-            decision = decide_foreign(
-                image_path,
-                metadata,
-                in_output=True,
-                lookup=history_lookup(self.db_manager, image_path),
-            )
-            if decision.kind not in CERTAIN:
+            decision = self._settle_lookup(image_path, metadata)
+            if decision is None:
                 self.logger.debug(f"{name} waits for its run to end")
                 return
             self._stop_awaiting(image_path, self._awaiting_foreign)
@@ -764,6 +774,29 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self._store_foreign(image_path, decision)
         else:
             self.logger.info(f"No certain prompt for {name}; left unlinked")
+
+    def _settle_lookup(self, image_path: str, metadata):
+        """The settle-time history lookup of a file only history can decide.
+
+        Registered first, so a run sealed before this lookup is not missed.
+        Returns None to keep waiting: no record yet, and the answer is not
+        the inspector's or the recorded saver's (the legacy floor waits for
+        the re-check). With a record, any decision ends the wait.
+        """
+        self._await_foreign(image_path)
+        found = []
+        lookup = history_lookup(self.db_manager, image_path)
+
+        def recorded():
+            found.append(lookup())
+            return found[-1]
+
+        decision = decide_foreign(image_path, metadata, in_output=True, lookup=recorded)
+        if any(record is not None for record in found):
+            return decision
+        if decision.kind in CERTAIN and decision.source in ANCHORED_SOURCES:
+            return decision
+        return None
 
     def _recheck_foreign(self, image_path: str, reference) -> None:
         """The one re-check of a foreign output after its run ended (#247)."""
@@ -789,6 +822,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
     def _store_foreign(self, image_path: str, decision) -> None:
         name = os.path.basename(image_path)
+        if not save_foreign_runs():  # switched off while this file was decided
+            self.logger.info(f"Saving prompts from other workflows is off: {name}")
+            return
         try:
             status, prompt_id = store_foreign(self.db_manager, image_path, decision)
         except Exception as error:

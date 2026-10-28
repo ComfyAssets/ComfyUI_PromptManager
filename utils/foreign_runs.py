@@ -28,6 +28,8 @@ except ImportError:
 
 # Decisions that name a prompt to store
 CERTAIN = (PAIR, POSITIVE)
+# Sources certain without a recorded run: the graph alone, or its recorded saver
+ANCHORED_SOURCES = ("inspector", "recorded-run")
 
 
 @dataclass(frozen=True)
@@ -40,8 +42,13 @@ class ForeignRecheck:
 
 
 def save_foreign_runs() -> bool:
-    """``GalleryConfig.SAVE_FOREIGN_RUNS``, read for every file; True when
-    the configuration cannot be imported (the default)."""
+    """Whether a foreign output may be stored now, read for every file.
+
+    ``GalleryConfig.SAVE_FOREIGN_RUNS`` and ``MONITORING_ENABLED``: a
+    monitoring switch saved off stops foreign writes at once, although the
+    running observer watches until a restart. True when the configuration
+    cannot be imported (the defaults).
+    """
     try:
         from ..py.config import GalleryConfig
     except ImportError:
@@ -49,7 +56,10 @@ def save_foreign_runs() -> bool:
             from py.config import GalleryConfig
         except ImportError:
             return True
-    return GalleryConfig.SAVE_FOREIGN_RUNS is not False
+    return (
+        GalleryConfig.SAVE_FOREIGN_RUNS is not False
+        and GalleryConfig.MONITORING_ENABLED is not False
+    )
 
 
 def history_lookup(
