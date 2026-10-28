@@ -434,12 +434,12 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* D132: at phone width the concept's 120px cap cuts every engine label ("WD14 SwinV2 · ~400 MB"); the Tagging model
    select alone keeps its natural width there (its widest engine label) and, with no room beside the row text, wraps
    under it. Existing tags (#398) never shrinks for its row text and, past the cap, keeps its natural width beside the
-   text ("Replace after review"), as D106's Integrations selects do. */
+   text ("Replace after review"), bounded by its row like the engine select. */
 .setting-row #tag-existing { flex-shrink: 0; /* D132 */ }
 @media (max-width: 700px) {
   #workspace-main .setting-row:has(> #tag-model) { flex-wrap: wrap; /* D132 */ }
   #workspace-main .setting-row #tag-model { flex-shrink: 0; max-width: 100% !important; /* D132 */ }
-  #workspace-main .setting-row #tag-existing { max-width: none !important; /* D132 */ }
+  #workspace-main .setting-row #tag-existing { max-width: 100% !important; /* D132 */ }
 }
 
 /* D109: System › Diagnostics & logs' added Lines field sits in the concept's toolbar like its Level select, and a value
