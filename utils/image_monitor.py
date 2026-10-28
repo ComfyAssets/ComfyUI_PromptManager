@@ -33,10 +33,11 @@ from typing import Callable, Optional, Dict, Any, List, Tuple
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from .file_prompt import HISTORY
+from .file_prompt import HISTORY, NOT_SAVED, NOT_SAVED_WIRED
 from .foreign_runs import (
     ANCHORED_SOURCES,
     CERTAIN,
+    NOT_SAVED_KINDS,
     ForeignRecheck,
     decide_foreign,
     history_lookup,
@@ -477,10 +478,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # negative-prompt PromptManager nodes in the workflow.
             state, current_prompt = self._find_prompt_from_metadata(metadata)
             if state == "opted_out":
-                self.logger.info(
-                    "Save to library is off for this run's prompt, skipping image: "
-                    f"{image_path}"
-                )
+                self._log_not_saved(image_path)
                 return
             if state == "foreign":
                 # Another workflow saved this image: never a batch queue entry
@@ -782,10 +780,23 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 self.logger.debug(f"{name} waits for its run to end")
                 return
             self._stop_awaiting(image_path, self._awaiting_foreign)
-        if decision.kind in CERTAIN:
+        if decision.kind in NOT_SAVED_KINDS:
+            self._log_not_saved(image_path, decision.kind)
+        elif decision.kind in CERTAIN:
             self._store_foreign(image_path, decision)
         else:
             self.logger.info(f"No certain prompt for {name}; left unlinked")
+
+    def _log_not_saved(self, image_path: str, kind: str = NOT_SAVED) -> None:
+        """The log line of a file whose run's prompt does not save (#90)."""
+        if kind == NOT_SAVED_WIRED:
+            reason = "is wired from a node the image cannot show"
+        else:
+            reason = "is off"
+        self.logger.info(
+            f"Save to library {reason} for this run's prompt, skipping image: "
+            f"{image_path}"
+        )
 
     def _settle_lookup(self, image_path: str, metadata):
         """The settle-time history lookup of a file only history can decide.
@@ -793,7 +804,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
         Registered first, so a run sealed before this lookup is not missed.
         Returns None to keep waiting: no record yet, and the answer is not
         the inspector's or the recorded saver's (the legacy floor waits for
-        the re-check). With a record, any decision ends the wait.
+        the re-check). With a record, any decision ends the wait, and so
+        does a switched-off node's text (#90): a record could only store it.
         """
         self._await_foreign(image_path)
         found = []
@@ -805,6 +817,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
         decision = decide_foreign(image_path, metadata, in_output=True, lookup=recorded)
         if any(record is not None for record in found):
+            return decision
+        if decision.kind in NOT_SAVED_KINDS:
             return decision
         if decision.kind in CERTAIN and decision.source in ANCHORED_SOURCES:
             return decision
@@ -825,6 +839,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
             return
         lookup = history_lookup(self.db_manager, image_path, reference)
         decision = decide_foreign(image_path, metadata, in_output=True, lookup=lookup)
+        if decision.kind in NOT_SAVED_KINDS:
+            self._log_not_saved(image_path, decision.kind)
+            return
         if decision.kind in CERTAIN:
             self._store_foreign(image_path, decision)
             return

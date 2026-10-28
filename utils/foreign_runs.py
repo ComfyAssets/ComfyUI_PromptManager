@@ -13,7 +13,15 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional, Tuple
 
-from .file_prompt import PAIR, POSITIVE, Decision, Policy, decide_file_prompt
+from .file_prompt import (
+    NOT_SAVED,
+    NOT_SAVED_WIRED,
+    PAIR,
+    POSITIVE,
+    Decision,
+    Policy,
+    decide_file_prompt,
+)
 from .hashing import generate_prompt_hash
 from .usage_tracking import survive_switch
 
@@ -28,6 +36,9 @@ except ImportError:
 
 # Decisions that name a prompt to store
 CERTAIN = (PAIR, POSITIVE)
+# Decisions of a run whose prompt has Save to library off, or wired from a
+# node the file cannot show (#90): final, nothing is stored, nothing waits
+NOT_SAVED_KINDS = (NOT_SAVED, NOT_SAVED_WIRED)
 # Sources certain without a recorded run: the graph alone, or its recorded saver
 ANCHORED_SOURCES = ("inspector", "recorded-run")
 
