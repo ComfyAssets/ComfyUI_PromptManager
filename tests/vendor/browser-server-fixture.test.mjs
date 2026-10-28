@@ -4,6 +4,7 @@ import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startBrowserServer, createServerSupervisor, attachServerStderr, forwardPrefixedLines, SLOW_RESET_PREFIX } from '../../tools/vendor/start-browser-server.mjs';
@@ -259,8 +260,11 @@ test('worker count follows PM_TEST_WORKERS, then one in CI, then a quarter of th
 
 test('CI adds the running-tests reporter and a blob report under test-results/blob/, which the trace upload covers; local runs keep list', () => {
     assert.equal(reporters({ env: {}, name: 'workflows' }), 'list');
-    assert.deepEqual(reporters({ env: { CI: '1' }, name: 'workflows' }),
-        [['list'], ['./running-tests-reporter.mjs'], ['blob', { outputDir: './test-results/blob/workflows' }]]);
+    const [list, running, blob] = reporters({ env: { CI: '1' }, name: 'workflows' });
+    assert.deepEqual(list, ['list']);
+    // Absolute: a config imported from another directory (workflow-artifacts.test.mjs) still finds it.
+    assert.ok(isAbsolute(running[0]) && running[0].endsWith('running-tests-reporter.mjs'), running[0]);
+    assert.deepEqual(blob, ['blob', { outputDir: './test-results/blob/workflows' }]);
 });
 
 function fakeHost() {
