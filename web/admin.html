@@ -164,27 +164,31 @@
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Export
                         </button>
-                        <button id="settingsBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="settingsBtn" href="workspace#/system/overview" target="_blank" rel="noopener"
+                           title="Opens System › Overview in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Settings
-                        </button>
+                        </a>
                         <a id="diagnosticsBtn" href="workspace#/system/diagnostics" target="_blank" rel="noopener"
                            title="Opens System › Diagnostics &amp; logs in a new tab"
                            class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Diagnostics
                         </a>
-                        <button id="maintenanceBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        <a id="maintenanceBtn" href="workspace#/system/maintenance" target="_blank" rel="noopener"
+                           title="Opens System › Maintenance in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Maintenance
-                        </button>
-                        <button id="backupBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        </a>
+                        <a id="backupBtn" href="workspace#/system/backups" target="_blank" rel="noopener"
+                           title="Opens System › Backup &amp; export in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Backup DB
-                        </button>
-                        <button id="restoreBtn"
-                                class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
+                        </a>
+                        <a id="restoreBtn" href="workspace#/system/backups" target="_blank" rel="noopener"
+                           title="Opens System › Backup &amp; export in a new tab"
+                           class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Restore DB
-                        </button>
+                        </a>
                         <button id="scanBtn"
                                 class="px-2.5 py-1 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
                             Scan Images
@@ -231,11 +235,12 @@
                                 </select>
                                 <span class="text-xs text-pm-secondary">per page</span>
                             </div>
-                            <!-- Session-only toggle; the saved default lives in Settings -->
+                            <!-- Session-only toggle; the saved default lives in Page options -->
                             <label class="flex items-center gap-1.5 text-xs text-pm-secondary cursor-pointer" title="Load the next page as you scroll (this session)">
                                 <input type="checkbox" id="infiniteScrollSession" class="w-3.5 h-3.5 rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent">
                                 Infinite scroll
                             </label>
+                            <button id="pageOptionsBtn" type="button" class="text-xs text-pm-secondary hover:text-pm-accent underline">Page options</button>
                         </div>
                         <span class="text-xs font-medium text-pm-secondary bg-pm-input px-2 py-0.5 rounded-full" id="resultsCount">Loading...</span>
                     </div>
@@ -369,136 +374,18 @@
     <!-- Settings Modal -->
     <div id="settingsModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
         <div class="bg-pm-surface rounded-pm-lg p-4 max-w-lg w-full mx-4 border border-pm max-h-[90vh] overflow-y-auto shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-4">Settings</h3>
+            <h3 class="text-sm font-semibold text-pm mb-4">Page options</h3>
 
             <div class="space-y-4">
-                <!-- Gallery Settings Section -->
                 <div class="border-b border-pm pb-3">
-                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Gallery Settings</h4>
+                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Prompt list</h4>
 
-                    <div class="mb-3">
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Image Scan Directories</label>
-                        <div id="scanPathsList" class="space-y-2">
-                            <!-- Populated dynamically by JS -->
-                        </div>
-                        <button id="addScanPathBtn" type="button"
-                                class="mt-2 flex items-center gap-1 text-xs text-pm-accent hover:text-pm-accent-hover">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                            </svg>
-                            Add Directory
-                        </button>
-                        <p class="text-xs text-pm-muted mt-1">Directories to scan for images. Leave empty to use ComfyUI default output directory.</p>
-                    </div>
-
-                    <div class="mb-3">
-                        <div class="flex items-center justify-between">
-                            <label class="block text-xs font-medium text-pm-secondary">Currently Monitoring</label>
-                            <button id="refreshMonitoringStatus" class="text-xs text-pm-accent hover:text-pm-accent-hover">Refresh</button>
-                        </div>
-                        <div id="monitoringStatus" class="mt-1.5 px-2.5 py-1.5 bg-pm-input rounded-pm-sm text-xs text-pm-secondary font-mono">
-                            Loading...
-                        </div>
-                    </div>
-                </div>
-
-                <!-- UI Settings Section -->
-                <div class="border-b border-pm pb-3">
-                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">UI Settings</h4>
-
-                    <div class="mb-3">
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Search Results Auto-Hide (seconds)</label>
-                        <input type="number" id="resultTimeout" min="0" max="300" value="30"
-                               class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                        <p class="text-xs text-pm-muted mt-1">Set to 0 to disable auto-hide.</p>
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-medium text-pm-secondary mb-1">Web UI Display Mode</label>
-                        <select id="webuiDisplayMode"
-                                class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] focus:outline-none">
-                            <option value="popup">Popup Window (Current)</option>
-                            <option value="newtab">New Tab</option>
-                        </select>
-                        <p class="text-xs text-pm-muted mt-1">Choose how the Web UI opens from ComfyUI nodes.</p>
-                    </div>
-
-                    <div class="mt-3 flex items-center justify-between">
+                    <div class="flex items-center justify-between">
                         <div>
                             <label for="infiniteScrollDefault" class="block text-xs font-medium text-pm-secondary">Infinite Scrolling</label>
                             <p class="text-xs text-pm-muted">Load the next page of prompts as you scroll. The checkbox in the list header overrides this for the current session.</p>
                         </div>
                         <input type="checkbox" id="infiniteScrollDefault" class="w-4 h-4 rounded border-pm bg-pm-input text-pm-accent focus:ring-pm-accent ml-3">
-                    </div>
-                </div>
-
-                <!-- Performance Section -->
-                <div class="border-b border-pm pb-3">
-                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Performance</h4>
-
-                    <div>
-                        <div class="flex items-center justify-between mb-1.5">
-                            <label for="workerThreads" class="text-xs font-medium text-pm-secondary">Worker threads</label>
-                            <span id="workerThreadsValue" class="text-pm-accent text-xs font-mono">1 / 1 cores</span>
-                        </div>
-                        <input type="range" id="workerThreads" min="1" max="1" step="1" value="1"
-                            class="w-full h-1.5 bg-pm-primary rounded-lg appearance-none cursor-pointer accent-[var(--pm-accent)]">
-                        <p class="text-xs text-pm-muted mt-1">Threads used by the image rescan and thumbnail generation. More threads finish sooner; fewer leave CPU for ComfyUI while it generates.</p>
-                    </div>
-                </div>
-
-                <!-- Integrations Section -->
-                <div class="border-b border-pm pb-3">
-                    <h4 class="text-xs font-semibold text-pm-secondary mb-3 uppercase tracking-wide">Integrations</h4>
-
-                    <div class="mb-3">
-                        <div class="flex items-center justify-between mb-2">
-                            <div class="flex items-center gap-2">
-                                <label class="block text-xs font-medium text-pm-secondary">LoraManager</label>
-                                <span id="loraDetectionBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-pm-input text-pm-muted">checking...</span>
-                            </div>
-                            <label class="relative inline-flex items-center cursor-pointer">
-                                <input type="checkbox" id="loraEnabled" class="sr-only peer" disabled>
-                                <div class="w-8 h-4 bg-pm-input rounded-full peer peer-checked:bg-pm-accent transition-colors pointer-events-none after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
-                            </label>
-                        </div>
-
-                        <div id="loraSettings" class="hidden space-y-2 mt-2 pl-2 border-l-2 border-pm">
-                            <div>
-                                <label class="block text-xs font-medium text-pm-secondary mb-1">Path</label>
-                                <input type="text" id="loraManagerPath" readonly
-                                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] text-pm-muted">
-                            </div>
-
-                            <div class="flex items-center justify-between">
-                                <label class="block text-xs font-medium text-pm-secondary">Auto-inject trigger words</label>
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" id="loraTriggerWords" class="sr-only peer">
-                                    <div class="w-8 h-4 bg-pm-input rounded-full peer peer-checked:bg-pm-accent transition-colors pointer-events-none after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
-                                </label>
-                            </div>
-                            <p class="text-xs text-pm-muted">Automatically append trigger words when <code class="text-pm-accent">&lt;lora:name:weight&gt;</code> is detected in prompts.</p>
-
-                            <div class="mt-2">
-                                <label class="block text-xs font-medium text-pm-secondary mb-1">CivitAI API Key</label>
-                                <input type="password" id="civitaiApiKey" placeholder="Optional — required for NSFW example images"
-                                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] placeholder:text-pm-muted focus:outline-none">
-                                <p class="text-xs text-pm-muted mt-1">Get your key from <a href="https://civitai.com/user/account" target="_blank" class="text-pm-accent hover:underline">civitai.com/user/account</a></p>
-                            </div>
-
-                            <label class="mt-1 flex items-center gap-1.5 text-xs text-pm-secondary cursor-pointer">
-                                <input type="checkbox" id="clearCivitaiKey" class="w-3.5 h-3.5 text-pm-accent bg-pm-input border-pm rounded focus:ring-pm-accent">
-                                <span>Clear the stored key on save</span>
-                            </label>
-
-                            <button id="loraImportBtn" type="button"
-                                    class="mt-1 flex items-center gap-1 text-xs text-pm-accent hover:text-pm-accent-hover">
-                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-                                </svg>
-                                Import LoRA Data
-                            </button>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -512,32 +399,6 @@
                         class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Save Settings
                 </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- LoRA Import Progress Modal -->
-    <div id="loraImportModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-4">Importing LoRA Data</h3>
-
-            <div class="mb-3">
-                <p class="text-pm-secondary text-xs">Status:</p>
-                <p id="loraImportStatus" class="text-pm text-xs font-medium truncate">Initializing...</p>
-            </div>
-
-            <div class="mb-3">
-                <div class="flex justify-between text-xs text-pm-secondary mb-1">
-                    <span>Progress</span>
-                    <span id="loraImportPercent">0%</span>
-                </div>
-                <div class="w-full bg-pm-input rounded-full h-1.5">
-                    <div id="loraImportBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-                </div>
-                <div class="flex justify-between text-[11px] text-pm-muted mt-1">
-                    <span id="loraImportProcessed">0 processed</span>
-                    <span id="loraImportImported">0 imported</span>
-                </div>
             </div>
         </div>
     </div>
@@ -610,136 +471,6 @@
                         class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
                     Set Category
                 </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Database Restore Modal -->
-    <div id="restoreModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-4">Restore Database</h3>
-
-            <div class="mb-3">
-                <div class="bg-pm-warning-tint border border-pm-warning/40 rounded-pm-md p-3 mb-3">
-                    <h4 class="text-pm-warning font-medium text-xs">Warning</h4>
-                    <p class="text-pm text-xs mt-1">This will replace your current database. A backup will be created automatically.</p>
-                </div>
-
-                <label class="block text-xs font-medium text-pm-secondary mb-1">Select Database File (.db)</label>
-                <input type="file" id="restoreFileInput" accept=".db"
-                       class="w-full px-2.5 py-1.5 bg-pm-input border border-pm rounded-pm-sm text-pm text-[13px] file:mr-3 file:py-1 file:px-3 file:rounded-pm-sm file:border-0 file:text-xs file:font-medium file:bg-pm-accent file:text-pm-accent-fg">
-            </div>
-
-            <div class="flex justify-end gap-2 mt-4">
-                <button id="cancelRestore"
-                        class="px-3 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                    Cancel
-                </button>
-                <button id="confirmRestore"
-                        class="px-3 py-1.5 bg-pm-warning hover:opacity-80 text-black text-xs font-medium rounded-pm-sm transition-colors">
-                    Restore Database
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Maintenance Modal -->
-    <div id="maintenanceModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg max-w-4xl w-full max-h-[90vh] overflow-hidden mx-4 border border-pm shadow-pm">
-            <div class="p-4 border-b border-pm">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-sm font-semibold text-pm">Database Maintenance</h3>
-                    <button onclick="window.admin.closeMaintenance()" class="p-1 rounded-pm-sm hover:bg-pm-hover transition-colors">
-                        <svg class="w-4 h-4 text-pm-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div class="p-4 overflow-y-auto max-h-[calc(90vh-120px)]">
-                <!-- Maintenance Options -->
-                <div class="space-y-3 mb-4">
-                    <h4 class="text-xs font-semibold text-pm-secondary uppercase tracking-wide mb-3">Select Maintenance Operations:</h4>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="cleanup_duplicates" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Remove Duplicates</div>
-                                <div class="text-[11px] text-pm-secondary">Find and remove duplicate prompts based on text content</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="vacuum" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Vacuum Database</div>
-                                <div class="text-[11px] text-pm-secondary">Optimize database file size and performance</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="cleanup_orphaned_images" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]" checked>
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Clean Orphaned Images</div>
-                                <div class="text-[11px] text-pm-secondary">Remove image records for files that no longer exist</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="check_hash_duplicates" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Check Hash Duplicates</div>
-                                <div class="text-[11px] text-pm-secondary">Identify prompts with duplicate hash values</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="check_consistency" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Consistency Check</div>
-                                <div class="text-[11px] text-pm-secondary">Verify database integrity and data consistency</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="statistics" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Database Statistics</div>
-                                <div class="text-[11px] text-pm-secondary">Generate detailed database statistics report</div>
-                            </div>
-                        </label>
-
-                        <label class="flex items-center gap-2.5 p-3 bg-pm-input rounded-pm-md hover:bg-pm-hover cursor-pointer">
-                            <input type="checkbox" id="prune_orphaned_prompts" class="maintenance-option w-3.5 h-3.5 accent-[var(--pm-accent)]">
-                            <div class="flex-1">
-                                <div class="text-pm text-xs font-medium">Prune Orphaned Prompts</div>
-                                <div class="text-[11px] text-pm-secondary">Remove prompts that have no linked images</div>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- Action Buttons -->
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex gap-2">
-                        <button id="runMaintenanceBtn" class="px-3 py-1.5 bg-pm-accent hover:bg-pm-accent-hover text-pm-accent-fg text-xs font-medium rounded-pm-sm transition-colors">
-                            Run Maintenance
-                        </button>
-                        <button id="selectAllMaintenanceBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                            Select All
-                        </button>
-                        <button id="clearAllMaintenanceBtn" class="px-2.5 py-1.5 bg-pm-surface border border-pm hover:bg-pm-hover text-pm text-xs font-medium rounded-pm-sm transition-colors">
-                            Clear All
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Results -->
-                <div id="maintenanceResults" class="space-y-3">
-                    <div class="text-center py-6 text-pm-secondary text-xs">
-                        Click "Run Maintenance" to perform selected operations
-                    </div>
-                </div>
             </div>
         </div>
     </div>
@@ -1253,36 +984,6 @@ No sentences, no commentary, no captions. Only tags. Keep length short but descr
                         Scan Now
                     </button>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Auto Tag Download Modal -->
-    <div id="autoTagDownloadModal" class="fixed inset-0 bg-black/60 backdrop-blur-[2px] hidden items-center justify-center z-50">
-        <div class="bg-pm-surface rounded-pm-lg p-4 max-w-md w-full mx-4 border border-pm shadow-pm">
-            <h3 class="text-sm font-semibold text-pm mb-4">Downloading Model</h3>
-
-            <div class="mb-3">
-                <p class="text-pm-secondary text-xs">Downloading:</p>
-                <p id="downloadModelName" class="text-pm text-xs font-medium">GGUF Model</p>
-            </div>
-
-            <div class="mb-4">
-                <div class="flex justify-between text-xs text-pm-secondary mb-1">
-                    <span id="downloadStatus">Preparing...</span>
-                    <span id="downloadProgressPercent">0%</span>
-                </div>
-                <div class="w-full bg-pm-input rounded-full h-1.5">
-                    <div id="downloadProgressBar" class="bg-pm-accent h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-                </div>
-                <p class="text-pm-secondary text-xs mt-2">The download continues in Activity.</p>
-            </div>
-
-            <div class="flex justify-center">
-                <button id="cancelDownloadBtn"
-                        class="px-3 py-1.5 text-pm-error bg-transparent hover:bg-pm-error-tint border border-pm text-xs font-medium rounded-pm-sm transition-colors">
-                    Close
-                </button>
             </div>
         </div>
     </div>

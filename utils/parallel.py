@@ -21,6 +21,8 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from .exit_signal import checked
+
 SHUTDOWN_REFUSAL = "interpreter shutdown"
 _logger = logging.getLogger("prompt_manager.parallel")
 _noted = set()
@@ -49,8 +51,11 @@ def map_parallel(func, items, workers):
     ``workers`` of 1 (or fewer) runs on the calling thread with no pool. An
     exception in ``func`` propagates to the caller, so callers that must
     survive bad input wrap ``func`` themselves. A pool refused at interpreter
-    exit runs the items it did not start on the calling thread (#375).
+    exit runs the items it did not start on the calling thread (#375). An item
+    that has not started when the interpreter starts exiting raises
+    ExitRequested instead (#376).
     """
+    func = checked(func)
     items = list(items)
     workers = max(1, int(workers or 1))
     if workers == 1 or len(items) <= 1:
