@@ -67,6 +67,8 @@ try:
     from ...utils.parallel import map_parallel
     from ...utils.json_strict import dumps_strict
     from ...utils.inspection_response import (
+        OWN_CATEGORY_UNREAD,
+        apply_own_category,
         encode_inspection_response,
         library_metadata,
     )
@@ -89,6 +91,8 @@ except ImportError:
     from utils.parallel import map_parallel
     from utils.json_strict import dumps_strict
     from utils.inspection_response import (
+        OWN_CATEGORY_UNREAD,
+        apply_own_category,
         encode_inspection_response,
         library_metadata,
     )
@@ -582,7 +586,8 @@ class _ImageTagMatch(NamedTuple):
 
     tags: bool  # every filter tag is in its image tags or linked positive tags
     query: bool  # ``q`` is a case-folded substring of one image tag name
-    link: tuple | None  # (hit, rating, positive id) of its unambiguous link
+    # (hit, rating, positive id, inherited category) of its unambiguous link
+    link: tuple | None
 
 
 def _current_fingerprint(path: Path) -> tuple[int, int] | None:
@@ -1243,20 +1248,27 @@ def _admitted_entries(
     links: dict | None,
     members: frozenset | None = None,
     image_tags: dict | None = None,
+    own_categories: dict | None = None,
 ):
     """Yield ``(position, entry, link match)`` for each entry the filters admit.
 
-    *links* maps normalized paths to (hit, rating, positive id) for every
-    unambiguously linked image (see PromptDatabase.get_image_link_matches); a
-    category or tag filter admits only those, and ``q`` admits a filename match
-    or a linked-positive hit. *members*, when given, admits only those listed
-    paths (the favorites of ``favorites=1`` or a ``collection``'s members).
-    *image_tags* maps normalized paths to their _ImageTagMatch: a tag filter
-    also admits a file whose current image tags (with its linked positive's
-    tags) carry every tag, and ``q`` also admits an image tag name hit.
+    *links* maps normalized paths to (hit, rating, positive id, inherited
+    category) for every unambiguously linked image (see
+    PromptDatabase.get_image_link_matches); a tag filter admits only those,
+    and ``q`` admits a filename match or a linked-positive hit. A category
+    admits a file whose effective category equals it (#332 MC5): its own
+    category (*own_categories*, ``{normalized path: category}``) when it has one,
+    else the inherited one, so an unlinked file with its own category is
+    admitted. *members*, when given, admits only those listed paths (the
+    favorites of ``favorites=1`` or a ``collection``'s members). *image_tags*
+    maps normalized paths to their _ImageTagMatch: a tag filter also admits a
+    file whose current image tags (with its linked positive's tags) carry every
+    tag, and ``q`` also admits an image tag name hit.
     """
     query, media, folder = filters["query"], filters["media"], filters["folder"]
-    members_only = filters["category"] is not None or bool(filters["tags"])
+    category = filters["category"]
+    members_only = bool(filters["tags"])
+    own = own_categories or {}
     native_folder = folder.replace("/", os.sep)
     nested = native_folder + os.sep
     exact = filters.get("path", "")
@@ -1275,6 +1287,12 @@ def _admitted_entries(
         image = None if image_tags is None else image_tags.get(entry.normalized)
         if members_only and match is None and not (image and image.tags):
             continue
+        if category is not None:
+            effective = own.get(entry.normalized) if own else None
+            if effective is None and match is not None:
+                effective = match[3]
+            if effective != category:
+                continue
         if (
             query
             and query not in entry.folded
@@ -1293,6 +1311,7 @@ def _filtered_page(
     links: dict | None,
     members: frozenset | None = None,
     image_tags: dict | None = None,
+    own_categories: dict | None = None,
 ) -> tuple[int, list, int | None]:
     """Count the *entries* the filters admit and take *size* from *start* on.
 
@@ -1302,7 +1321,7 @@ def _filtered_page(
     """
     total, page, positives = 0, [], set()
     for position, entry, match in _admitted_entries(
-        entries, filters, links, members, image_tags
+        entries, filters, links, members, image_tags, own_categories
     ):
         total += 1
         if match is not None:
@@ -2245,9 +2264,10 @@ class ImageRoutesMixin:
         stat'ed (never every listed file), and a candidate's tags count only
         while a byte record is verified at its present ``(size, mtime_ns)``
         (spec amendment S1). Under a Tags filter the candidates' linked
-        positives are read too, so their tags and category combine.
+        positives are read too, so their tags combine; the category is checked
+        once, on the effective category, by _admitted_entries (#332).
         """
-        tags, query, category = filters["tags"], filters["query"], filters["category"]
+        tags, query = filters["tags"], filters["query"]
         wanted = set(tags)
         located = self._workspace_locators(listings)
         # The tag index answers which files carry a relevant name (#379); no
@@ -2277,11 +2297,9 @@ class ImageRoutesMixin:
             link = facts.get(entry.normalized)
             carried = set(names).union(link[4] if link else ())
             matches[entry.normalized] = _ImageTagMatch(
-                bool(wanted)
-                and wanted <= carried
-                and (category is None or (link is not None and link[3] == category)),
+                bool(wanted) and wanted <= carried,
                 bool(query) and any(query in name.casefold() for name in names),
-                link[:3] if link else None,
+                tuple(link[:4]) if link else None,
             )
         return matches
 
@@ -2290,12 +2308,16 @@ class ImageRoutesMixin:
     ) -> tuple:
         """The ordered entries and what admits them (blocking; run in executor).
 
-        Returns ``(entries, key, links, image_tags, members)``: the listing in
-        the filters' order, its keyset key, and the link, image-tag and member
-        maps _admitted_entries reads (members: a collection's, else the
-        favorites, else None). A collection deleted since the route checked it
-        raises CollectionMissing. One SELECT (get_image_link_matches) reads
-        every linked positive when *read_links*. A failed read raises when the
+        Returns ``(entries, key, links, image_tags, members, own)``: the
+        listing in the filters' order, its keyset key, and the link, image-tag,
+        member and own-category maps _admitted_entries reads (members: a
+        collection's, else the favorites, else None). A collection deleted since
+        the route checked it raises CollectionMissing. One SELECT
+        (get_image_link_matches) reads every linked positive when *read_links*;
+        under a category it keeps only links whose raw recipe or positive
+        category is that value (the inherited one is decided in Python), and
+        the links of files whose own category is that value are read by path,
+        so their rating and positive still count (#332). A failed read raises when the
         filters need it (category, tags, the rating sort) or *strict*; else the
         listing stays usable without links (a search then matches filenames
         only). A failed image-tag read raises under a Tags filter; a search then
@@ -2307,10 +2329,10 @@ class ImageRoutesMixin:
             try:
                 links = self.db.get_image_link_matches(
                     filters["text"],
-                    category,
                     tags,
                     every_link=True,
                     wanted=self._workspace_wanted(listings),
+                    category=category,
                 )
             except Exception:
                 if strict or category is not None or tags or order == "rating":
@@ -2324,6 +2346,13 @@ class ImageRoutesMixin:
                     ),
                     exc_info=True,
                 )
+        own = None
+        if category is not None:
+            # A failed read raises: an unfiltered page must never pass for the
+            # category (DC6).
+            own = self._own_category_map(self._get_all_output_dirs(), listings)
+            if links is not None:
+                links = self._own_category_links(links, own, filters)
         image_tags = None
         if filters["query"] or tags:
             try:
@@ -2373,7 +2402,31 @@ class ImageRoutesMixin:
             links,
             image_tags,
             self._workspace_members(listings, filters),
+            own,
         )
+
+    def _own_category_links(self, links: dict, own: dict, filters: dict) -> dict:
+        """*links* plus the links of files whose own category is the filter's.
+
+        Their inherited category differs, so the category's link read left
+        them out; read by path (get_image_link_facts), kept only when their
+        positive has every filter tag, as the link read would.
+        """
+        category, wanted = filters["category"], set(filters["tags"])
+        missing = [
+            path
+            for path, value in own.items()
+            if value == category and path not in links
+        ]
+        if not missing:
+            return links
+        facts = self.db.get_image_link_facts(missing, filters["text"])
+        extra = {
+            path: tuple(fact[:4])
+            for path, fact in facts.items()
+            if wanted <= set(fact[4])
+        }
+        return {**links, **extra} if extra else links
 
     def _select_workspace_page(
         self,
@@ -2402,7 +2455,7 @@ class ImageRoutesMixin:
             or bool(filters["tags"])
             or order == "rating"
         )
-        entries, key, links, image_tags, members = self._workspace_admission(
+        entries, key, links, image_tags, members, own = self._workspace_admission(
             listings, filters, read_links=needed or after is None
         )
         start = 0
@@ -2413,7 +2466,7 @@ class ImageRoutesMixin:
             else:
                 start = bisect_right(entries, after, key=key)
         total, page, positive_count = _filtered_page(
-            entries, start, limit + 1, filters, links, members, image_tags
+            entries, start, limit + 1, filters, links, members, image_tags, own
         )
         if not needed and after is not None:
             positive_count = _COUNT_OMITTED
@@ -2435,12 +2488,12 @@ class ImageRoutesMixin:
 
         The links are read strictly: the positives must be the listing's own.
         """
-        entries, _key, links, image_tags, members = self._workspace_admission(
+        entries, _key, links, image_tags, members, own = self._workspace_admission(
             listings, filters, read_links=True, strict=True
         )
         targets, positives, unlinked, scopes = [], {}, 0, {}
         for _position, entry, match in _admitted_entries(
-            entries, filters, links, members, image_tags
+            entries, filters, links, members, image_tags, own
         ):
             if len(targets) == cap:
                 return ListingSelection(targets, list(positives), unlinked, True)
@@ -3794,13 +3847,20 @@ class ImageRoutesMixin:
                     except Exception:
                         # The link stays known; only its title is withheld.
                         self.logger.warning("Inspection link title could not be read")
+                # An output file's own category (#332); LoRA roots have none.
+                own = (
+                    self._read_own_category(outputs, path)
+                    if index < len(outputs)
+                    else None
+                )
                 try:
                     observed = inspect_current_file(
                         path,
                         source_label=_public_path(roots[index]),
                         saved=saved,
-                        library=self._inspection_library(
-                            saved, unavailable=unavailable
+                        library=apply_own_category(
+                            self._inspection_library(saved, unavailable=unavailable),
+                            own,
                         ),
                         image_tags=self._inspection_image_tags(
                             roots[index], Path(relative).parts
@@ -3867,6 +3927,19 @@ class ImageRoutesMixin:
             return {"state": "current", "tags": list(tags)}
 
         return read
+
+    def _read_own_category(self, sources, path):
+        """One file's own category, None, or OWN_CATEGORY_UNREAD (blocking).
+
+        Keyed by ``image_category_key`` over the output sources, as Images
+        writes it. A failed read is logged and hides the category (DC5).
+        """
+        try:
+            key = image_category_key(sources, path)
+            return None if key is None else self.db.image_category(*key)
+        except Exception:
+            self.logger.warning("Image category could not be read", exc_info=True)
+            return OWN_CATEGORY_UNREAD
 
     def _inspection_library(self, saved: dict | None, *, unavailable: bool) -> dict:
         """The inspector's Library facts; the route sets the title afterwards."""

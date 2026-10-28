@@ -26,6 +26,13 @@ try:
     from .utils.prompt_graph import resolve_text, run_prompt_nodes
     from .utils.run_keys import executing_run_id, prompt_node_key
     from .utils.usage_tracking import PENDING_FIRST_USE
+    from .utils.cached_runs import (
+        CACHED_RUNS,
+        Role,
+        Seen,
+        own_counts,
+        stored_facts,
+    )
 except ImportError:
     import sys
 
@@ -38,6 +45,13 @@ except ImportError:
     from utils.prompt_graph import resolve_text, run_prompt_nodes
     from utils.run_keys import executing_run_id, prompt_node_key
     from utils.usage_tracking import PENDING_FIRST_USE
+    from utils.cached_runs import (
+        CACHED_RUNS,
+        Role,
+        Seen,
+        own_counts,
+        stored_facts,
+    )
 
 
 class PromptManagerBase:
@@ -71,8 +85,10 @@ class PromptManagerBase:
         """Save the prompt to the SQLite database.
 
         Runs are normally counted by the queue hook (utils/usage_tracking.py), so a
-        save only counts one when asked to (batch items whose text the hook could not
-        see) or when the hook queued this prompt before it existed.
+        save only counts one when asked to (text the hook could not see, unless
+        this job already counted the node from ComfyUI's cache) or when the hook
+        queued this prompt before it existed. The two are independent: the
+        pending catch-up is written even when ``count_run`` is False.
 
         Args:
             text: The prompt text
@@ -167,8 +183,19 @@ class PromptManagerBase:
         batch_item = (
             role["known"] and role["is_run_prompt"] and not role["seen_at_queue"]
         )
+        counts = own_counts(
+            type(self).__name__,
+            stored_facts(text),
+            Role(
+                frozenset({"text"} if role["known"] and role["is_run_prompt"] else ())
+            ),
+            Seen(text=role["seen_at_queue"]),
+        )
         prompt_id = self._save_prompt_to_database(
-            text=text, category=category, tags=tags, count_run=batch_item
+            text=text,
+            category=category,
+            tags=tags,
+            count_run=bool(counts) and not self._replayed(unique_id),
         )
         if role["is_run_prompt"] and not prompt_id:
             # The save failed: an older entry of this key must not stand in (#342)
@@ -181,6 +208,34 @@ class PromptManagerBase:
                 **self._run_identity(prompt_graph, unique_id),
             )
         return prompt_id
+
+    def _cached_runs(self) -> Any:
+        return getattr(self, "cached_runs", CACHED_RUNS)
+
+    def _replayed(self, unique_id: Any) -> bool:
+        """This job already counted the node from ComfyUI's cache (#347).
+
+        A RAM-pressure cache can free the entry after ``execution_cached``, so
+        the node executes in a job that replayed it: its own count is skipped.
+        """
+        try:
+            return unique_id is not None and self._cached_runs().replayed(unique_id)
+        except Exception as error:
+            self.logger.debug(f"Could not check the cached-run replay: {error}")
+            return False
+
+    def _record_cached_item(
+        self, unique_id: Any, outputs: tuple, text: Any, negative_text: Any = None
+    ) -> None:
+        """Remember this execution's outputs and stored text for cached jobs (#347)."""
+        if unique_id is None:
+            return
+        try:
+            self._cached_runs().record_item(
+                unique_id, outputs, stored_facts(text, negative_text)
+            )
+        except Exception as error:
+            self.logger.debug(f"Could not record the cached-run receipt: {error}")
 
     @staticmethod
     def _run_identity(prompt_graph: Any, unique_id: Any) -> Dict[str, Any]:
