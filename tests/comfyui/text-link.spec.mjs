@@ -370,6 +370,7 @@ test('workflows saved before #343 load unchanged and their linked text keeps wor
         const nodes = Object.fromEntries(app.graph._nodes.map(node => [node.id, node]));
         const reloaded = app.graph.serialize();
         return {
+            saves: Object.fromEntries(Object.entries(output).filter(([, node]) => node.class_type.startsWith('PromptManager')).map(([id, node]) => [id, node.inputs.save_to_library])),
             values: Object.fromEntries(reloaded.nodes.map(node => [node.id, node.widgets_values])),
             links: Object.fromEntries(Object.entries(output).map(([id, node]) => [id, { text: node.inputs.text, negative_text: node.inputs.negative_text }])),
             widgetBound: Object.fromEntries(Object.values(nodes).filter(node => node.type.startsWith('PromptManager')).map(node => [node.id, node.inputs.filter(input => ['text', 'negative_text'].includes(input.name) && input.widget).map(input => input.name)])),
@@ -377,8 +378,16 @@ test('workflows saved before #343 load unchanged and their linked text keeps wor
     }, workflow);
     for (const node of workflow.nodes) {
         // Every saved widget value comes back as it was saved, except the typed text main lost under a link (null).
-        if (node.widgets_values?.[0] !== null) expect(result.values[node.id], `${node.type} ${node.id}`).toEqual(node.widgets_values);
+        // #90: the last saved value is the editor's own slot (''), where the Save to library switch is now: it loads on.
+        if (node.widgets_values?.[0] === null) continue;
+        if (!node.type.startsWith('PromptManager')) { expect(result.values[node.id], `${node.type} ${node.id}`).toEqual(node.widgets_values); continue; }
+        const saved = node.widgets_values.length - 1;
+        expect(result.values[node.id].slice(0, saved), `${node.type} ${node.id}`).toEqual(node.widgets_values.slice(0, saved));
+        expect(result.values[node.id][saved], `${node.type} ${node.id} save_to_library`).toBe(true);
     }
+    // Every PromptManager node of the old workflow queues with Save to library on.
+    for (const save of Object.values(result.saves)) expect(save).toBe(true);
+    expect(Object.keys(result.saves).length).toBeGreaterThan(0);
     expect(result.links).toMatchObject({
         1: { text: 'Saved PromptManager text' }, 2: { text: 'Saved PromptManagerText text' }, 3: { text: 'Saved PromptManagerFocused text' },
         4: { text: 'Saved PromptManagerSplit text' }, 5: { text: 'Saved PromptManagerPair text', negative_text: 'Saved pair negative' },

@@ -35,15 +35,16 @@ test('execution script discovers only the new matrix and preserves all 78 origin
     assert.match(executions, /\[nodes2-start\]/);
     // + the fresh-host library location case, + #342 image attribution, + #343 linked text,
     // + #332 image category routes on a generated output (image-attribution.spec.mjs, 2 projects),
-    // + #347 cached runtime-linked runs: five node kinds and eight one-renderer cases (execution-text-link.spec.mjs, 2 projects)
-    assert.match(executions, /Total: 118 tests in 5 files/);
+    // + #347 cached runtime-linked runs: five node kinds and eight one-renderer cases (execution-text-link.spec.mjs, 2 projects),
+    // + #90 Save to library off (five node types)
+    assert.match(executions, /Total: 128 tests in 5 files/);
     for (const project of ['classic-start', 'nodes2-start']) {
         const cases = executions.split('\n').filter(line => line.includes(`[${project}]`));
         assert.equal(cases.filter(line => line.includes('execution-history.spec.mjs')).length, 15);
         assert.equal(cases.filter(line => line.includes('execution-outputs.spec.mjs')).length, 8);
         assert.equal(cases.filter(line => line.includes('library-location.spec.mjs')).length, 1);
         assert.equal(cases.filter(line => line.includes('image-attribution.spec.mjs')).length, 3);
-        assert.equal(cases.filter(line => line.includes('execution-text-link.spec.mjs')).length, 32);
+        assert.equal(cases.filter(line => line.includes('execution-text-link.spec.mjs')).length, 37);
     }
     assert.doesNotMatch(executions, /prompt-manager.spec/);
 });
