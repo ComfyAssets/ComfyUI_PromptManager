@@ -169,6 +169,13 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .masonry-grid .image-open video { aspect-ratio: var(--media-ratio); object-fit: contain; }
 .list-grid .image-open video { height: 95px; aspect-ratio: auto; }
 
+/* #451 D157: a cover crop of a generated image keeps its top (heads, faces) instead of its middle. The vertical 20%
+   acts only when the image is taller than its box; a wider image overflows sideways and stays centred. Masonry shows
+   the whole image (contain) and keeps the centre. */
+.image-grid:not(.masonry-grid) .image-open :is(img, video), .card-art img, .detail-cover, .tag-image-preview {
+    object-position: 50% 20%; /* D157 */
+}
+
 /* Images viewer (#249 C6): the concept's `#viewer-dialog` shell (s1008–1058, ≤700 s1456–1474). #249 D34: real media,
    titles and states that the concept's one demo image never shows. */
 /* #249 D34: a real title can wrap (long linked titles and filenames). Above 700px the dialog stacks its header and the

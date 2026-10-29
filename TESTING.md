@@ -1397,7 +1397,7 @@ The Images page renders the concept's DOM with real data. Its controls, top to b
   (click, Enter, Space); Info selects the card into the side panel; the star toggles
   the favorite; arrows, Home and End move between cards. Bounded rendering keeps the
   DOM small, and returning to Images restores filters, layout, size, selection and
-  scroll.
+  scroll (a layout or size the toolbar never changed follows newer defaults, D157).
 - **Continuation** (`#gallery-continuation`): scrolling near it loads the next page;
   `Load more images` and `Retry` do the same by hand, with a toast per batch.
 - **Viewer** (`dialog#viewer-dialog`): "<title> · <filename>", the concept toolbar
@@ -1686,6 +1686,29 @@ Recorded deviations on this page (spec §8):
   `scroll-margin-block-end: 96px`, so it is never under the toast.
   `Rescan toast does not cover the discovery alert it leaves` ends the window inside
   the toast's band at 1600 and 390 pixels and measures both boxes.
+- **D157** (#451, maintainer request, beyond the concept): Images opens in **Masonry**
+  when this browser has no Default layout (`gallery-settings.js`
+  `DEFAULT_SETTINGS.workspaceLayout`); the concept starts at Grid (`state.view`, app.js
+  208). A stored choice is kept, and an invalid value reads as Masonry. Saved views,
+  favorites, collections and the embedded galleries keep their fixed Grid/Comfortable.
+  The return to Images (the last visit) keeps a layout or thumbnail size its toolbar
+  changed; a value it kept from the defaults it started with follows a Default layout or
+  Thumbnail size saved since, in this tab or another (a toolbar List then Default =
+  Masonry stays List; a toolbar List then back to Grid counts as untouched). A cover crop
+  of a generated image (Grid and List card art, Library card art, the side panel's and
+  History's inspector cover, the Tag image preview) uses `object-position: 50% 20%`
+  instead of the concept's centre: it acts only when the image is taller than its box
+  (portraits keep heads and faces), and a wider image stays centred. Masonry shows the
+  whole image and keeps the centre. The concept comparisons (`openProduction`) and the
+  specs of the Grid's own geometry start production from the concept's state, a stored
+  Default layout of Grid (`startInGrid`, concept-inventory.mjs, only while the browser
+  stored nothing); the comparisons do not measure `object-position`.
+  `a fresh browser opens Images in Masonry (#451)`, `a Default layout saved later reaches
+  the next Images visit in this tab (#451)`, `... in another tab ... (#451)` and `cover
+  crops keep the top of a portrait image; Masonry stays centred (#451)`
+  (workspace-system.spec.mjs) cover it. A browser whose legacy gallery wrote the old
+  default (`"grid"`) keeps Grid until Default layout is changed or "Reset display
+  defaults" is saved.
 
 `tests/browser/inspector-concept.spec.mjs` compares the side panel and the viewer's
 full details (#249 D4) for alpine_00001.png, at 1600x1100 and 390x844 in both themes:
