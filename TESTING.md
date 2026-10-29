@@ -1386,8 +1386,8 @@ The Images page renders the concept's DOM with real data. Its controls, top to b
 - **Toolbar** (`toolbar.mjs`, shared with the Library in PR E): `#search` "Search
   prompts, tags, filenames…" (debounced 250 ms; filename, linked positive text and
   Library title, and tag names), `#category-filter` "All categories" plus the
-  Library's categories, `#sort` (Recently added, Name A–Z, Highest rated, then Oldest
-  first and Name Z–A), and `Filters` (opens "Refine this view").
+  Library's categories, `#sort` (Recently added, Name A–Z, then Oldest first and Name
+  Z–A; no Highest rated, D153), and `Filters` (opens "Refine this view").
 - **Filter row**: Grid / List / Masonry (`.segmented`, group "Image layout"),
   "Thumbnail size" Comfortable / Large / Compact, the scope chip ("All output folders"
   or "<source> · <folder>"), and "Group by positive prompt →" (goes to the Library).
@@ -1413,7 +1413,7 @@ How the earlier workspace Images filters moved (old → new). The legacy `/galle
 | Source | "Refine this view" → Source (D14); shown in the scope chip |
 | Folder | "Refine this view" → Folder (D14); shown in the scope chip |
 | Media (All media / Images / Videos) | "Refine this view" → Media (D14) |
-| Sort: Newest first / Oldest first / Filename A–Z / Filename Z–A | toolbar sort: Recently added / Oldest first / Name A–Z / Name Z–A, plus Highest rated (D13, D14) |
+| Sort: Newest first / Oldest first / Filename A–Z / Filename Z–A | toolbar sort: Recently added / Oldest first / Name A–Z / Name Z–A (D13, D14; no Highest rated, D153) |
 | (none) | toolbar category (the effective category, D141) and "Refine this view" → Tags, through the linked positive (D13, D14) |
 | Refresh | Import → "Scan an output folder" → Rescan (D15) |
 | Grid / List / Masonry, Comfortable / Large / Compact | the same choices in the concept filter row |
@@ -2404,7 +2404,7 @@ The shelf uses the shared concept toolbar and caption (E1) and the concept's
 `article.prompt-card` (app.js `renderLibrary` a586, style.css s653–708): `.card-art`
 (at most two previews), `.card-content` (`.card-title` with the title `button` and the
 category `span.chip`, the positive prompt block, `.card-meta`, `.tags`) and
-`.card-footer` (the rating and last-use line, then `.row-actions` with the positive
+`.card-footer` (the last-use line, then `.row-actions` with the positive
 `button.send.icon-btn` and "Explore history"). Rows stay windowed (`.library-row`).
 `tests/browser/workspace-library.spec.mjs` covers the markup, the clamp, the buttons and
 the measured row heights on Chromium and touch.
@@ -2414,8 +2414,8 @@ Recorded deviations on this page:
   "Used today", "Used yesterday", "Used N days ago" (under a week) or "Used <Mon D>"
   ("Used <Mon D>, <YYYY>" for a use in another calendar year, so last year's date never
   reads as this year's), counted in the viewer's local calendar days from `last_used_at` (a time ahead of the
-  browser reads as today), and "Not used yet" without one. Stars are `★` × rating with
-  a visually hidden "Rated N out of 5"; an unrated parent shows only the last-use words.
+  browser reads as today), and "Not used yet" without one. There are no rating stars
+  (D153, amending D23): every parent shows only the last-use words.
   The meta chip reads "− N negative variants" (singular for one). The title and Explore
   history are buttons that open `#/library/<id>`, as the concept's are; the trade-off
   against the old links is that they offer no open in a new tab, middle-click or URL on
@@ -2575,6 +2575,48 @@ field refusals and restore refusal; Ctrl/Cmd+A and Select all N loaded across ba
 during a write); `tests/browser/library-concept.spec.mjs` (the bar comparison now includes
 Add tags); units `tests/js/workspace-library-selection.test.js`; Python
 `tests/test_bulk_library_tags.py`. A Python change: ComfyUI needs a restart.
+
+### No 1–5 prompt rating in the workspace (#447)
+
+**D153** (maintainer ruling 2026-10-28: the star is only for favorites; the concept keeps
+a 1–5 rating): the workspace shows and edits no prompt rating. The concept's rating
+appears in four places, and production draws none of them:
+
+- Library cards: the concept's footer reads "★★★★★ · Used today"; production reads only
+  the last use (amends D23). `library-concept.spec.mjs` takes the stars and their " · "
+  out of the concept page itself before measuring (`dropConceptRatings`), so the footer
+  facts are compared at production's width; it first checks that every concept card had
+  them.
+- Sort: the concept's "Highest rated" is not offered on Images or the Library (amends
+  D14); the comparisons drop it from the concept's options. A saved view or a Library
+  visit that still names `sort: "rating"` opens on Recently added; the server keeps such a
+  view as it was stored.
+- Editor (New prompt, Edit recipe metadata, Create text revision): no `#recipe-rating`
+  "Rating" select; `library-editor-canonical-comparison.mjs` `mapConcept` drops the
+  concept's Rating field. The editor never sends `rating`. An edit sends only changed
+  fields, so a stored rating stays as it is; a new prompt and a text revision create an
+  unrated positive (the revised prompt keeps its own rating; the legacy admin page shows
+  the revision as unrated). A reuse that leaves metadata unapplied compares title,
+  category, tags and notes only. The edit token still covers `rating`, so a rating
+  changed on a legacy page while the editor is open is an ordinary metadata conflict
+  whose review shows no visible difference.
+- System > Statistics: no "Avg. rating" column and no "Rated images" total (amends D96);
+  `system-concept.spec.mjs` maps the concept's table without that column.
+
+Data and API are unchanged: the `rating` column (`CHECK` 1–5), `PUT
+/prompt_manager/prompts/{id}/rating`, `rating` in Library, Images and statistics
+answers, and the server's `rating` sorts. The legacy pages keep their ratings until the
+cutover (#334). Favorites (the image star) are unchanged.
+
+Tests: units `tests/js/workspace-library-editor-state.test.js` (a prompt rated 4 edited
+and saved keeps 4, no `rating` in any body, no rating field),
+`workspace-library-state.test.js`, `workspace-images-state.test.js`,
+`workspace-saved-views.test.js`, `workspace-system-overview.test.js`,
+`workspace-library-format.test.js`; browser `workspace-library-editor.spec.mjs` (the
+fixture's positive stored with rating 4 still reads 4 after Edit, a revision, Add
+negative and a reuse), `workspace-library.spec.mjs`, `workspace-images.spec.mjs`,
+`workspace-saved-views.spec.mjs`, `workspace-system.spec.mjs` and the concept
+comparisons above.
 
 ### Prompt history page and recorded deviations (#249 PR F-a)
 
@@ -3491,12 +3533,13 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   every check passed, some could not run, or issues need review. Close / Review missing
   links, which reviews a fresh Missing-file links plan (D100, S7); it never cleans up.
   Nothing is changed by a check.
-- **D96** (Statistics): "Usage statistics" without the sample note: the concept's
-  "Runs by category" table (Category / Runs / Avg. rating) with the real runs and
-  average rating of eligible parents per category ("Uncategorized", "Not rated"),
-  then a second table "Library totals" (Total / Count: Prompts, Tags, Images from the
-  legacy statistics, and Rated images: indexed images whose linked prompt is rated).
-  The Overview row says "Runs and ratings by category, with library totals." because
+- **D96** (Statistics; amended by D153): "Usage statistics" without the sample note: the
+  concept's "Runs by category" table without its Avg. rating column (Category / Runs)
+  with the real runs of eligible parents per category ("Uncategorized"), then a second
+  table "Library totals" (Total / Count: Prompts, Tags, Images from the legacy
+  statistics; no Rated images). The API still reports `average_rating` and
+  `rated_images`; the workspace does not show them.
+  The Overview row says "Runs by category, with library totals." because
   that is what the dialog shows (the concept's own dialog shows only "Runs by
   category"); per-prompt run counts, prompt tags and dated runs are recorded, but no
   table of them exists yet. A failed read toasts "Statistics could not

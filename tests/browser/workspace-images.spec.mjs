@@ -897,7 +897,8 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     // app.js toolbar() a347–360: search, category, sort, Save view, Filters.
     await expect(main.locator('search.toolbar > *')).toHaveCount(5);
     await expect(main.locator('search.toolbar > button')).toHaveText(['Save view', 'Filters']);
-    await expect(sortBy(page).locator('option')).toHaveText(['Recently added', 'Name A–Z', 'Highest rated', 'Oldest first', 'Name Z–A']);
+    // D153 (#447): no "Highest rated", even with a rated prompt in the library.
+    await expect(sortBy(page).locator('option')).toHaveText(['Recently added', 'Name A–Z', 'Oldest first', 'Name Z–A']);
     const row = main.locator('.filter-row');
     await expect(row.locator(':scope > *')).toHaveCount(5);
     await expect(row.locator(':scope > .segmented[role="group"][aria-label="Image layout"] > button')).toHaveText(['Grid', 'List', 'Masonry']);
@@ -916,8 +917,8 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     await search(page).fill('');
     await expect(cards(page)).toHaveCount(2);
     await expect(cards(page).first()).toHaveAttribute('data-image-key', '0:shared/same.png');
-    await sortBy(page).selectOption('rating');
-    await expect(cards(page).first()).toHaveAttribute('data-image-key', '1:shared/same.png');
+    await sortBy(page).selectOption('name-desc');
+    await expect(sortBy(page)).toHaveValue('name-desc');
     await sortBy(page).selectOption('newest');
     await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('Landscapes');
     await expect(cards(page)).toHaveCount(1);
