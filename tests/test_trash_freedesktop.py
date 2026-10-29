@@ -277,12 +277,13 @@ class UnavailableBackendTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, trash.NO_TRASH)
             self.assertTrue(os.path.exists(path))
 
-    def test_windows_and_macos_have_no_trash_yet(self):
-        for platform in ("win32", "darwin"):
-            with self.subTest(platform=platform):
-                self.assertIsInstance(
-                    trash.default_backend(platform), trash.UnavailableBackend
-                )
+    def test_each_platform_gets_its_backend(self):
+        from utils import trash_macos
+
+        self.assertIsInstance(trash.default_backend("win32"), trash.UnavailableBackend)
+        self.assertIsInstance(
+            trash.default_backend("darwin"), trash_macos.MacTrashBackend
+        )
         self.assertIsInstance(trash.default_backend("linux"), trash.FreedesktopBackend)
 
     def test_module_functions_use_the_replaceable_backend(self):

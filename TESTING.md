@@ -2462,10 +2462,26 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   freedesktop Trash specification (home trash on the same mount, else the mount's
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with
   `renameat2(RENAME_NOREPLACE)`; without it, across devices, on a read-only mount or with
-  a trash inside an output root the move is refused (`no-trash`, `trash-in-root`). Windows
-  and macOS report `no-trash` until their own backends land; library-only removal works
-  everywhere. Tests use `tests/fake_trash.py`; the browser test server installs it, so no
-  test touches a real trash.
+  a trash inside an output root the move is refused (`no-trash`, `trash-in-root`). macOS
+  (#499, `utils/trash_macos.py`) calls `-[NSFileManager trashItemAtURL:resultingItemURL:error:]`
+  through `ctypes` (ten fixed `objc_msgSend` prototypes, nil checks before every send, one
+  autorelease pool per call, loaded on first use). It answers in the review dialog, without
+  writing: `network` (not a local volume), `no-trash` (read-only, or no trash folder
+  macOS would use), `cloud-sync` (iCloud Drive, `~/Library/CloudStorage`, or ubiquitous),
+  `trash-in-root` (the trash folder is inside an output root, compared by `(st_dev,
+  st_ino)` of every ancestor) and `no-permission` (folder not writable, an immutable or
+  append flag, a foreign file in a sticky folder). A fresh volume's `.Trashes/<uid>` is
+  predicted (`URLForDirectory` answers 3328/`ENOENT` until macOS makes it). A refused move
+  keeps the file and logs the `NSError`; a move macOS reports done but whose place cannot be
+  shown (no result URL, or one inside an output root) goes under `errors` as
+  `trash-unconfirmed`, keeps its records and stops the job. Windows reports `no-trash`
+  until #500; library-only removal works everywhere. Tests use `tests/fake_trash.py`; the
+  browser test server installs it, so no test touches a real trash. The native proof,
+  `tests/test_trash_macos_native.py`, runs only with `PM_NATIVE_TRASH=macos` in
+  portability.yml's `native-trash` job (`macos-latest` and `macos-15-intel`): the startup
+  volume, a name clash, fresh APFS and FAT32 disk images, an image used as an output root,
+  a read-only image and an unwritable folder (design and probe:
+  `docs/egm/499-macos-trash/`, local).
 
 ### Prompt library cards and recorded deviations (#249 PR E)
 

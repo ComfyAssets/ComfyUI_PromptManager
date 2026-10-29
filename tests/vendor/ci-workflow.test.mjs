@@ -353,6 +353,20 @@ test('Windows and macOS run 3.12-3.14 on main, nightly and on demand, never on a
     assert.doesNotMatch(text, /cancel-in-progress: true|cancel-in-progress: \$/, 'no portability run is cancelled');
 });
 
+// #499: the native trash proof runs on both macOS CPUs, apart from the suite so a red suite never skips it.
+test('portability runs the native trash proof on arm64 and Intel macOS', () => {
+    const body = jobs(readWorkflow('portability.yml')).get('native-trash');
+    assert.ok(body, 'portability.yml has a native-trash job');
+    assert.deepEqual(matrixList(body, 'os'), ['macos-latest', 'macos-15-intel']);
+    assert.match(body, /^ {6}fail-fast: false$/m);
+    assert.doesNotMatch(body, /^ {4}needs:/m, 'it does not wait for the suite job');
+    assert.match(body, /^ {10}PM_NATIVE_TRASH: macos$/m);
+    assert.match(body, /^ {8}run: python -m unittest tests\.test_trash_macos_native tests\.test_trash_macos -v$/m);
+    const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(body)[1]);
+    const stepMinutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(body)?.[1]);
+    assert.ok(stepMinutes > 0 && jobMinutes - stepMinutes >= 2, 'the proof step stops before the job limit');
+});
+
 test('real ComfyUI runs only outside pull requests; the other test.yml checks run on every event', () => {
     const found = testJobs();
     assert.match(found.get('comfyui'), QUEUE_ONLY_IF);
