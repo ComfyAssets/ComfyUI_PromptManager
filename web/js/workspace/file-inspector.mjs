@@ -175,23 +175,31 @@ function extensionOf(record) {
     return (record.file?.extension || record.identity.path.split('.').at(-1)).replace(/^\./, '').toUpperCase();
 }
 /**
- * The chip row after the prompt blocks (D88): the file's current image tags first, then D21's linked tags not already
- * shown (case-insensitive). With `filterable` (a Tags filter exists, as in the Images panel) every image tag sets it, and
- * a linked tag only when it is the positive's own (D21); otherwise, as in the viewer, every chip is plain.
+ * The tag chips after the prompt blocks (D88, D154): the file's current image tags (`source: 'image'`), then D21's linked
+ * tags (`source: 'linked'`), each without case-insensitive repeats within its own source (D154: a linked tag that is also
+ * an image tag stays in both labelled sections). With `filterable` (a Tags filter exists, as in the Images panel) every
+ * image tag sets it, and a linked tag only when it is the positive's own (D21); otherwise, as in the viewer, every chip
+ * is plain.
  */
 export function inspectorTagChips(record, {filterable}) {
-    const shown = new Set(), chips = [];
-    const add = (names, filter) => {
+    const chips = [];
+    const add = (names, filter, source) => {
+        const shown = new Set();
         for (const name of names) {
             const key = name.toLowerCase();
             if (shown.has(key)) continue;
-            shown.add(key); chips.push({name, filter});
+            shown.add(key); chips.push({name, filter, source});
         }
     };
-    if (record.imageTags?.state === 'current') add(record.imageTags.tags, filterable);
+    if (record.imageTags?.state === 'current') add(record.imageTags.tags, filterable, 'image');
     const {library} = record;
-    if (library?.status === 'linked') add(library.tags, filterable && library.tags_scope === 'positive');
+    if (library?.status === 'linked') add(library.tags, filterable && library.tags_scope === 'positive', 'linked');
     return chips;
+}
+/** D154 (#449): a tag section's visible heading; linked tags name their owner as D146's category chip does. */
+export function tagSectionLabel(source, library) {
+    if (source === 'image') return 'Image tags';
+    return library?.tags_scope === 'pair' ? 'Recipe tags' : 'Prompt tags';
 }
 /** A concept chip whose visible text carries a visually hidden prefix naming what it is. */
 /**
@@ -289,14 +297,11 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain. With the
         // D39 fallback a recipe without tags shows its positive's, which are filter buttons again. D88: the file's own
         // image tags lead the row and, where a Tags filter exists, always set it (it matches them too).
+        // D154 (#449): each source gets its own labelled section, so image tags never read as part of the negative prompt.
         const chips = inspectorTagChips(record, {filterable:!!onTagFilter});
-        if (chips.length) {
-            const tags = el('div', undefined, 'tags');
-            for (const {name, filter} of chips) {
-                if (!filter) {tags.append(el('span', name, 'chip')); continue;}
-                const chip = createButton(name, 'chip'); contentScope.listen(chip, 'click', () => onTagFilter(name)); tags.append(chip);
-            }
-            inner.append(tags);
+        for (const source of ['image', 'linked']) {
+            const own = chips.filter(chip => chip.source === source);
+            if (own.length) inner.append(tagSection(source, tagSectionLabel(source, library), own));
         }
         inner.append(...generationFacts(record, 'meta-grid', 'small'));
         if (full) inner.append(summaryButton(record), provenance(record, badge), rawMetadata(record));
@@ -318,6 +323,22 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
             footer.append(history);
         }
         if (!full && footer.childNodes.length) container.append(footer);
+    }
+    /**
+     * D154: `section.tag-section` in the prompt sections' frame, its `.role-label` heading naming the source and count.
+     * The region's name leaves the count out and carries the prompt blocks' context ("Current file image tags").
+     */
+    function tagSection(source, label, chips) {
+        const section = el('section', undefined, `tag-section ${source}-tags`), heading = el('div', undefined, 'prompt-heading');
+        section.setAttribute('aria-label', promptContext ? `${promptContext} ${label.toLowerCase()}` : label);
+        heading.append(el('span', `${label} · ${chips.length}`, 'role-label'));
+        const tags = el('div', undefined, 'tags');
+        for (const {name: text, filter} of chips) {
+            if (!filter) {tags.append(el('span', text, 'chip')); continue;}
+            const chip = createButton(text, 'chip'); contentScope.listen(chip, 'click', () => onTagFilter(text)); tags.append(chip);
+        }
+        section.append(heading, tags);
+        return section;
     }
     /**
      * D117 (LI-4): "Copy settings summary" after the six facts, the legacy COPY ALL. It copies as the concept's prompt

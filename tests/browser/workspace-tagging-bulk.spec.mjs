@@ -16,7 +16,7 @@ const toasts = page => page.evaluate(() => window.__toasts);
 const chips = page => modal(page).locator('#tag-suggestions .chip.tag-suggestion');
 const actionButtons = page => modal(page).locator('.dialog-actions button');
 const panel = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
-const tagRow = page => panel(page).locator('.detail-inner > .tags').last();
+const imageTags = page => panel(page).getByRole('region', { name: 'Image tags', exact: true }).locator('.tags');
 const NOT_DOWNLOADED = 'WD14 SwinV2 is not downloaded. Download it in System › Auto-tagging.';
 
 test.beforeEach(async ({ page, request, browserName }) => {
@@ -110,7 +110,7 @@ test('Add tags runs a job and the cards show the tags after it finishes', async 
     await expect(bar(page).locator('strong')).toHaveText('2 selected');
     expect((await ended(request, job.id)).counters).toEqual({ tagged: 2, unchanged: 0, skipped: 0, errors: 0 });
     // The finished job's files are read again: the selected card's panel shows its new image tags.
-    await expect(tagRow(page).locator('button.chip')).toHaveText(['sunset', 'blue_hour']);
+    await expect(imageTags(page).locator('button.chip')).toHaveText(['sunset', 'blue_hour']);
     expect(await savedTags(request, SECOND)).toEqual(['sunset', 'blue_hour']);
     expect(await savedTags(request, UNLINKED)).toEqual([]);
 });
@@ -275,7 +275,7 @@ test('Review each image walks the selection one dialog at a time and only approv
     expect(await savedTags(request, SECOND)).toEqual([]);
     expect(await savedTags(request, UNLINKED)).toEqual(['sandstone', 'desert']);
     // The reviewed file's panel shows its saved tags without reselecting.
-    await expect(tagRow(page).locator('button.chip')).toHaveText(['mine', 'sandstone']);
+    await expect(imageTags(page).locator('button.chip')).toHaveText(['mine', 'sandstone']);
     await expect.poll(async () => (await (await request.get('/__test__/tagging/captures')).json()).captures).toBe(0);
 });
 

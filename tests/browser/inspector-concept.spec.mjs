@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInventory,mutate,countCopy,saveImageTags,withChipSource} from './concept-inventory.mjs';
+import {SIZES,THEMES,seedConcept,openConcept,openProduction,inspectorOf,diffInventory,mutate,countCopy,saveImageTags,withChipSource,withTagSections,PROMPT_TAGS} from './concept-inventory.mjs';
 
 // Task D4 of #249: the Images side panel (app.js imageDetails a400–414) and the viewer's full details (imageDetails(i,
 // true)) against the immutable concept, on the concept-shaped real fixture, at 1600x1100 and 390x844 in both themes.
@@ -51,7 +51,8 @@ function withCategoryScope(inventory) {
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117 and D146); everything else must
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117, D146 and D154, whose labelled tag
+ * sections the concept page gets at runtime from `withTagSections`); everything else must
  * equal production. `reference.viewerPlain` is the concept's own full details
  * with its tag chips made plain (D20), D117's summary button added and, under a coarse pointer, D34's targets, all at
  * runtime: the browser lays out what follows them, as the Images spec's removed toolbar items do.
@@ -107,18 +108,20 @@ async function openProductionPanel(page,theme) {
     await expect(page.locator(CARDS).first()).toBeVisible();
     await expect(panelOf(page).locator('.panel-heading h2')).toHaveText(TITLE);
     await expect(panelOf(page).locator('.detail-footer')).toBeVisible();
-    await expect(panelOf(page).locator('.detail-inner > .tags')).toHaveCount(2);
+    await expect(panelOf(page).locator('.detail-inner > .tags')).toHaveCount(1);
+    await expect(panelOf(page).locator('.detail-inner > .tag-section.linked-tags')).toBeVisible();
     await settle(page);
 }
 
 /**
- * The concept's tag chips in the open viewer as plain `span.chip`s (D20), D34's coarse targets and D117's "Copy
- * settings summary" after the six facts (LI-4), drawn as the concept's own plain button (its "Download sample JSON",
- * without its action); returns an undo.
+ * The concept's tag chips in the open viewer in D154's labelled sections (`sections`) as plain `span.chip`s (D20), D34's
+ * coarse targets and D117's "Copy settings summary" after the six facts (LI-4), drawn as the concept's own plain button
+ * (its "Download sample JSON", without its action); returns an undo.
  */
-async function plainViewerChips(page) {
+async function plainViewerChips(page,sections) {
     const restoreTargets=await mutate(page,{css:D34_COARSE_TARGETS});
     const restoreSource=await withChipSource(page,'#viewer-details',ORIGIN);
+    const restoreSections=await withTagSections(page,'#viewer-details',sections);
     await page.evaluate(()=>{
         window.__plainChips=[...document.querySelectorAll('#viewer-details .tags > button.chip')].map(button=>{
             const span=document.createElement('span');span.className='chip';span.textContent=button.textContent;
@@ -133,7 +136,7 @@ async function plainViewerChips(page) {
     return async()=>{
         await page.evaluate(()=>{for(const [span,button] of window.__plainChips)span.replaceWith(button);delete window.__plainChips;
             window.__summaryButton.remove();delete window.__summaryButton;});
-        await restoreSource();await restoreTargets();
+        await restoreSections();await restoreSource();await restoreTargets();
     };
 }
 
@@ -151,7 +154,7 @@ async function fileControlsOf(page) {
  * The first card's viewer: its full details and open "File & provenance" measured (in the concept also with plain
  * chips), then closed again. `mutation` (production) is applied once the viewer is open and undone before it closes.
  */
-async function viewerOf(page,concept,mutation=null) {
+async function viewerOf(page,concept,mutation=null,sections=PROMPT_TAGS) {
     await page.locator(CARDS).first().locator('.image-open').click();
     await expect(page.locator('#viewer-dialog[open] #viewer-details .panel-heading h2')).toHaveText(TITLE);
     await settle(page);
@@ -160,7 +163,7 @@ async function viewerOf(page,concept,mutation=null) {
     const {viewerDetails}=await inspectorOf(page);
     const fileControls=await fileControlsOf(page);
     let viewerPlain=null;
-    if(concept) {const restore=await plainViewerChips(page);viewerPlain=(await inspectorOf(page)).viewerDetails;await restore();}
+    if(concept) {const restore=await plainViewerChips(page,sections);viewerPlain=(await inspectorOf(page)).viewerDetails;await restore();}
     await restoreMutation?.();
     await page.keyboard.press('Escape');
     await expect(page.locator('#viewer-dialog[open]')).toHaveCount(0);
@@ -168,13 +171,15 @@ async function viewerOf(page,concept,mutation=null) {
     await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));await settle(page);
     return {viewerDetails,viewerPlain,fileControls};
 }
-async function inventory(page,concept=false) {
-    // D146: the concept panel's category chip with its visible origin, laid out by the concept page itself.
+async function inventory(page,concept=false,sections=PROMPT_TAGS) {
+    // D146: the concept panel's category chip with its visible origin, and D154's labelled tag sections (by default the
+    // fixture's D39 positive tags under "Prompt tags"), laid out by the concept page itself.
     const restoreSource=concept?await withChipSource(page,'#image-inspector',ORIGIN):null;
+    const restoreSections=concept?await withTagSections(page,'#image-inspector',sections):null;
     if(concept)await settle(page);
     const {panel}=await inspectorOf(page);
-    await restoreSource?.();
-    const {viewerDetails,viewerPlain,fileControls}=await viewerOf(page,concept);
+    await restoreSections?.();await restoreSource?.();
+    const {viewerDetails,viewerPlain,fileControls}=await viewerOf(page,concept,null,sections);
     return concept?{panel,viewerDetails,viewerPlain,fileControls}:{panel,viewerDetails,fileControls};
 }
 
@@ -238,7 +243,8 @@ async function productionSendOf(page,context) {
 /** A tag chip: the collection it leaves (the count line), then the chip pressed again for the same result. */
 async function tagOf(page) {
     const before=await page.locator('#result-count').textContent();
-    await panelOf(page).locator('.detail-inner > .tags').last().getByRole('button',{name:'cinematic',exact:true}).click();
+    // The concept's bare row, or production's linked-tags section (D154): the last chip row either way.
+    await panelOf(page).locator('.detail-inner .tags').last().getByRole('button',{name:'cinematic',exact:true}).click();
     // Production's caption reads "Loading images…" until the tag's listing answers (#391); the concept's search is instant.
     await expect.poll(async()=>{const text=await page.locator('#result-count').textContent();return text!==before&&text!=='Loading images…';}).toBe(true);
     await settle(page);
@@ -303,6 +309,9 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector pane
     expect.soft(panel.badges.chips.map(chip=>chip.text),'concept badges').toEqual(['Execution recorded','Landscapes · prompt']);
     expect.soft(reference.viewerDetails.structure.inner.slice(-2),'concept full details').toEqual(['details','details']);
 
+    // D154: both documents measured the labelled section, so the comparison covers it (never two absent sections).
+    for(const [name,inventory] of [['concept panel',reference.panel],['concept viewer',reference.viewerPlain],['panel',actual.panel],['viewer',actual.viewerDetails]])
+        expect.soft(inventory.tagSections.map(section=>section.label.text),`${name} tag sections`).toEqual(['Prompt tags · 3']);
     expect.soft(diff,'differences after the recorded deviations').toEqual([]);
     // Copy: the concept's toast "Prompt copied." (or its dialog), in both documents.
     expect.soft(production.copy,'copy').toEqual(concept.copy);
@@ -332,14 +341,17 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await openProductionPanel(page,'dark');
     await page.locator(CARDS).nth(1).locator('[aria-label^="Inspect"]').click();
     await expect(panelOf(page).locator('.panel-heading h2')).toHaveText('Quiet geometry');
-    const rows=panelOf(page).locator('.detail-inner > .tags');
-    await expect(rows).toHaveCount(2);
-    await expect(rows.first().locator('.chip')).toHaveText(['Execution recorded','Positive prompt category: Architecture · prompt']);
-    await expect(rows.first().locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
+    const badges=panelOf(page).locator('.detail-inner > .tags');
+    await expect(badges).toHaveCount(1);
+    await expect(badges.locator('.chip')).toHaveText(['Execution recorded','Positive prompt category: Architecture · prompt']);
+    await expect(badges.locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
     // D146 (#332): the visible origin names where the value came from.
-    await expect(rows.first().locator('.chip .chip-source')).toHaveText(' · prompt');
-    await expect(rows.nth(1).locator('button.chip')).toHaveText(['minimal','warm_light','editorial']);
-    await expect(rows.nth(1).locator('span.chip')).toHaveCount(0);
+    await expect(badges.locator('.chip .chip-source')).toHaveText(' · prompt');
+    // D154: the positive's tags, so the section is "Prompt tags", not "Recipe tags".
+    const tags=panelOf(page).getByRole('region',{name:'Prompt tags',exact:true});
+    await expect(tags.locator('.role-label')).toHaveText('Prompt tags · 3');
+    await expect(tags.locator('.tags > button.chip')).toHaveText(['minimal','warm_light','editorial']);
+    await expect(tags.locator('span.chip')).toHaveCount(0);
     await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history']);
 });
 
@@ -353,7 +365,7 @@ test('a tag chip collection reads as loading, not empty, until its listing answe
     await page.route(url=>url.pathname==='/prompt_manager/images/output'&&url.searchParams.get('tags')==='cinematic',
         async route=>{arrived();await held;await route.continue();},{times:1});
     const count=page.locator('#result-count');
-    await panelOf(page).locator('.detail-inner > .tags').last().getByRole('button',{name:'cinematic',exact:true}).click();
+    await panelOf(page).locator('.tag-section.linked-tags').getByRole('button',{name:'cinematic',exact:true}).click();
     await reached;
     await expect(count).toHaveText('Loading images…');
     await expect(page.locator(CARDS)).toHaveCount(0);
@@ -363,8 +375,9 @@ test('a tag chip collection reads as loading, not empty, until its listing answe
 });
 
 // Task C3 (D88, #249 PR C): the concept's chip row is the image's own tags (`i.tags`, app.js a402). With those names
-// saved as the file's current image tags, production draws the row from them (Tags filter buttons in the panel, plain
-// in the viewer, the linked positive's equal tags not repeated) and still equals the concept, in both sizes.
+// saved as the file's current image tags, production draws them in D154's "Image tags" section (Tags filter buttons in
+// the panel, plain in the viewer) and the linked positive's equal tags in its "Prompt tags" section after it (#449),
+// and equals the concept with its row in those two sections, in both sizes.
 for(const [width,height] of SIZES)test(`image tags saved on the concept image keep the inspector equal to the concept ${width}x${height} (D88)`,async({page,request},testInfo)=>{
     test.setTimeout(120_000);
     const viewport={width,height};await page.setViewportSize(viewport);
@@ -372,13 +385,14 @@ for(const [width,height] of SIZES)test(`image tags saved on the concept image ke
     const names=await panelOf(page).locator('.detail-inner > .tags').last().locator('button.chip').allTextContents();
     expect(names).toEqual(['cinematic','blue_hour','architecture']);
     await captureCanonicalState(page,testInfo,`concept-image-tags-${width}`,'#image-inspector');
-    const reference=await inventory(page,true);
+    const reference=await inventory(page,true,[['image-tags','Image tags','Image tags'],...PROMPT_TAGS]);
     const {path}=testInfo.manifest.images.find(item=>item.filename==='alpine_00001.png');
     expect(await saveImageTags(request,path,names)).toEqual(names);
     const read=page.waitForResponse(item=>new URL(item.url()).pathname===`/prompt_manager/images/inspect/${path}`);
     await openProductionPanel(page,'dark');
     expect((await (await read).json()).image_tags).toEqual({state:'current',tags:names});
-    await expect(panelOf(page).locator('.detail-inner > .tags').last().locator('.chip')).toHaveText(names);
+    await expect(panelOf(page).locator('.tag-section.image-tags .chip')).toHaveText(names);
+    await expect(panelOf(page).locator('.tag-section.linked-tags .chip')).toHaveText(names);
     await captureCanonicalState(page,testInfo,`production-image-tags-${width}`,'#image-inspector');
     assertInspectorMatch(reference,await inventory(page),viewport);
 });
@@ -401,6 +415,17 @@ test('inspector comparison detects mutations',async({page})=>{
     const cssMutated=await measure();
     expect(()=>assertInspectorMatch(reference,cssMutated,viewport)).toThrow(/panel\.sections\.0\.label\.letterSpacing/);
     await restoreCss();await settle(page);
+    assertInspectorMatch(reference,await measure(),viewport);
+
+    // D154: the tag section's muted label and its row's spacing are part of the mapped concept.
+    for(const [css,path] of [['#image-inspector .tag-section .role-label { color: rgb(255, 0, 0) }',/panel\.tagSections\.0\.label\.color/],
+        ['#image-inspector .tag-section > .tags { margin-top: 12px }',/panel\.tagSections\.0\.row\.marginTop/],
+        ['#image-inspector .tag-section { border-top-width: 0 }',/panel\.tagSections\.0\.borderTopWidth/]]) {
+        const restore=await mutate(page,{css});
+        const mutated=await measure();
+        expect(()=>assertInspectorMatch(reference,mutated,viewport)).toThrow(path);
+        await restore();await settle(page);
+    }
     assertInspectorMatch(reference,await measure(),viewport);
 
     const panel=(await inspectorOf(page)).panel;

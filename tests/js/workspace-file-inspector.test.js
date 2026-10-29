@@ -209,16 +209,18 @@ test('a branch named by recorded run history shows the Recorded run badge', asyn
 function tagged(imageTags, library = {status:'linked', tags:['Minimal', 'warm_light', 'editorial'], tags_scope:'positive'}) {
     return {...record(), imageTags, library};
 }
-test('renders current image tags before linked tags without duplicates', async () => {
+test('renders current image tags before linked tags, each without repeats within its source', async () => {
     const {inspectorTagChips} = await load();
     assert.equal(typeof inspectorTagChips, 'function', 'inspectorTagChips is exported');
-    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['dunes', 'minimal']}), {filterable:true}),
-        [{name:'dunes', filter:true}, {name:'minimal', filter:true}, {name:'warm_light', filter:true}, {name:'editorial', filter:true}]);
+    // D154 amends D88: a linked tag that is also an image tag stays in its own labelled section.
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['dunes', 'minimal', 'Dunes']}), {filterable:true}),
+        [{name:'dunes', filter:true, source:'image'}, {name:'minimal', filter:true, source:'image'},
+            {name:'Minimal', filter:true, source:'linked'}, {name:'warm_light', filter:true, source:'linked'}, {name:'editorial', filter:true, source:'linked'}]);
     // D21's rule still decides the linked chips: a recipe's own tags stay plain, an image tag stays a filter.
     assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['Editorial']}, {status:'linked', tags:['editorial', 'cover'], tags_scope:'pair'}), {filterable:true}),
-        [{name:'Editorial', filter:true}, {name:'cover', filter:false}]);
+        [{name:'Editorial', filter:true, source:'image'}, {name:'editorial', filter:false, source:'linked'}, {name:'cover', filter:false, source:'linked'}]);
     // An unlinked file shows only its own tags; a facet-less record (history, local) only the linked ones.
-    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['loose']}, {status:'none', tags:[], tags_scope:null}), {filterable:true}), [{name:'loose', filter:true}]);
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['loose']}, {status:'none', tags:[], tags_scope:null}), {filterable:true}), [{name:'loose', filter:true, source:'image'}]);
     assert.deepEqual(inspectorTagChips(tagged(null), {filterable:true}).map(chip => chip.name), ['Minimal', 'warm_light', 'editorial']);
     assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:[]}, {status:'ambiguous', tags:['x'], tags_scope:'positive'}), {filterable:true}), []);
 });
@@ -234,6 +236,61 @@ test('none and unavailable render no image chips', async () => {
         assert.deepEqual(inspectorTagChips(tagged({state, tags:[]}), {filterable:true}).map(chip => chip.name), ['Minimal', 'warm_light', 'editorial']);
         assert.deepEqual(inspectorTagChips(tagged({state, tags:[]}, {status:'none', tags:[], tags_scope:null}), {filterable:true}), []);
     }
+});
+
+// #449 (D154): the image's own tags and the linked prompt's or recipe's tags each get a labelled section after the
+// prompt blocks, so per-image tags never read as part of the negative prompt.
+function renderVariant(record, variant, options = {}) {
+    const f = mountedDom(), scope = createScope();
+    const view = mountFileInspector(f.container, {sender:{open() {}}, parentScope:scope, variant, ...options});
+    view.setState({loading:false, error:false, record});
+    return {f, done() {view.dispose(); scope.dispose(); f.restore();}};
+}
+const tagSections = f => f.walk(f.container, n => n.tagName === 'section' && /(^| )tag-section( |$)/.test(n.className ?? ''));
+function sectionSummary(f, section) {
+    const label = f.walk(section, n => /(^| )role-label( |$)/.test(n.className ?? ''))[0];
+    const chips = f.walk(section, n => /(^| )chip( |$)/.test(n.className ?? ''));
+    return {className:section.className, name:section.getAttribute('aria-label'), label:label?.textContent, chips:chips.map(chip => `${chip.tagName}:${chip.textContent}`)};
+}
+test('chips name their source: the image or the linked prompt', async () => {
+    const {inspectorTagChips, tagSectionLabel} = await load();
+    assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['dunes', 'minimal']}), {filterable:true}).map(chip => chip.source),
+        ['image', 'image', 'linked', 'linked', 'linked']);
+    assert.equal(tagSectionLabel('image', {tags_scope:'pair'}), 'Image tags');
+    assert.equal(tagSectionLabel('linked', {tags_scope:'positive'}), 'Prompt tags');
+    assert.equal(tagSectionLabel('linked', {tags_scope:'pair'}), 'Recipe tags');
+});
+test('image tags and linked tags render in their own labelled sections', async () => {
+    for (const [variant, options, tag] of [['panel', {onTagFilter() {}}, 'button'], ['full', {}, 'span']]) {
+        const {f, done} = renderVariant(tagged({state:'current', tags:['dunes', 'minimal']}), variant, options);
+        try {
+            const sections = tagSections(f).map(section => sectionSummary(f, section));
+            assert.deepEqual(sections, [
+                {className:'tag-section image-tags', name:'Image tags', label:'Image tags · 2', chips:[`${tag}:dunes`, `${tag}:minimal`]},
+                {className:'tag-section linked-tags', name:'Prompt tags', label:'Prompt tags · 3', chips:[`${tag}:Minimal`, `${tag}:warm_light`, `${tag}:editorial`]},
+            ], variant);
+            // No bare chip row follows the prompt blocks any more.
+            const inner = f.container.children.find(n => n.tagName === 'div');
+            assert.equal(inner.children.filter(n => n.className === 'tags').length, 0, variant);
+        } finally { done(); }
+    }
+});
+test('a recipe names its tags and the context names the regions', async () => {
+    const {f, done} = renderVariant(tagged({state:'current', tags:['dunes']}, {status:'linked', tags:['cover'], tags_scope:'pair'}), 'panel', {promptContext:'Current file'});
+    try {
+        assert.deepEqual(tagSections(f).map(section => sectionSummary(f, section)), [
+            {className:'tag-section image-tags', name:'Current file image tags', label:'Image tags · 1', chips:['span:dunes']},
+            {className:'tag-section linked-tags', name:'Current file recipe tags', label:'Recipe tags · 1', chips:['span:cover']},
+        ]);
+    } finally { done(); }
+});
+test('an empty tag source draws no section', async () => {
+    let view = renderVariant(tagged(null), 'full');
+    try { assert.deepEqual(tagSections(view.f).map(section => sectionSummary(view.f, section).label), ['Prompt tags · 3']); } finally { view.done(); }
+    view = renderVariant(tagged({state:'current', tags:['loose']}, {status:'none', tags:[], tags_scope:null}), 'full');
+    try { assert.deepEqual(tagSections(view.f).map(section => sectionSummary(view.f, section).label), ['Image tags · 1']); } finally { view.done(); }
+    view = renderVariant(tagged({state:'none', tags:[]}, {status:'none', tags:[], tags_scope:null}), 'full');
+    try { assert.equal(tagSections(view.f).length, 0); } finally { view.done(); }
 });
 
 // LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the legacy metadata
