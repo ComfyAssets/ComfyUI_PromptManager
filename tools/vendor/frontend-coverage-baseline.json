@@ -73,7 +73,7 @@
   },
   "metadata-autocomplete.js": {
     "lines": 98,
-    "branches": 82,
+    "branches": 83,
     "functions": 85,
     "statements": 98
   },
@@ -371,6 +371,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/library-delete.mjs": {
+    "lines": 98,
+    "branches": 95,
+    "functions": 92,
+    "statements": 98
+  },
   "workspace/library-editor-state.mjs": {
     "lines": 96,
     "branches": 92,
@@ -397,8 +403,8 @@
   },
   "workspace/library-selection.mjs": {
     "lines": 98,
-    "branches": 86,
-    "functions": 84,
+    "branches": 87,
+    "functions": 89,
     "statements": 98
   },
   "workspace/library-state.mjs": {
@@ -410,7 +416,7 @@
   "workspace/library.mjs": {
     "lines": 96,
     "branches": 85,
-    "functions": 96,
+    "functions": 97,
     "statements": 96
   },
   "workspace/local-inspection.mjs": {
@@ -553,7 +559,7 @@
   },
   "workspace/system-backups.mjs": {
     "lines": 95,
-    "branches": 88,
+    "branches": 89,
     "functions": 94,
     "statements": 95
   },

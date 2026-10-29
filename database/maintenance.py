@@ -15,6 +15,8 @@ change:
   ``cleanup_orphaned_images``), counted only under a source that can be read
   now, as the health check's ``missing_files`` judges them
   (``health.link_states``). It deletes database rows only, never a file.
+  It also forgets the removal marks (#480) that hide nothing any more: the
+  file is gone or changed, under a readable source (#501, ``_stale_marks``).
 
 ``preview_maintenance`` reads one snapshot on its own ``mode=ro`` connection
 (``health.readonly_uri``) and closes it in ``finally``; files are looked at
@@ -41,6 +43,8 @@ from pathlib import Path
 
 from .execution_contexts import LIVE_HINT_CTES
 from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
+from .image_removal_schema import TABLE as MARKS_TABLE
+from .image_removal_schema import clear_marks, has_marks_table
 from .pairs import PairDependencyError
 from .workflow_documents import documents_of_rows, release_documents
 
@@ -86,6 +90,12 @@ PROTECTIONS = (
         "with Library state (a title or an explicit parent)",
     ),
     (
+        # #443: an archived prompt is restorable, never pruned.
+        "EXISTS (SELECT 1 FROM prompt_archive pa WHERE pa.prompt_id = p.id)",
+        "archived in the Library",
+        "archived in the Library",
+    ),
+    (
         "p.id IN (SELECT prompt_id FROM live_hint_prompts)",
         "used by recorded runs",
         "used by a recorded run",
@@ -93,7 +103,8 @@ PROTECTIONS = (
 )
 
 # Exempt references: images, pairs, the __protected__ tag, Library parent
-# state, and live recorded-run hints (computed once, see LIVE_HINT_CTES).
+# state, the Library archive, and live recorded-run hints (computed once,
+# see LIVE_HINT_CTES).
 ORPHANED_PROMPTS_SQL = (
     "WITH "
     + LIVE_HINT_CTES
@@ -187,6 +198,8 @@ class MaintenanceDraft:
     protected: dict
     media: dict
     details: list = field(default_factory=list)
+    # missing_links only: locators of removal marks whose file is gone (#501).
+    marks: list = field(default_factory=list)
 
     def public(self):
         """The plan fields a response may carry (no fingerprint, no targets)."""
@@ -287,6 +300,90 @@ def _delete_ids(conn, table, ids):
         removed += cursor.rowcount
         release_documents(conn, documents)
     return removed
+
+
+def _mark_rows(conn, only=None):
+    """``[(locator, size, mtime_ns)]`` of the removal marks (all, or those
+    among *only*), sorted by locator."""
+    if not has_marks_table(conn):
+        return []
+    sql = f"SELECT locator, size, mtime_ns FROM {MARKS_TABLE}"  # nosec B608
+    if only is None:
+        return sorted(tuple(row) for row in conn.execute(sql))
+    found = []
+    for batch in _batches(sorted(only)):
+        found.extend(
+            tuple(row)
+            for row in conn.execute(
+                f"{sql} WHERE locator IN ({_marks(batch)})", batch  # nosec B608
+            )
+        )
+    return sorted(found)
+
+
+def _lists_something(folder):
+    """Whether *folder* holds at least one entry (an unplugged drive's mount
+    point, or an unbound volume, is an empty folder that reads fine)."""
+    try:
+        with os.scandir(folder) as entries:
+            return next(entries, None) is not None
+    except OSError:
+        return False
+
+
+def _name_listed(path):
+    """Whether *path*'s folder lists its name, compared under ``normcase``.
+
+    A locator is ``normcase``d; on a case-sensitive NTFS folder ``lstat`` of
+    the lower-cased spelling fails for a file that is there.
+    """
+    folder, name = os.path.split(path)
+    wanted = os.path.normcase(name)
+    try:
+        with os.scandir(folder) as entries:
+            return any(os.path.normcase(entry.name) == wanted for entry in entries)
+    except OSError:
+        return True  # cannot tell: keep the mark
+
+
+def _stale_mark(locator, size, mtime_ns):
+    """Whether the file of a mark is gone or has other bytes (blocking)."""
+    try:
+        info = os.lstat(locator)
+    except (FileNotFoundError, NotADirectoryError):
+        return os.path.isdir(os.path.dirname(locator)) and not _name_listed(locator)
+    except OSError:
+        return False
+    return (info.st_size, info.st_mtime_ns) != (size, mtime_ns)
+
+
+def _stale_marks(marks, roots):
+    """``[(locator, owner)]`` of the marks that hide nothing any more (#501).
+
+    *marks* are ``(locator, size, mtime_ns)`` rows. A mark is stale when its
+    file was changed, or is gone from a folder that still exists. Only marks
+    under a source that can be read now and lists something are judged (an
+    unplugged drive's marks, or its empty mount point's, stay); any doubt
+    keeps the mark. *owner* is the index of the longest source holding it.
+    Locators are ``normcase(realpath)`` paths, so the sources are too.
+    """
+    readable = readable_roots(roots)
+    prefixes = [
+        os.path.normcase(os.path.realpath(root)).rstrip("\\/") + os.sep
+        for root in roots
+    ]
+    judged = {}
+    stale = []
+    for locator, size, mtime_ns in marks:
+        owners = [i for i, prefix in enumerate(prefixes) if locator.startswith(prefix)]
+        if not owners:
+            continue  # under no source now (a source removed from the settings)
+        owner = max(owners, key=lambda i: len(prefixes[i]))
+        if owner not in judged:
+            judged[owner] = readable[owner] and _lists_something(roots[owner])
+        if judged[owner] and _stale_mark(locator, size, mtime_ns):
+            stale.append((locator, owner))
+    return stale
 
 
 def _read_snapshot(db_path, read):
@@ -431,8 +528,11 @@ class MaintenanceOperations:
         if operation == "workflow_storage":
             return self._plan_workflow_storage()
         if operation == "missing_links":
-            rows = _read_snapshot(self.model.db_path, self._link_rows)
-            return self._plan_missing_links(rows, roots)
+            rows, marks = _read_snapshot(
+                self.model.db_path,
+                lambda conn: (self._link_rows(conn), _mark_rows(conn)),
+            )
+            return self._plan_missing_links(rows, roots, _stale_marks(marks, roots))
         reader = (
             self._plan_duplicate_prompts
             if operation == "duplicate_prompts"
@@ -563,13 +663,15 @@ class MaintenanceOperations:
         )
 
     @staticmethod
-    def _links_fingerprint(candidates):
+    def _links_fingerprint(candidates, stale=()):
         fingerprint = _Fingerprint("missing_links")
         for row, owner in candidates:
             fingerprint.add([row[0], row[1], row[3], owner])
+        for locator, owner in stale:
+            fingerprint.add(["mark", locator, owner])
         return fingerprint.hexdigest()
 
-    def _plan_missing_links(self, rows, roots):
+    def _plan_missing_links(self, rows, roots, stale=()):
         readable = readable_roots(roots)
         candidates, unavailable, outside = [], 0, 0
         for row, owner, state in link_states(rows, roots, readable):
@@ -597,29 +699,47 @@ class MaintenanceOperations:
                 )
             )
         count = len(candidates)
+        parts = []
+        if count:
+            parts.append(
+                _plural(count, "link to a missing file", "links to missing files")
+            )
+        if stale:
+            parts.append(
+                _plural(
+                    len(stale),
+                    "removed image whose file is gone or changed",
+                    "removed images whose files are gone or changed",
+                )
+            )
+        details = [
+            {
+                "label": _relative(row[1], roots[owner]),
+                "detail": f"{_source_name(roots[owner], owner)} · the file is missing",
+            }
+            for row, owner in candidates
+        ] + [
+            {
+                "label": _relative(locator, os.path.realpath(roots[owner])),
+                "detail": (
+                    f"{_source_name(roots[owner], owner)} · removed image, "
+                    "the file is gone or changed"
+                ),
+            }
+            for locator, owner in stale
+        ]
         return MaintenanceDraft(
             operation="missing_links",
-            fingerprint=self._links_fingerprint(candidates),
+            fingerprint=self._links_fingerprint(candidates, stale),
             targets=[row[0] for row, _owner in candidates],
             scope={
-                "count": count,
-                "label": (
-                    _plural(count, "link to a missing file", "links to missing files")
-                    if count
-                    else "No links to missing files"
-                ),
+                "count": count + len(stale),
+                "label": "; ".join(parts) or "No links to missing files",
             },
             protected={"count": unavailable + outside, "reasons": reasons},
             media={"deletes_files": False, "label": LINKS_ONLY},
-            details=[
-                {
-                    "label": _relative(row[1], roots[owner]),
-                    "detail": (
-                        f"{_source_name(roots[owner], owner)} · the file is missing"
-                    ),
-                }
-                for row, owner in candidates[:MAX_DETAILS]
-            ],
+            details=details[:MAX_DETAILS],
+            marks=[locator for locator, _owner in stale],
         )
 
     def _plan_optimize(self):
@@ -669,14 +789,18 @@ class MaintenanceOperations:
 
     # ── apply ─────────────────────────────────────────────────────────
 
-    def apply_maintenance(self, operation, fingerprint, targets, roots=()) -> dict:
+    def apply_maintenance(
+        self, operation, fingerprint, targets, roots=(), marks=()
+    ) -> dict:
         """Apply a reviewed plan exactly, or raise PlanChanged (blocking).
 
         Inside ``BEGIN IMMEDIATE`` the fingerprint is computed again on the
         write connection; when it differs nothing is written. ``targets`` and
         ``roots`` are the plan's. Returns ``{changed, rows}``: how many
         records changed and up to ``MAX_RESULT_ROWS`` descriptions of them
-        (``{prompt_id[, kept_id]}`` or ``{image_path}``).
+        (``{prompt_id[, kept_id]}`` or ``{image_path}``). ``marks`` are a
+        missing-links plan's stale removal marks; that apply also returns
+        ``marks``, how many it forgot.
         """
         if operation not in MAINTENANCE_OPERATIONS or operation == "workflow_storage":
             raise ValueError(f"Unknown maintenance operation {operation!r}")
@@ -689,9 +813,12 @@ class MaintenanceOperations:
         appliers = {
             "duplicate_prompts": self._apply_duplicate_prompts,
             "unused_components": self._apply_unused_components,
-            "missing_links": self._apply_missing_links,
         }
         with self._pair_transaction() as conn:
+            if operation == "missing_links":
+                return self._apply_missing_links(
+                    conn, fingerprint, targets, roots, list(marks)
+                )
             return appliers[operation](conn, fingerprint, targets, roots)
 
     def _apply_duplicate_prompts(self, conn, fingerprint, targets, _roots):
@@ -720,7 +847,7 @@ class MaintenanceOperations:
         ]
         return {"changed": changed, "rows": rows}
 
-    def _apply_missing_links(self, conn, fingerprint, targets, roots):
+    def _apply_missing_links(self, conn, fingerprint, targets, roots, marks):
         rows = []
         for batch in _batches(sorted(targets)):
             rows.extend(
@@ -737,10 +864,14 @@ class MaintenanceOperations:
             if state != "missing":  # back, or its source went away
                 raise PlanChanged("missing_links")
             candidates.append((row, owner))
-        if self._links_fingerprint(candidates) != fingerprint:
+        stale = _stale_marks(_mark_rows(conn, marks) if marks else [], roots)
+        if [locator for locator, _owner in stale] != marks:  # a mark went or is valid
+            raise PlanChanged("missing_links")
+        if self._links_fingerprint(candidates, stale) != fingerprint:
             raise PlanChanged("missing_links")
         changed = _delete_ids(conn, "generated_images", [row[0] for row in rows])
         return {
             "changed": changed,
+            "marks": clear_marks(conn, marks),
             "rows": [{"image_path": row[1]} for row in rows[:MAX_RESULT_ROWS]],
         }

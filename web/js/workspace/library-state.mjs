@@ -19,7 +19,12 @@ function parameters(filters,limit) {
     if(typeof folder!=='string' || folder.length>1024) throw new TypeError('Invalid library folder');
     if(tagMode!=='all') query.set('tag_mode',tagMode);
     if(folder) query.set('folder',folder);
-    query.set('sort',sort);return query;
+    query.set('sort',sort);
+    // #443 D152: the archived shelf; the default shelf sends nothing, as before.
+    const shelf=filters.shelf || 'active';
+    if(!['active','archived'].includes(shelf)) throw new TypeError('Invalid library shelf');
+    if(shelf==='archived') query.set('shelf','archived');
+    return query;
 }
 /** The Library's tag match values (#444); the first is the default, sent as no parameter. */
 export const LIBRARY_TAG_MODES=Object.freeze(['all','any','untagged']);
@@ -31,7 +36,7 @@ function validatePage(page,cursor,query) {
     if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || !Number.isSafeInteger(page.variant_total) || page.variant_total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
 }
 export function createLibraryStream({api,onChange=()=>{},restore}) {
-    let state=Object.freeze({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null,epoch:null});
+    let state=Object.freeze({items:Object.freeze([]),total:0,variantTotal:null,archivedTotal:null,cursor:null,hasMore:true,loading:false,error:null,epoch:null});
     let query=parameters({},40),request,disposed=false,seen=new Set();
     if(restore) {
         query=parameters(restore.filters,40);const saved=restore.state;
@@ -57,11 +62,13 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
             const incoming=[];const added=new Set();
             for(const item of page.items) if(!seen.has(item.id) && !added.has(item.id)) {added.add(item.id);incoming.push(Object.freeze({...item}));}
             for(const value of added) seen.add(value);
-            request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,epoch:state.epoch ?? epoch,total:page.total,variantTotal:page.variant_total,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;
+            // #443: the archived parents matching the filters (Show archived prompts); null from an older server.
+            const archivedTotal=Number.isSafeInteger(page.archived_total) && page.archived_total>=0?page.archived_total:null;
+            request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,epoch:state.epoch ?? epoch,total:page.total,variantTotal:page.variant_total,archivedTotal,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;
         } catch(error) {if(!disposed && current===request) {request=null;emit({loading:false,error});}return 0;}
     }
     return {get state(){return state;},loadMore,async reset(filters={}) {
-        if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null,epoch:null});return loadMore();
+        if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,variantTotal:null,archivedTotal:state.archivedTotal ?? null,cursor:null,hasMore:true,loading:false,error:null,epoch:null});return loadMore();
     },dispose(){disposed=true;request?.abort();request=null;}};
 }
 /**

@@ -286,6 +286,17 @@ class UnavailableBackendTests(unittest.TestCase):
         )
         self.assertIsInstance(trash.default_backend("linux"), trash.FreedesktopBackend)
 
+    def test_windows_says_why_the_recycle_bin_is_not_used(self):
+        # #500 ruling (a): the Recycle Bin can delete permanently, so it is never used.
+        backend = trash.default_backend("win32")
+        self.assertEqual(
+            backend.available("C:/x/a.png", ["C:/x"]), trash.WINDOWS_RECYCLE
+        )
+        with self.assertRaises(trash.TrashRefused) as caught:
+            backend.move("C:/x/a.png", ["C:/x"])
+        self.assertEqual(caught.exception.code, trash.WINDOWS_RECYCLE)
+        self.assertIn(trash.WINDOWS_RECYCLE, trash.CODES)
+
     def test_module_functions_use_the_replaceable_backend(self):
         fake = mock.Mock()
         fake.available.return_value = "network"

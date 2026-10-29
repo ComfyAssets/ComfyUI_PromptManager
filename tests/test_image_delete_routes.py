@@ -306,6 +306,13 @@ class TestFileCheck(ImageDeleteTestCase):
             file_check(str(self.output_dir / "ok.png"), root, "ok.png")[0]
         )
 
+    def test_windows_reason_says_why_plainly(self):
+        self.assertEqual(
+            image_delete.REASONS["windows-recycle"],
+            "Moving files to the Recycle Bin isn't available on Windows: files "
+            "larger than the bin's capacity would be deleted permanently.",
+        )
+
     def test_reasons_cover_every_code(self):
         from utils import trash
 
@@ -392,7 +399,7 @@ class TestNativeBackend(ImageDeleteTestCase):
         native_trash = sys.platform != "win32"
         if not native_trash:
             self.assertEqual(plan["trash"], {"count": 0})
-            self.assertEqual(plan["trash_refused"]["counts"], {"no-trash": 1})
+            self.assertEqual(plan["trash_refused"]["counts"], {"windows-recycle": 1})
         body = await self.post(APPLY, {"token": plan["token"], "mode": "library"}, 202)
         job = self.api._jobs.get(body["job"]["id"])
         await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)

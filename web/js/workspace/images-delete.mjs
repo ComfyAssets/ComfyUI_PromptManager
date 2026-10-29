@@ -32,7 +32,7 @@ export const REVIEW_FAILED = 'The review failed. Nothing was changed.';
 export const SOURCE_CHANGED = 'The sources changed. Refresh the images and try again.';
 export const STORAGE_CHANGED = 'Prompt storage was restored. Reopen Delete.';
 export const USE_LIBRARY_ONLY = 'To remove these files from the library anyway, choose “Remove from the library only”.';
-export const NO_TRASH_HERE = 'Moving to the trash is not available on this system yet.';
+export const NO_TRASH_HERE = 'Moving to the trash is not available for these files; each one lists why.';
 const SENTENCES = Object.freeze({
     libraryBackup: 'Removed images stay hidden unless the file is modified or replaced. Their tags, category, collections '
         + 'and favorite can only be recovered by restoring the safety backup, which also undoes every later change.',

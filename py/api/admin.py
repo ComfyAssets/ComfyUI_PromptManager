@@ -36,10 +36,13 @@ except ImportError:
 
 try:
     from ...utils import exit_signal
+    from ...utils.media_folders import is_skipped_folder
 except ImportError:
     from utils import exit_signal
+    from utils.media_folders import is_skipped_folder
 
 try:
+    from ...database.image_removal import mark_hides
     from ...database.pair_ingestion import SCAN_MARKS, ingest_resolved_pair
     from ...database.run_attribution import (
         RecordedOutput,
@@ -60,6 +63,7 @@ try:
         decide_file_prompt,
     )
 except ImportError:
+    from database.image_removal import mark_hides
     from database.pair_ingestion import SCAN_MARKS, ingest_resolved_pair
     from database.run_attribution import (
         RecordedOutput,
@@ -118,10 +122,11 @@ DUPLICATE_FIND_LEGACY_TITLE = "Find duplicate image files (gallery page)"
 def _collect_media_files(output_dirs, extensions):
     """Media files under ``output_dirs`` (blocking), bounded and symlink-free.
 
-    Walks each root without following symlinks, skips ``thumbnails``
-    directories and symlinked files, never descends more than MAX_SCAN_DEPTH
-    levels and stops after MAX_SCAN_FILES files in total. Extensions match
-    case-insensitively and each path is listed once.
+    Walks each root without following symlinks, skips ``thumbnails`` and
+    trash folders (``utils.media_folders``) and symlinked files, never
+    descends more than MAX_SCAN_DEPTH levels and stops after MAX_SCAN_FILES
+    files in total. Extensions match case-insensitively and each path is
+    listed once.
     """
     wanted = {ext.lower() for ext in extensions}
     found = []
@@ -136,7 +141,7 @@ def _collect_media_files(output_dirs, extensions):
             dirnames[:] = sorted(
                 d
                 for d in dirnames
-                if d != "thumbnails"
+                if not is_skipped_folder(d)
                 and depth < MAX_SCAN_DEPTH
                 and not os.path.islink(os.path.join(current, d))
             )
@@ -893,11 +898,8 @@ class AdminRoutesMixin:
                     stat = os.stat(path)
                 except OSError:
                     continue
-                mark = marks.get(os.path.normcase(os.path.realpath(str(path))))
-                if mark is not None and tuple(mark) == (
-                    stat.st_size,
-                    stat.st_mtime_ns,
-                ):
+                locator = os.path.normcase(os.path.realpath(str(path)))
+                if locator in marks and mark_hides(marks, locator, path):
                     continue
                 key = _physical_file_key(path, stat)
                 if key not in seen:

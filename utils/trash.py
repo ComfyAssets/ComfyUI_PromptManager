@@ -16,7 +16,9 @@ same mount, else the file's mount's ``.Trash/$uid`` (only under a real, sticky
 ``renameat2(RENAME_NOREPLACE)``; without that call the move is refused.
 macOS uses :class:`utils.trash_macos.MacTrashBackend` (#499): NSFileManager's
 ``trashItemAtURL`` through ctypes, after refusing what it cannot show to be
-recoverable. Windows has no backend yet (:class:`UnavailableBackend`, #500).
+recoverable. Windows never uses the Recycle Bin (#500: files over its capacity
+are deleted permanently, undetectably), so it answers ``windows-recycle``
+through :class:`UnavailableBackend`.
 
 ``BACKEND`` is the one replaceable seam; tests install a fake.
 """
@@ -39,6 +41,8 @@ LOCKED = "locked"
 FAILED = "failed"
 NO_PERMISSION = "no-permission"
 CLOUD_SYNC = "cloud-sync"
+# Windows never uses the Recycle Bin (#500): it can delete permanently.
+WINDOWS_RECYCLE = "windows-recycle"
 CODES = frozenset(
     {
         NO_TRASH,
@@ -49,6 +53,7 @@ CODES = frozenset(
         FAILED,
         NO_PERMISSION,
         CLOUD_SYNC,
+        WINDOWS_RECYCLE,
     }
 )
 
@@ -204,13 +209,16 @@ def _owned_folder(path: str, uid: int, *, create: bool) -> bool:
 
 
 class UnavailableBackend:
-    """No trash on this system: every move is refused, nothing is touched."""
+    """No trash on this system: every move is refused with *code*, untouched."""
+
+    def __init__(self, code: str = NO_TRASH):
+        self.code = code
 
     def available(self, path: str, roots) -> str | None:
-        return NO_TRASH
+        return self.code
 
     def move(self, path: str, roots) -> str:
-        raise TrashRefused(NO_TRASH)
+        raise TrashRefused(self.code)
 
 
 class FreedesktopBackend:
@@ -372,17 +380,21 @@ class FreedesktopBackend:
 
 
 def default_backend(platform: str = sys.platform):
-    """The backend for *platform*; Windows has none yet (#500).
+    """The backend for *platform* (#480, #499, #500).
 
     macOS gets :class:`utils.trash_macos.MacTrashBackend`, which loads its
-    Foundation bridge only on first use (#499).
+    Foundation bridge only on first use (#499). Windows never uses the Recycle
+    Bin (#500).
     """
     if platform == "darwin":
         from . import trash_macos
 
         return trash_macos.MacTrashBackend()
     if platform == "win32" or platform.startswith("cygwin"):
-        return UnavailableBackend()
+        # #500, ruling (a): Windows deletes files larger than the Recycle Bin's
+        # capacity permanently, and IFileOperation's PreDeleteItem guard cannot
+        # tell (native probe runs 40951037575, 40953347904).
+        return UnavailableBackend(WINDOWS_RECYCLE)
     return FreedesktopBackend()
 
 

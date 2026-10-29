@@ -73,6 +73,19 @@ for (const mode of ['library', 'trash']) {
     });
 }
 
+// #501: the sidebar's Images count (read once at mount) follows a finished delete without a reload.
+test('a finished delete re-reads the sidebar Images count', async ({ page }) => {
+    await openImages(page);
+    const badge = page.locator('#primary-nav a[data-route="images"] .nav-count');
+    await expect(badge).toHaveText(/^\d[\d,]*$/);
+    const before = Number((await badge.textContent()).replace(/,/g, ''));
+    await check(page, 0);
+    const { primary } = await deleteChecked(page, 'library');
+    await primary.click();
+    await expect(toast(page)).toContainText('Removed 1 image from the library.');
+    await expect(badge).toHaveText((before - 1).toLocaleString('en-US'));
+});
+
 test('Cancel changes nothing', async ({ page }) => {
     const before = await openImages(page);
     await check(page, 0);

@@ -11,8 +11,8 @@ const STATUS_URL = '/prompt_manager/backup/status';
 const PREVIEW_URL = '/prompt_manager/restore/preview';
 const APPLY_URL = '/prompt_manager/restore/apply';
 const WHEN = { dateStyle: 'medium', timeStyle: 'short' };
-const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups and LoRA imports change ' +
-    'records. A restore always keeps one.';
+const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups, LoRA imports and ' +
+    'prompt deletes change records. A restore always keeps one.';
 
 test.use({ locale: 'en-US', timezoneId: 'UTC' });
 
