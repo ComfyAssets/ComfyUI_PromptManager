@@ -67,6 +67,7 @@ function pairedOf(preview) {
             variants: count(counts.variants), keptNegatives: count(counts.kept_negatives) },
         pairedImageLinks: count(preview?.paired_image_links), choice: 'archive',
         // #512: archive ids the server says cannot be deleted (another prompt's negative); none from an older answer.
+        // The server's own list, not the digest-checked one: a deletable prompt with a bad digest is still paired.
         archiveOnly: Array.isArray(preview?.deletable)
             ? [...archive].filter(id => !ids(preview.deletable).includes(id)) : [],
     };

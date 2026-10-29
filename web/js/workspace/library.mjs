@@ -581,12 +581,16 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             contentScope?.dispose();contentScope=createScope();detail=null;updateBranches=null;updateParent=null;current=null;send.disabled=true;
             blocks?.dispose();blocks=null;galleryScope?.dispose();galleryScope=null;body.replaceChildren();
             // #512: a prompt that no longer exists (deleted, or a stale link) says so, with the way back; no Retry.
+            // Edit metadata and ⋯ act on a loaded prompt only (review M2).
+            const hadFocus=[edit,moreMenu.button].includes(document.activeElement);
+            const loaded=!state.loading && !state.error;edit.disabled=!loaded;moreMenu.setDisabled(!loaded);
             if(state.error?.status===404) {
-                edit.disabled=true;moreMenu.setDisabled(true);
                 const message=el('p',PROMPT_GONE,'library-status');message.setAttribute('role','status');body.append(message);
-                const open=createButton('Open the Prompt library');contentScope.listen(open,'click',()=>{window.location.hash='#/library';});body.append(open);return;
+                const open=createButton('Open the Prompt library');contentScope.listen(open,'click',()=>{window.location.hash='#/library';});body.append(open);
+                // A focused control that was just disabled hands focus to the way back (review M3).
+                if(hadFocus) open.focus({preventScroll:true});
+                return;
             }
-            edit.disabled=false;moreMenu.setDisabled(false);
             if(state.loading || state.error) {
                 const message=el('p',state.loading?'Loading prompt history…':'Prompt history could not be loaded.','library-status');message.setAttribute('role',state.error?'alert':'status');body.append(message);
                 if(state.error) {const retry=createButton('Retry prompt history');contentScope.listen(retry,'click',()=>loader.load(positiveId));body.append(retry);}return;

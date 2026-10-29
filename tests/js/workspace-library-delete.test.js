@@ -318,6 +318,9 @@ test('a negative used by another prompt is named as such when it is archived', a
         "that prompt's variant stays. To bring them back, press Show archived prompts, select them and press Restore."]);
     const mixed = reviewOf(preview({archive: [2, 5], deletable: [2], review_digests: {2: 'c'.repeat(64)}}));
     assert.deepEqual(reviewGrid(mixed)[0], ['Archive', "2 prompts in a saved pair (1 used as another prompt's negative): hidden, restorable"]);
+    // A paired prompt whose review digest is missing is not called another prompt's negative (review M1).
+    const noDigest = reviewOf(preview({archive: [2], deletable: [2], review_digests: {}}));
+    assert.deepEqual(reviewGrid(noDigest), [['Archive', '1 prompt in a saved pair: hidden, restorable']]);
     const sentences = reviewSentences(mixed);
     assert.match(sentences[0], /^Prompts in a saved pair, as its positive or its negative, are archived instead of deleted/);
     assert.match(sentences[1], /^Prompts used as another prompt's negative are archived instead of deleted, so that prompt's variant stays\.$/);

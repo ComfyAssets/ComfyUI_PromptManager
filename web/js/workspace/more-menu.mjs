@@ -71,6 +71,8 @@ export function createMoreMenu({ scope, label, items }) {
         event.preventDefault();
         keys[event.key]();
     });
+    // Focus leaving the menu (a screen reader's cursor, a script) closes it too.
+    scope.listen(element, 'focusout', event => { if (event.relatedTarget && !element.contains(event.relatedTarget)) close(false); });
     // An outside press closes it; capture, so a press that a page control stops still counts.
     const outside = event => { if (isOpen() && !element.contains(event.target)) close(false); };
     document.addEventListener('pointerdown', outside, true);
