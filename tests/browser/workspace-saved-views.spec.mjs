@@ -233,7 +233,7 @@ test('a view stored under older rules still lists and opens with its usable valu
 // D153 (#447): the workspace no longer offers "Highest rated"; the API still stores such a view as it was saved.
 test('a view saved under Highest rated opens on Recently added on Images and the Library', async ({ page, request }) => {
     const images = await create(request, { page: 'images', name: 'Rated cats', state: { ...IMAGE_DEFAULTS, q: 'cat', sort: 'rating' } });
-    const library = await create(request, { page: 'library', name: 'Rated dogs', state: { q: 'dog', category: '', sort: 'rating', tags: [] } });
+    const library = await create(request, { page: 'library', name: 'Rated dogs', state: { q: 'dog', category: '', sort: 'rating', tags: [], tag_mode: 'all' } });
     expect((await listed(request)).map(view => view.state.sort)).toEqual(['rating', 'rating']);
     const listings = [];
     page.on('request', item => {
