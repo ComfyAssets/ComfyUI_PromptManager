@@ -104,11 +104,14 @@ class ImageFavoriteOperations:
         """Mark one file as a favorite; repeating it is a no-op. Returns True."""
         from .models import utc_now_iso  # models imports this module's schema
 
+        from .image_removal_schema import clear_marks_of_keys
+
         with self.model.get_connection() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO image_favorites VALUES (?, ?, ?)",
                 (root_key, relative_path, utc_now_iso()),
             )
+            clear_marks_of_keys(conn, [(root_key, relative_path)])  # #480
         return True
 
     def clear_image_favorite(self, root_key: str, relative_path: str) -> bool:

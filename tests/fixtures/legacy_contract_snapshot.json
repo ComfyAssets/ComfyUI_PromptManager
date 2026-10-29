@@ -118,6 +118,7 @@
     "POST /prompt_manager/image-annotations/observe",
     "POST /prompt_manager/image-annotations/suggest",
     "POST /prompt_manager/images/clear-thumbnails",
+    "POST /prompt_manager/images/delete/preview",
     "POST /prompt_manager/images/generate-thumbnails",
     "POST /prompt_manager/images/generate-thumbnails/progress",
     "POST /prompt_manager/images/link",

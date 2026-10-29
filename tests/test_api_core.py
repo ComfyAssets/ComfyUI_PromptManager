@@ -684,6 +684,132 @@ class TestStaticRoutes(CoreRoutesTestCase):
         self.assertEqual(resp.status, 403)
 
 
+class TestRevalidatedCaching(CoreRoutesTestCase):
+    """Every served page and static file is revalidated on reload (#478).
+
+    ``Cache-Control: no-cache`` makes the browser ask before it reuses a copy,
+    and the ETag lets an unchanged file answer 304 without a body, so an update
+    reaches the browser on a normal reload and an unchanged reload stays cheap.
+    """
+
+    STATIC_PATHS = (
+        "/prompt_manager/js/workspace/index.mjs",
+        "/prompt_manager/js/admin.js",
+        "/prompt_manager/js/inspection-semantics.json",
+        "/prompt_manager/lib/viewerjs/viewer.min.css",
+    )
+
+    async def _assert_revalidated(self, path):
+        resp = await self.client.request("GET", path)
+        self.assertEqual(resp.status, 200, path)
+        self.assertEqual(resp.headers.get("Cache-Control"), "no-cache", path)
+        etag = resp.headers.get("ETag")
+        self.assertTrue(etag, path)
+        body = await resp.read()
+        self.assertTrue(body, path)
+
+        again = await self.client.request("GET", path, headers={"If-None-Match": etag})
+        self.assertEqual(again.status, 304, path)
+        self.assertEqual(again.headers.get("ETag"), etag, path)
+        self.assertEqual(again.headers.get("Cache-Control"), "no-cache", path)
+        self.assertEqual(await again.read(), b"", path)
+
+        stale = await self.client.request(
+            "GET", path, headers={"If-None-Match": 'W/"stale"'}
+        )
+        self.assertEqual(stale.status, 200, path)
+        self.assertEqual(await stale.read(), body, path)
+        return etag
+
+    async def test_static_files_are_revalidated(self):
+        for path in self.STATIC_PATHS:
+            await self._assert_revalidated(path)
+
+    async def test_pages_are_revalidated(self):
+        for path in UI_PATHS:
+            await self._assert_revalidated(path)
+
+    async def test_etag_matches_in_a_list_and_as_wildcard(self):
+        path = "/prompt_manager/js/workspace/index.mjs"
+        etag = (await self.client.request("GET", path)).headers["ETag"]
+        for header in (f'W/"other", {etag}', etag.removeprefix("W/"), "*"):
+            resp = await self.client.request(
+                "GET", path, headers={"If-None-Match": header}
+            )
+            self.assertEqual(resp.status, 304, header)
+
+    async def test_changed_file_gets_a_new_etag_and_its_new_body(self):
+        web_dir = self._fake_root()
+        module = web_dir / "js" / "m.mjs"
+        module.write_text("export const v = 1;")
+        path = "/prompt_manager/js/m.mjs"
+        first = await self.client.request("GET", path)
+        etag = first.headers["ETag"]
+        # Same size and, on coarse clocks, the same mtime: only the bytes differ.
+        module.write_text("export const v = 2;")
+        resp = await self.client.request("GET", path, headers={"If-None-Match": etag})
+        self.assertEqual(resp.status, 200)
+        self.assertNotEqual(resp.headers["ETag"], etag)
+        self.assertEqual(await resp.text(), "export const v = 2;")
+
+    async def test_gzipped_and_plain_bodies_share_a_weak_etag(self):
+        """The gzip middleware changes the bytes, so the tag must be weak."""
+        resp = await self.client.request("GET", "/prompt_manager/js/admin.js")
+        self.assertTrue(resp.headers["ETag"].startswith('W/"'))
+
+    async def test_errors_carry_no_validator(self):
+        resp = await self.client.request("GET", "/prompt_manager/js/nope.js")
+        self.assertEqual(resp.status, 404)
+        self.assertNotIn("ETag", resp.headers)
+
+
+@web.middleware
+async def _comfyui_cache_control(request, handler):
+    """ComfyUI's own middleware (middleware/cache_middleware.py), JS/CSS branch.
+
+    It only fills a missing Cache-Control, and ``.mjs`` is not ``.js``: that is
+    why the workspace modules went out with no header at all before #478.
+    """
+    response = await handler(request)
+    if request.path.endswith(".js") or request.path.endswith(".css"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+class TestRevalidatedCachingBehindMiddlewares(CoreRoutesTestCase):
+    """The host's middlewares keep the header and the 304 intact."""
+
+    async def get_application(self):
+        app = await super().get_application()
+        app.middlewares.append(_comfyui_cache_control)
+        app.middlewares.append(api_module._gzip_middleware)
+        return app
+
+    async def test_gzipped_files_keep_no_cache_and_answer_304(self):
+        for path in (
+            "/prompt_manager/js/workspace/index.mjs",
+            "/prompt_manager/js/admin.js",
+            "/prompt_manager/lib/viewerjs/viewer.min.css",
+            "/prompt_manager/workspace",
+        ):
+            resp = await self.client.request(
+                "GET", path, headers={"Accept-Encoding": "gzip"}
+            )
+            self.assertEqual(resp.status, 200, path)
+            self.assertEqual(resp.headers.get("Content-Encoding"), "gzip", path)
+            self.assertEqual(resp.headers["Cache-Control"], "no-cache", path)
+            again = await self.client.request(
+                "GET",
+                path,
+                headers={
+                    "Accept-Encoding": "gzip",
+                    "If-None-Match": resp.headers["ETag"],
+                },
+            )
+            self.assertEqual(again.status, 304, path)
+            self.assertEqual(again.headers["Cache-Control"], "no-cache", path)
+
+
 # ── instance helpers ──────────────────────────────────────────────────
 
 

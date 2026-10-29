@@ -56,7 +56,8 @@ function withCategoryScope(inventory) {
  * equal production. `reference.viewerPlain` is the concept's own full details
  * with its tag chips made plain (D20), D117's summary button added and, under a coarse pointer, D34's targets, all at
  * runtime: the browser lays out what follows them, as the Images spec's removed toolbar items do. D139's
- * "Collections…" is drawn after Prompt history in both the concept's panel footer and its full details.
+ * "Collections…" is drawn after Prompt history in both the concept's panel footer and its full details; #480's
+ * D159 "Delete…" follows it in the panel footer.
  */
 export function mapInspectorConcept(reference,{viewport}) {
     const {panel,viewerPlain,fileControls}=reference;
@@ -125,6 +126,13 @@ async function withCollectionsButton(page,selector) {
         for(const key of Object.keys(button.dataset))delete button.dataset[key];
         button.append(document.querySelector('.filter-row .chip > svg.icon').cloneNode(true),' Collections…');
         history.after(button);(window.__collectionsButtons??=[]).push(button);
+        // #480 D159: Delete… ends the panel's actions, drawn as the concept's own `danger` button (its Remove links…).
+        if(selector.startsWith('#image-inspector')) {
+            const remove=history.cloneNode(false);
+            for(const key of Object.keys(remove.dataset))delete remove.dataset[key];
+            remove.className='danger';remove.textContent='Delete…';
+            button.after(remove);window.__collectionsButtons.push(remove);
+        }
     },selector);
     await settle(page);
     return async()=>{await page.evaluate(()=>{for(const button of window.__collectionsButtons??[])button.remove();delete window.__collectionsButtons;});};
@@ -373,7 +381,7 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(tags.locator('.role-label')).toHaveText('Prompt tags · 3');
     await expect(tags.locator('.tags > button.chip')).toHaveText(['minimal','warm_light','editorial']);
     await expect(tags.locator('span.chip')).toHaveCount(0);
-    await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
+    await expect(panelOf(page).locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…','Delete…']);
 });
 
 // #391: a tag chip replaces the collection; until its listing answers the caption says it is loading, never that the

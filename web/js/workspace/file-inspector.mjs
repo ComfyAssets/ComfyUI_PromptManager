@@ -234,7 +234,7 @@ export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
  * collections checklist; `onCollectionsChanged({added, removed})` hears the confirmed changes.
  */
 export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback,
-    collections = null, onCollectionsChanged = null}) {
+    collections = null, onCollectionsChanged = null, onDelete = null}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -339,6 +339,9 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
                 onChanged:onCollectionsChanged, focusFallback:fallback}));
             footer.append(button);
         }
+        // #480: Delete… for a listed Images file only, last in the actions.
+        const removable = onDelete ? revealTarget(record.identity) : null;
+        if (removable) footer.append(deleteButton(removable));
         if (!full && footer.childNodes.length) container.append(footer);
     }
     /**
@@ -454,6 +457,12 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
             pending = false; button.removeAttribute('aria-busy');
             if (!contentScope.signal.aborted) showWorkspaceToast(revealOutcome(error));
         });
+        return button;
+    }
+    /** #480: "Delete…" opens the Images delete review for this one file. */
+    function deleteButton(target) {
+        const button = createButton('Delete…', 'danger');
+        contentScope.listen(button, 'click', () => onDelete(target, button));
         return button;
     }
     /** "Workflow & raw metadata": each supported record (`pre[tabindex=0] > code`), then the two downloads. */

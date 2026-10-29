@@ -9,6 +9,7 @@ import { TOO_MANY, bulkTargets, openAddTags, openAutoTag } from './images-taggin
 import { showWorkspaceToast } from './toast.mjs';
 import { applyKeys, createLongPress, matchingLabel, matchingOffer, offersAllMatching, rangeKeys } from './images-multiselect.mjs';
 import { openAddToCollection, removeFromCollection } from './images-collections.mjs';
+import { openDeleteImages } from './images-delete.mjs';
 
 const CHECKBOX = '.image-overlays input[type="checkbox"]';
 const CHECKBOX_LABEL = '.image-overlays > label';
@@ -50,7 +51,7 @@ function el(tag, text, className) {
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
     getListing, getFilter, getCategories, checked: initial = Object.freeze(new Set()), collections = null,
-    collection = null, onCollectionsChanged = null, onSourceChanged = null }) {
+    collection = null, onCollectionsChanged = null, onSourceChanged = null, onDeleted = null }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     // D135: the range anchor, "all N matching" mode, touch selection mode and a pending Shift+click on a checkbox.
@@ -93,7 +94,15 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
         scope.listen(removeButton, 'click', () => removeChecked(removeButton));
         bulk.append(removeButton);
     }
-    bulk.append(exportMetadata, clearButton);
+    bulk.append(exportMetadata);
+    // #480 (D159): the concept's "Remove links…" (`danger`) place, after Export metadata and before Clear.
+    if (onDeleted) {
+        const deleteButton = createButton('Delete…', 'danger');
+        scope.listen(deleteButton, 'click', () => openDeleteImages({ api, scope, store: activity, images: checkedImages(),
+            ...matchingTarget(), trigger: deleteButton, onDeleted }));
+        bulk.append(deleteButton);
+    }
+    bulk.append(clearButton);
 
     /** The count updates in place: the same bar and `strong`, its text written only when it changes. */
     function render() {

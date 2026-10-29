@@ -9,6 +9,7 @@ import { createPromptSender } from './prompt-sender.mjs';
 import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
+import { openDeleteImages } from './images-delete.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
@@ -299,6 +300,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
     const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state?.items ?? [], focusFallback,
         checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys),
+        onDeleted:deleted,
         // The Set category field suggests the toolbar's categories (#332 MC13).
         getCategories:() => categoryNames,
         // #392 "Select all N matching": the listing's total and its filter, as the server lists them.
@@ -321,6 +323,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     };
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
         collections:inspectorCollections,onCollectionsChanged:collectionsChangedBy,
+        onDelete:embedded ? null : (item,button) => deleteOne(item,button,() => mediaViewer.close()),
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onMediaError:image => recovery.recover(image),onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
@@ -338,7 +341,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
             onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
-            collections:inspectorCollections, onCollectionsChanged:collectionsChangedBy});
+            collections:inspectorCollections, onCollectionsChanged:collectionsChangedBy,
+            onDelete:embedded ? null : (target, button) => deleteOne(target, button)});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
@@ -647,6 +651,15 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         clearChecks:() => bar?.clear(), listsNow:() => !recovering,
         current:started => !scope.signal.aborted && started === generation,
         rediscover:() => loadOptions().then(found => { if (found) renderLoadStatus(); })})});
+    /** #480: a finished delete job reloads the listing (the deleted files leave it, and the selection clears). */
+    function deleted() {
+        loadCategories();
+        reset();
+    }
+    /** #480: Delete… for one file, from the inspector or the viewer (`after` closes the viewer first). */
+    function deleteOne(target, trigger, after = null) {
+        openDeleteImages({api, scope, store:activity, images:[target], trigger, onDeleted:() => { after?.(); deleted(); }});
+    }
     function reset() {
         generation += 1;
         mediaViewer.stopSlideshow();
