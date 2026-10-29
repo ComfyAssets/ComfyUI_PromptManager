@@ -51,22 +51,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: DIAG 487 microbench (temporary)
-        if: matrix.python-version == '3.12'
-        run: python diag_487.py
-
-      - name: DIAG 487 profile (temporary)
-        if: matrix.python-version == '3.12'
-        run: python diag_487_profile.py tests.test_database tests.test_review_schema tests.test_api_admin tests.test_lora_utils
+      # The runner's TEMP is on C:, the OS disk, where a flush took about 6 ms
+      # and a test database's create-to-delete about 111 ms; on the D: work
+      # disk the same took 0.5 ms and 23 ms (macOS: 19 ms). Tests write their
+      # databases under TEMP, so it moves to the runner's temp folder on D:
+      # (measured in #487, run 40915866444).
+      - name: Keep test files on the work disk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
 
       - name: Run tests
         env:
           PM_TEST_SLOWEST: "40"
         run: python -m tests.run_suite -v
-
-      - name: DIAG 487 microbench without Defender realtime (temporary)
-        if: always() && matrix.python-version == '3.12' && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $true
-          python diag_487.py

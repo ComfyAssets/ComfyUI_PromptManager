@@ -844,8 +844,12 @@ class FolderGuardTests(unittest.TestCase):
 
     def test_missing_folders_add_nothing(self):
         self.assertIsNone(layout_module._guard_folder(str(self.tmp / "x"), "/home"))
+        # A missing share on this machine: an unknown server name made
+        # Windows wait about 2.8 s for the network (#487).
         self.assertIsNone(
-            layout_module._guard_folder("\\\\server\\share\\loras", str(self.tmp))
+            layout_module._guard_folder(
+                "\\\\localhost\\pm-no-such-share\\loras", str(self.tmp)
+            )
         )
         self.assertEqual(
             layout_module._guard_folder(str(self.tmp), "/nonexistent-home"),
