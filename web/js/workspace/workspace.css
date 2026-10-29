@@ -271,6 +271,9 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #249 D23: a parent with one preview, or none, fills the art row instead of leaving the concept's second cell empty. */
 .prompt-card .card-art > :only-child { grid-column: 1 / -1; /* D23 */ }
 .prompt-card .card-art > .small { display: grid; place-content: center; min-width: 0; color: var(--ca-muted); /* D23 */ }
+/* #437 D148: the card's selection checkbox is the concept's Images `.image-overlays`, placed over the art as on an image
+   card; `.media-art` carries the concept's `position: relative` there, the prompt card carries it here. */
+.prompt-card { position: relative; /* D148 */ }
 
 /* Prompt library shelf (#249 PR E). #249 D3: rows stay windowed, as the Images grid's do; the concept's `.library-grid`
    tracks and breakpoints lay them out, each row spans them, and appended rows never anchor the scroll. The row's

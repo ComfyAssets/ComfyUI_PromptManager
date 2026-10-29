@@ -8,6 +8,7 @@ import { showWorkspaceToast } from './toast.mjs';
 import { openCopyFallback } from './workspace-dialogs.mjs';
 import { displayPreferences } from './preferences.mjs';
 import { fallBackToOriginal, thumbnailSource } from './thumbnail-support.mjs';
+import { openCollectionsDialog } from './inspector-collections.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -220,7 +221,12 @@ function prefixedChip(prefix, text) {
 /** D124: the inspector's line while "Load metadata on selection" is off. */
 export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
 
-export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback}) {
+/**
+ * #331 D139: with the client store `collections`, a listed file's footer ends with "Collections…", which opens its
+ * collections checklist; `onCollectionsChanged({added, removed})` hears the confirmed changes.
+ */
+export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback,
+    collections = null, onCollectionsChanged = null}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -316,6 +322,17 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
                 navigateTo(record.historyTarget);
             });
             footer.append(history);
+        }
+        const member = collections ? revealTarget(record.identity) : null;
+        if (member) {
+            const button = createButton('');
+            button.dataset.collections = '';
+            button.append(createWorkspaceIcon('folder'), ' Collections…');
+            // A re-render replaces the button: closing focuses the current one, else the inspector's heading.
+            const fallback = () => container.querySelector('button[data-collections]') ?? container.querySelector('h2');
+            contentScope.listen(button, 'click', () => openCollectionsDialog({scope, collections, target:member, trigger:button,
+                onChanged:onCollectionsChanged, focusFallback:fallback}));
+            footer.append(button);
         }
         if (!full && footer.childNodes.length) container.append(footer);
     }
