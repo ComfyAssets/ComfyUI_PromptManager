@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from database import restore_stage
 from database.execution_history import HistoryEpochChanged, notify_history_restore
 from tests import test_execution_history_database as history_tests
 
@@ -41,7 +42,12 @@ class HistoryReadFenceTests(unittest.TestCase):
         generation = fence.begin()
         with reader.recorded_history_snapshot() as epoch:
             original = reader.get_history_run(start.run_id)
-            with patch("database.execution_history.notify_history_restore"):
+            # The open snapshot keeps the WAL from being truncated; do not
+            # sit out the full 30 s checkpoint wait for it (#487).
+            with (
+                patch("database.execution_history.notify_history_restore"),
+                patch.object(restore_stage, "CHECKPOINT_BUSY_MS", 50),
+            ):
                 writer.model.restore_from_file(source)
             self.assertEqual(reader.get_execution_epoch(), epoch)
             self.assertEqual(original["run"]["storage_epoch"], epoch)

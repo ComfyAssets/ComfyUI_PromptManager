@@ -51,5 +51,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: DIAG 487 microbench (temporary)
+        if: matrix.python-version == '3.12'
+        run: python diag_487.py
+
+      - name: DIAG 487 profile (temporary)
+        if: matrix.python-version == '3.12'
+        run: python diag_487_profile.py tests.test_database tests.test_review_schema tests.test_api_admin tests.test_lora_utils
+
       - name: Run tests
+        env:
+          PM_TEST_SLOWEST: "40"
         run: python -m tests.run_suite -v
+
+      - name: DIAG 487 microbench without Defender realtime (temporary)
+        if: always() && matrix.python-version == '3.12' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          python diag_487.py
