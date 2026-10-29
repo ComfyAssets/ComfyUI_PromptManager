@@ -149,6 +149,7 @@ def library_summary(conn: sqlite3.Connection) -> Dict[str, int]:
     collections (#331).
     """
     from .library import _ELIGIBLE
+    from .prompt_archive import SHELVED, TABLE as ARCHIVE
 
     has_state = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND "
@@ -157,9 +158,15 @@ def library_summary(conn: sqlite3.Connection) -> Dict[str, int]:
     has_pairs = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompt_pairs'"
     ).fetchone()
+    has_archive = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (ARCHIVE,)
+    ).fetchone()
     if has_state and has_pairs:
+        # Archived parents (#443) are off the shelf, as in library_counts.
         positives = conn.execute(
-            "SELECT COUNT(*) FROM prompts p WHERE " + _ELIGIBLE
+            "SELECT COUNT(*) FROM prompts p WHERE "
+            + _ELIGIBLE
+            + (" AND " + SHELVED if has_archive else "")
         ).fetchone()[0]
     else:
         positives = _count(conn, "prompts")

@@ -345,7 +345,8 @@ class TestLibrary(unittest.TestCase):
         self.assertEqual(
             (parent["title"], parent["notes"]), ("Portrait", "keep\nnotes")
         )
-        self.assertNotIn("archived", parent)
+        # The parent's own archive state (#443), never a pair's.
+        self.assertIs(parent["archived"], False)
         self.assertRegex(parent["edit_token"], r"^[0-9a-f]{64}$")
         self.assertEqual(page["items"][1]["title"], " \t\u00a0\u3000")
         self.assertEqual(self.db.list_library(text="Portrait")["total"], 1)
@@ -1520,6 +1521,7 @@ class TestLibrary(unittest.TestCase):
                     "tags",
                     "rating",
                     "notes",
+                    "archived",
                     "variants",
                 },
             )
