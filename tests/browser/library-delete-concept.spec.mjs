@@ -90,12 +90,12 @@ function mapDeleteConcept({ danger, review }) {
         title: 'Delete or archive selected prompts',
         tree: ['dl.meta-grid', 'p.small', 'p.small', 'div.dialog-actions'],
         grid: { ...review.grid, rows: [['Delete permanently', '1 prompt not in a saved pair'],
-            ['Archive', '1 prompt with negative variants: hidden, restorable'],
+            ['Archive', '1 prompt in a saved pair: hidden, restorable'],
             ['Image links removed', '0 images will no longer show these prompts (files stay on disk)'],
             ['Backup', 'Create and verify before deleting']] },
         notes: [
-            { ...note, text: 'Prompts with negative variants, or used as one, are archived instead of deleted, so their variants '
-                + 'and runs stay intact. Archived prompts cannot be deleted. To bring them back, press Show archived prompts, '
+            { ...note, text: 'Prompts in a saved pair, as its positive or its negative, are archived instead of deleted, so the '
+                + 'pair and its runs stay intact. Archived prompts cannot be deleted. To bring them back, press Show archived prompts, '
                 + 'select them and press Restore.' },
             // A second paragraph takes the concept's own `p + p` margin (style.css 93-95).
             { ...note, marginTop: '10px', text: "Deleting removes each prompt's text, title, category, tags, rating, notes, run count, last use and "

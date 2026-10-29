@@ -48,7 +48,7 @@ test('Delete… reviews the selection, deletes the unpaired, archives the paired
     await expect(review(page)).toHaveAccessibleName('Delete or archive selected prompts');
     const grid=review(page).locator('dl.meta-grid > div');
     await expect(grid.locator('dt')).toHaveText(['Delete permanently','Archive','Protected (kept)','Image links removed','Backup']);
-    await expect(grid.locator('dd')).toHaveText(['1 prompt not in a saved pair','1 prompt with negative variants: hidden, restorable',
+    await expect(grid.locator('dd')).toHaveText(['1 prompt not in a saved pair','1 prompt in a saved pair: hidden, restorable',
         '1: Library extra 0000','0 images will no longer show these prompts (files stay on disk)','Create and verify before deleting']);
     await expect(review(page).locator('p.small')).toHaveCount(3);
     await expect(review(page).getByRole('button',{name:'Delete 1 and archive 1 prompt',exact:true})).toHaveClass(/danger/);
@@ -78,6 +78,8 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await box(page,cat.id).check();await box(page,dual.id).check();
     await openReview(page);
     await expect(review(page)).toHaveAccessibleName('Archive selected prompts');
+    // The archive reason is the saved pair, for one or many prompts (live note on #470): never negative variants.
+    await expect(review(page).locator('dl.meta-grid > div').filter({hasText:'Archive'}).locator('dd')).toHaveText('2 prompts in a saved pair: hidden, restorable');
     await review(page).getByRole('button',{name:'Archive 2 prompts',exact:true}).click();
     await expect(toast(page)).toHaveText('Archived 2 prompts.');
     await expect(cards(page)).toHaveCount(before.length-2);

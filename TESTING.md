@@ -2621,7 +2621,8 @@ rulings of 2026-10-28):
   too, is `aria-disabled` and Delete… reads "Reviewing…" (a double press sends one preview).
 - The review is the shared record-changing review (`openReviewDialog`), titled "Delete
   selected prompts", "Archive selected prompts" or "Delete or archive selected prompts", its
-  `dl.meta-grid` rows Delete permanently and Archive (always), Protected (kept) with up to
+  `dl.meta-grid` rows Delete permanently ("N prompts not in a saved pair") and Archive ("N prompts in a saved
+  pair: hidden, restorable", never negative variants: a pair's prompt with none is archived too) (always), Protected (kept) with up to
   three titles, Already archived, No longer exist, and, when something is deleted, Image
   links removed and Backup ("Create and verify before deleting", or "Off: no safety backup
   (System › Backup & export › Recovery policy)"); then `p.small` sentences: why paired

@@ -65,7 +65,8 @@ export function protectedNames(review, titleOf) {
 export function reviewGrid(review, titleOf = () => null) {
     const rows = [
         ['Delete permanently', `${countOf(review.delete.length, 'prompt')} not in a saved pair`],
-        ['Archive', `${countOf(review.archive.length, 'prompt')} with negative variants: hidden, restorable`],
+        // The archive reason is the saved pair (a pair's positive or negative), with or without negative variants.
+        ['Archive', `${countOf(review.archive.length, 'prompt')} in a saved pair: hidden, restorable`],
     ];
     if (review.protected.length) {
         const names = protectedNames(review, titleOf);
@@ -85,8 +86,8 @@ export function reviewGrid(review, titleOf = () => null) {
 export function reviewSentences(review) {
     const sentences = [];
     if (review.archive.length) {
-        sentences.push('Prompts with negative variants, or used as one, are archived instead of deleted, so their variants ' +
-            'and runs stay intact. Archived prompts cannot be deleted. To bring them back, press Show archived prompts, ' +
+        sentences.push('Prompts in a saved pair, as its positive or its negative, are archived instead of deleted, so the ' +
+            'pair and its runs stay intact. Archived prompts cannot be deleted. To bring them back, press Show archived prompts, ' +
             'select them and press Restore.');
     }
     if (review.delete.length) {

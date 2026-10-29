@@ -35,7 +35,7 @@ test('the grid shows each row only when it applies, with protected titles in sel
         not_found: 2, image_links: 3}));
     assert.deepEqual(reviewGrid(review, id => names[id]), [
         ['Delete permanently', '1 prompt not in a saved pair'],
-        ['Archive', '1 prompt with negative variants: hidden, restorable'],
+        ['Archive', '1 prompt in a saved pair: hidden, restorable'],
         ['Protected (kept)', '4: Seven, Eight, Nine and 1 more'],
         ['Already archived', '1'],
         ['No longer exist', '2'],
@@ -48,10 +48,22 @@ test('the grid shows each row only when it applies, with protected titles in sel
     assert.equal(reviewGrid(off).at(-1)[1], 'Off: no safety backup (System › Backup & export › Recovery policy)');
 });
 
+test('the Archive row names the saved pair, never negative variants, for one or many prompts', async () => {
+    const {reviewOf, reviewGrid} = await source;
+    // A saved-pair prompt with 0 negative variants (live prompt 7901) is archive-only for its pair, not for variants.
+    const one = reviewGrid(reviewOf(preview({archive: [2]}))).find(([term]) => term === 'Archive');
+    assert.deepEqual(one, ['Archive', '1 prompt in a saved pair: hidden, restorable']);
+    const many = reviewGrid(reviewOf(preview({archive: [2, 3, 4]}))).find(([term]) => term === 'Archive');
+    assert.deepEqual(many, ['Archive', '3 prompts in a saved pair: hidden, restorable']);
+    for (const [, value] of [one, many]) assert.doesNotMatch(value, /variant/);
+});
+
 test('the sentences explain archive, irreversibility per backup policy, re-creation and protection', async () => {
     const {reviewOf, reviewSentences} = await source;
     const [archive, remove, guarded] = reviewSentences(reviewOf(preview({delete: [1], archive: [2], protected: [3]})));
-    assert.match(archive, /^Prompts with negative variants, or used as one, are archived instead of deleted/);
+    // Live test (#470): the archive reason is the saved pair, which a prompt with 0 negative variants has too.
+    assert.match(archive, /^Prompts in a saved pair, as its positive or its negative, are archived instead of deleted, so the pair and its runs stay intact\./);
+    assert.doesNotMatch(archive, /variant/);
     assert.match(archive, /Archived prompts cannot be deleted\. To bring them back, press Show archived prompts/);
     assert.match(remove, /the only way back is to restore the safety backup taken first \(System › Backup & export\), which returns the whole library to that moment\. It is kept among the last 10 safety backups\./);
     assert.match(remove, /A later scan, a new image or a node run with the same text adds it again as a new prompt\.$/);
