@@ -9,7 +9,7 @@ import { parityPng } from './local-inspect-files.mjs';
 // `#metadata` (docs/concepts/workspace/app.js renderMetadata 740–748, selection 1715–1729, style.css 709–722,
 // 1180–1194, 1543–1545, 1559–1564), at 1600x1100 and 390x844 in both themes, in three states: initial, selected (the
 // same synthetic PNG set into both `#local-file` inputs) and viewer-open. The concept is never edited: the recorded
-// differences D60–D66 (TESTING.md) are applied to its measurement, and, where they change copy, to its page before it
+// differences D60–D66 and D155 (TESTING.md) are applied to its measurement, and, where they change copy, to its page before it
 // is measured, so the browser lays the concept out with production's words. After that the diff must be empty.
 // Paired captures are artifacts only; there are no PNG baselines.
 test.use({ locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
@@ -22,7 +22,8 @@ const COPY = {
         'Read embedded metadata in this browser. The file is not uploaded or added to your library.'],
     chooser: ['Choose an image for a local preview', 'Choose an image or video for a local preview'],
     note: ['This mock previews your file locally. Sample metadata is available with “Open sample metadata”.',
-        'Your file stays in this browser. Its metadata opens with “Open file metadata”.'],
+        // D155 (#448): choosing the file opens its metadata.
+        'Your file stays in this browser. Choosing it opens its metadata.'],
     toast: ['Local preview only. No file uploaded; sample metadata is available above.',
         'Local preview only. No file uploaded; metadata is available above.'],
 };
@@ -212,23 +213,29 @@ async function productionStates(page, theme, testInfo, tag) {
     await settle(page);
     const initial = await page.evaluate(measureInspect, '#workspace-main');
     await captureCanonicalState(page, testInfo, `production-initial-${tag}`);
+    // D155 (#448): choosing the file opens the viewer with its details at once (the concept waits for its heading
+    // action), so the viewer state is measured first; the selected page is measured after Escape, with the focus the
+    // close returned to the chooser removed (the concept's page has no focused control there).
     await page.locator('#workspace-main #local-file').setInputFiles(parityPng(FILE));
-    await expect(page.locator('#workspace-main #local-preview img.local-file-preview')).toBeVisible();
-    await page.locator('#workspace-main #local-preview img').evaluate(image => image.decode().catch(() => {}));
-    await expect(page.locator('#workspace-toast')).toHaveText(COPY.toast[1]);
-    await expect(action).toHaveAttribute('aria-disabled', 'false');
-    // D63: a readable PNG shows no status line.
-    await expect(page.locator('#workspace-main #local-preview p.small')).toHaveCount(0);
-    await settle(page);
-    const selected = await page.evaluate(measureInspect, '#workspace-main');
-    await captureCanonicalState(page, testInfo, `production-selected-${tag}`);
-    await action.click();
     await expect(page.locator('dialog#viewer-dialog[open] #viewer-details .panel-heading')).toBeVisible();
     await expect(page.locator('dialog#viewer-dialog[open] #viewer-details .meta-grid').first()).toBeVisible();
     await page.mouse.move(0, 0);
     await settle(page);
     const viewer = await page.evaluate(measureViewer);
     await captureCanonicalState(page, testInfo, `production-viewer-${tag}`);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog#viewer-dialog')).toHaveCount(0);
+    await page.evaluate(() => document.activeElement?.blur());
+    await expect(page.locator('#workspace-main #local-preview img.local-file-preview')).toBeVisible();
+    await page.locator('#workspace-main #local-preview img').evaluate(image => image.decode().catch(() => {}));
+    // D155: no toast; the opened viewer was the confirmation.
+    await expect(page.locator('#workspace-toast')).toHaveText('');
+    await expect(action).toHaveAttribute('aria-disabled', 'false');
+    // D63: a readable PNG shows no status line.
+    await expect(page.locator('#workspace-main #local-preview p.small')).toHaveCount(0);
+    await settle(page);
+    const selected = await page.evaluate(measureInspect, '#workspace-main');
+    await captureCanonicalState(page, testInfo, `production-selected-${tag}`);
     return { initial, selected, viewer };
 }
 

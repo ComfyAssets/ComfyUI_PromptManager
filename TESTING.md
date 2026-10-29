@@ -2418,10 +2418,12 @@ mapped differences"):
 - **D60** (heading action, LI-3): "Open file metadata" (`ca-primary`) replaces the
   concept's "Open sample metadata". It is `aria-disabled="true"` and
   `aria-describedby="local-file-note"` (the drop note) until a classified selection is
-  ready, then opens the shared viewer on that file.
+  ready, then opens the shared viewer on that file. Amended by D155: choosing the file
+  already opens it; the action reopens it.
 - **D61** (copy, LI-3): the surface `p` reads "Read embedded metadata in this browser.
   The file is not uploaded or added to your library."; the drop note "Your file stays in
-  this browser. Its metadata opens with “Open file metadata”."; the chooser label "Choose
+  this browser. Its metadata opens with “Open file metadata”." (D155: "Your file stays in
+  this browser. Choosing it opens its metadata."); the chooser label "Choose
   an image or video for a local preview"; the toast "Local preview only. No file
   uploaded; metadata is available above.". The h2 "Inspect without importing" is the
   concept's, verbatim.
@@ -2475,6 +2477,7 @@ mapped differences"):
   by the next selection attempt or after the concept's toast interval (6.5 s). The toast
   "Local preview only…; metadata is available above." shows only for a selection whose
   status is empty or the AVI/WMV note, never beside an unreadable or failed preview.
+  Amended by D155: only the AVI/WMV note keeps the toast; an empty status opens the viewer.
 - **D64** (drop, LI-6): `dragover`/`drop` on `.file-drop` accept exactly one File, read
   only `dataTransfer.files`/`items` (never its strings) and change nothing visually.
   While the page is mounted, `window` `dragover`/`drop` call `preventDefault`, so a missed
@@ -2487,6 +2490,32 @@ mapped differences"):
   Modified with no Path row and no Show in folder, and ends with "Local file; no saved
   library association was checked." and Download original. There is no Prompt history
   action and no category or tag chips.
+- **D155** (#448, maintainer choice 2026-10-28, beyond the concept): choosing or dropping
+  a file opens the shared viewer on it at once, with `#viewer-details` showing, in one
+  step; the concept previews it and waits for its heading action. The viewer opens once
+  per selection, after the session has selected the record (a microtask after `ready`),
+  only while that selection is current and no other dialog is open. A new selection
+  that starts while the viewer shows the previous file closes it first, so no element
+  holds the old `blob:` URL when the session revokes it (`URLs and media end with their
+  owning session`); the new file's viewer opens once it is ready. It opens for a selection with no status and for one
+  without a preview URL ("The preview could not be displayed. Metadata and the original
+  remain available in the viewer."); an unreadable file stays on the page with its
+  alert, and AVI/WMV keeps its note and the toast (the viewer could not play it and
+  reads no metadata); "Open file metadata" opens either. An image or video that fails to
+  decode after the viewer opened shows the viewer's own media error; the page's alert
+  is there on close. The toast no longer shows for an opened file (the viewer is the
+  confirmation), and the drop note reads "Your file stays in this browser. Choosing it
+  opens its metadata.". On this page the viewer, by choice or by the heading action,
+  opens with the details showing even when "Collapse viewer details by default" is on
+  (D97); the toggle is still drawn then and starts as "Hide details" (`aria-expanded`
+  true). Closing returns focus to the chooser (the heading action when it opened the
+  viewer), with the preview, the chooser naming the file and the heading action in
+  place; the next file chosen or dropped replaces it and opens again. A drop is still
+  ignored while the viewer is open (D64). Nothing else changes: the file is read in this
+  browser only. Browser tests: "D155: choosing a file opens the viewer with its details
+  in one click", "D155: Inspect shows the details even when the viewer collapses them by
+  default (amends D97)", "D155: an unreadable file stays on the page with its alert" and
+  "D155: at 390px the opened details are reachable below the media".
 - **D117** (Copy settings summary, LI-4): the legacy metadata
   page's COPY ALL, consolidated into the shared full inspector (the viewer's
   `#viewer-details`, so Images, the recorded history's current file and Inspect all have
@@ -3164,7 +3193,8 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   card's title and file line, Info and Tag stay at the end of the row), "Collapse viewer
   details by default" (`sidebarCollapsedByDefault`; the viewer opens with
   `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
-  `aria-expanded`, the stage taking the whole width), and the operation "Reset display
+  `aria-expanded`, the stage taking the whole width; amended by D155: on Inspect a file
+  the viewer opens with the details showing and the toggle reading "Hide details"), and the operation "Reset display
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
