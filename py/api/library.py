@@ -294,6 +294,7 @@ class LibraryRoutesMixin:
             "text": request.query.get("text", ""),
             "category": request.query.get("category"),
             "tags": sorted(set(request.query.getall("tag", []))),
+            "tag_mode": request.query.get("tag_mode", "all"),
             "sort": request.query.get("sort", "newest"),
         }
         limit = _page_limit(request)

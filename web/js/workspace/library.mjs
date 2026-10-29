@@ -2,11 +2,11 @@ import {createScope,createButton} from '../shared/toolkit/core.js';
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
-import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './library-state.mjs';
+import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_MODES} from './library-state.mjs';
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
-import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './library-layout.mjs';
+import {layoutLibraryRows,visibleLibraryRows,usedLabel} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
@@ -29,8 +29,10 @@ const selectedPairs=new Map();
 // Parent metadata a reuse did not apply, kept for an explicit Edit metadata action.
 const metadataDrafts=new Map();
 const archivedVisible=new Map();
-// The concept's three sorts first, then the Library's appended Oldest first (D14).
-const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+// The concept's sorts first, then the Library's appended Oldest first (D14); D153 (#447) drops "Highest rated".
+const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['oldest','Oldest first']]);
+// Refine › Tag match (#444 D149), in LIBRARY_TAG_MODES order.
+const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['untagged','Prompts without tags']]);
 // A card's focusable controls in order: the D148 selection checkbox, then its buttons (#437).
 const CARD_CONTROLS='button, input[type="checkbox"]';
 const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
@@ -83,9 +85,9 @@ export function onLibraryWrite(listener) {
  * with the existing Library filters, and the heading takes focus as after a save.
  */
 export function browseLibrary(filters) {
-    const {text='',category='',tags=[],sort='newest'}=filters || {};
-    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string') throw new TypeError('Invalid Library filters');
-    shelfVisit={filters:{text,category,tags:[...tags],sort},anchor:null};
+    const {text='',category='',tags=[],sort='newest',tagMode='all'}=filters || {};
+    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string' || !LIBRARY_TAG_MODES.includes(tagMode)) throw new TypeError('Invalid Library filters');
+    shelfVisit={filters:{text,category,tags:[...tags],sort,tagMode},anchor:null};
     focusHeadingOnMount=true;window.location.hash='#/library';
 }
 /** Remember the selection a reconciled save names, so the destination history opens on it once. */
@@ -111,7 +113,7 @@ function outcomeMessage(result,outcome) {
     if(kind!=='create' && kind!=='add-negative') return null;
     if(receipt.positive_created) return 'Saved.';
     if(receipt.pair_created) return kind==='add-negative'?'Negative saved without adding another positive or gallery.'
-        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.'
+        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags and notes you entered were not applied.'
             :'Saved as a new negative variant of an existing prompt.';
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
     return 'This prompt pair already exists. Showing the saved version.';
@@ -122,7 +124,7 @@ function takeSavedSelection(positiveId) {
 }
 function rememberUnappliedMetadata(result,{outcome,draft}={}) {
     if(result.commit.kind!=='create' || !outcome?.metadataNotApplied || !draft) return;
-    const {title:name,category,tags,rating,notes}=draft;metadataDrafts.set(result.detail.positive.id,{title:name,category,tags,rating,notes});
+    const {title:name,category,tags,notes}=draft;metadataDrafts.set(result.detail.positive.id,{title:name,category,tags,notes});
 }
 /** New prompt, from Library or Images: a saved prompt always opens its own history, as in the concept. */
 function createNewPromptEditor(api,scope,main) {
@@ -158,13 +160,16 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const visit=saved?null:shelfVisit, mountedGeneration=writeGeneration;
         // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
         const restorable=visit?.state?visit:null;
-        const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters,...saved};
+        const filters={text:'',category:'',tags:[],sort:'newest',tagMode:'all',...visit?.filters,...saved};
+        // D153: a sort the shelf no longer offers (an older "Highest rated" visit) reads as Recently added.
+        if(!LIBRARY_SORTS.some(([value])=>value===filters.sort)) filters.sort='newest';
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
         const toolbarScope=createScope();
-        // D44: Filters reads "Filters · 1" while a Tags filter (from Refine or a Browse) narrows the shelf.
-        const refinements=()=>filters.tags.length?1:0;
+        // D44: Filters reads "Filters · N" while Refine filters (from Refine or a Browse) narrow the shelf: Tags, and a
+        // Tag match other than All (#444 D149).
+        const refinements=()=>(filters.tags.length?1:0)+(filters.tagMode!=='all'?1:0);
         const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
             value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters,
             onSaveView:trigger=>{const value=toolbar.value();onSaveView(trigger,libraryViewState({...filters,text:value.q.trim(),category:value.category,sort:value.sort}));}});
@@ -220,7 +225,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         if(restorable?.layout?.inlineSize===inlineSize && restorable.layout.columns===columnCount) for(const [id,height] of restorable.layout.heights) heights.set(id,height);
         const hiddenSave=restorable?null:savedParentId;savedParentId=null;
         function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
-        /** The concept's prompt card (app.js renderLibrary a586) with real counts, last use and rating (#249 D23). */
+        /** The concept's prompt card (app.js renderLibrary a586) with real counts and last use (#249 D23; no rating, D153). */
         function cardFor(item,index) {
             const article=el('article',undefined,'prompt-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
             const art=el('div',undefined,'card-art');art.setAttribute('aria-hidden','true');
@@ -246,10 +251,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const vocabulary=el('div',undefined,'tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'chip'));
             content.append(heading,prompts,meta,vocabulary);
             const footer=el('div',undefined,'card-footer');
-            const {stars,hidden}=ratingLabel(item.rating), used=usedLabel(item.last_used_at);
-            const facts=el('span');
-            if(stars) {const shown=el('span',stars);shown.setAttribute('aria-hidden','true');facts.append(shown,el('span',hidden,'ca-visually-hidden'),` \u00b7 ${used}`);}
-            else facts.textContent=used;
+            // D153 (#447): the footer reads only the last use; the concept's rating stars are not drawn.
+            const facts=el('span',usedLabel(item.last_used_at));
             const actions=el('div',undefined,'row-actions');
             const send=createButton('','send icon-btn');send.setAttribute('aria-label',`Send positive prompt to ComfyUI: ${name}`);send.append(createWorkspaceIcon('send'));send.dataset.sendPositive='';
             const explore=createButton('');explore.append(createWorkspaceIcon('branch'),' Explore history');explore.dataset.history='';
@@ -394,7 +397,10 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
             message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
-            schedule();scheduleLoad();
+            // #464: a loaded page is laid out now, not on the next frame: a starved renderer (a background tab, headless
+            // WebKit under load) can hold frames for seconds, which left a loaded shelf empty. Measurements still flush per frame.
+            if(batch && grid.isConnected) {cancelAnimationFrame(frame);flush();} else schedule();
+            scheduleLoad();
         }
         const stream=createLibraryStream({api,onChange:render,restore:restorable?{filters,state:restorable.state}:undefined});
         function maybeLoad() {
@@ -417,15 +423,17 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             if(Object.entries(next).every(([key,item])=>filters[key]===item)) return;
             Object.assign(filters,next);reset();
         }
-        /** "Refine this view" with the Library's one extra filter, Tags (D14); Clear also clears the toolbar category. */
+        /** "Refine this view" with the Library's extra filters, Tags (D14) and Tag match (D149); Clear also clears the toolbar category. */
         function openFilters(trigger) {
-            openRefineDialog({scope,trigger,fields:[{key:'tags'}],values:{tags:filters.tags.join(', ')},onApply:applyRefinement,
+            openRefineDialog({scope,trigger,fields:[{key:'tags'},{key:'tagMode',options:TAG_MATCH_OPTIONS}],
+                values:{tags:filters.tags.join(', '),tagMode:filters.tagMode},onApply:applyRefinement,
                 onClear:cleared=>{toolbar.setValue({category:cleared.category});applyRefinement(cleared);}});
         }
-        function applyRefinement({tags,category=filters.category}) {
-            const next=[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
-            if(category===filters.category && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
-            filters.category=category;filters.tags=next;reset();
+        function applyRefinement({tags,tagMode='all',category=filters.category}) {
+            // "Prompts without tags" takes no Tags (the dialog disables them).
+            const next=tagMode==='untagged'?[]:[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
+            if(category===filters.category && tagMode===filters.tagMode && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
+            filters.category=category;filters.tags=next;filters.tagMode=tagMode;reset();
         }
         scope.listen(more,'click',()=>stream.loadMore());
         // Retry also re-reads a category list that failed (D15: Refresh is gone).

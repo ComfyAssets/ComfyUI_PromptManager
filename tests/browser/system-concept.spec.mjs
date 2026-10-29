@@ -162,7 +162,6 @@ async function serverJson(request, url) {
 }
 
 const number = value => value.toLocaleString('en-US');
-const ratingText = value => value === null ? 'Not rated' : `${number(value)} / 5`;
 
 /** The concept's shell and Overview with the recorded deviations applied, given the server's real overview. */
 function mapOverviewConcept(reference, overview) {
@@ -178,8 +177,8 @@ function mapOverviewConcept(reference, overview) {
         'One display configuration': row => ({ ...row, description: 'Grid and density settings are shared across views.' }),
         // D93: the real sources, not samples.
         '2 sample output sources': row => ({ ...row, title: `${number(overview.sources.effective)} output sources` }),
-        // D96: the dialog shows runs and ratings by category and library totals, not prompt, tag or date usage.
-        Statistics: row => ({ ...row, description: 'Runs and ratings by category, with library totals.' }),
+        // D96: the dialog shows runs by category and library totals, not prompt, tag or date usage (D153: no ratings).
+        Statistics: row => ({ ...row, description: 'Runs by category, with library totals.' }),
     };
     const surfaces = reference.columns.surfaces.map(surface => ({ ...surface,
         rows: surface.rows.map(row => (rows[row.title] ?? (value => value))(row)) }));
@@ -288,7 +287,10 @@ test('system comparison detects mutations', async ({ page, request }) => {
     expect(diffInventory(expected, await measure())).toEqual([]);
 });
 
-/** D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. */
+/**
+ * D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. D153 (#447): the
+ * concept's "Avg. rating" column and a "Rated images" total are not drawn.
+ */
 function mapStatisticsConcept(reference, statistics) {
     const [runs] = reference.tables;
     return {
@@ -296,10 +298,11 @@ function mapStatisticsConcept(reference, statistics) {
         // No sample note (prototype copy); a second table follows the first.
         body: ['table', 'table'],
         tables: [
-            { ...runs, rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs), ratingText(row.average_rating)]) },
+            { ...runs, head: runs.head.filter(([, , text]) => text !== 'Avg. rating'),
+                rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]) },
             { caption: 'Library totals', head: [['th', 'col', 'Total'], ['th', 'col', 'Count']],
                 rows: [['Prompts', number(statistics.totals.total_prompts)], ['Tags', number(statistics.totals.total_tags)],
-                    ['Images', number(statistics.totals.total_images)], ['Rated images', number(statistics.rated_images)]] },
+                    ['Images', number(statistics.totals.total_images)]] },
         ],
     };
 }
@@ -472,9 +475,9 @@ function measureAppearance(mainSelector) {
 }
 
 // D97: the rows Appearance adds for the legacy gallery settings, after the concept's own, as production renders them.
+// D156 (#450) moved "Collapse viewer details by default" to the Viewer surface (workspace-viewer-mode.spec.mjs).
 const ADDED_APPEARANCE_ROWS = [
     ['card-details', 'Show image details on cards', 'Show each card’s title and file details under the preview.', true],
-    ['viewer-details', 'Collapse viewer details by default', 'Open the image viewer with its details panel hidden.', false],
 ];
 
 /** The concept's Appearance with the recorded deviations applied, given the server's real settings. */
@@ -485,10 +488,11 @@ function mapAppearanceConcept(reference, settings) {
         control: { ...toggleRow.control, id, checked } }));
     return {
         ...reference,
-        // #317: the server's thumbnail settings follow in their own surface ("Thumbnails", README: retained in Appearance).
-        layout: [reference.layout[0], 'section.surface', ...reference.layout.slice(1)],
-        // D97: two added toggles and the "Reset display defaults" operation close the surface.
-        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.setting-row', 'div.operation'] },
+        // D156: the Viewer surface, then (#317) the server's thumbnail settings in their own surface ("Thumbnails",
+        // README: retained in Appearance).
+        layout: [reference.layout[0], 'section.surface', 'section.surface', ...reference.layout.slice(1)],
+        // D97: one added toggle (D156 moved the other) and the "Reset display defaults" operation close the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.operation'] },
         rows: [...reference.rows.map(row => row.control?.id === 'timeout'
             // The node search timeout is the server's real `result_timeout`, not the concept's sample 30.
             ? { ...row, control: { ...row.control, value: String(settings.result_timeout) } } : row), ...added],
@@ -535,7 +539,7 @@ test('appearance comparison detects mutations', async ({ page, request }) => {
     // Unmapped, the concept differs only where D97 and the real timeout are recorded.
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort())
-        .toEqual(['layout.1', 'layout.2', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12', 'rows.13',
+        .toEqual(['layout.1', 'layout.2', 'layout.3', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12',
             'rows.length', 'surface.tree'].sort());
     const measure = () => page.evaluate(measureAppearance, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
@@ -614,10 +618,21 @@ const WATCHED = new Set(['watching', 'stopping']);
 const REFRESH_FILES = { title: 'Refresh files', description: 'Read every source again to find files added or removed outside ComfyUI.',
     label: 'Refresh' };
 
+// D158 (#247): the row production adds directly below "Watch for new outputs", in that row's markup.
+const FOREIGN_RUNS = { id: 'foreign-runs', label: 'Save prompts from other workflows',
+    description: 'New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.' };
+
+/** D158: the concept's "Watch for new outputs" row as the inserted "Save prompts from other workflows" row. */
+function foreignRunsRow(monitoringRow, settings) {
+    return { ...monitoringRow, text: [['label', FOREIGN_RUNS.label, FOREIGN_RUNS.id], ['p', FOREIGN_RUNS.description, null]],
+        control: { ...monitoringRow.control, id: FOREIGN_RUNS.id, checked: settings.save_foreign_runs } };
+}
+
 /** The concept's Sources with the recorded deviations applied, given the server's real settings and sources. */
 function mapSourcesConcept(reference, { settings, sources }) {
     const [sample] = reference.sources;
     const scan = sample.actions[0];
+    const rowAt = reference.surface.tree.indexOf('div.setting-row');
     return {
         ...reference,
         // The real sources replace the two samples (without the "sample path" note). D98: each configured one has Remove,
@@ -625,13 +640,15 @@ function mapSourcesConcept(reference, { settings, sources }) {
         sources: sources.effective.map(source => ({ ...sample, title: source.label,
             description: `${source.path} · ${WATCH_TEXT[source.watch]}`,
             actions: [{ ...scan, text: WATCHED.has(source.watch) ? 'Scan changes' : 'Scan folder' }, { ...scan, text: 'Remove' }] })),
-        rows: reference.rows.map(row => {
-            if (row.control.id === 'monitoring') return { ...row, control: { ...row.control, checked: settings.monitoring_enabled } };
+        rows: reference.rows.flatMap(row => {
+            if (row.control.id === 'monitoring') return [{ ...row, control: { ...row.control, checked: settings.monitoring_enabled } },
+                foreignRunsRow(row, settings)];
             // D113: the range ends at the server's core count (the concept's fixed 16) and shows the real worker count.
-            return { ...row, control: { ...row.control, max: String(settings.cpu_count), value: String(settings.worker_threads) } };
+            return [{ ...row, control: { ...row.control, max: String(settings.cpu_count), value: String(settings.worker_threads) } }];
         }),
-        // D98: "Refresh files" closes the surface.
-        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.operation'] },
+        // D158: the inserted row after the first setting row; D98: "Refresh files" closes the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree.slice(0, rowAt + 1), 'div.setting-row',
+            ...reference.surface.tree.slice(rowAt + 1), 'div.operation'] },
         operations: [...reference.operations, { ...reference.operations[0], title: REFRESH_FILES.title,
             description: REFRESH_FILES.description, actions: [{ ...reference.operations[0].actions[0], text: REFRESH_FILES.label }] }],
     };
@@ -685,10 +702,12 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     const expected = mapSourcesConcept(concept, server);
     const production = await productionSources(page, 'dark', { notice: true });
     expect(diffInventory(expected, production)).toEqual([]);
-    // Unmapped, the concept differs only in the real sources, the D98 operation and the D113 range.
+    // Unmapped, the concept differs only in the real sources, the D98 operation, the D158 row (which moves the D113
+    // range to the third row) and the D113 range.
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort())
-        .toEqual(['operations.2', 'operations.length', 'rows.1', 'sources.0', 'sources.1', 'surface.tree'].sort());
+        .toEqual(['operations.2', 'operations.length', 'rows.1', 'rows.2', 'rows.length', 'sources.0', 'sources.1',
+            'surface.tree'].sort());
     const measure = () => page.evaluate(measureSources, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
     // A removed notice and a removed source row.
@@ -702,6 +721,13 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     await page.evaluate(() => { document.querySelector('#workspace-main label[for="monitoring"]').textContent = 'Watch for outputs'; });
     expect(await paths()).toEqual(['rows.0.text.0.1']);
     await page.evaluate(() => { document.querySelector('#workspace-main label[for="monitoring"]').textContent = 'Watch for new outputs'; });
+    // D158: the inserted row is compared too: a missing one and a changed label are caught.
+    const undoForeign = await mutate(page, { remove: ['#workspace-main .setting-row:has(#foreign-runs)'] });
+    expect(await paths()).toEqual(expect.arrayContaining(['rows.length', 'surface.tree.length']));
+    await undoForeign();
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="foreign-runs"]').textContent = 'Save other prompts'; });
+    expect(await paths()).toEqual(['rows.1.text.0.1']);
+    await page.evaluate(() => { document.querySelector('#workspace-main label[for="foreign-runs"]').textContent = 'Save prompts from other workflows'; });
     await page.evaluate(() => { document.querySelector('#workspace-main .panel-heading button').textContent = 'Add source'; });
     expect(await paths()).toEqual(['heading.action.text']);
     await page.evaluate(() => { document.querySelector('#workspace-main .panel-heading button').textContent = '+ Add source'; });

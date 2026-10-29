@@ -268,6 +268,71 @@ test('Watch for new outputs saves monitoring_enabled; a restart applies it', asy
     await expect(sourceList(page).locator('.operation p')).toHaveText(['output · watching', 'input · watching']);
 });
 
+test('D158: Save prompts from other workflows saves save_foreign_runs live; off while monitoring is off (#247)', async ({ page, request }, testInfo) => {
+    try {
+        const layout = await openSources(page);
+        const rows = layout.locator('section.surface > .setting-row');
+        await expect(rows.locator(':scope > div > label')).toHaveText(['Watch for new outputs', 'Save prompts from other workflows', 'Worker threads']);
+        const foreign = layout.getByRole('switch', { name: 'Save prompts from other workflows', exact: true });
+        const foreignRow = rows.filter({ has: page.locator('#foreign-runs') });
+        await expect(foreignRow.locator(':scope > div > p')).toHaveText('New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.');
+        await expect(foreign).toBeChecked();
+        await expect(foreign).toBeEnabled();
+        // Keyboard on desktop, a tap on the touch project.
+        if (testInfo.project.name === 'touch') await foreign.tap();
+        else {
+            await foreign.focus();
+            await page.keyboard.press('Space');
+        }
+        await expect(foreign).not.toBeChecked();
+        await expect(statusOf(page)).toHaveText('Unsaved changes.');
+        const saved = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(SETTINGS_URL));
+        await saveButton(page).click();
+        const response = await saved;
+        expect(response.request().postDataJSON()).toEqual(expect.objectContaining({ save_foreign_runs: false }));
+        expect((await response.json()).restart_required_fields).toEqual([]);
+        // Applied live: the monitor reads it for every file, so no restart is named.
+        await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
+        expect((await serverJson(request, SETTINGS_URL)).settings.save_foreign_runs).toBe(false);
+        // With Watch for new outputs drafted off nothing is watched: the row is disabled and its note says why.
+        const monitoring = layout.getByRole('switch', { name: 'Watch for new outputs', exact: true });
+        await monitoring.uncheck();
+        await expect(foreign).toBeDisabled();
+        const note = foreignRow.locator('p.small');
+        await expect(note).toHaveText('Applies while Watch for new outputs is on.');
+        await expect(foreign).toHaveAttribute('aria-describedby', await note.getAttribute('id'));
+        await monitoring.check();
+        await expect(foreign).toBeEnabled();
+        await expect(note).toHaveCount(0);
+        await expect(foreign).not.toHaveAttribute('aria-describedby', /./);
+        await expect(statusOf(page)).toHaveText('No unsaved changes.');
+    } finally {
+        // The server is shared by the spec's tests: put the default back whatever happened.
+        await request.post(SETTINGS_URL, { data: { save_foreign_runs: true } });
+    }
+});
+
+test('D158: saved off while the monitor still watches until a restart, the foreign row can still be set (D128)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/system/monitor', { data: { watching: ['output', 'input'] } })).toBeOK();
+    try {
+        const layout = await openSources(page);
+        await layout.getByRole('switch', { name: 'Watch for new outputs', exact: true }).uncheck();
+        await saveButton(page).click();
+        await expect(sourceList(page).locator('.operation p').first()).toHaveText('output · watching until restart');
+        const foreign = layout.getByRole('switch', { name: 'Save prompts from other workflows', exact: true });
+        await expect(foreign).toBeEnabled();
+        await expect(layout.locator('.setting-row').filter({ has: page.locator('#foreign-runs') }).locator('p.small'))
+            .toHaveText('Applies while Watch for new outputs is on.');
+        await foreign.uncheck();
+        const saved = page.waitForRequest(item => item.method() === 'POST' && item.url().endsWith(SETTINGS_URL));
+        await saveButton(page).click();
+        expect((await saved).postDataJSON()).toEqual({ save_foreign_runs: false, expected_revision: expect.any(String) });
+        await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
+    } finally {
+        await request.post(SETTINGS_URL, { data: { save_foreign_runs: true } });
+    }
+});
+
 test('worker range max is cpu_count', async ({ page, request }) => {
     const { settings } = await serverJson(request, SETTINGS_URL);
     const layout = await openSources(page);

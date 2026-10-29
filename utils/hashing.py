@@ -65,6 +65,43 @@ def generate_prompt_hash(text: str) -> str:
     return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
 
+def stored_prompt_text(text: str) -> str:
+    """The text the Library stores for raw node text: outer whitespace removed.
+
+    Every prompt writer stores ``text.strip()`` and the hash above strips too,
+    so this is the form recorded raw run text is compared in (#438). Case and
+    inner whitespace stay significant.
+    """
+    return text.strip()
+
+
+# The code points str.strip() removes (every str.isspace() character), for
+# SQLite's char(); tests/test_hashing.py pins it to the running Python.
+STRIPPED_CODE_POINTS = (
+    *range(0x09, 0x0E),
+    *range(0x1C, 0x21),
+    0x85,
+    0xA0,
+    0x1680,
+    *range(0x2000, 0x200B),
+    0x2028,
+    0x2029,
+    0x202F,
+    0x205F,
+    0x3000,
+)
+_STRIP_CODES = ",".join(map(str, STRIPPED_CODE_POINTS))
+
+
+def stored_prompt_text_sql(expression: str) -> str:
+    """``stored_prompt_text`` as an SQLite expression over ``expression``.
+
+    SQLite's one-argument trim() removes spaces only; trim(X, Y) removes every
+    character of Y, multi-byte ones included, so it strips what Python does.
+    """
+    return f"trim({expression}, char({_STRIP_CODES}))"
+
+
 def is_duplicate_prompt(text1: str, text2: str, threshold: float = 0.95) -> bool:
     """
     Check if two prompts are likely duplicates using hash comparison.

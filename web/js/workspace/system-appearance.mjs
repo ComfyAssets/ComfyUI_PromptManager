@@ -13,7 +13,10 @@
  *   (`showImageInfo`), "Collapse viewer details by default" (`sidebarCollapsedByDefault`) and the operation "Reset
  *   display defaults", which drafts the gallery's defaults for these browser rows and touches no other key.
  *
- * - #317: a second surface, "Thumbnails", holds the server's thumbnail format, quality and size limit
+ * - #450 (D156, amends D97): a "Viewer" surface after it holds "Open viewer in" (Centered→`centered`, Full
+ *   screen→`fullscreen`, `viewerOpenMode`) and the moved "Collapse viewer details by default"; "Reset display defaults"
+ *   covers both surfaces' browser rows.
+ * - #317: a further surface, "Thumbnails", holds the server's thumbnail format, quality and size limit
  *   (system-thumbnails.mjs).
  *
  * Controls follow the store: a value read later (the host settings, another tab's change) repaints them. A host row
@@ -50,14 +53,20 @@ export const APPEARANCE_ROWS = Object.freeze([
         { type: 'select', options: [['newtab', 'New tab'], ['popup', 'Popup window']] }],
     ['timeout', 'Node search auto-hide (seconds)', 'Node search behavior only. Use 0 to keep results visible.', 'host', 'result_timeout',
         { type: 'number' }],
-    // D97: the legacy gallery's card and viewer settings.
+    // D97: the legacy gallery's card setting (its viewer setting moved to VIEWER_ROWS, D156).
     ['card-details', 'Show image details on cards', 'Show each card’s title and file details under the preview.', 'browser', 'showImageInfo', BOOLEAN],
+]);
+
+/** #450 (D156): the "Viewer" surface's rows, in the same shape. */
+export const VIEWER_ROWS = Object.freeze([
+    ['viewer-mode', 'Open viewer in', 'Full screen fills the browser window; Centered is the framed viewer.', 'browser', 'viewerOpenMode',
+        { type: 'select', options: [['centered', 'Centered'], ['fullscreen', 'Full screen']] }],
     ['viewer-details', 'Collapse viewer details by default', 'Open the image viewer with its details panel hidden.', 'browser',
         'sidebarCollapsedByDefault', BOOLEAN],
 ]);
 
-/** The browser keys "Reset display defaults" restores (D97). */
-export const DISPLAY_KEYS = Object.freeze(APPEARANCE_ROWS.filter(row => Array.isArray(row) && row[3] === 'browser').map(row => row[4]));
+/** The browser keys "Reset display defaults" restores (D97), on both surfaces. */
+export const DISPLAY_KEYS = Object.freeze([...APPEARANCE_ROWS, ...VIEWER_ROWS].filter(row => Array.isArray(row) && row[3] === 'browser').map(row => row[4]));
 
 /** A whole number of seconds from 0 to 300 (the server's `validate_result_timeout`), else null. */
 export function resultTimeout(text) {
@@ -104,29 +113,36 @@ function paint(input, control, value) {
 
 /**
  * Mount Appearance in `container` (System's `.settings-layout`); returns the section's nodes: "Browsing & display",
- * then the server's thumbnail settings (#317, system-thumbnails.mjs).
+ * "Viewer" (D156), then the server's thumbnail settings (#317, system-thumbnails.mjs).
  */
 export function mountAppearance(container, { scope, drafts, api, activity }) {
     const surface = el('section', undefined, 'surface');
     surface.append(el('h2', 'Browsing & display'), el('p', 'One set of defaults; toolbar changes apply to the current view.'));
     const controls = [];
-    for (const row of APPEARANCE_ROWS) {
-        if (row === 'continuous') { surface.append(continuousRow()); continue; }
-        const [id, label, description, domain, key, control] = row;
-        const onChange = value => {
-            if (key === 'result_timeout') {
-                const seconds = resultTimeout(input.value);
-                if (seconds === null) { drafts.reject(domain, key); return; }
-                value = seconds;
-            }
-            drafts.set(domain, key, value);
-        };
-        const node = settingRow({ id, label, description, control, scope, onChange });
-        surface.append(node);
-        const input = controlOf(node, id);
-        input.dataset.key = key;
-        controls.push({ input, control, domain, key, text: node.children[0], note: null });
+    function addRows(target, rows) {
+        for (const row of rows) {
+            if (row === 'continuous') { target.append(continuousRow()); continue; }
+            const [id, label, description, domain, key, control] = row;
+            const onChange = value => {
+                if (key === 'result_timeout') {
+                    const seconds = resultTimeout(input.value);
+                    if (seconds === null) { drafts.reject(domain, key); return; }
+                    value = seconds;
+                }
+                drafts.set(domain, key, value);
+            };
+            const node = settingRow({ id, label, description, control, scope, onChange });
+            target.append(node);
+            const input = controlOf(node, id);
+            input.dataset.key = key;
+            controls.push({ input, control, domain, key, text: node.children[0], note: null });
+        }
     }
+    addRows(surface, APPEARANCE_ROWS);
+    // D156: the viewer's defaults in their own surface.
+    const viewer = el('section', undefined, 'surface');
+    viewer.append(el('h2', 'Viewer'), el('p', 'How the image viewer opens; the button beside ✕ switches the current view.'));
+    addRows(viewer, VIEWER_ROWS);
     surface.append(operationRow({ title: 'Reset display defaults',
         description: 'Restore this browser’s display defaults, then save. Other settings are kept.', label: 'Reset', scope,
         onClick: () => {
@@ -146,5 +162,5 @@ export function mountAppearance(container, { scope, drafts, api, activity }) {
     };
     scope.cleanup(drafts.subscribe(repaint));
     repaint();
-    return [surface, mountThumbnailSettings(container, { scope, drafts, api, activity })];
+    return [surface, viewer, mountThumbnailSettings(container, { scope, drafts, api, activity })];
 }

@@ -21,7 +21,10 @@ const paths = Object.freeze({
     "tagImage": "M3 4h8l9 9-7 7L3 10V4ZM7 8h.01M18 2v5M15.5 4.5h5",
     "folder": "M3 5h7l2 3h9v12H3z",
     "history": "M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v6l4 2",
-    "review": "M4 3h16v18H4zM8 7h8M8 12h8M8 17h5"
+    "review": "M4 3h16v18H4zM8 7h8M8 12h8M8 17h5",
+    // #450 (D156): the viewer's Full screen / Centered switch.
+    "maximize": "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
+    "minimize": "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"
 });
 
 /** Create an approved decorative outline icon without injecting markup. */

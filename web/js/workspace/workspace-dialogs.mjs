@@ -24,7 +24,8 @@
 import { createButton, createSwitch } from '../shared/toolkit/core.js';
 import { noun } from './plural.mjs';
 
-const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags' });
+// `tagMode` (#444, D149): the Library's Tag match select after Tags; its `untagged` value disables Tags.
+const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags', tagMode: 'Tag match' });
 const FIELD_ORDER = Object.keys(FIELD_LABELS);
 
 let shell = null;
@@ -179,7 +180,7 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
     requireScope(scope);
     requireCallbacks({ onApply, onClear });
     if (!Array.isArray(fields) || fields.some(item => !FIELD_ORDER.includes(item?.key))) {
-        throw new TypeError('Refine fields are source, folder, media and tags');
+        throw new TypeError('Refine fields are source, folder, media, tags and tagMode');
     }
     const controls = FIELD_ORDER.flatMap(key => {
         const item = fields.find(candidate => candidate.key === key);
@@ -199,6 +200,12 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
     for (const { key, control } of controls) {
         if (key !== 'tags') control.addEventListener('change', () => wanted.set(key, control.value));
     }
+    // "Prompts without tags" takes no Tags: the field is disabled (and Apply reports it empty) while it is chosen.
+    const tagsField = controls.find(item => item.key === 'tags');
+    const tagMode = controls.find(item => item.key === 'tagMode');
+    const followTagMode = () => { if (tagsField && tagMode) tagsField.control.disabled = tagMode.control.value === 'untagged'; };
+    tagMode?.control.addEventListener('change', followTagMode);
+    followTagMode();
     const source = controls.find(item => item.key === 'source');
     const folder = controls.find(item => item.key === 'folder' && typeof item.optionsFor === 'function');
     const followSource = (chosen = folder.control.value) => {
@@ -211,7 +218,7 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
         source.control.addEventListener('change', () => { followSource(); wanted.set('folder', folder.control.value); });
     }
     const read = () => Object.fromEntries(controls.map(({ key, control }) =>
-        [key, key === 'tags' ? control.value.trim() : control.value]));
+        [key, key === 'tags' ? (control.disabled ? '' : control.value.trim()) : control.value]));
 
     const clear = createButton('Clear filters');
     const apply = createButton('Apply filters', 'ca-primary');
@@ -219,6 +226,7 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
         // The cleared Source's folders first, so the cleared Folder value is one of them.
         if (source && folder) { source.control.value = source.cleared; followSource(); }
         for (const { control, cleared } of controls) control.value = cleared;
+        followTagMode();
         const reset = read();
         finish();
         onClear({ ...reset, category: '' });

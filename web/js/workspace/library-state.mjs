@@ -11,11 +11,19 @@ function parameters(filters,limit) {
     if(filters.tags!==undefined && (!Array.isArray(filters.tags) || filters.tags.some(tag=>typeof tag!=='string'))) throw new TypeError('Invalid library tags');
     for(const tag of filters.tags || []) if(tag.trim()) query.append('tag',tag.trim());
     const sort=filters.sort || 'newest';
-    if(!['newest','oldest','name','rating'].includes(sort)) throw new TypeError('Invalid library sort');
+    if(!['newest','oldest','name'].includes(sort)) throw new TypeError('Invalid library sort');
+    // #444: how Tags match; `untagged` lists parents no tag's Browse returns and never goes with tags.
+    const tagMode=filters.tagMode ?? 'all';
+    if(!LIBRARY_TAG_MODES.includes(tagMode) || (tagMode==='untagged' && query.has('tag'))) throw new TypeError('Invalid library tag mode');
+    if(tagMode!=='all') query.set('tag_mode',tagMode);
     query.set('sort',sort);return query;
 }
+/** The Library's tag match values (#444); the first is the default, sent as no parameter. */
+export const LIBRARY_TAG_MODES=Object.freeze(['all','untagged']);
 // `variant_total` is the filtered parents' active negative variants (the concept caption's "M negative variants").
-function validatePage(page,cursor) {
+function validatePage(page,cursor,query) {
+    // A tag match the server did not echo was not applied (an older server): never show the whole shelf as filtered.
+    if(query?.has('tag_mode') && page?.tag_mode!==query.get('tag_mode')) throw new TypeError('Unconfirmed library tag mode');
     if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || !Number.isSafeInteger(page.variant_total) || page.variant_total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
 }
 export function createLibraryStream({api,onChange=()=>{},restore}) {
@@ -37,7 +45,7 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
         try {
             const page=await api.get(`/prompt_manager/library?${params}`,{signal:current.signal});
             if(disposed || current!==request) return 0;
-            validatePage(page,cursor);
+            validatePage(page,cursor,query);
             // #437: the storage epoch the shelf's items were read under, which a bulk write sends as its fence; a later
             // page from a restored storage is refused (its items would belong to another database).
             const epoch=typeof page.library_epoch==='string'?page.library_epoch:null;
