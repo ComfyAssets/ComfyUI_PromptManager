@@ -9,6 +9,7 @@ import email
 import json
 import os
 import shutil
+import ssl
 import sys
 import tempfile
 import threading
@@ -669,6 +670,15 @@ class TestStaleDownloadSweep(unittest.TestCase):
         self.assertTrue(old.exists())
 
 
+def _unused_tls_context():
+    """A TLS context for the fake handlers, which never open a connection.
+
+    HTTPSHandler() builds a default context, and on Windows that reads the
+    system certificate store: about 0.14 s per handler (#487).
+    """
+    return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
 class _FakeHTTPSHandler(urllib.request.HTTPSHandler):
     """Serves canned responses through a real urllib opener, recording requests.
 
@@ -677,7 +687,7 @@ class _FakeHTTPSHandler(urllib.request.HTTPSHandler):
     """
 
     def __init__(self, redirect_to):
-        super().__init__()
+        super().__init__(context=_unused_tls_context())
         self.redirect_to = redirect_to
         self.requests = []
 
@@ -745,7 +755,7 @@ class _ChainHTTPSHandler(urllib.request.HTTPSHandler):
     urllib opener, recording every request; an unknown URL answers 404."""
 
     def __init__(self, routes):
-        super().__init__()
+        super().__init__(context=_unused_tls_context())
         self.routes = routes
         self.requests = []
 

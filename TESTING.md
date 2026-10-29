@@ -251,6 +251,21 @@ the process exits non-zero.
   stacks.
 - When the watchdog fires under coverage, that run's coverage data is lost; the
   job fails anyway and the dump is what matters.
+- `PM_TEST_SLOWEST=N` (off by default) lists the N slowest tests after the
+  summary, each timed from its `start:` line to the next one like the hang
+  limit. The Windows and macOS jobs (`portability.yml`) set it to 40, so every
+  run shows where its time went (#487). The list prints only when the run
+  ends: a job GitHub cancels or a watchdog exit prints none, so read the
+  timestamps between `start:` lines instead.
+- On the Windows runners `TEMP` sits on the OS disk C:, where a flush took about
+  6 ms and a test database's create-to-delete about 111 ms (D: 0.5 ms and 23 ms,
+  macOS 19 ms). `portability.yml` points `TEMP`/`TMP` at a folder under
+  `RUNNER_TEMP` on D: before the suite. It switches 8.3 short names on for D:
+  and spells the folder by its short name, as the runner's own TEMP was
+  (`C:\Users\RUNNER~1\...`), logs it, and warns when there is none.
+  A test that waits on a fixed busy timeout, a network name (`\\server\share`:
+  use `\\localhost\<missing share>`) or a default TLS context (it reads the
+  Windows certificate store) costs seconds there; the slowest list shows it.
 
 Every job in `test.yml`, `code-quality.yml` and `viewerjs-check.yml` has
 `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs` checks it). The rule is
@@ -2922,6 +2937,12 @@ mapped differences"):
   change within the workspace waits the same way: the shell renders the next route once a
   video still starting on Inspect settles (`leaveGuard`; the latest route wins). Route
   changes at `loadstart` + 0–7 ms hung 4–5 of 120 pages before and 0 of 120 after.
+  The shared viewer's own video gets the same guard (#483): a new selection while the
+  viewer D155 opened is still starting its video leaves the viewer open, untouched, until
+  that video reports metadata or an error (or 15 s), then closes it; the URL is revoked
+  after that, and a viewer asked for meanwhile (the new file's D155 open) opens then. The
+  merge queue hung once without it (run 40903238387: the PNG selection 12 ms after the
+  inline video showed, with the viewer's new video still starting).
   A real page leave cannot wait. With no page code releasing anything, navigating
   away hung 8 of 120 pages and reload 22 of 120 (3 and 8 of 120 with the page's own
   release), so that WebKit teardown stays a known limitation; dispose still releases at

@@ -37,6 +37,15 @@ test.afterEach(async ({ page, request, browserName }) => {
     await expect(await request.post('/__test__/tagging/reset', { data: {} })).toBeOK();
 });
 
+async function openSettled(page, url) {
+    // The page reads its selected file's details as soon as it lists. A source change before that read is answered
+    // makes the page find the file again on its own, so the test's old-numbering locators are gone before they are
+    // used (#484): every test changes sources only after the read was answered.
+    const inspected = page.waitForResponse(item => new URL(item.url()).pathname.startsWith('/prompt_manager/images/inspect/') &&
+        item.request().method() === 'GET');
+    await page.goto(url);
+    expect((await inspected).status()).toBe(200);
+}
 async function openTag(page, path = FIRST, root = 0) {
     const observed = answered(page, '/image-annotations/observe');
     await tagButton(page, path, root).click();
@@ -53,7 +62,7 @@ async function savedTags(request, path, root) {
 }
 
 test('renumbered sources under an open Tag dialog: it finds the file again, keeps the draft and Generate works', async ({ page, request }) => {
-    await page.goto(images);
+    await openSettled(page, images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
     expect((await openTag(page)).status()).toBe(200);
     await manual(page).fill('kept_draft');
@@ -91,7 +100,7 @@ test('renumbered sources under an open Tag dialog: it finds the file again, keep
 });
 
 test('the inspector finds a renumbered file again; checked files from the old numbering are cleared', async ({ page, request }) => {
-    await page.goto(images);
+    await openSettled(page, images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
     await card(page, FIRST).getByRole('checkbox', { name: /^Select / }).check();
     await expect(page.locator('.bulkbar')).toBeVisible();
@@ -113,7 +122,7 @@ test('the inspector finds a renumbered file again; checked files from the old nu
 });
 
 test('a scope that cannot be mapped: Generate and Save are visibly disabled, the reason and Refresh sit beside them', async ({ page }) => {
-    await page.goto(images);
+    await openSettled(page, images);
     await expect(card(page, FIRST)).toBeVisible();
     await expect(await page.request.post('/__test__/scope-key/rotate')).toBeOK();
     const rescoped = answered(page, '/images/rescope');
@@ -157,7 +166,7 @@ test('a scope that cannot be mapped: Generate and Save are visibly disabled, the
 });
 
 test('an unmappable inspector read keeps its visible Refresh, and Refresh recovers the panel', async ({ page }) => {
-    await page.goto(images);
+    await openSettled(page, images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
     await expect(await page.request.post('/__test__/scope-key/rotate')).toBeOK();
     const rescoped = answered(page, '/images/rescope');
@@ -173,7 +182,7 @@ test('an unmappable inspector read keeps its visible Refresh, and Refresh recove
 
 test('a Load more cursor the server cannot verify offers Refresh instead of a dead Retry', async ({ page, request }) => {
     await expect(await request.post('/__test__/tagging/reset', { data: { extra_images: 60 } })).toBeOK();
-    await page.goto(images);
+    await openSettled(page, images);
     await expect(cards(page).first()).toBeVisible();
     await expect(page.locator('#gallery-continuation')).toContainText('more load as you scroll');
     await expect(await request.post('/__test__/scope-key/rotate')).toBeOK();
@@ -191,7 +200,7 @@ test('a Load more cursor the server cannot verify offers Refresh instead of a de
 });
 
 test('a viewer whose media source was renumbered closes onto the file, kept selected', async ({ page, request }) => {
-    await page.goto(images);
+    await openSettled(page, images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
     await expect(await request.post('/__test__/sources/reverse')).toBeOK();
     const rescoped = answered(page, '/images/rescope');
@@ -217,7 +226,7 @@ test('a collection page finds a renumbered member again and stays on its members
     await expect(added).toBeOK();
     const collections = (await (await request.get('/prompt_manager/collections')).json()).collections;
     const { id } = collections.find(item => item.name === name);
-    await page.goto(`/prompt_manager/workspace#/collection/${id}`);
+    await openSettled(page, `/prompt_manager/workspace#/collection/${id}`);
     await expect(cards(page)).toHaveCount(1);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
     await expect(await request.post('/__test__/sources/reverse')).toBeOK();

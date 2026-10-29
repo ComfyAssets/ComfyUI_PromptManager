@@ -28,6 +28,10 @@ stack shows which). A dump after the summary is a hang at interpreter exit
 
 A limit is a measurement, not a dial: change it only with new measurements
 written next to it (TESTING.md "Time limits and hangs").
+
+PM_TEST_SLOWEST=N (opt-in, #487) lists the N slowest tests after the summary.
+A test's time runs from its ``start:`` line to the next one, so it includes
+the class and module fixtures in between, like the hang limit.
 """
 
 import argparse
@@ -36,6 +40,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -63,11 +68,40 @@ def read_limit(name, default):
     return int(text)
 
 
-def make_result_class(stream, per_test_limit, shutdown_limit):
+class TestClock:
+    """Seconds from each test's start to the next start (or the run's end)."""
+
+    def __init__(self, clock=time.perf_counter):
+        self._clock = clock
+        self._current = None
+        self._started = 0.0
+        self.durations = []
+
+    def start(self, test_id):
+        self.stop()
+        self._current = test_id
+        self._started = self._clock()
+
+    def stop(self):
+        if self._current is not None:
+            self.durations.append((self._clock() - self._started, self._current))
+            self._current = None
+
+    def report(self, count):
+        """Return the lines that list the ``count`` slowest tests."""
+        slowest = sorted(self.durations, key=lambda item: item[0], reverse=True)
+        lines = [f"slowest {min(count, len(slowest))} of {len(slowest)} tests:"]
+        lines += [f"{seconds:8.2f}s {test_id}" for seconds, test_id in slowest[:count]]
+        return lines
+
+
+def make_result_class(stream, per_test_limit, shutdown_limit, slowest=0):
     """Build a TextTestResult that names each test and re-arms the watchdog."""
 
     def arm(seconds):
         faulthandler.dump_traceback_later(seconds, exit=True, file=stream)
+
+    clock = TestClock()
 
     class WatchdogResult(unittest.TextTestResult):
         def startTest(self, test):
@@ -75,11 +109,16 @@ def make_result_class(stream, per_test_limit, shutdown_limit):
             prefix = "\n" if self.dots else ""
             stream.write(f"{prefix}start: {test.id()}\n")
             stream.flush()
+            clock.start(test.id())
             super().startTest(test)
             arm(per_test_limit)
 
         def stopTestRun(self):
+            clock.stop()
             super().stopTestRun()
+            if slowest:
+                stream.write("\n".join(["", *clock.report(slowest), ""]))
+                stream.flush()
             arm(shutdown_limit)
 
     return WatchdogResult
@@ -138,6 +177,7 @@ def main(argv=None):
     try:
         per_test_limit = read_limit("PM_TEST_HANG_LIMIT", DEFAULT_PER_TEST_LIMIT)
         shutdown_limit = read_limit("PM_TEST_SHUTDOWN_LIMIT", DEFAULT_SHUTDOWN_LIMIT)
+        slowest = read_limit("PM_TEST_SLOWEST", 0)
     except LimitError as error:
         stream.write(f"{error}\n")
         return USAGE_EXIT
@@ -152,7 +192,9 @@ def main(argv=None):
             verbosity=args.verbosity,
             # As unittest.main does: show warnings unless -W/PYTHONWARNINGS set them.
             warnings=None if sys.warnoptions else "default",
-            resultclass=make_result_class(stream, per_test_limit, shutdown_limit),
+            resultclass=make_result_class(
+                stream, per_test_limit, shutdown_limit, slowest
+            ),
         )
         result = runner.run(suite)
     finally:
