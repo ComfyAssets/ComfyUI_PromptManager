@@ -9,8 +9,9 @@ import {inventoryOf,mapConcept,diffInventory} from './library-editor-canonical-c
 test.use({locale:'en-US',timezoneId:'UTC',reducedMotion:'reduce'});
 const workspace='/prompt_manager/workspace';
 const ACTIONS={new:['Cancel','Save'],metadata:['Create text revision','Archive…','Cancel','Save'],revision:['Cancel','Save'],negative:['Cancel','Save']};
-const LABELS=['Title','Positive prompt','Negative prompt (optional)','Category','Tags, separated by commas','Rating','Notes'];
-const RATINGS=[['5','5 / 5'],['4','4 / 5'],['3','3 / 5'],['2','2 / 5'],['1','1 / 5'],['0','Unrated']];
+// D153 (#447): no Rating field; the fixture's positive stays stored with rating 4 through every workspace save.
+const LABELS=['Title','Positive prompt','Negative prompt (optional)','Category','Tags, separated by commas','Notes'];
+const UNAPPLIED='Saved as a new negative variant of an existing prompt. The title, category, tags and notes you entered were not applied.';
 const editorDialog=page=>page.locator('dialog.library-editor');
 
 test.beforeEach(async({page,request,browserName})=>{
@@ -65,9 +66,8 @@ test('edit recipe metadata shows the concept fields with the selected saved nega
     await expect(dialog.getByRole('region')).toHaveCount(0);
     await expect(field(dialog,'Category')).toHaveValue('Portraits');
     await expect(field(dialog,'Tags, separated by commas')).toHaveValue('studio, window light');
-    await expect(field(dialog,'Rating')).toHaveValue('4');
     await expect(field(dialog,'Notes')).toHaveValue(f.metadata.notes);
-    expect(await field(dialog,'Rating').locator('option').evaluateAll(nodes=>nodes.map(node=>[node.value,node.textContent]))).toEqual(RATINGS);
+    await expect(dialog.getByLabel('Rating')).toHaveCount(0);await expect(dialog.locator('select, #recipe-rating')).toHaveCount(0);
     expect(await field(dialog,'Category').evaluate(node=>[...node.list.options].map(option=>option.value))).toEqual(['Portraits','Sketches']);
     expect(await field(dialog,'Tags, separated by commas').evaluate(node=>[...node.list.options].map(option=>option.value))).toEqual(['draft,','studio,','window light,']);
     await expect(dialog.locator('[placeholder]')).toHaveCount(0);
@@ -82,19 +82,20 @@ test('editor modes persist through reload with selected saved negative',async({p
     const f=page.fixture;await mountEditor(page);
     let dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
     await field(dialog,'Title').fill('Edited portrait');await field(dialog,'Category').fill('');
-    await field(dialog,'Tags, separated by commas').fill('studio, moody');await field(dialog,'Rating').selectOption('0');
+    await field(dialog,'Tags, separated by commas').fill('studio, moody');
     await field(dialog,'Notes').fill('Edited notes');await button(dialog,'Save').click();
     await expect(dialog).toHaveCount(0);
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual([`PATCH /prompt_manager/library/${f.positive_id}`]);
-    expect(page.writes[0].body.metadata).toEqual({title:'Edited portrait',category:'',tags:['studio','moody'],rating:null,notes:'Edited notes'});
+    expect(page.writes[0].body.metadata).toEqual({title:'Edited portrait',category:'',tags:['studio','moody'],notes:'Edited notes'});
     await expect.poll(()=>page.evaluate(()=>window.editorEvents.reconciled.length)).toBe(1);
     const saved=(await detail(request,f.positive_id)).positive;
-    expect(saved).toMatchObject({title:'Edited portrait',category:null,rating:null,notes:'Edited notes'});expect([...saved.tags].sort()).toEqual(['moody','studio']);
+    // D153: the edit never sends a rating, so the stored 4 stays.
+    expect(f.metadata.rating).toBe(4);expect(saved).toMatchObject({title:'Edited portrait',category:null,rating:4,notes:'Edited notes'});expect([...saved.tags].sort()).toEqual(['moody','studio']);
 
     await page.reload();await mountEditor(page);
     dialog=await openEditor(page,{mode:'metadata',positiveId:f.positive_id,pairId:f.pair_id});await ready(dialog);
     await expect(field(dialog,'Title')).toHaveValue('Edited portrait');await expect(field(dialog,'Category')).toHaveValue('');
-    await expect(field(dialog,'Rating')).toHaveValue('0');await expect(field(dialog,'Negative prompt (optional)')).toHaveValue(f.selected_negative);
+    await expect(field(dialog,'Negative prompt (optional)')).toHaveValue(f.selected_negative);
     await button(dialog,'Create text revision').click();
     await expect(dialog.getByRole('heading',{name:'Create text revision',exact:true})).toBeVisible();
     await expect(editorDialog(page)).toHaveCount(1);expect(await dialog.evaluate(node=>node.open&&node.matches(':modal'))).toBe(true);
@@ -106,12 +107,15 @@ test('editor modes persist through reload with selected saved negative',async({p
     await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
     const create=page.writes.at(-1);expect(`${create.method} ${create.url}`).toBe('POST /prompt_manager/library');
     expect(create.body).toMatchObject({positive_text:'Editor portrait, revised dusk light',negative_text:f.selected_negative,
-        parent_metadata:{title:'Edited portrait',category:'Uncategorized',rating:null,notes:'Edited notes'}});
+        parent_metadata:{title:'Edited portrait',category:'Uncategorized',notes:'Edited notes'}});
+    expect(Object.hasOwn(create.body.parent_metadata,'rating'),'D153: a revision sends no rating').toBe(false);
     expect([...create.body.parent_metadata.tags].sort()).toEqual(['moody','studio']);
     await expect.poll(()=>page.evaluate(()=>window.editorEvents.reconciled.length)).toBe(1);
     const revision=await page.evaluate(()=>window.editorEvents.committed.at(-1).receipt);
     expect(revision).toMatchObject({positive_created:true,pair_created:true});expect(revision.positive.id).not.toBe(f.positive_id);
-    expect((await detail(request,revision.positive.id)).positive).toMatchObject({title:'Edited portrait',category:'Uncategorized'});
+    // D153: the revision is a new, unrated positive; the revised prompt keeps its stored rating.
+    expect((await detail(request,revision.positive.id)).positive).toMatchObject({title:'Edited portrait',category:'Uncategorized',rating:null});
+    expect((await detail(request,f.positive_id)).positive.rating).toBe(4);
 
     dialog=await openEditor(page,{mode:'new'});await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
     expect(await actionNames(dialog)).toEqual(ACTIONS.new);
@@ -120,9 +124,9 @@ test('editor modes persist through reload with selected saved negative',async({p
     await expect(field(dialog,'Title')).toBeFocused();expect(await field(dialog,'Title').evaluate(node=>node.validity.valueMissing)).toBe(true);
     expect(page.writes).toHaveLength(before);
     await field(dialog,'Title').fill('Fresh idea');await field(dialog,'Positive prompt').fill('A fresh lighthouse at dawn');
-    await field(dialog,'Rating').selectOption('5');await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
+    await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
     expect(page.writes.at(-1).body).toEqual({expected_epoch:expect.any(String),positive_text:'A fresh lighthouse at dawn',negative_text:'',
-        parent_metadata:{title:'Fresh idea',category:'Uncategorized',tags:[],rating:5,notes:''}});
+        parent_metadata:{title:'Fresh idea',category:'Uncategorized',tags:[],notes:''}});
 
     dialog=await openEditor(page,{mode:'negative',positiveId:f.positive_id});
     await expect(dialog.getByRole('heading',{name:'Add a negative variant',exact:true})).toBeVisible();await ready(dialog);
@@ -134,6 +138,7 @@ test('editor modes persist through reload with selected saved negative',async({p
     const added=await page.evaluate(()=>window.editorEvents.committed.at(-1).receipt);
     expect(added).toMatchObject({positive_created:false,pair_created:true,pair:{negative_text:'grain, dust'}});
     await expect(page.locator('#editor-trigger')).toBeFocused();
+    expect((await detail(request,f.positive_id)).positive.rating,'D153: adding a negative keeps the stored rating').toBe(4);
 });
 
 test('archive confirms the selected pair with fresh counts and writes only on confirm',async({page,request})=>{
@@ -804,20 +809,20 @@ test('archived reuse is reported, shown under Show archived and selected read-on
     await uniqueDotNames(page);
     await page.goto(`${workspace}#/library`);await page.getByRole('button',{name:'+ New prompt',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
     await field(dialog,'Title').fill(f.metadata.title);await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill(f.archived_negative);
-    await field(dialog,'Category').fill(f.metadata.category);await field(dialog,'Tags, separated by commas').fill(f.metadata.tags.join(', '));await field(dialog,'Rating').selectOption(String(f.metadata.rating));await field(dialog,'Notes').fill(f.metadata.notes);
+    await field(dialog,'Category').fill(f.metadata.category);await field(dialog,'Tags, separated by commas').fill(f.metadata.tags.join(', '));await field(dialog,'Notes').fill(f.metadata.notes);
     await button(dialog,'Save').click();await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
     await expect(toast(page)).toHaveText(message);
     await expect(variantsPanel(page).locator('.library-variant-archived .variant-dot')).toHaveAttribute('aria-pressed','true');
     expect(page.writes.every(write=>write.method==='POST')).toBe(true);
 });
 
-test('reuse that leaves parent metadata unapplied discloses it and keeps the draft for Edit metadata',async({page})=>{
+test('reuse that leaves parent metadata unapplied discloses it and keeps the draft for Edit metadata',async({page,request})=>{
     const f=page.fixture;await page.goto(`${workspace}#/library`);
     await page.getByRole('button',{name:'+ New prompt',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
     await field(dialog,'Title').fill('A different title');await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill('brand new negative');
     await field(dialog,'Notes').fill('Draft notes');await button(dialog,'Save').click();
     await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
-    await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.');
+    await expect(toast(page)).toHaveText(UNAPPLIED);
     await expect(page.locator('#workspace-main h1')).toHaveText(f.metadata.title);
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
     await expect(field(dialog,'Title')).toHaveValue('A different title');await expect(field(dialog,'Notes')).toHaveValue('Draft notes');
@@ -825,6 +830,8 @@ test('reuse that leaves parent metadata unapplied discloses it and keeps the dra
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
     await expect(field(dialog,'Title')).toHaveValue(f.metadata.title);await button(dialog,'Cancel').click();
     expect(page.writes).toHaveLength(1);
+    // D153: neither the reuse nor the kept draft touches the stored rating.
+    expect((await detail(request,f.positive_id)).positive.rating).toBe(4);
 });
 
 test('reuse with the stored parent metadata entered does not claim it was not applied',async({page})=>{
@@ -832,7 +839,7 @@ test('reuse with the stored parent metadata entered does not claim it was not ap
     await page.getByRole('button',{name:'+ New prompt',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
     await field(dialog,'Title').fill(f.metadata.title);await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill('another brand new negative');
     await field(dialog,'Category').fill(f.metadata.category);await field(dialog,'Tags, separated by commas').fill(f.metadata.tags.join(', '));
-    await field(dialog,'Rating').selectOption(String(f.metadata.rating));await field(dialog,'Notes').fill(f.metadata.notes);
+    await field(dialog,'Notes').fill(f.metadata.notes);
     await button(dialog,'Save').click();await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
     await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt.');
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();dialog=editorDialog(page);await ready(dialog);
@@ -848,13 +855,13 @@ test('reuse of an uncategorized prompt with the category left blank is not unapp
         await page.goto(`${workspace}#/library`);await page.getByRole('button',{name:'+ New prompt',exact:true}).click();const dialog=editorDialog(page);await ready(dialog);
         await field(dialog,'Title').fill(f.metadata.title);await field(dialog,'Positive prompt').fill(f.positive_text);await field(dialog,'Negative prompt (optional)').fill(negative);
         await field(dialog,'Category').fill(category);await field(dialog,'Tags, separated by commas').fill(f.metadata.tags.join(', '));
-        await field(dialog,'Rating').selectOption(String(f.metadata.rating));await field(dialog,'Notes').fill(f.metadata.notes);
+        await field(dialog,'Notes').fill(f.metadata.notes);
         await button(dialog,'Save').click();await expect(page).toHaveURL(new RegExp(`#/library/${f.positive_id}$`));
     };
     await reuse('','blank category negative');
     await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt.');
     await reuse('Landscapes','different category negative');
-    await expect(toast(page)).toHaveText('Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.');
+    await expect(toast(page)).toHaveText(UNAPPLIED);
     expect(page.writes.map(write=>`${write.method} ${write.url}`)).toEqual(['POST /prompt_manager/library','POST /prompt_manager/library']);
 });
 

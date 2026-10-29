@@ -92,7 +92,8 @@ export function mapImagesConcept(reference,{manifest,now=new Date(manifest.now*1
     const paths=new Map(manifest.images.map(image=>[image.filename,image.path]));
     // D14: the sort appends production's two sorts. Save view is the concept's own (saved views, #249 D16 retired).
     const toolbar={...reference.toolbar};
-    toolbar.items=toolbar.items.map(item=>item.id==='sort'?{...item,options:[...item.options,'Oldest first','Name Z–A']}:item);
+    // D153 (#447): production offers no "Highest rated".
+    toolbar.items=toolbar.items.map(item=>item.id==='sort'?{...item,options:[...item.options.filter(option=>option!=='Highest rated'),'Oldest first','Name Z–A']}:item);
     // D36: the category list is the Library's real list, sorted alphabetically (database/library.py `ORDER BY category
     // COLLATE NOCASE, category`); the concept lists its samples in prompt order (app.js 348). Only the order is mapped.
     // D141 (#332): the list also holds the listed images' own categories (`GET /prompt_manager/images/categories`),

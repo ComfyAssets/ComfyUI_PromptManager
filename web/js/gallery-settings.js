@@ -41,7 +41,8 @@
         videoAutoplay: false,
         videoMute: true,
         videoLoop: true,
-        workspaceLayout: "grid",
+        // #451: Images opens in Masonry unless this browser chose another layout.
+        workspaceLayout: "masonry",
         workspaceDensity: "comfortable",
         // #450 (D156): how the workspace viewer opens.
         viewerOpenMode: "centered",

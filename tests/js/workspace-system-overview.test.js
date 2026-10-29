@@ -141,7 +141,7 @@ test('the report summary says when it was checked and whether it is complete', a
     assert.equal(healthSummary({ ...REPORT, checked_at: 'x' }), 'Nothing was changed; review the checks with issues.');
 });
 
-test('statistics rows are the real runs and ratings, then the library totals', async () => {
+test('statistics rows are the real runs, then the library totals, without ratings (D153)', async () => {
     const { categoryRows, totalsRows } = await overviewModule;
     const statistics = {
         by_category: [{ category: 'Landscapes', runs: 1200, average_rating: 4.5 },
@@ -149,8 +149,8 @@ test('statistics rows are the real runs and ratings, then the library totals', a
         totals: { total_prompts: 12, total_tags: 15, total_images: 24 },
         rated_images: 20,
     };
-    assert.deepEqual(categoryRows(statistics), [['Landscapes', (1200).toLocaleString(), '4.5 / 5'], ['Uncategorized', '3', 'Not rated']]);
-    assert.deepEqual(totalsRows(statistics), [['Prompts', '12'], ['Tags', '15'], ['Images', '24'], ['Rated images', '20']]);
+    assert.deepEqual(categoryRows(statistics), [['Landscapes', (1200).toLocaleString()], ['Uncategorized', '3']]);
+    assert.deepEqual(totalsRows(statistics), [['Prompts', '12'], ['Tags', '15'], ['Images', '24']]);
 });
 
 /** A fake api answering each `get`/`post` from a queue per URL, recording the calls. */
