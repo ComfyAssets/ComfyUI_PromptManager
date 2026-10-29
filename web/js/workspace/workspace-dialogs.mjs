@@ -113,13 +113,13 @@ function bindScope(scope) {
     });
 }
 
-function show(heading, nodes, { scope, trigger, focusTarget, onClose = null, canClose = null }) {
+function show(heading, nodes, { scope, trigger, focusTarget, onClose = null, canClose = null, review = false }) {
     shell ??= createShell();
     if (!shell.dialog.isConnected) document.body.append(shell.dialog);
     bindScope(scope);
     // A swapped-out body is gone from the shell, so its owner releases it.
     const replaced = session?.onClose;
-    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose, canClose };
+    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose, canClose, review };
     replaced?.();
     shell.title.textContent = heading;
     shell.body.replaceChildren(...nodes);
@@ -132,6 +132,14 @@ export function closeWorkspaceDialog() {
     finish();
     shell?.dialog.remove();
     shell = null;
+}
+
+/**
+ * #415: a finished restore ends an open record-changing review (`openReviewDialog`) as a dismissal, since the plan it
+ * reviewed no longer describes storage and it holds nothing typed. Any other dialog stays open.
+ */
+export function closeReviewDialog() {
+    if (session?.review) closeWorkspaceDialog();
 }
 
 function fillSelect(select, key, options) {
@@ -505,7 +513,7 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
     actions.append(cancel, start);
     nodes.push(actions);
     // Cancel, ×, Escape, a replacing dialog or the page leaving: everything but the primary is a dismissal.
-    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null });
+    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null, review: true });
     return {
         setValue(term, text) {
             const dd = values.get(term);

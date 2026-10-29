@@ -908,6 +908,34 @@ test('openReviewDialog lays out heading, grid, options, sentence, backup box and
     }
 });
 
+// #415: a finished restore ends an open review (its reviewed plan no longer describes storage) as a dismissal, and
+// leaves any other dialog, with what was typed in it, open.
+test('closeReviewDialog closes only an open review, as dismissed', async () => {
+    const { openReviewDialog, openInputDialog, closeReviewDialog, closeWorkspaceDialog } = await dialogsModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        closeReviewDialog();
+        const outcomes = [];
+        openInputDialog({ scope, title: 'Save view', label: 'Name', value: 'typed', action: 'Save', onApply() {} });
+        closeReviewDialog();
+        assert.equal(modal(dom).open, true, 'an input dialog stays');
+        assert.equal(byId(dom, 'action-input').value, 'typed');
+        openReviewDialog({ scope, title: 'Restore preview', grid: [['Integrity', 'Verified']], cancelLabel: 'Cancel',
+            primary: { label: 'Restore', danger: true }, onStart: () => outcomes.push('start'), onDismiss: () => outcomes.push('dismiss') });
+        closeReviewDialog();
+        assert.deepEqual(outcomes, ['dismiss']);
+        assert.equal(modal(dom), undefined, 'the shell is gone');
+        closeReviewDialog();
+        assert.deepEqual(outcomes, ['dismiss']);
+    } finally {
+        scope.dispose();
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
 test('review dialog backup box keeps the dialog open and toasts the outcome', async () => {
     const { openReviewDialog, closeWorkspaceDialog, SCAN_BACKUP_COPY } = await dialogsModule;
     const { downloadDatabaseBackup, BACKUP_DONE, BACKUP_FAILED } = await scanModule;

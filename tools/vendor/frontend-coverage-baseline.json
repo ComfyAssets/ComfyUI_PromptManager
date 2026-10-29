@@ -377,6 +377,12 @@
     "functions": 93,
     "statements": 94
   },
+  "workspace/library-selection.mjs": {
+    "lines": 98,
+    "branches": 86,
+    "functions": 84,
+    "statements": 98
+  },
   "workspace/library-state.mjs": {
     "lines": 98,
     "branches": 95,

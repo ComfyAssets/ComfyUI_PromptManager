@@ -619,7 +619,8 @@ test('card matches the concept and never wraps the category mid-word',async({pag
         const card=page.locator(`article[data-prompt-id="${cat.id}"]`);
         // app.js renderLibrary a586: article.prompt-card > .card-art, .card-content, .card-footer.
         await expect(card).toHaveClass('prompt-card');
-        expect(await card.evaluate(node=>[...node.children].map(child=>child.className))).toEqual(['card-art','card-content','card-footer']);
+        // D148 (#437): the concept's Images selection overlay leads the card.
+        expect(await card.evaluate(node=>[...node.children].map(child=>child.className))).toEqual(['image-overlays','card-art','card-content','card-footer']);
         expect(await card.locator('.card-art').evaluate(node=>[...node.children].map(child=>child.tagName))).toEqual(['IMG','IMG']);
         expect(await card.locator('.card-content').evaluate(node=>[...node.children].map(child=>child.className))).toEqual(['card-title','prompt-inspector','card-meta','tags']);
         expect(await card.locator('.card-title').evaluate(node=>[...node.children].map(child=>`${child.tagName}.${child.className}`))).toEqual(['BUTTON.','SPAN.chip']);

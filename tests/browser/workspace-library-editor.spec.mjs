@@ -1,7 +1,7 @@
 import {writeFile} from 'node:fs/promises';
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
-import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
+import {armUnseenRestores,unseenRestore,followRestore,SEEN_RESTORE_PILL,SEEN_RESTORE_TOAST} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {inventoryOf,mapConcept,diffInventory} from './library-editor-canonical-comparison.mjs';
 
@@ -453,6 +453,37 @@ async function leaveAndReturn(page,id) {
     await page.evaluate(id=>{location.hash=`#/library/${id}`;},id);await expect(variantsPanel(page)).toBeVisible();await expect(pressedVariant(page)).toHaveCount(1);
 }
 const laneLabel=(page,text)=>variantsPanel(page).locator('.variant-lane').filter({hasText:text});
+
+// #415: a restore the page sees finish while New prompt is open keeps the dialog and its entries; the Library is shown
+// again from the restored data only once the dialog has closed.
+test('a restore seen finishing keeps New prompt open and reloads the Library after it closes',async({page,request})=>{
+    const f=page.fixture;const snapshot=await request.get('/__test__/library-editor/snapshot');await expect(snapshot).toBeOK();
+    const buffer=await snapshot.body();
+    const current=await detail(request,f.positive_id,'active');
+    await expect(await request.patch(`/prompt_manager/library/${f.positive_id}`,{data:{expected_epoch:current.library_epoch,if_match:current.positive.edit_token,metadata:{title:'Retitled elsewhere'}}})).toBeOK();
+    const restoreRun=await followRestore(page);
+    await page.goto(`${workspace}#/library`);const card=page.locator(`article[data-prompt-id="${f.positive_id}"]`);
+    await expect(card).toContainText('Retitled elsewhere');
+    await expect(page.locator('#activity-pill')).toHaveAttribute('href',SEEN_RESTORE_PILL);
+    await headingActions(page).getByRole('button',{name:'+ New prompt',exact:true}).click();
+    const dialog=editorDialog(page);await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
+    await field(dialog,'Title').fill('Typed before restore');await field(dialog,'Positive prompt').fill('A prompt typed while storage was restored');
+    await expect(await request.post('/prompt_manager/restore',{multipart:{database_file:{name:'editor.db',mimeType:'application/octet-stream',buffer}}})).toBeOK();
+    page.writes.length=0;
+    await restoreRun.finish();
+    await expect(toast(page)).toHaveText(SEEN_RESTORE_TOAST);
+    await expect(dialog).toBeVisible();
+    await expect(field(dialog,'Title')).toHaveValue('Typed before restore');
+    await expect(field(dialog,'Positive prompt')).toHaveValue('A prompt typed while storage was restored');
+    await expect(card).toContainText('Retitled elsewhere');
+    await button(dialog,'Save').click();
+    await expect(note(dialog)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was saved.');
+    await expect(button(dialog,'Save')).toBeDisabled();expect(page.writes).toHaveLength(1);
+    await button(dialog,'Cancel').click();await expect(dialog).toHaveCount(0);
+    await expect(card).not.toContainText('Retitled elsewhere');await expect(card).toContainText('Editor portrait');
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
+    expect(page.writes).toHaveLength(1);
+});
 
 test('library heading offers Export then + New prompt, and New opens the saved prompt history',async({page,request})=>{
     await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();

@@ -15,6 +15,7 @@ import {pageHeading} from './heading.mjs';
 import {mountToolbar} from './toolbar.mjs';
 import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
+import {mountLibrarySelection} from './library-selection.mjs';
 import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
 
 let shelfVisit=null;
@@ -40,6 +41,8 @@ export function libraryFolderOptions(folders,current='') {
     const listed=[...folders];if(current && !listed.includes(current)) listed.push(current);
     return [['','All output folders'],...listed.map(folder=>{const parts=folder.split('/');return [folder,`${'\u00a0\u00a0'.repeat(parts.length-1)}${parts.at(-1)}`];})];
 }
+// A card's focusable controls in order: the D148 selection checkbox, then its buttons (#437).
+const CARD_CONTROLS='button, input[type="checkbox"]';
 const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
 const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative variants.';
 function el(tag,text,className) {
@@ -182,6 +185,11 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         // The count is announced when it changes; a reload keeps the last count shown, so nothing else re-announces it.
         captionCount.setAttribute('role','status');
         const grid=el('div',undefined,'library-grid');grid.setAttribute('role','list');grid.setAttribute('aria-label','Positive prompts');
+        // #437 D148: select prompts and set their category (the legacy admin's Set Category); a write reloads the shelf.
+        let categoryNames=[];
+        const selection=mountLibrarySelection({scope,api,grid,getItems:()=>state?.items ?? [],getEpoch:()=>state?.epoch ?? null,
+            getCategories:()=>categoryNames,focusFallback:{focus:()=>focusHeading(main)},
+            onCommitted:receipt=>invalidateLibraryAfterWrite({kind:'bulk-category',receipt}),onReload:()=>{loadCategories();reset();}});
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
@@ -212,7 +220,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         scope.listen(exportButton,'click',exportLibrary);
         headingDescription(main,section,'One positive. Reusable negatives. Every experiment stays connected.');
         // Nothing follows the grid in the concept; the legacy Library stays one click away on Overview (spec §5).
-        continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,caption,grid,continuation);main.append(section);
+        continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,selection.element,caption,grid,continuation);main.append(section);
         const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
         let state,frame=0,loadFrame=0,observer,optionsRequest,folderRequest,focusOverride=-1;
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
@@ -257,7 +265,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const send=createButton('','send icon-btn');send.setAttribute('aria-label',`Send positive prompt to ComfyUI: ${name}`);send.append(createWorkspaceIcon('send'));send.dataset.sendPositive='';
             const explore=createButton('');explore.append(createWorkspaceIcon('branch'),' Explore history');explore.dataset.history='';
             actions.append(send,explore);footer.append(facts,actions);
-            article.append(art,content,footer);article.dataset.index=index;return {node:article,blocks};
+            article.append(selection.overlayFor(item,name),art,content,footer);article.dataset.index=index;return {node:article,blocks};
         }
         function captureAnchor() {
             // Mounted rows can already differ from estimates before their observer batch.
@@ -351,10 +359,11 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             if(changed) {pendingAnchor ||= anchor;schedule();}
         }):null;
         measurementObserver?.observe(grid);
-        function focusCard(index,last=false) {
+        /** Focus a card's first or `last` control (Tab across the window edge), or its title (`title`: Home/End/arrows). */
+        function focusCard(index,last=false,title=false) {
             if(index<0 || index>=state.items.length) return;
             if(dirty) {cancelAnimationFrame(frame);flush();}focusOverride=index;renderWindow();const card=cards.get(state.items[index].id).node;
-            const controls=card.querySelectorAll('button');(last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
+            const controls=card.querySelectorAll(CARD_CONTROLS);(title?card.querySelector('.card-title > button'):last?controls[controls.length-1]:controls[0]).focus();card.scrollIntoView({block:'nearest'});focusOverride=-1;renderWindow();
         }
         // The title and Explore history open the prompt's history; the footer send sends the full positive (D23).
         scope.listen(grid,'click',event=>{
@@ -366,9 +375,9 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         scope.listen(grid,'keydown',event=>{
             const card=event.target.closest('article[data-prompt-id]');if(!card) return;
             const index=Number(card.dataset.index);
-            if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1));}
+            if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1),false,true);}
             else if(event.key==='Tab') {
-                const controls=card.querySelectorAll('button');const next=index+(event.shiftKey?-1:1);
+                const controls=card.querySelectorAll(CARD_CONTROLS);const next=index+(event.shiftKey?-1:1);
                 const edge=event.shiftKey?controls[0]:controls[controls.length-1];
                 if(event.target===edge && state.items[next] && !cards.has(state.items[next].id)) {event.preventDefault();focusCard(next,event.shiftKey);}
             }
@@ -403,10 +412,10 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             optionsRequest?.abort();const request=optionsRequest=new AbortController();
             try {
                 const data=await api.get('/prompt_manager/library/options',{signal:request.signal});if(scope.signal.aborted || optionsRequest!==request) return;
-                toolbar.setCategories([...data.categories,filters.category]);toolbar.setValue({category:filters.category});optionsStatus.hidden=true;
+                categoryNames=[...data.categories];toolbar.setCategories([...data.categories,filters.category]);toolbar.setValue({category:filters.category});optionsStatus.hidden=true;
             } catch {if(!scope.signal.aborted && optionsRequest===request) {optionsStatus.textContent=CATEGORIES_FAILED;optionsStatus.hidden=false;}}
         }
-        const reset=()=>{restoreScrollY=null;toolbar.setActiveFilters(refinements());return stream.reset(filters);};
+        const reset=()=>{restoreScrollY=null;selection.clear();toolbar.setActiveFilters(refinements());return stream.reset(filters);};
         /** A toolbar report; a debounced search that lands after a select already applied the same values reloads nothing. */
         function applyToolbar(value) {
             const next={text:value.q.trim(),category:value.category,sort:value.sort};
