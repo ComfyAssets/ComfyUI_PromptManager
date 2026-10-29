@@ -6,7 +6,7 @@ import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './libr
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
-import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './library-layout.mjs';
+import {layoutLibraryRows,visibleLibraryRows,usedLabel} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
@@ -30,8 +30,8 @@ const selectedPairs=new Map();
 // Parent metadata a reuse did not apply, kept for an explicit Edit metadata action.
 const metadataDrafts=new Map();
 const archivedVisible=new Map();
-// The concept's three sorts first, then the Library's appended Oldest first (D14).
-const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+// The concept's sorts first, then the Library's appended Oldest first (D14); D153 (#447) drops "Highest rated".
+const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['oldest','Oldest first']]);
 // A card's focusable controls in order: the D148 selection checkbox, then its buttons (#437).
 const CARD_CONTROLS='button, input[type="checkbox"]';
 const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
@@ -114,7 +114,7 @@ function outcomeMessage(result,outcome) {
     if(kind!=='create' && kind!=='add-negative') return null;
     if(receipt.positive_created) return 'Saved.';
     if(receipt.pair_created) return kind==='add-negative'?'Negative saved without adding another positive or gallery.'
-        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.'
+        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags and notes you entered were not applied.'
             :'Saved as a new negative variant of an existing prompt.';
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
     return 'This prompt pair already exists. Showing the saved version.';
@@ -125,7 +125,7 @@ function takeSavedSelection(positiveId) {
 }
 function rememberUnappliedMetadata(result,{outcome,draft}={}) {
     if(result.commit.kind!=='create' || !outcome?.metadataNotApplied || !draft) return;
-    const {title:name,category,tags,rating,notes}=draft;metadataDrafts.set(result.detail.positive.id,{title:name,category,tags,rating,notes});
+    const {title:name,category,tags,notes}=draft;metadataDrafts.set(result.detail.positive.id,{title:name,category,tags,notes});
 }
 /** New prompt, from Library or Images: a saved prompt always opens its own history, as in the concept. */
 function createNewPromptEditor(api,scope,main) {
@@ -163,6 +163,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const restorable=visit?.state?visit:null;
         // #443 D152: `shelf` ('active' or 'archived', Show archived prompts) lives in the visit's filters, never in a saved view.
         const filters={text:'',category:'',tags:[],sort:'newest',shelf:'active',...visit?.filters,...saved};
+        // D153: a sort the shelf no longer offers (an older "Highest rated" visit) reads as Recently added.
+        if(!LIBRARY_SORTS.some(([value])=>value===filters.sort)) filters.sort='newest';
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
@@ -232,7 +234,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         if(restorable?.layout?.inlineSize===inlineSize && restorable.layout.columns===columnCount) for(const [id,height] of restorable.layout.heights) heights.set(id,height);
         const hiddenSave=restorable?null:savedParentId;savedParentId=null;
         function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
-        /** The concept's prompt card (app.js renderLibrary a586) with real counts, last use and rating (#249 D23). */
+        /** The concept's prompt card (app.js renderLibrary a586) with real counts and last use (#249 D23; no rating, D153). */
         function cardFor(item,index) {
             const article=el('article',undefined,'prompt-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
             const art=el('div',undefined,'card-art');art.setAttribute('aria-hidden','true');
@@ -259,10 +261,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const vocabulary=el('div',undefined,'tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'chip'));
             content.append(heading,prompts,meta,vocabulary);
             const footer=el('div',undefined,'card-footer');
-            const {stars,hidden}=ratingLabel(item.rating), used=usedLabel(item.last_used_at);
-            const facts=el('span');
-            if(stars) {const shown=el('span',stars);shown.setAttribute('aria-hidden','true');facts.append(shown,el('span',hidden,'ca-visually-hidden'),` \u00b7 ${used}`);}
-            else facts.textContent=used;
+            // D153 (#447): the footer reads only the last use; the concept's rating stars are not drawn.
+            const facts=el('span',usedLabel(item.last_used_at));
             const actions=el('div',undefined,'row-actions');
             const send=createButton('','send icon-btn');send.setAttribute('aria-label',`Send positive prompt to ComfyUI: ${name}`);send.append(createWorkspaceIcon('send'));send.dataset.sendPositive='';
             const explore=createButton('');explore.append(createWorkspaceIcon('branch'),' Explore history');explore.dataset.history='';

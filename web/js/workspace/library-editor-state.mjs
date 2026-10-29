@@ -9,7 +9,9 @@
  */
 const MODES = new Set(['new', 'metadata', 'revision', 'negative']);
 const KINDS = new Set(['metadata', 'create', 'add-negative', 'archive-pair', 'restore-pair']);
-const FIELDS = ['title', 'positive_text', 'negative_text', 'category', 'tags', 'notes', 'rating'];
+// D153 (#447): the workspace edits no 1–5 rating; a stored one is left exactly as it is.
+export const EDITOR_FIELDS = Object.freeze(['title', 'positive_text', 'negative_text', 'category', 'tags', 'notes']);
+const FIELDS = EDITOR_FIELDS;
 const RECOVERY = {'metadata-conflict': 'conflict', 'storage-changed': 'storage-changed'};
 // A proxy timeout or bad gateway cannot tell whether the server committed the write.
 const UNCONFIRMED_STATUS = new Set([502, 503, 504]);
@@ -106,27 +108,20 @@ export function fallbackTitle(text) {return text.split('\n')[0].trim();}
 export function parseTags(value) {return [...new Set(value.split(',').map(tag => tag.trim()).filter(Boolean))];}
 const sameTags = (a, b) => a.length === b.length && new Set([...a, ...b]).size === a.length;
 const stored = value => (value ?? '').trim();
-function normalizeRating(value) {
-    if (value === null || value === '') return null;
-    const number = typeof value === 'string' && /^[1-5]$/.test(value) ? Number(value) : value;
-    if (!rating(number)) throw new TypeError('Rating must be 1 to 5 or null');
-    return number;
-}
-
-const blankDraft = () => ({title: '', positive_text: '', negative_text: '', category: '', tags: '', notes: '', rating: null});
+const blankDraft = () => ({title: '', positive_text: '', negative_text: '', category: '', tags: '', notes: ''});
 function seedDraft(mode, {owner, pair}) {
     if (!owner) return blankDraft();
     if (mode === 'negative') return {...blankDraft(), positive_text: owner.text};
     return {title: stored(owner.title) ? owner.title : fallbackTitle(owner.text), positive_text: owner.text,
         negative_text: pair ? pair.negative_text : '', category: owner.category ?? '', tags: owner.tags.join(', '),
-        notes: owner.notes ?? '', rating: owner.rating};
+        notes: owner.notes ?? ''};
 }
 /** Keep fields the user changed from the previous seed; the rest follow the new seed. */
 function overlay(next, draft, previous) {
     return Object.fromEntries(FIELDS.map(name => [name, draft[name] !== previous[name] ? draft[name] : next[name]]));
 }
 function baselineOf(owner) {
-    return owner && {title: owner.title, category: owner.category, tags: [...owner.tags], rating: owner.rating, notes: owner.notes};
+    return owner && {title: owner.title, category: owner.category, tags: [...owner.tags], notes: owner.notes};
 }
 
 /** Only changed fields; an untouched fallback title is not a title edit. */
@@ -136,19 +131,18 @@ function metadataChanges(draft, seed, baseline) {
     if (draft.title !== seed.title && title !== stored(baseline.title)) changes.title = title;
     if (category !== stored(baseline.category)) changes.category = category;
     if (!sameTags(tags, baseline.tags)) changes.tags = tags;
-    if (draft.rating !== baseline.rating) changes.rating = draft.rating;
     if (draft.notes !== (baseline.notes ?? '')) changes.notes = draft.notes;
     return changes;
 }
 function createMetadata(draft) {
     return {title: draft.title.trim(), category: draft.category.trim() || UNCATEGORIZED, tags: parseTags(draft.tags),
-        rating: draft.rating, notes: draft.notes};
+        notes: draft.notes};
 }
 // A blank category is stored as NULL; "Uncategorized" is only the UI's label for it.
 const categoryKey = value => (stored(value) === UNCATEGORIZED ? '' : stored(value));
 function sameMetadata(sent, owner) {
     return sent.title === stored(owner.title) && categoryKey(sent.category) === categoryKey(owner.category) && sameTags(sent.tags, owner.tags) &&
-        sent.rating === owner.rating && sent.notes === (owner.notes ?? '');
+        sent.notes === (owner.notes ?? '');
 }
 function draftProblem(mode, draft) {
     if (mode !== 'negative' && !draft.title.trim()) return Object.assign(new Error('Title is required'), {code: 'invalid-draft'});
@@ -328,9 +322,8 @@ export function createLibraryEditorController({api, mode, positiveId = null, pai
         },
         setField(name, value) {
             if (!FIELDS.includes(name)) throw new TypeError(`Unknown editor field: ${name}`);
-            const next = name === 'rating' ? normalizeRating(value) : value;
-            if (name !== 'rating' && typeof next !== 'string') throw new TypeError(`${name} must be a string`);
-            emit({draft: {...state.draft, [name]: next}});
+            if (typeof value !== 'string') throw new TypeError(`${name} must be a string`);
+            emit({draft: {...state.draft, [name]: value}});
         },
         async submit() {
             if (disposed || !SUBMITTABLE.has(state.phase)) return;

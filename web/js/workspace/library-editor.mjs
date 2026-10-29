@@ -7,12 +7,11 @@
  * module only renders `controller.state` and forwards user actions.
  */
 import { createButton } from '../shared/toolkit/core.js';
-import { createLibraryEditorController } from './library-editor-state.mjs';
+import { createLibraryEditorController, EDITOR_FIELDS } from './library-editor-state.mjs';
 
 const TITLES = {new: 'New prompt', metadata: 'Edit recipe metadata', revision: 'Create text revision', negative: 'Add a negative variant'};
-const RATINGS = [['5', '5 / 5'], ['4', '4 / 5'], ['3', '3 / 5'], ['2', '2 / 5'], ['1', '1 / 5'], ['0', 'Unrated']];
 const FIELD_IDS = {title: 'recipe-title', positive_text: 'recipe-positive', negative_text: 'recipe-negative', category: 'recipe-category',
-    tags: 'recipe-tags', rating: 'recipe-rating', notes: 'recipe-notes'};
+    tags: 'recipe-tags', notes: 'recipe-notes'};
 const SUBMITTABLE = new Set(['ready', 'write-error']);
 const NEGATIVE_HELP = 'Leave empty for an explicitly empty negative. The positive stays unchanged.';
 const NO_PAIR = 'Archive needs a selected saved negative variant.';
@@ -218,9 +217,8 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             category.setAttribute('list', 'categories');
             tagInput.setAttribute('list', 'tag-options');
             columns.append(field('Category', category, FIELD_IDS.category), field('Tags, separated by commas', tagInput, FIELD_IDS.tags));
-            const rating = controls.rating = el('select');
-            for (const [value, text] of RATINGS) rating.add(new Option(text, value));
-            form.append(columns, categories, tags, field('Rating', rating, FIELD_IDS.rating), field('Notes', textarea('notes'), FIELD_IDS.notes));
+            // D153 (#447): no Rating field; the concept's `#recipe-rating` select is not drawn.
+            form.append(columns, categories, tags, field('Notes', textarea('notes'), FIELD_IDS.notes));
         } else form.append(el('p', NEGATIVE_HELP, 'small'));
         const line = statusLine(), recovery = new Map();
         const actions = el('div', undefined, 'dialog-actions');
@@ -230,9 +228,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         form.append(line.note, actions);
 
         for (const [name, node] of Object.entries(controls)) {
-            node.addEventListener(node.tagName === 'SELECT' ? 'change' : 'input', () => {
-                controller.setField(name, name === 'rating' && node.value === '0' ? null : node.value);
-            }, {signal: views.signal});
+            node.addEventListener('input', () => controller.setField(name, node.value), {signal: views.signal});
         }
         form.addEventListener('submit', event => {
             event.preventDefault();
@@ -246,7 +242,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         let categoryKey = null, refocus = null;
         function render(state) {
             for (const [name, node] of Object.entries(controls)) {
-                const value = name === 'rating' ? String(state.draft.rating ?? 0) : state.draft[name];
+                const value = state.draft[name];
                 if (node.value !== value) node.value = value;
             }
             const key = state.categories.join('\n');
@@ -274,7 +270,8 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
 
         body.replaceChildren(form);
         return {controller, views, render, start() {
-            if (draft) for (const [name, value] of Object.entries(draft)) controller.setField(name, value);
+            // A kept draft carries only the editor's own fields (D153: never a rating).
+            if (draft) for (const [name, value] of Object.entries(draft)) if (EDITOR_FIELDS.includes(name)) controller.setField(name, value);
             render(controller.state);
             controller.initialize();
         }};
