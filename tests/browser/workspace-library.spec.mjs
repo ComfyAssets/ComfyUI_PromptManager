@@ -57,6 +57,26 @@ test('library groups reusable negatives under one positive without exposing nega
     for(const item of rows.items) await expect(page.locator(`article[data-prompt-id="${item.id}"] .card-meta > span`).nth(1)).toHaveText(`${item.run_count} run${item.run_count===1?'':'s'}`);
 });
 
+// #464: a starved renderer (headless WebKit under CPU load, a background tab) can hold animation frames for seconds;
+// a loaded page of prompts is shown without waiting for one.
+test('a held animation frame does not hide a loaded page of prompts, the first or a later one',async({page,request})=>{
+    await expect(await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:45}})).toBeOK();
+    const {total}=await(await request.get('/prompt_manager/library?limit=100')).json();
+    await page.addInitScript(()=>{
+        const request=window.requestAnimationFrame.bind(window),cancel=window.cancelAnimationFrame.bind(window);
+        const held=new Map(),real=new Map();let holding=true,next=0;
+        window.requestAnimationFrame=callback=>{const id=--next;if(holding)held.set(id,callback);else real.set(id,request(callback));return id;};
+        window.cancelAnimationFrame=id=>{held.delete(id);if(real.has(id))cancel(real.get(id));real.delete(id);};
+        window.__releaseAnimationFrames=()=>{holding=false;for(const [id,callback] of held)real.set(id,request(callback));held.clear();};
+    });
+    await page.goto(route);
+    const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+    await expect(more).toHaveAttribute('aria-disabled','false');await expect(cards(page)).toHaveCount(40);
+    await more.evaluate(node=>node.click());await expect(page.locator('.library-status')).toHaveText('You’re all caught up.');
+    await expect(cards(page)).toHaveCount(total);
+    await page.evaluate(()=>window.__releaseAnimationFrames());await nextFrame(page);
+    await expect(cards(page)).toHaveCount(total);await expect(page.locator('.library-row-spacer')).toHaveCount(0);
+});
 test('history displays the selected full negative beneath its positive and filters one shared physical gallery',async({page,request})=>{
     const rows=await(await request.get('/prompt_manager/library')).json();const cat=rows.items.find(item=>item.text==='Cat portrait');
     const data=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
@@ -153,13 +173,25 @@ test('failed library reads retry while late search responses cannot overwrite ne
     await expect(cards(page)).toHaveCount(1);await expect(cards(page).first()).toContainText('Dog landscape');release();await expect(cards(page).first()).toContainText('Dog landscape');
 });
 
+// D153 (#447): a Browse visit that still names the retired "Highest rated" sort opens the shelf on Recently added.
+test('a Library visit with the retired rating sort opens on Recently added',async({page})=>{
+    await page.goto(route);await expect(cards(page)).toHaveCount(3);
+    const sorts=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library')sorts.push(url.searchParams.get('sort'));});
+    await page.goto('/prompt_manager/workspace#/overview');await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
+    await page.evaluate(async()=>{const {browseLibrary}=await import('/prompt_manager/js/workspace/library.mjs');browseLibrary({sort:'rating'});});
+    await expect(cards(page)).toHaveCount(3);
+    await expect(page.getByRole('combobox',{name:'Sort results',exact:true})).toHaveValue('newest');
+    expect(sorts).toEqual(['newest']);
+});
+
 test('library toolbar matches the concept and tags live in Refine this view',async({page})=>{
     await page.goto(route);await expect(cards(page)).toHaveCount(3);
     // app.js toolbar() a347–360: search.toolbar > label.search-field (input#search), select#category-filter, select#sort, Save view, Filters.
     const toolbar=page.locator('#workspace-main search.toolbar');await expect(toolbar).toHaveCount(1);
     expect(await toolbar.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.id?`#${child.id}`:'')+(child.className?`.${child.className.split(' ').filter(name=>!name.startsWith('ca-')).join('.')}`:'')))).toEqual(['label.search-field','select#category-filter','select#sort','button','button']);
     await expect(toolbar.locator('#search')).toHaveAttribute('placeholder','Search prompts, tags, filenames…');
-    await expect(toolbar.locator('#sort option')).toHaveText(['Recently added','Name A–Z','Highest rated','Oldest first']);
+    // D153 (#447): no "Highest rated".
+    await expect(toolbar.locator('#sort option')).toHaveText(['Recently added','Name A–Z','Oldest first']);
     await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters']);
     await expect(page.getByRole('button',{name:'Refresh library',exact:true})).toHaveCount(0);
     await expect(page.getByRole('textbox',{name:'Tags',exact:true})).toHaveCount(0);
@@ -240,7 +272,8 @@ test('a sort change atomically discards old row geometry and renders changed par
     } finally {await page.evaluate(()=>window.releaseLibraryFrames());}
     await expect(cards(page)).toHaveCount(3);
     const changed=page.locator(`article[data-prompt-id="${id}"]`);await expect(changed).toContainText('Revised dog landscape');
-    await expect(changed.locator('.card-footer .ca-visually-hidden')).toHaveText('Rated 5 out of 5');await expect(changed.locator('.card-footer > span > [aria-hidden="true"]')).toHaveText('★★★★★');
+    // D153: a stored rating of 5 still draws no stars.
+    await expect(changed.locator('.card-footer > span')).not.toContainText('★');await expect(changed.locator('.card-footer > span > *')).toHaveCount(0);
     await expect(page.getByRole('button',{name:'Retry prompt library',exact:true})).toBeHidden();
 });
 
@@ -446,8 +479,8 @@ test('Library cards clamp long prompts and keep real content inside the card',as
         for(const item of data.items) {
             const card=page.locator(`article[data-prompt-id="${item.id}"]`);
             const footer=card.locator('.card-footer > span');
-            await expect(footer.locator('[aria-hidden="true"]')).toHaveText(item.rating?'★'.repeat(item.rating):[]);
-            await expect(footer.locator('.ca-visually-hidden')).toHaveText(item.rating?`Rated ${item.rating} out of 5`:[]);
+            // D153: no stars or "Rated N out of 5", whatever the stored rating.
+            await expect(footer.locator('> *')).toHaveCount(0);
             await expect(card.locator('.card-content > .tags .chip')).toHaveText(item.tags);
             await expect(card.locator('.card-meta > span').nth(1)).toHaveText(`${item.run_count} run${item.run_count===1?'':'s'}`);
         }
@@ -599,7 +632,7 @@ async function patchShelf(page,patch) {
         await route.fulfill({response,json:body});
     });
 }
-/** The footer line as seen: everything but its visually hidden rating sentence. */
+/** The footer line as seen: everything but visually hidden text (D153: there is no rating sentence any more). */
 const shownText=node=>[...node.childNodes].filter(child=>!child.classList?.contains('ca-visually-hidden')).map(child=>child.textContent).join('');
 const longPrompt=[`${'A luminous alpine observatory with layered glass terraces '.repeat(6)}`,'second paragraph keeps the full text',`final line ${'detail '.repeat(30)}end of prompt`].join('\n');
 
@@ -635,13 +668,13 @@ test('card matches the concept and never wraps the category mid-word',async({pag
         await expect(card.locator('.tags > .chip')).toHaveText(['cats','studio']);
         const footer=card.locator('.card-footer');
         expect(await footer.evaluate(node=>[...node.children].map(child=>`${child.tagName}.${child.className}`))).toEqual(['SPAN.','DIV.row-actions']);
-        await expect(footer.locator('> span > [aria-hidden="true"]')).toHaveText('★★★★★');
-        await expect(footer.locator('> span > .ca-visually-hidden')).toHaveText('Rated 5 out of 5');
-        expect(await footer.locator('> span').evaluate(shownText)).toBe('★★★★★ · Used today');
+        // D153 (#447): the stored rating 5 draws no stars; the footer reads only the last use.
+        await expect(footer.locator('> span > *')).toHaveCount(0);
+        expect(await footer.locator('> span').evaluate(shownText)).toBe('Used today');
         const actions=footer.locator('.row-actions > button');await expect(actions).toHaveCount(2);
         await expect(actions.first()).toHaveClass('send icon-btn');await expect(actions.first()).toHaveAccessibleName('Send positive prompt to ComfyUI: Cat portrait');
         await expect(actions.nth(1)).toHaveAccessibleName('Explore history');await expect(actions.nth(1).locator('svg')).toHaveCount(1);
-        // Unrated and never used: the used label alone; no negatives still reads as a count.
+        // Never used: the used label alone; no negatives still reads as a count.
         const unrated=page.locator(`article[data-prompt-id="${dual.id}"]`);
         expect(await unrated.locator('.card-footer > span').evaluate(shownText)).toBe('Not used yet');
         await expect(unrated.locator('.card-footer > span > [aria-hidden="true"]')).toHaveCount(0);

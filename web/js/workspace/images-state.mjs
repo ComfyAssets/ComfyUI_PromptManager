@@ -1,23 +1,39 @@
 import { noun } from './plural.mjs';
 
 /** Identity is the source and relative path; content hashes may be shared by files. */
+/** The layout and size a saved view, an embedded gallery and a page without readable preferences use. */
+const FIXED_VIEW = Object.freeze({ layout: 'grid', density: 'comfortable' });
+
 /**
- * The layout and thumbnail size an Images visit starts with (#249 System S3). The last visit (the current view) keeps
- * its own; a saved view starts as before, at Grid and Comfortable; any other new visit starts from System ›
- * Appearance's defaults (`preferences`, preferences.mjs values, or null when unavailable).
+ * The defaults a new Images visit starts from: System › Appearance's (`preferences`, preferences.mjs values; Masonry
+ * when the layout is missing, #451), or the fixed Grid/Comfortable when they are unavailable (null).
+ */
+export function visitDefaults(preferences) {
+    if (!preferences) return { ...FIXED_VIEW };
+    return { layout: preferences.workspaceLayout || 'masonry', density: preferences.workspaceDensity || 'comfortable' };
+}
+
+/**
+ * The layout and thumbnail size an Images visit starts with (#249 System S3). A saved view starts as before, at Grid
+ * and Comfortable; any other new visit starts from `visitDefaults(preferences)`. The last visit (`prior`, the current
+ * view) keeps a value its toolbar changed; a value it kept from the defaults it started from (`prior.defaults`) follows
+ * defaults saved since, in this tab or another (#451). A prior without `defaults` keeps its own values.
  */
 export function initialImagesView({ prior = null, saved = null, preferences = null } = {}) {
-    if (prior) return { layout: prior.layout || 'grid', density: prior.density || 'comfortable' };
-    if (saved || !preferences) return { layout: 'grid', density: 'comfortable' };
-    return { layout: preferences.workspaceLayout || 'grid', density: preferences.workspaceDensity || 'comfortable' };
+    if (!prior) return saved ? { ...FIXED_VIEW } : visitDefaults(preferences);
+    const own = { layout: prior.layout || FIXED_VIEW.layout, density: prior.density || FIXED_VIEW.density };
+    if (!prior.defaults || !preferences) return own;
+    const current = visitDefaults(preferences);
+    const follow = key => own[key] === prior.defaults[key] ? current[key] : own[key];
+    return { layout: follow('layout'), density: follow('density') };
 }
 
 export function imageKey(image) {
     return `${image.root_index}:${image.path}`;
 }
 
-/** The workspace listing's sorts: the concept's Recently added, Name A–Z and Highest rated, plus Oldest and Z–A (D14). */
-export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc', 'rating']);
+/** The workspace listing's sorts: the concept's Recently added and Name A–Z, plus Oldest and Z–A (D14; no rating, D153). */
+export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc']);
 
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
 // The largest page a refresh asks for (the listing clamps at 500).
@@ -299,7 +315,7 @@ const startOfDay = date => new Date(date.getFullYear(), date.getMonth(), date.ge
 
 /**
  * D17: the caption's right-hand date, "<Today|Yesterday|weekday> · <Month D>" of the newest result under Newest first,
- * with ", YYYY" outside the current year; '' under Oldest first and the name or rating sorts.
+ * with ", YYYY" outside the current year; '' under Oldest first and the name sorts.
  */
 export function captionDate(items, sort, now = new Date()) {
     if (sort !== 'newest') return '';

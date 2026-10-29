@@ -25,9 +25,10 @@ export function inventoryOf(dialog) {
         demo:Boolean(dialog.querySelector('.demo-note')),
     };
 }
-// Documented differences only: prototype Save label, prototype demo note, and data-dependent values.
+// Documented differences only: prototype Save label, prototype demo note, data-dependent values, and D153 (#447): the
+// concept's "Rating" select is not drawn.
 export function mapConcept(reference) {
-    return {...reference,demo:false,actions:{...reference.actions,buttons:reference.actions.buttons.map(item=>item.text==='Save in prototype'?{...item,text:'Save'}:item)}};
+    return {...reference,demo:false,fields:reference.fields.filter(item=>item.label!=='Rating'),actions:{...reference.actions,buttons:reference.actions.buttons.map(item=>item.text==='Save in prototype'?{...item,text:'Save'}:item)}};
 }
 
 // Flatten an inventory to path->value so a comparison reports exactly which leaves differ.

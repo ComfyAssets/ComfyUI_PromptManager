@@ -64,16 +64,28 @@ test("infinite scrolling is off by default and must be a boolean", () => {
 
 test("the workspace keys have their own defaults and validation", () => {
     const { WORKSPACE_LAYOUTS, WORKSPACE_DENSITIES } = require("../../web/js/gallery-settings.js");
-    assert.equal(DEFAULT_SETTINGS.workspaceLayout, "grid");
+    // #451: Images opens in Masonry unless the browser chose otherwise.
+    assert.equal(DEFAULT_SETTINGS.workspaceLayout, "masonry");
     assert.equal(DEFAULT_SETTINGS.workspaceDensity, "comfortable");
     assert.deepEqual(WORKSPACE_LAYOUTS, ["grid", "list", "masonry"]);
     assert.deepEqual(WORKSPACE_DENSITIES, ["comfortable", "large", "compact"]);
     assert.equal(normalizeGallerySettings({ workspaceLayout: "masonry" }).workspaceLayout, "masonry");
-    assert.equal(normalizeGallerySettings({ workspaceLayout: "mosaic" }).workspaceLayout, "grid");
+    assert.equal(normalizeGallerySettings({ workspaceLayout: "grid" }).workspaceLayout, "grid");
+    assert.equal(normalizeGallerySettings({ workspaceLayout: "mosaic" }).workspaceLayout, "masonry");
+    assert.equal(normalizeGallerySettings(null).workspaceLayout, "masonry");
     assert.equal(normalizeGallerySettings({ workspaceDensity: "large" }).workspaceDensity, "large");
     assert.equal(normalizeGallerySettings({ workspaceDensity: 3 }).workspaceDensity, "comfortable");
     // The legacy gallery's own view mode is separate: it has no masonry.
     assert.equal(normalizeGallerySettings({ defaultViewMode: "masonry" }).defaultViewMode, "grid");
+});
+
+// #450 (D156): the viewer's default view, Centered unless Full screen was chosen.
+test("the viewer open mode defaults to centered and accepts only its two values", () => {
+    const { VIEWER_OPEN_MODES } = require("../../web/js/gallery-settings.js");
+    assert.deepEqual(VIEWER_OPEN_MODES, ["centered", "fullscreen"]);
+    assert.equal(DEFAULT_SETTINGS.viewerOpenMode, "centered");
+    assert.equal(normalizeGallerySettings({ viewerOpenMode: "fullscreen" }).viewerOpenMode, "fullscreen");
+    for (const value of ["full", true, 1, null]) assert.equal(normalizeGallerySettings({ viewerOpenMode: value }).viewerOpenMode, "centered");
 });
 
 // #330 S13: the legacy gallery's Page options edit only the page-only keys (PAGE_OPTION_KEYS); System › Appearance owns the rest, so a Save
@@ -109,7 +121,8 @@ const PAGE_OPTION_CONTROLS = () => ({
 
 test("a legacy gallery Save keeps the workspace keys and every other stored key", () => {
     const { manager, saved } = legacyGallery({ workspaceLayout: "masonry", workspaceDensity: "compact", someOtherTool: 1,
-        imageQuality: "high", showImageInfo: false, videoMute: false, thumbnailPromptDismissed: "sig", defaultViewMode: "list" },
+        imageQuality: "high", showImageInfo: false, videoMute: false, thumbnailPromptDismissed: "sig", defaultViewMode: "list",
+        viewerOpenMode: "fullscreen" },
         PAGE_OPTION_CONTROLS());
     manager.saveSettings();
     const result = saved();
@@ -120,6 +133,7 @@ test("a legacy gallery Save keeps the workspace keys and every other stored key"
     assert.equal(result.showImageInfo, false);
     assert.equal(result.videoMute, false);
     assert.equal(result.thumbnailPromptDismissed, "sig");
+    assert.equal(result.viewerOpenMode, "fullscreen");
     // Page options no longer edit the default view (S13 G5), so a stored one stays.
     assert.equal(result.defaultViewMode, "list");
     // The page-only keys come from the dialog.

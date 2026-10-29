@@ -79,7 +79,7 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     expect(await rowsOf(layout, 'Workspace preferences')).toEqual([
         ['One display configuration', 'Grid and density settings are shared across views.', 'Appearance'],
         ['2 output sources', 'Monitoring and enrichment share one source list.', 'Manage sources'],
-        ['Statistics', 'Runs and ratings by category, with library totals.', 'Explore'],
+        ['Statistics', 'Runs by category, with library totals.', 'Explore'],
     ]);
     expect(writes).toEqual([]);
 });
@@ -287,7 +287,8 @@ test('Appearance › Thumbnails saves the server thumbnail settings and never co
     await expect(await request.post('/__test__/system/jxl-encoder', { data: { available: false } })).toBeOK();
     await expect(await request.post('/__test__/system/legacy-previews', { data: { count: 1 } })).toBeOK();
     await page.goto(`${workspace}#/system/appearance`);
-    const surface = page.locator('#workspace-main .settings-layout > section.surface').nth(1);
+    // #450 D156: the Viewer surface sits between Browsing & display and Thumbnails.
+    const surface = page.locator('#workspace-main .settings-layout > section.surface').nth(2);
     await expect(surface.locator(':scope > h2')).toHaveText('Thumbnails');
     await expect(surface.locator('.setting-row label')).toHaveText(['Thumbnail format', 'Thumbnail quality', 'Thumbnail size limit']);
     const format = surface.locator('#thumbnail-format');
@@ -373,13 +374,12 @@ test('statistics dialog lists runs by category and library totals', async ({ pag
     await expect(dialog.locator('#modal-title')).toHaveText('Usage statistics');
     const tables = dialog.locator('#modal-body > table');
     await expect(tables.locator('caption')).toHaveText(['Runs by category', 'Library totals']);
-    await expect(tables.first().locator('thead th')).toHaveText(['Category', 'Runs', 'Avg. rating']);
+    // D153 (#447): no rating column and no rated-images total.
+    await expect(tables.first().locator('thead th')).toHaveText(['Category', 'Runs']);
     const cells = table => table.locator('tbody tr').evaluateAll(rows => rows.map(row => [...row.cells].map(cell => cell.textContent)));
-    expect(await cells(tables.first())).toEqual(statistics.by_category.map(row => [row.category ?? 'Uncategorized',
-        number(row.runs), row.average_rating === null ? 'Not rated' : `${number(row.average_rating)} / 5`]));
+    expect(await cells(tables.first())).toEqual(statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]));
     expect(await cells(tables.nth(1))).toEqual([['Prompts', number(statistics.totals.total_prompts)],
-        ['Tags', number(statistics.totals.total_tags)], ['Images', number(statistics.totals.total_images)],
-        ['Rated images', number(statistics.rated_images)]]);
+        ['Tags', number(statistics.totals.total_tags)], ['Images', number(statistics.totals.total_images)]]);
     await page.keyboard.press('Escape');
     await expect(explore).toBeFocused();
     // A statistics read that fails says so; the Overview stays.
@@ -481,17 +481,19 @@ test('defaults apply to a new visit but not to the current view or a saved view'
         await page.getByRole('group', { name: 'Image layout' }).getByRole('button', { name: 'List', exact: true }).click();
         await expect(page.locator('.image-grid')).toHaveAttribute('data-layout', 'list');
         await openAppearance(page);
-        await expect(page.locator('#default-view')).toHaveValue('grid');
-        await page.locator('#default-view').selectOption('masonry');
+        // #451: a fresh browser's Default layout is Masonry.
+        await expect(page.locator('#default-view')).toHaveValue('masonry');
+        await page.locator('#default-view').selectOption('grid');
         await page.locator('#density').selectOption('compact');
         await expect(statusOf(page)).toHaveText('Unsaved changes.');
         await saveAppearance(page, 'Saved in this browser.');
         const stored = await storedSettings(page);
-        expect([stored.workspaceLayout, stored.workspaceDensity]).toEqual(['masonry', 'compact']);
-        // Back in Images (the page session's last visit): the current view keeps its own layout and size.
+        expect([stored.workspaceLayout, stored.workspaceDensity]).toEqual(['grid', 'compact']);
+        // Back in Images (the page session's last visit): the toolbar's List is the current view's own and stays; the
+        // size the toolbar never changed follows the newer default (#451).
         await page.locator('#primary-nav a[data-route="images"]').click();
         await expect(page.locator('.image-grid')).toHaveAttribute('data-layout', 'list');
-        await expect(page.locator('.image-grid')).toHaveAttribute('data-density', 'comfortable');
+        await expect(page.locator('.image-grid')).toHaveAttribute('data-density', 'compact');
         // The saved view opens as before.
         await page.goto(`${workspace}#/saved/${view.id}`);
         await expect(imageCards(page).first()).toBeVisible();
@@ -501,13 +503,107 @@ test('defaults apply to a new visit but not to the current view or a saved view'
         await openImages(page);
         await page.reload();
         await expect(imageCards(page).first()).toBeVisible();
-        await expect(page.locator('.image-grid')).toHaveAttribute('data-layout', 'masonry');
+        await expect(page.locator('.image-grid')).toHaveAttribute('data-layout', 'grid');
         await expect(page.locator('.image-grid')).toHaveAttribute('data-density', 'compact');
-        await expect(page.getByRole('group', { name: 'Image layout' }).getByRole('button', { name: 'Masonry', exact: true }))
+        await expect(page.getByRole('group', { name: 'Image layout' }).getByRole('button', { name: 'Grid', exact: true }))
             .toHaveAttribute('aria-pressed', 'true');
     } finally {
         await request.delete(`/prompt_manager/saved-views/${view.id}`);
     }
+});
+
+/** Choose a Default layout in System › Appearance and save it. */
+async function saveDefaultLayout(page, value) {
+    await openAppearance(page);
+    await page.locator('#default-view').selectOption(value);
+    await saveAppearance(page, 'Saved in this browser.');
+}
+
+const imageLayoutOf = page => page.locator('#workspace-main .image-grid');
+const layoutButton = (page, name) => page.getByRole('group', { name: 'Image layout' }).getByRole('button', { name, exact: true });
+
+test('a fresh browser opens Images in Masonry (#451)', async ({ page }) => {
+    await openImages(page);
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'masonry');
+    await expect(layoutButton(page, 'Masonry')).toHaveAttribute('aria-pressed', 'true');
+    // Nothing was stored for it: the default is the gallery settings' own.
+    expect(await page.evaluate(() => localStorage.getItem('gallerySettings'))).toBeNull();
+    // A stored explicit choice is kept.
+    await page.evaluate(() => localStorage.setItem('gallerySettings', JSON.stringify({ workspaceLayout: 'grid' })));
+    await page.reload();
+    await expect(imageCards(page).first()).toBeVisible();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'grid');
+});
+
+test('a Default layout saved later reaches the next Images visit in this tab (#451)', async ({ page }) => {
+    // The visit starts from Grid, then System saves Masonry without a reload.
+    await page.addInitScript(() => { if (!localStorage.getItem('gallerySettings')) localStorage.setItem('gallerySettings', '{"workspaceLayout":"grid"}'); });
+    await openImages(page);
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'grid');
+    await page.locator('#system-nav a[data-route="system"]').click();
+    await expect(page.locator('#workspace-main .settings-layout')).toBeVisible();
+    await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Appearance', exact: true }).click();
+    await expect(page.locator('#timeout')).toBeEnabled();
+    await page.locator('#default-view').selectOption('masonry');
+    await saveAppearance(page, 'Saved in this browser.');
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(imageCards(page).first()).toBeVisible();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'masonry');
+    await expect(layoutButton(page, 'Masonry')).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('a Default layout saved in another tab reaches this tab\'s next Images visit (#451)', async ({ page, context }) => {
+    await page.addInitScript(() => { if (!localStorage.getItem('gallerySettings')) localStorage.setItem('gallerySettings', '{"workspaceLayout":"grid"}'); });
+    await openImages(page);
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'grid');
+    const other = await context.newPage();
+    try {
+        await saveDefaultLayout(other, 'list');
+    } finally {
+        await other.close();
+    }
+    await page.locator('#primary-nav a[data-route="library"]').click();
+    await expect(page.locator('#workspace-main .prompt-card').first()).toBeVisible();
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(imageCards(page).first()).toBeVisible();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'list');
+    // A toolbar choice afterwards is this view's own again: a return keeps it.
+    await layoutButton(page, 'Masonry').click();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'masonry');
+    await page.locator('#primary-nav a[data-route="library"]').click();
+    await expect(page.locator('#workspace-main .prompt-card').first()).toBeVisible();
+    await page.locator('#primary-nav a[data-route="images"]').click();
+    await expect(imageCards(page).first()).toBeVisible();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'masonry');
+});
+
+// #451 D157: a cover crop keeps a portrait image's top; Masonry shows the whole image and keeps the centre.
+test('cover crops keep the top of a portrait image; Masonry stays centred (#451)', async ({ page }) => {
+    const position = locator => locator.evaluate(node => getComputedStyle(node).objectPosition);
+    const portrait = page.locator('#workspace-main article.media-card .image-open img[width="1024"][height="1536"]').first();
+    await openImages(page);
+    await layoutButton(page, 'Grid').click();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'grid');
+    await expect(portrait).toBeVisible();
+    expect(await position(portrait)).toBe('50% 20%');
+    await layoutButton(page, 'List').click();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'list');
+    expect(await position(portrait)).toBe('50% 20%');
+    // The side panel's cover (also History's media inspector).
+    await portrait.locator('xpath=ancestor::article[1]').locator('.image-card-actions button').first().click();
+    await expect(panel(page).locator('.detail-cover')).toBeVisible();
+    expect(await position(panel(page).locator('.detail-cover'))).toBe('50% 20%');
+    await layoutButton(page, 'Masonry').click();
+    await expect(imageLayoutOf(page)).toHaveAttribute('data-layout', 'masonry');
+    expect(await position(portrait)).toBe('50% 50%');
+    // The Library's card art and a prompt history's shared gallery.
+    await page.goto(`${workspace}#/library`);
+    const art = page.locator('#workspace-main .prompt-card .card-art img').first();
+    await expect(art).toBeVisible();
+    expect(await position(art)).toBe('50% 20%');
+    await page.goto(`${workspace}#/library/${page.manifest.prompts[0].positive_id}`);
+    await expect(imageCards(page).first()).toBeVisible();
+    expect(await position(imageCards(page).first().locator('.image-open img'))).toBe('50% 20%');
 });
 
 test('the defaults reach the Images page only; embedded galleries keep their own presentation', async ({ page }) => {
@@ -787,12 +883,13 @@ test('reset restores defaults without touching other keys', async ({ page }) => 
     await expect(page.locator('#default-view')).toHaveValue('list');
     const reset = page.locator('#workspace-main .operation').filter({ hasText: 'Reset display defaults' }).getByRole('button', { name: 'Reset', exact: true });
     await reset.click();
-    await expect(page.locator('#default-view')).toHaveValue('grid');
+    // #451 D157: the default layout is Masonry.
+    await expect(page.locator('#default-view')).toHaveValue('masonry');
     await expect(page.locator('#video-muted')).toBeChecked();
     await expect(statusOf(page)).toHaveText('Unsaved changes.');
     await saveAppearance(page, 'Saved in this browser.');
     const stored = await storedSettings(page);
-    expect(stored).toEqual({ gridColumns: 5, defaultLimit: 200, thumbnailPromptDismissed: 'kept', workspaceLayout: 'grid',
+    expect(stored).toEqual({ gridColumns: 5, defaultLimit: 200, thumbnailPromptDismissed: 'kept', workspaceLayout: 'masonry',
         videoMute: true, showImageInfo: true });
 });
 

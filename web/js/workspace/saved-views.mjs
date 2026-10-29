@@ -6,7 +6,8 @@
  *   view", "View name", `Search: <q>` or "My workspace view", Cancel / Save; an empty name is "Saved view".
  * - The sidebar SAVED VIEWS group lists each view (concept `nav()` a331–335) as `#/saved/<id>` (a1158–1162).
  * - A view's state always holds every key of its page (the API requires them all); a value its page no longer
- *   accepts is dropped to that key's default, so an opened view applies what it can.
+ *   accepts is dropped to that key's default, so an opened view applies what it can (a view saved under the retired
+ *   "Highest rated" sort opens on Recently added, D153).
  * - D51: an open view's heading Edit (maintainer ruling, beyond the concept): "Edit saved view" with "View name",
  *   Delete… (danger), Cancel and Save; Delete… asks inside the same dialog, never through `window.confirm`.
  */
@@ -36,7 +37,7 @@ const tags = { fallback: [], accepts: value => Array.isArray(value) && value.len
     typeof tag === 'string' && tag.trim() && tag.length <= MAX_TAG_LENGTH && !tag.includes(',') && !CONTROL.test(tag)) };
 const FIELDS = Object.freeze({
     images: Object.freeze({
-        q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'name-desc', 'rating'], 'newest'),
+        q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'name-desc'], 'newest'),
         source: { fallback: 'all', accepts: value => typeof value === 'string' && /^(all|0|[1-9][0-9]{0,8})$/.test(value) },
         folder: text(1024), media: choice(['all', 'image', 'video'], 'all'), tags,
         // A view saved on Favorites (#249 D51) reopens Images filtered to favorites.
@@ -45,7 +46,7 @@ const FIELDS = Object.freeze({
         collection: { fallback: '', accepts: value => typeof value === 'string' && /^(|[1-9][0-9]{0,8})$/.test(value) },
     }),
     library: Object.freeze({
-        q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'rating'], 'newest'), tags,
+        q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name'], 'newest'), tags,
         // #444: how the Tags match ('untagged' never goes with tags; the listing refuses both) and the output folder
         // ('/'-joined, below a root).
         tag_mode: choice(['all', 'any', 'untagged'], 'all'), folder: text(1024),

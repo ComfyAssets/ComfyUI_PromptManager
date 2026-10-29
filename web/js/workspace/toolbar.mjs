@@ -13,6 +13,7 @@ export const SEARCH_DELAY = 250;
 
 // The concept's sort labels, in the concept's order. Matching is by exact label (note the en dash in "Name A–Z"); any
 // other label is one of the page's appended options.
+// No page passes "Highest rated" since D153 (#447); it stays here only to keep the concept's order.
 const CONCEPT_SORT_LABELS = Object.freeze(['Recently added', 'Name A–Z', 'Highest rated']);
 
 const isText = value => typeof value === 'string';

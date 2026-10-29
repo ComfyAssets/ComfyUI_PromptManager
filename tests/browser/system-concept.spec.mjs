@@ -162,7 +162,6 @@ async function serverJson(request, url) {
 }
 
 const number = value => value.toLocaleString('en-US');
-const ratingText = value => value === null ? 'Not rated' : `${number(value)} / 5`;
 
 /** The concept's shell and Overview with the recorded deviations applied, given the server's real overview. */
 function mapOverviewConcept(reference, overview) {
@@ -178,8 +177,8 @@ function mapOverviewConcept(reference, overview) {
         'One display configuration': row => ({ ...row, description: 'Grid and density settings are shared across views.' }),
         // D93: the real sources, not samples.
         '2 sample output sources': row => ({ ...row, title: `${number(overview.sources.effective)} output sources` }),
-        // D96: the dialog shows runs and ratings by category and library totals, not prompt, tag or date usage.
-        Statistics: row => ({ ...row, description: 'Runs and ratings by category, with library totals.' }),
+        // D96: the dialog shows runs by category and library totals, not prompt, tag or date usage (D153: no ratings).
+        Statistics: row => ({ ...row, description: 'Runs by category, with library totals.' }),
     };
     const surfaces = reference.columns.surfaces.map(surface => ({ ...surface,
         rows: surface.rows.map(row => (rows[row.title] ?? (value => value))(row)) }));
@@ -288,7 +287,10 @@ test('system comparison detects mutations', async ({ page, request }) => {
     expect(diffInventory(expected, await measure())).toEqual([]);
 });
 
-/** D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. */
+/**
+ * D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. D153 (#447): the
+ * concept's "Avg. rating" column and a "Rated images" total are not drawn.
+ */
 function mapStatisticsConcept(reference, statistics) {
     const [runs] = reference.tables;
     return {
@@ -296,10 +298,11 @@ function mapStatisticsConcept(reference, statistics) {
         // No sample note (prototype copy); a second table follows the first.
         body: ['table', 'table'],
         tables: [
-            { ...runs, rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs), ratingText(row.average_rating)]) },
+            { ...runs, head: runs.head.filter(([, , text]) => text !== 'Avg. rating'),
+                rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]) },
             { caption: 'Library totals', head: [['th', 'col', 'Total'], ['th', 'col', 'Count']],
                 rows: [['Prompts', number(statistics.totals.total_prompts)], ['Tags', number(statistics.totals.total_tags)],
-                    ['Images', number(statistics.totals.total_images)], ['Rated images', number(statistics.rated_images)]] },
+                    ['Images', number(statistics.totals.total_images)]] },
         ],
     };
 }
@@ -472,9 +475,9 @@ function measureAppearance(mainSelector) {
 }
 
 // D97: the rows Appearance adds for the legacy gallery settings, after the concept's own, as production renders them.
+// D156 (#450) moved "Collapse viewer details by default" to the Viewer surface (workspace-viewer-mode.spec.mjs).
 const ADDED_APPEARANCE_ROWS = [
     ['card-details', 'Show image details on cards', 'Show each card’s title and file details under the preview.', true],
-    ['viewer-details', 'Collapse viewer details by default', 'Open the image viewer with its details panel hidden.', false],
 ];
 
 /** The concept's Appearance with the recorded deviations applied, given the server's real settings. */
@@ -485,10 +488,11 @@ function mapAppearanceConcept(reference, settings) {
         control: { ...toggleRow.control, id, checked } }));
     return {
         ...reference,
-        // #317: the server's thumbnail settings follow in their own surface ("Thumbnails", README: retained in Appearance).
-        layout: [reference.layout[0], 'section.surface', ...reference.layout.slice(1)],
-        // D97: two added toggles and the "Reset display defaults" operation close the surface.
-        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.setting-row', 'div.operation'] },
+        // D156: the Viewer surface, then (#317) the server's thumbnail settings in their own surface ("Thumbnails",
+        // README: retained in Appearance).
+        layout: [reference.layout[0], 'section.surface', 'section.surface', ...reference.layout.slice(1)],
+        // D97: one added toggle (D156 moved the other) and the "Reset display defaults" operation close the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.operation'] },
         rows: [...reference.rows.map(row => row.control?.id === 'timeout'
             // The node search timeout is the server's real `result_timeout`, not the concept's sample 30.
             ? { ...row, control: { ...row.control, value: String(settings.result_timeout) } } : row), ...added],
@@ -535,7 +539,7 @@ test('appearance comparison detects mutations', async ({ page, request }) => {
     // Unmapped, the concept differs only where D97 and the real timeout are recorded.
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort())
-        .toEqual(['layout.1', 'layout.2', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12', 'rows.13',
+        .toEqual(['layout.1', 'layout.2', 'layout.3', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12',
             'rows.length', 'surface.tree'].sort());
     const measure = () => page.evaluate(measureAppearance, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
