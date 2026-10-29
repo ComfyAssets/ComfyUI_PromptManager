@@ -772,6 +772,13 @@ class TestMonitorHistoryRecheck(RecordedRuns, unittest.TestCase):
         run_attribution.notify_outputs_sealed("run", [])  # no dead callback raises
 
 
+def folder_is_case_sensitive(folder):
+    """True when ``folder``'s volume tells names apart by case: the existing
+    folder spelled with swapped case is not found (#476)."""
+    head, name = os.path.split(folder)
+    return not os.path.exists(os.path.join(head, name.swapcase()))
+
+
 class TestMonitorForeignRuns(RecordedRuns, unittest.TestCase):
     """#247: outputs of workflows without a PromptManager node, in the monitor."""
 
@@ -942,11 +949,21 @@ class TestMonitorForeignRuns(RecordedRuns, unittest.TestCase):
         self.assertEqual(self.handler.awaiting_foreign(), [])
 
     def test_the_sealed_reference_spells_the_file_as_history_recorded_it(self):
-        """Windows: the watcher's spelling differs in case from the run's report."""
-        Path(self.output, "Dataset").mkdir()
-        recorded = self.image("IMG_GEN_00007_.png", subfolder="Dataset")
+        """Windows: the watcher's spelling differs in case from the run's report.
+
+        On a case-sensitive folder the two spellings are two files and the
+        folded key joins them; on a case-insensitive one (Windows, default
+        macOS) they already name one file, so only history's spelling and
+        the watcher's differ (#476)."""
         seen = os.path.join(self.output, "dataset", "img_gen_00007_.png")
         Path(seen).write_bytes(b"png")
+        recorded = os.path.join(self.output, "Dataset", "IMG_GEN_00007_.png")
+        self.assertNotEqual(os.path.basename(recorded), os.path.basename(seen))
+        if folder_is_case_sensitive(os.path.join(self.output, "dataset")):
+            Path(self.output, "Dataset").mkdir()
+            self.image("IMG_GEN_00007_.png", subfolder="Dataset")
+        else:
+            self.assertTrue(os.path.exists(recorded))
         folded = staticmethod(lambda path: os.path.realpath(path).lower())
         with mock.patch.object(ImageGenerationHandler, "_awaiting_key", folded):
             self.handler.process_new_image(seen)
