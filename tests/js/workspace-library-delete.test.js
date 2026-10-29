@@ -286,4 +286,8 @@ test('the outcome names prompts restored since the review', async () => {
     const {deleteOutcome} = await source;
     const outcome = deleteOutcome({success: true, deleted: 1, archived: 0, not_archived: 2, changed: 0}, null, {protected: []});
     assert.equal(outcome.toast, 'Deleted 1 prompt. 2 were restored since the review and kept.');
+    const none = deleteOutcome({success: true, deleted: 0, archived: 0, not_archived: 1, changed: 1}, null,
+        {protected: [], shelf: 'archived'});
+    assert.equal(none.toast, 'Nothing was deleted. 1 was restored since the review and kept. 1 changed since the review and ' +
+        'was not deleted. The Library was reloaded.');
 });

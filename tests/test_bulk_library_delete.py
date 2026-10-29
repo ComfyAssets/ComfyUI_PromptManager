@@ -851,6 +851,31 @@ class TestArchivedShelfDelete(LibraryDeleteCase):
         self.assertEqual((result["deleted"], result["pairs_removed"]), (1, 1))
         self.assertEqual(archived_ids(self.db), [shared])
 
+    def test_mixed_outcomes_are_each_counted_once(self):
+        owl, _neg, _pair = self.paired("Owl", "dark")
+        hen, _neg2, hen_pair = self.paired("Hen", "fog")
+        loose = save(self.db, "Loose")
+        self.image(loose, "loose.png")
+        guarded = save(self.db, "Guarded", tags=["__protected__"])
+        self.image(guarded, "guarded.png")
+        gone = save(self.db, "Gone")
+        self.image(gone, "gone.png")
+        self.archive(owl, hen, loose, guarded, gone)
+        review = self.shelf_classify([owl, hen, loose, guarded, gone])
+        self.db.update_prompt_pair_metadata(hen_pair, notes="drifted")
+        self.restore([loose])
+        with self.db.model.get_connection() as conn:
+            conn.execute("DELETE FROM generated_images WHERE prompt_id=?", (gone,))
+            conn.execute("DELETE FROM prompts WHERE id=?", (gone,))
+            conn.commit()
+        result = self.shelf_write(review, deletes=[loose, gone])
+        self.assertEqual(
+            {k: result[k] for k in ("deleted", "changed", "not_found", "not_archived")},
+            {"deleted": 1, "changed": 1, "not_found": 1, "not_archived": 1},
+        )
+        self.assertNotIn(owl, prompt_ids(self.db))
+        self.assertEqual(archived_ids(self.db), sorted([hen, guarded]))
+
     def test_shelf_must_be_active_or_archived(self):
         owl, _neg, _pair = self.paired("Owl")
         with self.assertRaises(ValueError):

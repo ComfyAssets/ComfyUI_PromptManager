@@ -322,7 +322,8 @@ export function deleteOutcome(result, failure, review) {
     if (deleted) parts.push(`Deleted ${countOf(deleted, 'prompt')}.`);
     if (pairs) parts.push(`Removed ${countOf(pairs, 'saved pair')}.`);
     if (archived) parts.push(`Archived ${countOf(archived, 'prompt')}.`);
-    if (!parts.length) parts.push(NOTHING);
+    // #492: the archived shelf archives nothing, so it says only that nothing was deleted.
+    if (!parts.length) parts.push(review?.shelf === 'archived' ? 'Nothing was deleted.' : NOTHING);
     const already = count(result.already_archived), missing = count(result.not_found), changed = count(result.changed);
     if (already) parts.push(`${were(already, 'was', 'were')} already archived.`);
     const restored = count(result.not_archived);
