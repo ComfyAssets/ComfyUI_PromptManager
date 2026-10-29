@@ -51,7 +51,8 @@ function el(tag, text, className) {
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
     getListing, getFilter, getCategories, checked: initial = Object.freeze(new Set()), collections = null,
-    collection = null, onCollectionsChanged = null, onSourceChanged = null, onDeleted = null }) {
+    collection = null, onCollectionsChanged = null, onSourceChanged = null, onDeleted = null, removedView = () => false,
+    onReturn = null }) {
     let checked = initial;
     let exporting = false, categorizing = false;
     // D135: the range anchor, "all N matching" mode, touch selection mode and a pending Shift+click on a checkbox.
@@ -103,10 +104,29 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
         bulk.append(deleteButton);
     }
     bulk.append(clearButton);
+    // #498 (D162): in Show removed images the bar holds only Return to library and Clear; every other action writes
+    // records, which would show a removed file again without reading it.
+    const normalActions = [...bulk.children].filter(node => node !== count && node !== clearButton);
+    const returnButton = onReturn ? createButton('Return to library') : null;
+    if (returnButton) {
+        scope.listen(returnButton, 'click', () => {
+            const target = matchingTarget();
+            onReturn(checkedImages(), target, returnButton);
+        });
+    }
+    let shownRemoved = false;
+    function paintMode() {
+        const removed = Boolean(returnButton && removedView());
+        if (removed === shownRemoved) return;
+        shownRemoved = removed;
+        for (const node of [...normalActions, returnButton]) node?.remove();
+        clearButton.before(...(removed ? [returnButton] : normalActions));
+    }
 
     /** The count updates in place: the same bar and `strong`, its text written only when it changes. */
     function render() {
         if (!checked.size && !allMatching) { touchMode = false; bulk.remove(); return; }
+        paintMode();
         const listing = getListing();
         const label = allMatching ? matchingLabel(listing.total) : selectionLabel(checked.size);
         if (count.textContent !== label) count.textContent = label;

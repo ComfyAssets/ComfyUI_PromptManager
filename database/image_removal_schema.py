@@ -155,6 +155,11 @@ def _bump() -> None:
     _generation += 1
 
 
+def bump_generation() -> None:
+    """Move the generation after a commit (a cached read made before it reloads)."""
+    _bump()
+
+
 def has_marks_table(conn: sqlite3.Connection) -> bool:
     return (
         conn.execute(

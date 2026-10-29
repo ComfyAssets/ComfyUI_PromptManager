@@ -10,6 +10,7 @@ import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { createMediaViewer } from './media-viewer.mjs';
 import { openDeleteImages } from './images-delete.mjs';
+import { removedCaption, removedEmpty, returnImages, toggleLabel } from './images-return.mjs';
 import { noun } from './plural.mjs';
 import { pageHeading } from './heading.mjs';
 import { mountToolbar } from './toolbar.mjs';
@@ -177,6 +178,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // A collection and favorites are never both the filter (DC10).
         favorites: !openCollection && (favorites || saved?.favorites === true), collection: openCollection };
     filters.tags = [...filters.tags];
+    // #498 (D162): Show removed images belongs to this visit only: never restored, saved or handed on.
+    filters.removed = false;
     if (!IMAGE_SORT_OPTIONS.some(([value]) => value === filters.sort)) filters.sort = 'newest';
     // A saved Source or Folder is only listed once discovery confirms it still exists; until then nothing is fetched.
     let savedScopePending = Boolean(saved) && (filters.root !== 'all' || filters.subfolder !== '');
@@ -186,20 +189,28 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
         // A favorites-only collection or a saved view is not the plain Images collection, so it never becomes the
         // Images return state (#249 D51, and M2 for saved views).
-        if (!embedded && !filters.favorites && !filters.collection && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, defaults: startDefaults, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
+        if (!embedded && !filters.favorites && !filters.collection && !saved && !filters.removed) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, defaults: startDefaults, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
     scope.cleanup(() => main.classList.remove('images-main'));
     // The concept's Images heading (app.js renderImages): description, then Import before the shell's New prompt.
     const heading = embedded ? null : pageHeading(main);
-    let importButton = null, importDialog = null;
+    let importButton = null, importDialog = null, showRemoved = null;
     if (heading) {
         heading.description.textContent = 'Your generations, their prompts, and the next idea.';
         importButton = createButton('');
         importButton.append(createWorkspaceIcon('upload'), el('span', 'Import'));
         heading.actions.prepend(importButton);
         scope.cleanup(() => importButton.remove());
+        // #498 (D162): Show removed images (N), before Import, only on the Images page and only while there are any.
+        if (imagesPage) {
+            // Attached only while shown, so a library without removals keeps the concept's heading exactly.
+            showRemoved = createButton(toggleLabel(null));
+            showRemoved.setAttribute('aria-pressed', 'false');
+            scope.cleanup(() => showRemoved.remove());
+            scope.listen(showRemoved, 'click', () => setRemovedView(!filters.removed));
+        }
         scope.listen(importButton, 'click', () => {
             importDialog = openImportDialog({scope, trigger:importButton, rescanBusy:rescanning,
                 onInspect:() => { window.location.hash = '#/inspect'; }, onRescan:rescan,
@@ -301,6 +312,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state?.items ?? [], focusFallback,
         checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys),
         onDeleted:deleted,
+        // #498: the removed view's bar holds only Return to library and Clear.
+        removedView:() => filters.removed,
+        onReturn:(images, extra, trigger) => returnSome({images, ...extra, trigger}),
         // The Set category field suggests the toolbar's categories (#332 MC13).
         getCategories:() => categoryNames,
         // #392 "Select all N matching": the listing's total and its filter, as the server lists them.
@@ -339,10 +353,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         selection = imageKey(image);
         selectedImage = image;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
+        // #498: a removed file's panel offers Return to library and nothing that writes (Collections…, Delete…, tag chips).
+        const removedView = filters.removed;
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
-            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
-            collections:inspectorCollections, onCollectionsChanged:collectionsChangedBy,
-            onDelete:embedded ? null : (target, button) => deleteOne(target, button)});
+            onTagFilter:embedded || removedView ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
+            collections:removedView ? null : inspectorCollections, onCollectionsChanged:collectionsChangedBy,
+            onDelete:embedded || removedView ? null : (target, button) => deleteOne(target, button),
+            onReturn:removedView ? (target, button) => returnSome({images:[target], trigger:button}) : null});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
@@ -360,7 +377,9 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const key = imageKey(image);
         const card = createImageCard(image, {checked:bar ? bar.isChecked(key) : null, favoriteBusy:favoriteBusy(key),
             // D97: "Show image details on cards" off hides the title and file line; Info and Tag stay.
-            showInfo:preferences?.showImageInfo !== false});
+            showInfo:preferences?.showImageInfo !== false,
+            // #498: a removed file has no records; its star and Tag would write and show it again.
+            removed:filters.removed});
         markSelected(card, key === selection);
         return card;
     }
@@ -378,6 +397,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const image = state.items.find(item => imageKey(item) === card.dataset.imageKey);
         if (!image) return;
         const action = event.target.closest('.image-card-actions button');
+        // #498: in the removed view a card only inspects (the viewer's writes would show the file again).
+        if (filters.removed) { if (event.target.closest('.image-open, .image-card-actions button')) inspect(image); return; }
         if (event.target.closest('.star-button')) toggleFavorite(api, image);
         else if (event.target.closest('.image-open')) previewImage(image);
         else if (action && !openCardTagging({api, scope, image, action, embedded, onSourceChanged:recovery.recover,
@@ -553,7 +574,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         state = next;
         bar?.listingChanged();
         if (!embedded) {
-            setText(count, countLine(next));
+            setText(count, filters.removed ? removedCaption(next.total) : countLine(next));
+            paintRemovedToggle(next);
             setText(captionDay, captionDate(next.items, filters.sort));
             if (captionDay.hidden !== !captionDay.textContent) captionDay.hidden = !captionDay.textContent;
         }
@@ -576,7 +598,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             queueMicrotask(() => { if (!scope.signal.aborted) onCollectionMissing(); });
         }
         if (showsEmpty) {
-            setText(empty, gone ? VIEW_COLLECTION_DELETED : embedded ? emptyText : NO_MATCHES);
+            setText(empty, gone ? VIEW_COLLECTION_DELETED : embedded ? emptyText
+                : filters.removed ? removedEmpty(Boolean(filters.q || filters.subfolder || filters.media !== 'all')) : NO_MATCHES);
             empty.hidden = !gone && (recovering || next.loading || !!next.error || next.hasMore || next.loaded > 0);
         }
         if (focusAfterLoad !== null && !next.loading) settleLoadFocus(next);
@@ -655,6 +678,32 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function deleted() {
         loadCategories();
         reset();
+    }
+    /** #498 (D162): enter or leave Show removed images; entering clears the Category and Tags it never combines with. */
+    function setRemovedView(on) {
+        if (filters.removed === on) return;
+        filters.removed = on;
+        if (on && (filters.category || filters.tags.length)) {
+            filters.category = ''; filters.tags = [];
+            toolbar?.setValue({q:filters.q, category:'', sort:filters.sort});
+            toolbar?.setActiveFilters(activeRefinements(filters));
+        }
+        reset();
+    }
+    function paintRemovedToggle(next) {
+        if (!showRemoved) return;
+        const total = next.removedTotal;
+        // A return that leaves nothing removed ends the view: Images lists every file again.
+        if (filters.removed && total === 0 && !next.loading) { queueMicrotask(() => setRemovedView(false)); }
+        setText(showRemoved, toggleLabel(total));
+        setAttr(showRemoved, 'aria-pressed', String(filters.removed));
+        const shown = filters.removed || total > 0;
+        if (!shown) showRemoved.remove();
+        else if (!showRemoved.isConnected) heading.actions.prepend(showRemoved);
+    }
+    /** #498: Return to library for the checked images, "all N matching" (`filter`) or the inspector's one. */
+    function returnSome({images = [], filter = null, count = images.length, trigger = null}) {
+        return returnImages({api, scope, store:activity, images, filter, count, trigger, onReturned:() => { if (!scope.signal.aborted) reset(); }});
     }
     /** #480: Delete… for one file, from the inspector or the viewer (`after` closes the viewer first). */
     function deleteOne(target, trigger, after = null) {

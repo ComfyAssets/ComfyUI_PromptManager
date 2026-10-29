@@ -129,8 +129,9 @@ export const KINDS = Object.freeze({
     scan: Object.freeze({
         ...GENERIC,
         pillVerb: 'Scanning',
-        startToast: () => 'Scan started.',
-        finishToast: namedFinish(() => 'Scan', addedOf, scanLine),
+        // #498: "Return images to the library" is a scan of the returned files; its toasts carry its own title.
+        startToast: job => (job.scope?.files === 'returned' ? `${job.title} started.` : 'Scan started.'),
+        finishToast: namedFinish(job => (job.scope?.files === 'returned' ? job.title : 'Scan'), addedOf, scanLine),
         line: scanLine,
         kept: addedOf,
         tiles: tiles([['added', 'Added to Library', 'added'], ['known', 'Already known', ''],

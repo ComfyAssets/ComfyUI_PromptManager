@@ -241,7 +241,12 @@ SCAN_FINAL_STATES = {
     "error": "failed",
 }
 # The scope as the scan log's first line names it (the review dialog's words).
-SCAN_SCOPE_LOG = {"new": "new and unresolved files", "all": "all files"}
+SCAN_SCOPE_LOG = {
+    "new": "new and unresolved files",
+    "all": "all files",
+    "returned": "images returned to the library",
+}
+RETURN_JOB_TITLE = "Return images to the library"  # #498
 MIN_BATCHES_FOR_ESTIMATE = 2  # "about X min left" waits for this many batches
 # Log line prefix per outcome group (spec: + added, = known, ? review, ! error,
 # - no usable metadata).
@@ -1381,13 +1386,17 @@ class AdminRoutesMixin:
             }
         )
 
-    def _start_scan_job(self, files=DEFAULT_SCAN_SCOPE, roots=None, output_dirs=None):
+    def _start_scan_job(
+        self, files=DEFAULT_SCAN_SCOPE, roots=None, output_dirs=None, returned=None
+    ):
         """Register the scan job synchronously; its runner starts on the loop.
 
         ``files`` is the scope (``SCAN_SCOPES``). ``roots`` selects sources by
         their index in ``output_dirs`` (the effective sources the caller
         resolved); None scans every source, resolved when the job starts.
-        Raises JobBusy while another record-changing job runs.
+        Raises JobBusy while another record-changing job runs. ``returned``
+        (#498, ``[(path, locator)]``) makes it "Return images to the library":
+        those files' removal marks go first, then only they are scanned.
         """
         if files not in SCAN_SCOPES:
             raise ValueError(f"Unknown scan scope: {files!r}")
@@ -1395,20 +1404,25 @@ class AdminRoutesMixin:
             output_dirs is None or not roots or max(roots) >= len(output_dirs)
         ):
             raise ValueError("A scoped scan needs the sources its roots index")
+        scope = {"files": files, "roots": None if roots is None else list(roots)}
+        if returned is not None:
+            scope = {"files": "returned", "roots": None, "images": len(returned)}
         job = self._jobs.start(
             SCAN_JOB_KIND,
-            SCAN_JOB_TITLE,
+            SCAN_JOB_TITLE if returned is None else RETURN_JOB_TITLE,
             record_changing=True,
-            scope={"files": files, "roots": None if roots is None else list(roots)},
-            runner=functools.partial(self._run_scan_job, output_dirs=output_dirs),
+            scope=scope,
+            runner=functools.partial(
+                self._run_scan_job, output_dirs=output_dirs, returned=returned
+            ),
             groups=SCAN_GROUP_NAMES,
         )
         self._scan_job = job
         return job
 
-    async def _run_scan_job(self, job, output_dirs=None):
+    async def _run_scan_job(self, job, output_dirs=None, returned=None):
         final = None
-        async for payload in self._scan_images_events(job, output_dirs):
+        async for payload in self._scan_images_events(job, output_dirs, returned):
             job.publish(payload)
             final = payload.get("type")
         state = SCAN_FINAL_STATES.get(final, "finished")
@@ -1446,7 +1460,7 @@ class AdminRoutesMixin:
             )
         return response
 
-    async def _scan_images_events(self, job, output_dirs=None):
+    async def _scan_images_events(self, job, output_dirs=None, returned=None):
         """Yield progress payloads while scanning the output directories.
 
         Every effective source is walked, or only those ``job.scope["roots"]``
@@ -1484,9 +1498,16 @@ class AdminRoutesMixin:
                 0, f"Scanning {len(walked)} directory(ies) for media files..."
             )
 
-            media_files = await self._run_in_executor(
-                self._collect_output_media_sync, walked
-            )
+            if returned is None:
+                media_files = await self._run_in_executor(
+                    self._collect_output_media_sync, walked
+                )
+            else:
+                # #498: only the files whose marks this job deleted.
+                media_files = await self._run_in_executor(
+                    self._clear_returned_marks, returned
+                )
+                job.log_line(f"Returned {_plural(len(media_files), 'image')}")
             counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
             job.update(
                 total=len(media_files),
