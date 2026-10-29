@@ -20,22 +20,25 @@ _MAX_FOLDER = 1024
 _MAX_PREFIXES = 64
 
 
-def normalize_folder(value: object) -> str:
-    """The folder as ``a/b``: ``\\`` read as ``/``, outer slashes dropped.
+def normalize_folder(value: object, pathmod=os.path) -> str:
+    """The folder as ``a/b``, outer slashes dropped; empty means no filter.
 
-    Empty means no folder filter. ``.``/``..``/empty segments, a drive or
-    control characters are refused: the value only ever names a folder below a
-    root, never a path of its own.
+    ``/`` always separates. ``\\`` separates only on Windows (``ntpath``): on
+    POSIX it is an ordinary character of a folder's name, and the listing
+    (``relative_folder``) names such a folder with it, so both agree.
+    ``.``/``..``/empty segments, control characters and (on Windows) a drive
+    are refused: the value only ever names a folder below a root.
     """
     if not isinstance(value, str) or len(value) > _MAX_FOLDER:
         raise ValueError(f"folder must be text of at most {_MAX_FOLDER} characters")
-    folder = value.replace("\\", "/").strip("/")
+    windows = pathmod.sep == "\\"
+    folder = (value.replace("\\", "/") if windows else value).strip("/")
     if not folder:
         return ""
     parts = folder.split("/")
     if (
         any(part in ("", ".", "..") for part in parts)
-        or ":" in parts[0]
+        or (windows and ":" in parts[0])
         or any(ord(char) < 32 or ord(char) == 127 for char in folder)
     ):
         raise ValueError("folder must be a folder below an output root")

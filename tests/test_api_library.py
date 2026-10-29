@@ -138,7 +138,9 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertNotIn("folders", plain)
         _, first = await self.get(folder="a", limit=1)
         self.assertEqual((first["total"], first["folder"]), (2, "a"))
-        _, second = await self.get(folder="\\a\\", limit=1, cursor=first["next_cursor"])
+        # Outer slashes are dropped (a backslash separates only on Windows).
+        outer = "\\a\\" if os.name == "nt" else "/a/"
+        _, second = await self.get(folder=outer, limit=1, cursor=first["next_cursor"])
         self.assertEqual(
             sorted([first["items"][0]["text"], second["items"][0]["text"]]),
             ["deep", "top"],
@@ -147,7 +149,7 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertEqual((all_rows["total"], all_rows["folder"]), (4, ""))
         for params in (
             {"folder": "a/../ab"},
-            {"folder": "C:/x"},
+            *([{"folder": "C:/x"}] if os.name == "nt" else []),
             {"folder": "b", "cursor": first["next_cursor"]},
             {"cursor": first["next_cursor"]},
         ):
@@ -156,6 +158,17 @@ class TestLibraryAPI(ImageAPITestCase):
             self.assertEqual(result["success"], False)
         response, _ = await self.get("/options", include="tags")
         self.assertEqual(response.status, 400)
+
+    @unittest.skipIf(os.name == "nt", "a backslash is a separator on Windows")
+    async def test_a_posix_folder_name_with_a_backslash_filters_its_prompts(self):
+        prompt = self._save_prompt("klein")
+        name = "Metadata\\Klein_4b Wildcard Run"
+        path = make_png(self.output_dir / name / "x.png")
+        self.api.db.link_image_to_prompt(prompt, str(path))
+        _, options = await self.get("/options", include="folders")
+        self.assertIn(name, options["folders"])
+        _, result = await self.get(folder=name)
+        self.assertEqual((result["total"], result["folder"]), (1, name))
 
     async def test_any_tag_mode_is_sent_through_and_echoed(self):
         self._save_prompt("a only", tags=["a"])

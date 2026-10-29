@@ -85,6 +85,21 @@ test('a chosen folder missing from the folder list stays listed and chosen in Re
     await apply(page).click();await expect(caption(page)).toHaveText(/^1 positive prompt · /);await expect(filtersButton(page)).toHaveText('Filters · 1');
 });
 
+// Live B1: the server's flat list sorts full paths as text ("-" and "_" before "/"); Refine shows each folder directly
+// under its own parent and keeps case variants apart.
+test('the Folder list nests each folder under its exact parent',async({page})=>{
+    const folders=['CCC','CCC/mabes9sans-dataset','CCC/mabes9sans-dataset-v1','CCC/mabes9sans-dataset/mabes9sans-dataset_IMG_GEN',
+        'FLUX','FLUX/2025-12-11','flux','flux/images','flux-klein','kiko','kiko-v6','kiko/char'].sort();
+    await page.route('**/prompt_manager/library/options?include=folders',route=>route.fulfill({json:{success:true,library_epoch:'x',categories:[],folders}}));
+    await open(page);await openRefine(page);
+    const I='\u00a0\u00a0';
+    await expect(folder(page).locator('option')).toHaveText(['All output folders','CCC',`${I}mabes9sans-dataset`,`${I}${I}mabes9sans-dataset_IMG_GEN`,
+        `${I}mabes9sans-dataset-v1`,'FLUX',`${I}2025-12-11`,'flux',`${I}images`,'flux-klein','kiko',`${I}char`,'kiko-v6']);
+    expect(await folder(page).locator('option').evaluateAll(nodes=>nodes.map(node=>node.value))).toEqual(['','CCC','CCC/mabes9sans-dataset',
+        'CCC/mabes9sans-dataset/mabes9sans-dataset_IMG_GEN','CCC/mabes9sans-dataset-v1','FLUX','FLUX/2025-12-11','flux','flux/images','flux-klein',
+        'kiko','kiko/char','kiko-v6']);
+});
+
 test('an older server that ignores the folder shows an error with Retry, never the whole shelf',async({page})=>{
     await open(page);
     await page.route('**/prompt_manager/library?*',async route=>{

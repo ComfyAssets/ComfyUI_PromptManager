@@ -145,3 +145,28 @@ test('the shelf no longer sorts by rating (D153)',async()=>{
  assert.throws(()=>createLibraryStream({api:{get:async()=>page([])},restore:{filters:{sort:'rating'},state:{}}}),/Invalid library sort/);
  for(const sort of ['newest','oldest','name']) assert.equal(await s.reset({sort}),0);s.dispose();
 });
+test('Refine › Folder nests each folder under its exact parent, by path segment (#444 live B1)',async()=>{
+ const {libraryFolderOptions}=await source;assert.equal(typeof libraryFolderOptions,'function');
+ const I='  ';
+ // The server's flat list sorts full paths as text, so "-" and "_" land before "/" (live report shapes).
+ const folders=['CCC','CCC/mabes9sans-dataset','CCC/mabes9sans-dataset-v1','CCC/mabes9sans-dataset/mabes9sans-dataset_IMG_GEN',
+  'FLUX','FLUX/2025-12-11','flux','flux/images','flux-klein','illustrious','illustrious-base','illustrious/2026-10-26','illustrious/training',
+  'illustrious/training/a','kiko','kiko-v6','kiko/char','kiko/XXX','QWEN','QWEN/x','Qwen','Qwen/y','Qwen-Training','Video','Video/v','video'].sort();
+ const options=libraryFolderOptions(folders);
+ assert.deepEqual(options[0],['','All output folders']);
+ assert.deepEqual(options.slice(1),[
+  ['CCC','CCC'],['CCC/mabes9sans-dataset',`${I}mabes9sans-dataset`],['CCC/mabes9sans-dataset/mabes9sans-dataset_IMG_GEN',`${I}${I}mabes9sans-dataset_IMG_GEN`],
+  ['CCC/mabes9sans-dataset-v1',`${I}mabes9sans-dataset-v1`],
+  ['FLUX','FLUX'],['FLUX/2025-12-11',`${I}2025-12-11`],['flux','flux'],['flux/images',`${I}images`],['flux-klein','flux-klein'],
+  ['illustrious','illustrious'],['illustrious/2026-10-26',`${I}2026-10-26`],['illustrious/training',`${I}training`],['illustrious/training/a',`${I}${I}a`],
+  ['illustrious-base','illustrious-base'],
+  ['kiko','kiko'],['kiko/char',`${I}char`],['kiko/XXX',`${I}XXX`],['kiko-v6','kiko-v6'],
+  ['QWEN','QWEN'],['QWEN/x',`${I}x`],['Qwen','Qwen'],['Qwen/y',`${I}y`],['Qwen-Training','Qwen-Training'],
+  ['Video','Video'],['Video/v',`${I}v`],['video','video'],
+ ]);
+ // Every parent precedes its children directly; a chosen folder missing from the list is kept, with its parents.
+ assert.deepEqual(libraryFolderOptions(['a'],'a/b/c').slice(1),[['a','a'],['a/b',`${I}b`],['a/b/c',`${I}${I}c`]]);
+ assert.deepEqual(libraryFolderOptions([],''),[['','All output folders']]);
+ // A POSIX folder whose name holds a backslash is one segment.
+ assert.deepEqual(libraryFolderOptions(['Metadata\\Klein_4b Wildcard Run']).slice(1),[['Metadata\\Klein_4b Wildcard Run','Metadata\\Klein_4b Wildcard Run']]);
+});
