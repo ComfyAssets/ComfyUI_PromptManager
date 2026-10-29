@@ -25,6 +25,7 @@ try:
 except ImportError:
     from tests.test_api_images import ImageAPITestCase
 
+from database import restore_stage
 from database.operations import PromptDatabase
 from py.api.library import _encode, _scope
 from tests.test_execution_context_database import bundle, snapshot
@@ -41,6 +42,21 @@ HANDOFF_TIMEOUT_SECONDS = 60
 
 OTHER_SESSION = "aaaaaaaa-3333-4333-8333-333333333333"
 MISSING_RUN = "bbbbbbbb-4444-4444-8444-444444444444"
+
+
+@contextmanager
+def no_wal_truncate_wait():
+    """Restore with the restore notification held back, as these tests need.
+
+    The read under test keeps its snapshot open across the restore, so the
+    publish's WAL truncate can never succeed; without the short wait it would
+    sit out the full CHECKPOINT_BUSY_MS (30 s) each time (#487).
+    """
+    with (
+        patch("database.execution_history.notify_history_restore"),
+        patch.object(restore_stage, "CHECKPOINT_BUSY_MS", 50),
+    ):
+        yield
 
 
 class HistoryAPITests(ImageAPITestCase):
@@ -346,7 +362,7 @@ class HistoryAPITests(ImageAPITestCase):
 
         def during_snapshot(*args, **kwargs):
             result = original(*args, **kwargs)
-            with patch("database.execution_history.notify_history_restore"):
+            with no_wal_truncate_wait():
                 writer.model.restore_from_file(source)
             return result
 
@@ -890,7 +906,7 @@ class HistoryAPITests(ImageAPITestCase):
 
                 def during_snapshot(*args, **kwargs):
                     result = original(*args, **kwargs)
-                    with patch("database.execution_history.notify_history_restore"):
+                    with no_wal_truncate_wait():
                         writer.model.restore_from_file(source)
                     return result
 

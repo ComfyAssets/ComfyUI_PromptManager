@@ -149,8 +149,8 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
     await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     const footer=panel.locator('.detail-footer');
-    // #331 D139: every listed file's footer ends with Collections… (folder icon).
-    await expect(footer.locator('button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
+    // #331 D139: every listed file's footer has Collections… (folder icon); #480 D159: Delete… ends it.
+    await expect(footer.locator('button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…','Delete…']);
     await expect(footer.locator('button.send')).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${POSITIVE_TITLE}`);
     await expect(footer.locator('button.send svg.icon')).toHaveCount(1);await expect(footer.locator('button:not(.send) svg.icon')).toHaveCount(2);
     await expect(panel).not.toContainText(/prompt evidence|Positive prompt tags/);
@@ -162,10 +162,10 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await selectFile(page,'ambiguous.png');await expect(panel.locator('.prompt-section.positive .prompt-text')).toHaveText('embedded positive');
     await expect(panel.locator('span.chip.blue')).toHaveText('Embedded parameters');
     await expect(panel.locator('.panel-heading .chip')).toHaveText('File extension PNG');await expect(panel.locator('.panel-heading .chip .ca-visually-hidden')).toHaveText('File extension ');
-    await expect(panel.locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Collections…']);
-    // Unlinked: no badge, category, tags, pair or history; the footer holds only Collections… (D139).
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Send to ComfyUI','Collections…','Delete…']);
+    // Unlinked: no badge, category, tags, pair or history; the footer holds Collections… (D139) and Delete… (D159).
     reads.patch=null;await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
-    await expect(panel.locator('.detail-footer button')).toHaveText(['Collections…']);
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Collections…','Delete…']);
     expect(await panelStructure(panel)).toEqual({outer:['img.detail-cover','div.detail-inner','div.detail-footer'],
         inner:['div.panel-heading','p.small','section.prompt-section.positive','section.prompt-section.negative','dl.meta-grid']});
     await expect(panel.locator('.meta-grid dd')).toHaveText(Array(6).fill('Not recorded'));
@@ -266,7 +266,7 @@ test('pair send and history appear only with real roles and link',async({page,re
     await expect(panel.getByRole('button',{name:'Send prompt pair to ComfyUI: explicit-empty.png',exact:true})).toBeVisible();
     await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
     await selectFile(page,'empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('empty.png');
-    await expect(panel.locator('.detail-footer button')).toHaveText(['Collections…']);await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(0);
+    await expect(panel.locator('.detail-footer button')).toHaveText(['Collections…','Delete…']);await expect(panel.getByRole('button',{name:/^Send prompt pair/})).toHaveCount(0);
 });
 
 test('no provenance, raw or download controls in the side panel',async({page,request})=>{
@@ -627,6 +627,10 @@ test('viewer matches the concept shell and toolbar order',async({page,request})=
         expect(modePaths.map(path=>path.split(' > ').slice(2).join(' > '))).toEqual(['button#viewer-mode.icon-btn','button#viewer-mode.icon-btn > svg.icon','button#viewer-mode.icon-btn > svg.icon > path']);
         expect(production.paths[production.paths.indexOf(modePaths[2])+1]).toBe('dialog#viewer-dialog > div.dialog-header > button#viewer-close');
         production.paths=production.paths.filter(path=>!modePaths.includes(path));
+        // #480 D159: the Images viewer's Delete… (`danger`) follows Download; the concept has none.
+        expect(production.toolbar[8].text).toBe('Delete…');
+        production.toolbar.splice(8,1);
+        production.paths=production.paths.filter(path=>!path.includes('button.danger'));
         // #249 D34: after Next → production appends its own status lines (position, then the transform and slideshow
         // reasons), and Download stays the original-file link; every other control keeps the concept's text and order.
         const appended=production.toolbar.slice(9);
