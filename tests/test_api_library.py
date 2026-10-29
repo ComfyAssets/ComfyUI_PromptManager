@@ -123,6 +123,72 @@ class TestLibraryAPI(ImageAPITestCase):
             },
         )
 
+    async def test_folder_filter_lists_and_matches_prompts_by_output_folder(self):
+        deep = self._save_prompt("deep")
+        top = self._save_prompt("top")
+        other = self._save_prompt("other")
+        self._save_prompt("no images")
+        for prompt, parts in ((deep, ("a", "b")), (top, ("a",)), (other, ("ab",))):
+            path = make_png(self.output_dir.joinpath(*parts, f"{prompt}.png"))
+            self.api.db.link_image_to_prompt(prompt, str(path))
+        response, options = await self.get("/options", include="folders")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(options["folders"], ["a", "a/b", "ab"])
+        _, plain = await self.get("/options")
+        self.assertNotIn("folders", plain)
+        _, first = await self.get(folder="a", limit=1)
+        self.assertEqual((first["total"], first["folder"]), (2, "a"))
+        # Outer slashes are dropped (a backslash separates only on Windows).
+        outer = "\\a\\" if os.name == "nt" else "/a/"
+        _, second = await self.get(folder=outer, limit=1, cursor=first["next_cursor"])
+        self.assertEqual(
+            sorted([first["items"][0]["text"], second["items"][0]["text"]]),
+            ["deep", "top"],
+        )
+        _, all_rows = await self.get()
+        self.assertEqual((all_rows["total"], all_rows["folder"]), (4, ""))
+        for params in (
+            {"folder": "a/../ab"},
+            *([{"folder": "C:/x"}] if os.name == "nt" else []),
+            {"folder": "b", "cursor": first["next_cursor"]},
+            {"cursor": first["next_cursor"]},
+        ):
+            response, result = await self.get(limit=1, **params)
+            self.assertEqual(response.status, 400, params)
+            self.assertEqual(result["success"], False)
+        response, _ = await self.get("/options", include="tags")
+        self.assertEqual(response.status, 400)
+
+    @unittest.skipIf(os.name == "nt", "a backslash is a separator on Windows")
+    async def test_a_posix_folder_name_with_a_backslash_filters_its_prompts(self):
+        prompt = self._save_prompt("klein")
+        name = "Metadata\\Klein_4b Wildcard Run"
+        path = make_png(self.output_dir / name / "x.png")
+        self.api.db.link_image_to_prompt(prompt, str(path))
+        _, options = await self.get("/options", include="folders")
+        self.assertIn(name, options["folders"])
+        _, result = await self.get(folder=name)
+        self.assertEqual((result["total"], result["folder"]), (1, name))
+
+    async def test_any_tag_mode_is_sent_through_and_echoed(self):
+        self._save_prompt("a only", tags=["a"])
+        self._save_prompt("b only", tags=["b"])
+        self._save_prompt("neither")
+        _, result = await self.get(tag=["a", "b"], tag_mode="any")
+        self.assertEqual(result["tag_mode"], "any")
+        self.assertEqual(
+            sorted(i["text"] for i in result["items"]), ["a only", "b only"]
+        )
+        _, both = await self.get(tag=["a", "b"])
+        self.assertEqual((both["total"], both["tag_mode"]), (0, "all"))
+        _, first = await self.get(tag=["a", "b"], tag_mode="any", limit=1)
+        response, _ = await self.get(
+            tag=["a", "b"], limit=1, cursor=first["next_cursor"]
+        )
+        self.assertEqual(response.status, 400)
+        response, _ = await self.get(tag_mode="or")
+        self.assertEqual(response.status, 400)
+
     async def test_variant_cursor_is_positive_scoped_and_required_limits_are_bounded(
         self,
     ):

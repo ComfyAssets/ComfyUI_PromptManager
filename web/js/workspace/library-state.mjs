@@ -12,18 +12,22 @@ function parameters(filters,limit) {
     for(const tag of filters.tags || []) if(tag.trim()) query.append('tag',tag.trim());
     const sort=filters.sort || 'newest';
     if(!['newest','oldest','name'].includes(sort)) throw new TypeError('Invalid library sort');
-    // #444: how Tags match; `untagged` lists parents no tag's Browse returns and never goes with tags.
-    const tagMode=filters.tagMode ?? 'all';
+    // #444: how Tags match (every tag, any of them, or parents no tag's Browse returns, which never goes with tags) and
+    // the output folder below a root.
+    const tagMode=filters.tagMode ?? 'all',folder=filters.folder ?? '';
     if(!LIBRARY_TAG_MODES.includes(tagMode) || (tagMode==='untagged' && query.has('tag'))) throw new TypeError('Invalid library tag mode');
+    if(typeof folder!=='string' || folder.length>1024) throw new TypeError('Invalid library folder');
     if(tagMode!=='all') query.set('tag_mode',tagMode);
+    if(folder) query.set('folder',folder);
     query.set('sort',sort);return query;
 }
 /** The Library's tag match values (#444); the first is the default, sent as no parameter. */
-export const LIBRARY_TAG_MODES=Object.freeze(['all','untagged']);
+export const LIBRARY_TAG_MODES=Object.freeze(['all','any','untagged']);
 // `variant_total` is the filtered parents' active negative variants (the concept caption's "M negative variants").
 function validatePage(page,cursor,query) {
-    // A tag match the server did not echo was not applied (an older server): never show the whole shelf as filtered.
+    // A tag match or folder the server did not echo was not applied (an older server): never show the whole shelf as filtered.
     if(query?.has('tag_mode') && page?.tag_mode!==query.get('tag_mode')) throw new TypeError('Unconfirmed library tag mode');
+    if(query?.has('folder') && page?.folder!==query.get('folder')) throw new TypeError('Unconfirmed library folder');
     if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || !Number.isSafeInteger(page.variant_total) || page.variant_total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
 }
 export function createLibraryStream({api,onChange=()=>{},restore}) {
@@ -120,4 +124,29 @@ export function libraryWindow(count,columns,top,height,focused=-1) {
     for(let row=first;row<=last;row++) keep.add(row);
     if(focused>=0 && focused<count) keep.add(Math.floor(focused/columns));
     return [...keep].sort((a,b)=>a-b).flatMap(row=>Array.from({length:columns},(_,column)=>row*columns+column).filter(index=>index<count));
+}
+
+const byFolderName=(a,b)=>{const x=a.toLowerCase(),y=b.toLowerCase();return x<y?-1:x>y?1:a<b?-1:a>b?1:0;};
+/**
+ * Refine › Folder options (#444 D150): the concept's "All output folders" first, then the folders as a tree built by
+ * path segment, so each folder sits directly under its own parent (never under a longer sibling such as `kiko-v6`) and
+ * folders differing only in case stay distinct siblings. Siblings sort case-insensitively, then by exact spelling. A
+ * label is the last segment indented by depth (the legacy admin select). The chosen folder is kept even when the list
+ * lacks it, with its parents.
+ */
+export function libraryFolderOptions(folders,current='') {
+    const root=new Map();
+    for(const folder of current?[...folders,current]:folders) {
+        let level=root;
+        for(const segment of folder.split('/')) {if(!level.has(segment)) level.set(segment,new Map());level=level.get(segment);}
+    }
+    const options=[['','All output folders']];
+    (function walk(level,prefix,depth) {
+        for(const segment of [...level.keys()].sort(byFolderName)) {
+            const path=prefix?`${prefix}/${segment}`:segment;
+            options.push([path,`${'\u00a0\u00a0'.repeat(depth)}${segment}`]);
+            walk(level.get(segment),path,depth+1);
+        }
+    })(root,'',0);
+    return options;
 }

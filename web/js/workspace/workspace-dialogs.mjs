@@ -24,7 +24,7 @@
 import { createButton, createSwitch } from '../shared/toolkit/core.js';
 import { noun } from './plural.mjs';
 
-// `tagMode` (#444, D149): the Library's Tag match select after Tags; its `untagged` value disables Tags.
+// `tagMode` (#444, D149, D150): the Library's Tag match select after Tags; its `untagged` value disables Tags.
 const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags', tagMode: 'Tag match' });
 const FIELD_ORDER = Object.keys(FIELD_LABELS);
 

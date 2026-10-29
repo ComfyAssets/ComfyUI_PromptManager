@@ -48,6 +48,7 @@ LIBRARY_STATE = {
     "sort": "rating",
     "tags": [],
     "tag_mode": "untagged",
+    "folder": "2026/Aug",
 }
 IMAGES_DEFAULTS = {
     "q": "",
@@ -66,6 +67,7 @@ LIBRARY_DEFAULTS = {
     "sort": "newest",
     "tags": [],
     "tag_mode": "all",
+    "folder": "",
 }
 # A row saved by an older build: no favorites key, a retired key, a sort
 # that is no longer offered and an over-long folder.
@@ -242,14 +244,15 @@ class TestSavedViewsApi(ImageAPITestCase):
         for sort in ("newest", "oldest", "name", "rating"):
             await self.create(
                 page="library",
-                state={"sort": sort, "tags": ["a b"], "tag_mode": "all"},
+                state={"sort": sort, "tags": ["a b"], "tag_mode": "all", "folder": ""},
             )
-        untagged = await self.create(
-            page="library", state={"tags": [], "tag_mode": "untagged"}
-        )
-        self.assertEqual(untagged["state"]["tag_mode"], "untagged")
+        for mode in ("untagged", "any"):
+            view = await self.create(
+                page="library", state={"tags": [], "tag_mode": mode}
+            )
+            self.assertEqual(view["state"]["tag_mode"], mode)
         _, listed = await self.send("GET")
-        self.assertEqual(len(listed["views"]), 21)
+        self.assertEqual(len(listed["views"]), 22)
 
     async def test_write_requires_the_collection_key(self):
         # #331 D140: a view saved on a collection page keeps the collection id.
@@ -694,13 +697,24 @@ class TestSavedViewsSchema(unittest.TestCase):
                 )
         self.assertEqual(normalize_state("history", {}), {})
 
-    def test_library_tag_mode_is_kept_and_never_paired_with_tags(self):
-        # A row from before #444 has no tag_mode: it opens matching every tag.
+    def test_library_tag_mode_and_folder_are_kept_with_defaults_for_old_rows(self):
+        # A row from before #444 has neither key.
         old = {"q": "", "category": "", "sort": "rating", "tags": ["a"]}
         self.assertEqual(normalize_state("library", old), {**LIBRARY_DEFAULTS, **old})
         self.assertEqual(
-            normalize_state("library", {"tag_mode": "any"}), LIBRARY_DEFAULTS
+            normalize_state("library", {"tag_mode": "or", "folder": 3}),
+            LIBRARY_DEFAULTS,
         )
+        for mode in ("all", "any", "untagged"):
+            self.assertEqual(
+                normalize_state("library", {"tag_mode": mode})["tag_mode"], mode
+            )
+        with self.assertRaises(SavedViewInvalid):
+            encode_state("library", {**LIBRARY_STATE, "tag_mode": "or"})
+        with self.assertRaises(SavedViewInvalid):
+            encode_state("library", {**LIBRARY_STATE, "folder": "x" * 1025})
+
+    def test_library_untagged_is_never_paired_with_tags(self):
         # Never written by this build: the tags win, as the listing refuses both.
         self.assertEqual(
             normalize_state("library", {"tags": ["a"], "tag_mode": "untagged"}),
@@ -708,8 +722,6 @@ class TestSavedViewsSchema(unittest.TestCase):
         )
         with self.assertRaises(SavedViewInvalid):
             encode_state("library", {**LIBRARY_STATE, "tags": ["a"]})
-        with self.assertRaises(SavedViewInvalid):
-            encode_state("library", {**LIBRARY_STATE, "tag_mode": "none"})
 
     def test_validation_errors_are_saved_view_invalid(self):
         for call in (

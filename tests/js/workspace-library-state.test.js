@@ -104,6 +104,20 @@ test('archived variant reads use their own scope and cursor without changing the
  const active=[];const plain=createLibraryDetail({api:{get:async url=>{active.push(url);return {positive:item(1),variants:[]};}},onChange:()=>{}});await plain.load(1);assert.equal(new URL(active[0],'https://x').searchParams.has('archive'),false);
  assert.throws(()=>createLibraryDetail({api:{},onChange:()=>{},archive:'parents'}));
 });
+test('tag mode any and a folder are sent, echoed and validated (#444)',async()=>{
+ const {createLibraryStream,LIBRARY_TAG_MODES}=await source;assert.deepEqual(LIBRARY_TAG_MODES,['all','any','untagged']);
+ const calls=[];const pending=[{...page([item(1)]),tag_mode:'any',folder:'2026/Aug'},{...page([item(2)]),tag_mode:'all',folder:''},page([item(3)]),{...page([item(4)]),tag_mode:'all'}];
+ const s=createLibraryStream({api:{get:async(url)=>{calls.push(new URL(url,'https://x').searchParams);return pending.shift();}}});
+ assert.equal(await s.reset({tags:['a','b'],tagMode:'any',folder:'2026/Aug'}),1);
+ assert.equal(calls[0].get('tag_mode'),'any');assert.equal(calls[0].get('folder'),'2026/Aug');assert.deepEqual(calls[0].getAll('tag'),['a','b']);
+ // An older server that ignored them answers without the echo: an error, never the unfiltered shelf.
+ assert.equal(await s.reset({tags:['a','b'],tagMode:'any',folder:'2026/Aug'}),0);assert.ok(s.state.error instanceof TypeError);
+ // The defaults send neither, so they need no echo.
+ assert.equal(await s.reset({tagMode:'all',folder:''}),1);assert.equal(calls[2].has('tag_mode'),false);assert.equal(calls[2].has('folder'),false);
+ assert.equal(await s.reset({folder:'x'}),0);assert.ok(s.state.error instanceof TypeError,'a folder without its echo is refused');
+ await assert.rejects(s.reset({tagMode:'or'}),TypeError);await assert.rejects(s.reset({folder:3}),TypeError);
+ assert.equal(calls.length,4);s.dispose();
+});
 test('tag mode untagged is sent, echoed and never combined with tags (#444)',async()=>{
  const {createLibraryStream}=await source;const calls=[];const pending=[{...page([item(1)]),tag_mode:'untagged'},page([item(2)]),page([item(3)])];
  const s=createLibraryStream({api:{get:async(url)=>{calls.push(url);return pending.shift();}}});
@@ -112,7 +126,7 @@ test('tag mode untagged is sent, echoed and never combined with tags (#444)',asy
  assert.equal(await s.reset({tagMode:'untagged'}),0);assert.ok(s.state.error instanceof TypeError);assert.deepEqual(s.state.items,[]);
  // The default sends no tag_mode, so it needs no echo.
  assert.equal(await s.reset({tagMode:'all'}),1);assert.equal(new URL(calls[2],'https://x').searchParams.has('tag_mode'),false);
- await assert.rejects(s.reset({tagMode:'untagged',tags:['a']}),TypeError);await assert.rejects(s.reset({tagMode:'none'}),TypeError);
+ await assert.rejects(s.reset({tagMode:'untagged',tags:['a']}),TypeError);await assert.rejects(s.reset({tagMode:'or'}),TypeError);
  assert.equal(calls.length,3);s.dispose();
 });
 test('the stream keeps the first page\'s storage epoch and refuses a later page from another one (#437)',async()=>{
@@ -130,4 +144,29 @@ test('the shelf no longer sorts by rating (D153)',async()=>{
  await assert.rejects(s.reset({sort:'rating'}),/Invalid library sort/);
  assert.throws(()=>createLibraryStream({api:{get:async()=>page([])},restore:{filters:{sort:'rating'},state:{}}}),/Invalid library sort/);
  for(const sort of ['newest','oldest','name']) assert.equal(await s.reset({sort}),0);s.dispose();
+});
+test('Refine › Folder nests each folder under its exact parent, by path segment (#444 live B1)',async()=>{
+ const {libraryFolderOptions}=await source;assert.equal(typeof libraryFolderOptions,'function');
+ const I='  ';
+ // The server's flat list sorts full paths as text, so "-" and "_" land before "/" (live report shapes).
+ const folders=['CCC','CCC/mabes9sans-dataset','CCC/mabes9sans-dataset-v1','CCC/mabes9sans-dataset/mabes9sans-dataset_IMG_GEN',
+  'FLUX','FLUX/2025-12-11','flux','flux/images','flux-klein','illustrious','illustrious-base','illustrious/2026-10-26','illustrious/training',
+  'illustrious/training/a','kiko','kiko-v6','kiko/char','kiko/XXX','QWEN','QWEN/x','Qwen','Qwen/y','Qwen-Training','Video','Video/v','video'].sort();
+ const options=libraryFolderOptions(folders);
+ assert.deepEqual(options[0],['','All output folders']);
+ assert.deepEqual(options.slice(1),[
+  ['CCC','CCC'],['CCC/mabes9sans-dataset',`${I}mabes9sans-dataset`],['CCC/mabes9sans-dataset/mabes9sans-dataset_IMG_GEN',`${I}${I}mabes9sans-dataset_IMG_GEN`],
+  ['CCC/mabes9sans-dataset-v1',`${I}mabes9sans-dataset-v1`],
+  ['FLUX','FLUX'],['FLUX/2025-12-11',`${I}2025-12-11`],['flux','flux'],['flux/images',`${I}images`],['flux-klein','flux-klein'],
+  ['illustrious','illustrious'],['illustrious/2026-10-26',`${I}2026-10-26`],['illustrious/training',`${I}training`],['illustrious/training/a',`${I}${I}a`],
+  ['illustrious-base','illustrious-base'],
+  ['kiko','kiko'],['kiko/char',`${I}char`],['kiko/XXX',`${I}XXX`],['kiko-v6','kiko-v6'],
+  ['QWEN','QWEN'],['QWEN/x',`${I}x`],['Qwen','Qwen'],['Qwen/y',`${I}y`],['Qwen-Training','Qwen-Training'],
+  ['Video','Video'],['Video/v',`${I}v`],['video','video'],
+ ]);
+ // Every parent precedes its children directly; a chosen folder missing from the list is kept, with its parents.
+ assert.deepEqual(libraryFolderOptions(['a'],'a/b/c').slice(1),[['a','a'],['a/b',`${I}b`],['a/b/c',`${I}${I}c`]]);
+ assert.deepEqual(libraryFolderOptions([],''),[['','All output folders']]);
+ // A POSIX folder whose name holds a backslash is one segment.
+ assert.deepEqual(libraryFolderOptions(['Metadata\\Klein_4b Wildcard Run']).slice(1),[['Metadata\\Klein_4b Wildcard Run','Metadata\\Klein_4b Wildcard Run']]);
 });

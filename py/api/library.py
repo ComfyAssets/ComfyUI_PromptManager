@@ -21,9 +21,11 @@ from .pairs import pair_response
 try:
     from ...database.library import ARCHIVE_SCOPES
     from ...database.library_commands import LibraryCommandError
+    from ...database.library_folders import folder_prefixes, normalize_folder
 except ImportError:
     from database.library import ARCHIVE_SCOPES
     from database.library_commands import LibraryCommandError
+    from database.library_folders import folder_prefixes, normalize_folder
 
 _SECRET = os.urandom(32)
 
@@ -283,13 +285,47 @@ class LibraryRoutesMixin:
         outputs = list(self._get_all_output_dirs())
         return self._media_roots(outputs), len(outputs)
 
+    def _library_root_spellings(self) -> list[str]:
+        """Every spelling of each output root (#444 folder filter): the
+        validated, resolved root and each configured or detected path that
+        resolves to it, so images saved through a symlinked root match."""
+        from ..config import GalleryConfig
+
+        roots = [str(root) for root in self._get_all_output_dirs()]
+        candidates = [
+            *GalleryConfig.MONITORING_DIRECTORIES,
+            self._find_comfyui_output_dir(),
+            *self._comfyui_output_dir_list(),
+        ]
+        spellings = []
+        for root in roots:
+            for value in (root, *candidates):
+                if not value or not isinstance(value, (str, os.PathLike)):
+                    continue
+                value = str(value)
+                same = value == root or os.path.normcase(
+                    os.path.realpath(value)
+                ) == os.path.normcase(root)
+                if same and value not in spellings:
+                    spellings.append(value)
+        return spellings
+
     @pair_response
     async def get_library_options(self, request: web.Request) -> web.Response:
-        result = await self._run_in_executor(self.db.get_library_options)
+        include = request.query.get("include", "")
+        if include not in ("", "folders"):
+            raise ValueError("include must be empty or 'folders'")
+        if include:
+            # Folders are read only when Refine opens (a walk of linked paths).
+            roots = await self._run_in_executor(self._library_root_spellings)
+            result = await self._run_in_executor(self.db.get_library_options, roots)
+        else:
+            result = await self._run_in_executor(self.db.get_library_options)
         return web.json_response({"success": True, **result})
 
     @pair_response
     async def list_library(self, request: web.Request) -> web.Response:
+        folder = normalize_folder(request.query.get("folder", ""))
         options = {
             "text": request.query.get("text", ""),
             "category": request.query.get("category"),
@@ -299,21 +335,34 @@ class LibraryRoutesMixin:
         }
         limit = _page_limit(request)
         cursor = request.query.get("cursor")
+        roots = (
+            await self._run_in_executor(self._library_root_spellings) if folder else []
+        )
+        prefixes = folder_prefixes(roots, folder) if folder else None
 
         def read() -> tuple[dict, dict]:
             with self.db.library_snapshot(include_ceiling=True) as snapshot:
                 conn, epoch, ceiling = snapshot
+                # The folder and the roots it was resolved under join the scope.
                 scope = _scope(
-                    {"kind": "parents", "projection": 2, "epoch": epoch, **options}
+                    {
+                        "kind": "parents",
+                        "projection": 2,
+                        "epoch": epoch,
+                        **options,
+                        **({"folder": folder, "roots": roots} if folder else {}),
+                    }
                 )
                 result = self.db._list_library(
                     conn,
                     epoch,
                     ceiling,
                     **options,
+                    folder_prefixes=prefixes,
                     limit=limit,
                     after=_decode(cursor, scope),
                 )
+                result["folder"] = folder
                 records = self.db.get_library_previews(
                     [parent["id"] for parent in result["items"]]
                 )

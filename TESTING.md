@@ -2443,10 +2443,38 @@ Recorded deviations on this page:
   view" filters are active, and plain "Filters" otherwise; the text is its accessible
   name, so the count is spoken. The concept has no indicator, and without one a Tags
   filter set by Tags & categories Browse was invisible on the shelf. The Library counts
-  Tags; Images counts Source, Folder, Media and Tags (each once). The toolbar category is
+  Tags, Folder and Tag match (D150); Images counts Source, Folder, Media and Tags (each once). The toolbar category is
   not a Refine filter and is not counted. The caption's count is a `role="status"`
   region, written only when it changes and kept shown while the shelf reloads, so
   Load more and scrolling never re-announce it.
+- **D150** (#444, cutover #334): "Refine this view" on the Library holds the concept
+  Filters dialog's **Folder** ("All output folders", then each folder below an output
+  root as a tree built by path segment (each folder directly under its own parent,
+  case variants as distinct siblings, siblings case-insensitive then exact), indented
+  by depth, read from `GET /prompt_manager/library/options?include=folders`
+  when the dialog opens; the chosen folder stays listed even when the list lacks it) and
+  **Tags**, plus **Tag match** ("All of these tags" / "Any of these tags" / "Prompts without tags", D149) drawn as the
+  concept's own select; the concept's "Prompt evidence" and prototype note are absent.
+  `GET /prompt_manager/library` takes `folder` (`/`-joined; `\` is a separator only on
+  Windows, on POSIX it is part of a folder's name as the listing shows it; `.`, `..`,
+  empty segments and, on Windows, drives are 400) and `tag_mode` (`all` default, `any`, `untagged` from D149), and echoes
+  both; a client whose non-default value is not echoed (an un-restarted older server)
+  shows the read error, never the unfiltered shelf. A folder keeps a parent with one
+  linked image (`generated_images.prompt_id`) in it or below it under any spelling of
+  any output root (the root as configured or detected and after `realpath`, so a
+  symlinked output folder works): `file_path` (`normcase(normpath(abspath))`) is
+  compared with prefixes built by the same normalization, so case folding is the
+  platform's own, including non-ASCII on Windows. The folder is an outer AND around the
+  parent and pair arms; Any puts one `t.name IN (...)` in each arm, so a card matches
+  when the parent or one active pair carries any tag (text and category still AND
+  inside each arm); with one tag Any equals All. Filters counts Tags, Folder and a Tag
+  match other than All (D44). Saved Library views store `tag_mode` (`all|any|untagged`) and
+  `folder` (text 1024); older rows read the defaults. Tests:
+  `tests/test_library_folders.py` (pure prefixes and names with `posixpath`/`ntpath`,
+  drive, UNC, non-ASCII, symlinked root, the any-tag union), `test_api_library.py`,
+  `test_saved_views.py`, the library-state and saved-views JS units, and
+  `tests/browser/workspace-library-filters.spec.mjs` (behavior, the Refine dialog against
+  the concept Filters dialog, artifact captures). Windows: run `portability.yml` on the PR.
 
 `tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
 concept-shaped fixture, which creates the concept's prompts last to first so Recently
@@ -6637,12 +6665,12 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for multi-tag AND/OR browsing (tag search and sort
-and the untagged entry moved here with D149, #444); bulk prompt delete stays on the
-legacy admin page (bulk tags: the Prompt library's selection bar, D151). A
-prompt's category is changed in the Prompt library editor, on many prompts at once with
-the Prompt library's selection bar (D148, #437), or with the legacy admin page's "Set
-Category" (both `POST /prompt_manager/bulk/category`);
+"Open existing tag manager" card for its own page; tag search and sort, the untagged
+entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
+(#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
+library's selection bar, D151). A prompt's category is changed in the Prompt library
+editor, on many prompts at once with the Prompt library's selection bar (D148, #437), or
+with the legacy admin page's "Set Category" (both `POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
 above and adds no route, so PR B needed no ComfyUI restart; D149 (#444) adds read
@@ -6715,10 +6743,10 @@ fixture-only tags after the concept's sample tags.
   counted every prompt without `prompt_tags` and hid the entry at 0; this row always
   shows) and echoes `search` and `sort`. Browse opens the Library with `tag_mode=untagged`
   (`GET /prompt_manager/library`, echoed as `tag_mode`; with a `tag` it is 400): "Filters ·
-  1", and Refine this view adds **Tag match** after Tags ("All of these tags" / "Prompts
+  1", and Refine this view adds **Tag match** after Tags ("All of these tags" / "Any of these tags" (D150) / "Prompts
   without tags", the latter disables Tags and drops them on Apply). A client whose request
   the server did not echo (an un-restarted older server) shows the read error with Retry,
-  never an unfiltered list. Saved Library views store `tag_mode` (`all|untagged`, default
+  never an unfiltered list. Saved Library views store `tag_mode` (`all|any|untagged`, default
   `all`); untagged with tags is refused on write and reads back as `all`; an older build
   opens an untagged view as the whole Library. The concept comparison holds the row to the
   concept's first category row, its top to the concept table's offset, the table to that
