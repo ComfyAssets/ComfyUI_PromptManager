@@ -19,6 +19,7 @@ Split into domain-specific mixins for maintainability:
 - SystemRoutesMixin: System health check, Overview and usage statistics
 - LibraryLocationRoutesMixin: where the library lives, Move library, Keep it here
 - MaintenanceRoutesMixin: reviewed maintenance plans (preview, apply)
+- LibraryDeleteRoutesMixin: the Library's Delete… (archive paired) and Restore
 - WorkflowStorageRoutesMixin: store each workflow once, then Reclaim space
 - DuplicateFilesMixin: duplicate image files as find and removal jobs
 - LoraImportRoutesMixin: the reviewed, staged LoRA reference import job
@@ -43,6 +44,7 @@ from .prompts import PromptRoutesMixin
 from .revalidation import revalidated_response
 from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
+from .library_delete import LibraryDeleteRoutesMixin
 from .vocabulary import VocabularyRoutesMixin
 from .annotations import AnnotationRoutesMixin
 from .review import ReviewRoutesMixin
@@ -316,6 +318,7 @@ async def _gzip_middleware(request, handler):
 class PromptManagerAPI(
     PairRoutesMixin,
     LibraryRoutesMixin,
+    LibraryDeleteRoutesMixin,
     VocabularyRoutesMixin,
     AnnotationRoutesMixin,
     ReviewRoutesMixin,
@@ -702,6 +705,7 @@ class PromptManagerAPI(
 
         self._register_pair_routes(routes)
         self._register_library_routes(routes)
+        self._register_library_delete_routes(routes)
         self._register_vocabulary_routes(routes)
         self._register_annotation_routes(routes)
         self._register_review_routes(routes)

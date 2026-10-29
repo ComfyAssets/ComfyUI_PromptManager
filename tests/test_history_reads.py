@@ -400,6 +400,32 @@ class HistoryReadTests(unittest.TestCase):
                 pass
         self.assertFalse(conn.in_transaction)
 
+    def test_a_deleted_negative_is_unavailable_and_a_negative_only_one_is_not(self):
+        # #443: a Library delete can remove an unpaired prompt a run used as
+        # its negative. The run's prompt ids are live hints, so a deleted one
+        # reads unavailable; a negative-only prompt stays available.
+        db = self.database()
+        self.saved(db)
+        self.saved(db, "negative", 2)
+        start = self.capture(db)
+        with db.recorded_history_snapshot():
+            context = db.get_history_run(start.run_id)["contexts"][0]
+        self.assertTrue(context["navigation"]["negative_available"])
+        with db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_pairs(id,positive_prompt_id,negative_prompt_id) "
+                "VALUES(9,1,2)"
+            )
+        with db.recorded_history_snapshot():
+            context = db.get_history_run(start.run_id)["contexts"][0]
+        self.assertTrue(context["navigation"]["negative_available"])
+        with db.model.get_connection() as conn:
+            conn.execute("DELETE FROM prompt_pairs WHERE id=9")
+            conn.execute("DELETE FROM prompts WHERE id=2")
+        with db.recorded_history_snapshot():
+            context = db.get_history_run(start.run_id)["contexts"][0]
+        self.assertFalse(context["navigation"]["negative_available"])
+
     def test_detail_preserves_full_text_snapshots_hints_and_archive(self):
         db = self.database()
         self.saved(db)

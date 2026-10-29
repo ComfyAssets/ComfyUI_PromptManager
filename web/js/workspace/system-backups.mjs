@@ -56,8 +56,8 @@ export const HOST_UNAVAILABLE = 'Server settings could not be read.';
 export const SCHEDULE_REASON = 'Daily and Weekly are not available yet: back up with Back up whenever you choose.';
 export const WARNING_NOTE = 'Restores are staged, migrated and validated before replacing live data.';
 // D104 (M2): what the safety-backup policy does (the concept's "Preview a verified backup…" line misstates it).
-export const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups and LoRA ' +
-    'imports change records. A restore always keeps one.';
+export const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups, LoRA ' +
+    'imports and prompt deletes change records. A restore always keeps one.';
 // I1: a third review while two are held (another window's): what the user can do about it.
 export const REVIEWS_FULL = 'Two restores are already being reviewed in another window. Discard one there, or try again ' +
     'when it expires (15 minutes after it was reviewed).';
