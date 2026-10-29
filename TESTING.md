@@ -2479,9 +2479,8 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   `$RECYCLE.BIN` (any case), as none descends `thumbnails`: the workspace and legacy
   listings (`_walk_media`, `_settled_entry`), the metadata scan and duplicate find
   (`_collect_media_files`), the legacy auto-tag listing (`_collect_scan_files`) and the
-  delete review (`trash-folder`). The image monitor tests every folder of the new file's
-  absolute path, so it also ignores outputs written into a source that itself lies
-  inside such a folder. Tests: `tests/test_media_folders.py`,
+  delete review (`trash-folder`), and the image monitor, which tests the folders below the
+  watched folder holding the new file (a source named like a trash folder is still watched). Tests: `tests/test_media_folders.py`,
   `tests/test_image_removal_gaps.py`.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's

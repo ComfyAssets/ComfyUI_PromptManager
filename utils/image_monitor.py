@@ -147,6 +147,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
         # Settle check: the file size must be unchanged across two reads
         self.settle_interval = SETTLE_INTERVAL_SECONDS
+        # The folders this handler is scheduled on (#501): the folder skip only
+        # tests the folders below them, so a source named like a trash folder
+        # is still watched.
+        self.watched_roots = ()
         self.settle_attempts = SETTLE_ATTEMPTS
 
         # Images scheduled but not yet processed: path -> (prompt snapshot, due time).
@@ -433,10 +437,27 @@ class ImageGenerationHandler(FileSystemEventHandler):
         """
         # Previews are derivatives, and a trash folder inside an output
         # folder holds thrown-away files (#501): neither is a new output.
-        folders = filepath.replace("\\", "/").split("/")[:-1]
-        if in_skipped_folder(folders):
+        if in_skipped_folder(self._folders_below_root(filepath)):
             return False
         return filepath.lower().endswith(self.supported_extensions)
+
+    def _folders_below_root(self, filepath: str) -> list:
+        """The folder names of *filepath* below the longest watched root.
+
+        Without a watched root holding it (a handler used on its own), every
+        folder of the path counts.
+        """
+        text = os.path.abspath(filepath)
+        holding = [
+            root
+            for root in getattr(self, "watched_roots", ())
+            if os.path.normcase(text).startswith(
+                os.path.normcase(os.path.join(root, ""))
+            )
+        ]
+        if holding:
+            text = text[len(os.path.join(max(holding, key=len), "")) :]
+        return text.replace("\\", "/").split("/")[:-1]
 
     def process_new_image(self, image_path: str, prompt_snapshot=None):
         """Process a newly created image file for gallery integration.
@@ -1238,6 +1259,7 @@ class ImageMonitor:
         handler.review_recorder = self.review_recorder
         handler.thumbnail_queue = self.thumbnail_queue
         handler.output_listener = self.output_listener
+        handler.watched_roots = tuple(os.path.abspath(d) for d in valid_directories)
         observer = Observer()
         scheduled = []
         for output_dir in valid_directories:
