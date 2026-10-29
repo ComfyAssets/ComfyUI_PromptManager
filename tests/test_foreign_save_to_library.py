@@ -205,6 +205,44 @@ class TestForeignPathKeepsSaveToLibrary(attribution.RecordedRuns, unittest.TestC
             self.db.get_prompt_by_hash(generate_prompt_hash(shapes.BRANCH_TEXTS[0]))
         )
 
+    def test_q3_an_off_node_in_the_recorded_saver_branch_is_never_foreign(self):
+        """PR 3's parity case: a switched-off node feeds the very branch the
+        recorded saver names (saver "23" is branch 2). A literal switch is the
+        opted-out path's; a wired one is the node's own run's (#90), never the
+        foreign path's. Nothing is stored at settle or after the run, and no
+        file waits for a foreign re-check."""
+        cases = (
+            ("off", False, "opted_out", SKIPPED),
+            ("wired", ["52", 0], "unknown", "No certain prompt for"),
+        )
+        for name, save, state, line in cases:
+            with self.subTest(name=name):
+                graph = shapes.shared_prefix()
+                graph["50"] = {
+                    "class_type": "PromptManagerText",
+                    "inputs": {"text": OFF_TEXT, "save_to_library": save},
+                }
+                graph["20"]["inputs"]["text"] = ["50", 0]
+                if isinstance(save, list):
+                    graph["52"] = {"class_type": "SomeBoolNode", "inputs": {}}
+                self.metadata = {"prompt": graph}
+                found, _ = self.handler._find_prompt_from_metadata(self.metadata)
+                self.assertEqual(found, state)
+                path = self.image(f"IMG_GEN_{name}_00001_.png")
+                with self.assertLogs(LOGGER, "INFO") as logs:
+                    self.handler.process_new_image(path)
+                self.assertIn(line, "\n".join(logs.output))
+                self.assert_nothing_stored(path)
+                self.seal(path, positives=[OFF_TEXT], nodes=("23",))
+                self.assertTrue(self.settled())
+                self.handler.process_new_image(path)
+                self.assert_nothing_stored(path)
+                self.assertIsNone(
+                    self.db.get_prompt_by_hash(
+                        generate_prompt_hash(shapes.BRANCH_TEXTS[1])
+                    )
+                )
+
     def test_q4_an_off_node_on_the_negative_only_still_links_the_positive(self):
         positive = "a lighthouse on a cliff at dusk"
         plain = sampled_graph(positive, "unused")
