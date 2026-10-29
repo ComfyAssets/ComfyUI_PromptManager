@@ -1418,9 +1418,10 @@ class TestPromptInspector(ImageAPITestCase):
     async def test_root_scope_rotated_key_and_removed_index_skip_reader_and_db(self):
         png(self.output_dir / "image.png", prompt=graph())
         descriptor = await self.scoped_descriptor()
-        import py.api.images as images_module
+        from utils.workspace_keys import WorkspaceKeys
 
-        with patch.object(images_module, "_WORKSPACE_CURSOR_SECRET", b"new-key"):
+        rotated = WorkspaceKeys(b"n" * 32, b"m" * 32, False)
+        with patch.object(self.api, "_workspace_keys", return_value=rotated):
             await self.assert_scope_skips_access(descriptor.get("root_scope", "0" * 64))
         self.api._get_all_output_dirs = lambda: []
         await self.assert_scope_skips_access(descriptor.get("root_scope", "0" * 64))

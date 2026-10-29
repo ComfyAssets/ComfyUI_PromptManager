@@ -569,6 +569,10 @@ test('source and folder discovery failure stays visible and Import Rescan restor
 async function staleSourceRecovery(page, request, roots) {
     await expect(await request.post('/__test__/reset', { data: { extra_images: 80 } })).toBeOK();
     await page.setViewportSize({ width: 1600, height: 1100 });
+    // #430: the page first asks the server where a stale file is now. These tests cover the manual Refresh, so the
+    // file is never found; workspace-stale-source.spec.mjs covers a renumbered file that is found again.
+    await page.route('**/prompt_manager/images/rescope', route => route.fulfill({ status: 409,
+        json: { success: false, code: 'source-changed', error: 'The source of this image changed or was removed.' } }));
     await page.goto(workspace);
     const source = refineDialog(page).getByLabel('Source', { exact: true });
     const folder = refineDialog(page).getByLabel('Folder', { exact: true });
@@ -1787,7 +1791,7 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     await checkbox(first, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
     // D85: Add tags (the concept's) and Auto-tag selected lead the real actions.
-    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Export metadata', 'Clear']);
+    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection', 'Export metadata', 'Clear']);
     // Toggling neither opens the viewer, nor inspects, nor moves focus.
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(checkbox(first, 'same.png')).toBeFocused();

@@ -78,7 +78,8 @@ export function parseCollections(data) {
 }
 
 /** The sidebar's order while a re-read is pending: an approximation of the server's name key, then id. */
-const nameKey = name => name.normalize('NFC').toLowerCase().normalize('NFC');
+export const collectionNameKey = name => name.normalize('NFC').toLowerCase().normalize('NFC');
+const nameKey = collectionNameKey;
 const ordered = list => [...list].sort((a, b) => {
     const left = nameKey(a.name), right = nameKey(b.name);
     return left < right ? -1 : left > right ? 1 : a.id - b.id;

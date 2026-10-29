@@ -1,7 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
-import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
+import {armUnseenRestores,unseenRestore,followRestore,SEEN_RESTORE_PILL,SEEN_RESTORE_TOAST} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog} from './vocabulary-canonical-comparison.mjs';
 
@@ -549,6 +549,31 @@ test('conflict and restore states keep the dialog and write nothing',async({page
     await button(box,'Reload').click();await expect(box).toHaveCount(0);
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
     await expect(tagRow(page,'mist')).toHaveCount(1);await expect(tagRow(page,'fog')).toHaveCount(0);
+    expect(writes.filter(write=>write.url==='/prompt_manager/vocabulary/tags')).toHaveLength(1);
+});
+
+// #415: a restore the page sees finish while Create tag is open keeps the dialog and its entries; the page is shown
+// again from the restored data only once the dialog has closed.
+test('a restore seen finishing keeps an open dialog and reloads the page after it closes',async({page,request})=>{
+    const saved=await backup(request);
+    await expect(await request.put('/prompt_manager/tags/mist',{data:{new_name:'fog'}})).toBeOK();
+    const restoreRun=await followRestore(page);const writes=trackWrites(page);await openPage(page);
+    await expect(page.locator('#activity-pill')).toHaveAttribute('href',SEEN_RESTORE_PILL);
+    await expect(tagRow(page,'fog')).toHaveCount(1);
+    const box=await openDialog(page,main(page).getByRole('button',{name:'+ Create tag',exact:true}),'Create tag');
+    await field(box,'Tag name').fill('sunrise');
+    await expect(await request.post('/prompt_manager/restore',{multipart:{database_file:{name:'vocabulary.db',mimeType:'application/octet-stream',buffer:saved}}})).toBeOK();
+    await restoreRun.finish();
+    await expect(toast(page)).toHaveText(SEEN_RESTORE_TOAST);
+    await expect(box).toBeVisible();await expect(field(box,'Tag name')).toHaveValue('sunrise');
+    await expect(tagRow(page,'fog')).toHaveCount(1);
+    await button(box,'Apply').click();
+    await expect(note(box)).toHaveText('Prompt storage was restored since this dialog opened. Nothing was changed.');
+    expect(await actionNames(box)).toEqual(['Reload','Cancel','Apply']);
+    expect(tagNames(await snapshot(request))).not.toContain('sunrise');
+    await button(box,'Cancel').click();await expect(box).toHaveCount(0);
+    await expect(tagRow(page,'mist')).toHaveCount(1);await expect(tagRow(page,'fog')).toHaveCount(0);
+    await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
     expect(writes.filter(write=>write.url==='/prompt_manager/vocabulary/tags')).toHaveLength(1);
 });
 

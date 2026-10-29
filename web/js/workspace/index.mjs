@@ -9,7 +9,7 @@ import { mountVocabulary } from './vocabulary.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { bindCanvasLink, canvasHref } from './topbar.mjs';
 import { renderHeading, pageHeading } from './heading.mjs';
-import { closeWorkspaceDialog } from './workspace-dialogs.mjs';
+import { closeReviewDialog, closeWorkspaceDialog } from './workspace-dialogs.mjs';
 import { createSavedViews, openSaveViewDialog, openEditViewDialog, savedViewHash } from './saved-views.mjs';
 import { createCollections, collectionHash, openEditCollectionDialog, missingNote, DELETED_PAGE_TEXT, OPEN_IMAGES_LINK,
     LIST_FAILED_TEXT } from './collections.mjs';
@@ -20,7 +20,7 @@ import { mountInspect } from './inspect.mjs';
 import { mountReview } from './review.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
-import { onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
+import { createRestoreReload, onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 
@@ -184,13 +184,20 @@ function mountWorkspace() {
     refreshCounts(NAV_COUNT_ROUTES);
     // S9: a finished restore replaced the library. The cached visits are dropped, the counts and saved views read
     // again, and the open page is shown again from the restored data; the Activity job view the restore opened stays.
-    scope.cleanup(onRestoreFinished(activity, () => {
+    // #415: an open review closes (its plan no longer describes storage); while any other dialog is open, all of it
+    // waits until the last one has closed, so the dialog keeps what was typed.
+    const restoreReload = createRestoreReload(() => {
         forgetImagesVisit();
         forgetLibraryVisit();
         refreshCounts(NAV_COUNT_ROUTES);
         savedViews.load();
         collections.load();
         if (currentKey !== 'activity') navigateTo(window.location.hash);
+    });
+    scope.cleanup(() => restoreReload.dispose());
+    scope.cleanup(onRestoreFinished(activity, () => {
+        closeReviewDialog();
+        restoreReload.request();
     }));
     // S9 I1: a restore this page started that could not run yet (other requests kept reading) hands its review back:
     // it opens again over the page shown now, with Restore (again) and Discard; leaving it any other way discards it.
@@ -403,7 +410,7 @@ function mountWorkspace() {
         if (route.id === 'images' || route.id === 'favorites' || route.id === 'collection') {
             mountNewPromptAction(main, api, view);
             images = mountImages(main, api, view, {savedState:saved?.state, favorites:route.id === 'favorites',
-                collection, onCollectionMissing, onSaveView:saveView('images', view), activity});
+                collection, onCollectionMissing, onSaveView:saveView('images', view), activity, collections});
             return;
         }
         if (route.id === 'library') {

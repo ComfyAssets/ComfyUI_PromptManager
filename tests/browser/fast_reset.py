@@ -28,6 +28,11 @@ import weakref
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+try:
+    import fcntl
+except ImportError:  # Windows: no flock, and no /dev/shm to share
+    fcntl = None
+
 T = TypeVar("T")
 
 # Set to 1 to run seeders on the live database as before #384 (the equivalence
@@ -43,8 +48,13 @@ MEMORY_ROOT = Path("/dev/shm")
 # the browsers and the other workers; with less free than this, the scratch
 # copy goes on disk instead.
 MEMORY_FREE_BYTES = 32 * 1024 * 1024
-# Scratch folders are named <prefix><owner pid>-<random>.
+# Scratch folders are created as <prefix>new-<owner pid>-<random>, locked, then
+# renamed to <prefix>held-<owner pid>-<random>. The pid is for people only:
+# ownership is the flock on OWNER_LOCK, which every PID namespace sees (#419).
 SCRATCH_PREFIX = "pm-reset-"
+STAGING_PREFIX = f"{SCRATCH_PREFIX}new-"
+HELD_PREFIX = f"{SCRATCH_PREFIX}held-"
+OWNER_LOCK = "owner.lock"
 
 
 def _quote(name: str) -> str:
@@ -96,29 +106,40 @@ def table_digests(conn: sqlite3.Connection, schema: str = "main") -> dict[str, s
     return result
 
 
-def _process_alive(pid: int) -> bool:
+def _hold(folder: Path, *, create: bool) -> int:
+    """Take ``folder``'s owner lock without waiting; the open descriptor."""
+    flags = os.O_RDWR | (os.O_CREAT if create else 0)
+    fd = os.open(folder / OWNER_LOCK, flags, 0o600)
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return True  # it exists but belongs to someone else
-    return True
+        os.close(fd)
+        raise
+    return fd
 
 
 def remove_orphaned_scratch(root: Path) -> None:
     """Remove scratch folders of servers that died without cleaning up.
 
     A server killed outright (SIGKILL, a crash) never runs ``close``, and
-    tmpfs keeps its folder in memory until reboot. The folder name carries
-    the owner's process id; a folder whose process is gone is removed.
+    tmpfs keeps its folder in memory until reboot. A live owner holds the
+    flock on the folder's owner lock; the kernel drops it when the owner
+    dies, in whatever PID namespace it ran (a container with ``--ipc=host``
+    shares /dev/shm but not the pids, #419). A folder whose lock is free is
+    removed. Folders without a lock (staging, or named before #419) cannot
+    be proven orphaned and are left alone.
     """
-    if os.name != "posix":
-        return  # os.kill(pid, 0) would terminate the process on Windows
-    for folder in root.glob(f"{SCRATCH_PREFIX}*-*"):
-        pid = folder.name[len(SCRATCH_PREFIX) :].split("-", 1)[0]
-        if pid.isdigit() and not _process_alive(int(pid)):
+    if fcntl is None:
+        return
+    for folder in root.glob(f"{HELD_PREFIX}*"):
+        try:
+            fd = _hold(folder, create=False)
+        except OSError:
+            continue  # held by its owner, no lock to judge by, or gone
+        try:
             shutil.rmtree(folder, ignore_errors=True)
+        finally:
+            os.close(fd)
 
 
 class _SeedApi:
@@ -162,6 +183,7 @@ class ScratchSeeder:
         self._fallback = Path(directory)
         self._memory_root = memory_root
         self._directory: Path | None = None
+        self._owner_lock: int | None = None
         self._on_live = on_live
         self._scratch = None
         self._unsynced: "weakref.WeakSet[sqlite3.Connection]" = weakref.WeakSet()
@@ -266,6 +288,9 @@ class ScratchSeeder:
         if self._directory is not None:
             shutil.rmtree(self._directory, ignore_errors=True)
             self._directory = None
+        if self._owner_lock is not None:
+            os.close(self._owner_lock)  # after the removal: never a free lock
+            self._owner_lock = None
 
     def _scratch_directory(self) -> Path:
         """A folder in memory (tmpfs) where there is one, else ``directory``.
@@ -274,10 +299,35 @@ class ScratchSeeder:
         kernel is writing back the pages they rewrite.
         """
         root = self._memory_root
-        if root is not None and root.is_dir() and os.access(root, os.W_OK):
+        if (
+            fcntl is not None
+            and root is not None
+            and root.is_dir()
+            and os.access(root, os.W_OK)
+        ):
             remove_orphaned_scratch(root)
             if shutil.disk_usage(root).free >= MEMORY_FREE_BYTES:
-                prefix = f"{SCRATCH_PREFIX}{os.getpid()}-"
-                return Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+                held = self._held_memory_directory(root)
+                if held is not None:
+                    return held
         self._fallback.mkdir(parents=True, exist_ok=True)
         return self._fallback
+
+    def _held_memory_directory(self, root: Path) -> Path | None:
+        """A new folder under ``root`` that this seeder holds the lock of.
+
+        It is locked under the staging name, which no cleaner judges, and
+        only then renamed: no cleaner ever sees it held-named and unlocked.
+        """
+        staging = Path(
+            tempfile.mkdtemp(prefix=f"{STAGING_PREFIX}{os.getpid()}-", dir=root)
+        )
+        try:
+            fd = _hold(staging, create=True)
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+            return None  # no locks on this filesystem: use the disk
+        held = root / (HELD_PREFIX + staging.name[len(STAGING_PREFIX) :])
+        os.rename(staging, held)
+        self._owner_lock = fd
+        return held
