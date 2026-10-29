@@ -36,11 +36,11 @@ async function watchHost(page,id,reset=true) {
 }
 const restore=page=>page.evaluate(async()=>{const {app}=await import('/scripts/app.js');Object.assign(app,window.inspectOriginals);});
 
-/** Chooses `file` on the Inspect page and opens the shared viewer on its local record. */
+/** Chooses `file` on the Inspect page, which opens the shared viewer on its local record (D155, #448). */
 async function inspect(workspace,{file,positive,shown}) {
     await workspace.locator('#local-file').setInputFiles(file());
     const open=workspace.locator('#workspace-main .heading-actions').getByRole('button',{name:'Open file metadata',exact:true});
-    await expect(open).toHaveAttribute('aria-disabled','false');await open.click();
+    await expect(open).toHaveAttribute('aria-disabled','false');
     const rail=workspace.locator('dialog#viewer-dialog[open] #viewer-details');
     await expect(rail.locator('.prompt-section.positive p.prompt-text')).toHaveText(positive);
     await expect(rail.locator('.prompt-section.negative p.prompt-text')).toHaveText(shown);
