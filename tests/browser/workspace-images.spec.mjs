@@ -1,6 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
-import { seedConcept, openConcept, openProduction } from './concept-inventory.mjs';
+import { seedConcept, openConcept, openProduction, startInGrid } from './concept-inventory.mjs';
 
 const workspace = '/prompt_manager/workspace#/images';
 const cards = page => page.locator('article[data-image-key]');
@@ -814,6 +814,8 @@ test('leaving during Rescan cancels it without replacing the next workspace', as
 
 test('Images uses approved geometry while keeping real controls', async ({page,request}) => {
     await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    // The approved Grid geometry (D157: the default layout is Masonry).
+    await startInGrid(page);
     await page.setViewportSize({width:1600,height:1100});
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(24);
