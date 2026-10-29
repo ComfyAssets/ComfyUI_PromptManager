@@ -2488,8 +2488,12 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with
   `renameat2(RENAME_NOREPLACE)`; without it, across devices, on a read-only mount or with
   a trash inside an output root the move is refused (`no-trash`, `trash-in-root`). Windows
-  and macOS report `no-trash` until their own backends land; library-only removal works
-  everywhere. Tests use `tests/fake_trash.py`; the browser test server installs it, so no
+  never uses the Recycle Bin (#500, maintainer ruling (a)): files larger than the bin's
+  capacity are deleted permanently and IFileOperation's `PreDeleteItem` guard cannot detect
+  it (native probe runs 40951037575, 40953347904), so every file answers `windows-recycle`
+  ("Moving files to the Recycle Bin isn't available on Windows: files larger than the bin's
+  capacity would be deleted permanently."). macOS reports `no-trash` until #499 lands;
+  library-only removal works everywhere. Tests use `tests/fake_trash.py`; the browser test server installs it, so no
   test touches a real trash.
 
 ### Prompt library cards and recorded deviations (#249 PR E)
