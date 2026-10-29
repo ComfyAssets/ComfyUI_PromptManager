@@ -394,7 +394,10 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
             message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
-            schedule();scheduleLoad();
+            // #464: a loaded page is laid out now, not on the next frame: a starved renderer (a background tab, headless
+            // WebKit under load) can hold frames for seconds, which left a loaded shelf empty. Measurements still flush per frame.
+            if(batch && grid.isConnected) {cancelAnimationFrame(frame);flush();} else schedule();
+            scheduleLoad();
         }
         const stream=createLibraryStream({api,onChange:render,restore:restorable?{filters,state:restorable.state}:undefined});
         function maybeLoad() {
