@@ -328,3 +328,31 @@ export function previewOutcome(failure) {
     if (failure?.code === 'busy') return failureOutcome(failure, {});
     return { toast: COPY.reviewFailed, committed: false, reload: false };
 }
+
+/**
+ * #481: review and run a delete of `ids` outside the selection bar (a prompt's own page): the same preview, review
+ * (#482's choice included), backup and write. `onSettled(outcome, result, failure)` runs once the write has answered
+ * (or the preview failed: `result` null); a dismissed review calls `onDismiss()`. The toast is the caller's.
+ */
+export async function reviewPromptDelete({ api, scope, trigger, ids: promptIds, epoch, titleOf, onSettled, onDismiss = () => {} }) {
+    const body = { prompt_ids: promptIds, expected_epoch: epoch };
+    let preview = null, failure = null;
+    try {
+        preview = await api.post(PREVIEW_URL, body, { signal: scope.signal });
+    } catch (error) {
+        failure = error;
+    }
+    if (scope.signal.aborted) return;
+    if (failure !== null || !preview?.success) { onSettled(previewOutcome(failure), null, failure); return; }
+    const review = { ...reviewOf(preview), epoch };
+    openDeleteReview({ scope, trigger, review, titleOf, onDismiss,
+        onStart: async chosen => {
+            let result = null, error = null;
+            try {
+                result = await api.post(DELETE_URL, deleteBody(chosen));
+            } catch (caught) {
+                error = caught;
+            }
+            onSettled(deleteOutcome(result, error, chosen), result?.success ? result : null, error);
+        } });
+}

@@ -17,7 +17,7 @@ import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 import {mountLibrarySelection} from './library-selection.mjs';
 import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
-import {COPY as DELETE_COPY,RESTORE_URL,archivedNoticeText,restoreOutcome} from './library-delete.mjs';
+import {COPY as DELETE_COPY,RESTORE_URL,archivedNoticeText,restoreOutcome,reviewPromptDelete} from './library-delete.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -496,7 +496,28 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         let pendingSelection=takeSavedSelection(positiveId);
         if(selectedPairs.get(positiveId)?.id!==pendingSelection) selectedPairs.delete(positiveId);
         const loader=createLibraryDetail({api,onChange:render});scope.cleanup(()=>loader.dispose());
-        const editor=createLibraryEditor({api,parentScope:scope,onCommitted:invalidateLibraryAfterWrite,onReconciled:reconciled,onRefreshRequired:reloadView});
+        const editor=createLibraryEditor({api,parentScope:scope,onCommitted:invalidateLibraryAfterWrite,onReconciled:reconciled,onRefreshRequired:reloadView,
+            onDeletePrompt:()=>deletePrompt()});
+        /** #481: this prompt through the Library's Delete… review; a delete returns to the shelf, an archive shows its notice. */
+        let deleting=false;
+        function deletePrompt() {
+            const shown=detail;if(deleting || !shown?.positive) return;
+            // One review at a time, as the selection bar holds itself (a second press during the preview starts nothing).
+            deleting=true;
+            reviewPromptDelete({api,scope,trigger:edit,ids:[shown.positive.id],epoch:shown.library_epoch,
+                titleOf:()=>displayTitle(shown.positive),onDismiss:()=>{deleting=false;if(edit.isConnected) edit.focus({preventScroll:true});},
+                onSettled:(outcome,result,failure)=>{
+                    deleting=false;
+                    if(outcome.committed) invalidateLibraryAfterWrite({kind:'bulk-delete',receipt:result ?? {phase:'unconfirmed'}});
+                    // A left page still invalidates what it cached, but says nothing (as the bar's write).
+                    if(scope.signal.aborted) return;
+                    showWorkspaceToast(outcome.toast);
+                    // Restored storage: the whole Library view reads again, as the editor's own restore path.
+                    if(failure?.code==='storage-changed') {reloadView();return;}
+                    if(result && Number.isSafeInteger(result.deleted) && result.deleted>0) {focusHeadingOnMount=true;window.location.hash='#/library';return;}
+                    if(outcome.reload) {detail=null;loader.load(positiveId);focusHeading(main);}
+                }});
+        }
         scope.listen(back,'click',()=>{window.location.hash='#/library';});
         scope.listen(edit,'click',()=>{
             const draft=metadataDrafts.get(positiveId);metadataDrafts.delete(positiveId);

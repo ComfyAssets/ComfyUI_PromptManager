@@ -175,6 +175,89 @@ test('the choice resets to Archive on every Delete…, and a selection with no p
     await expect(choice(page)).toHaveCount(0);
 });
 
+// #481 (D161): a prompt's own page deletes it from Edit metadata (the concept's recipe editor, app.js 976), through the
+// same review: "Delete prompt…" beside "Archive variant…" (the variant's archive, renamed so the two cannot be confused).
+const editMetadata=page=>page.locator('#workspace-main .heading-actions').getByRole('button',{name:'Edit metadata',exact:true});
+const editor=page=>page.locator('dialog.library-editor[open]');
+async function deleteFromPage(page,id){
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);
+    await editMetadata(page).click();
+    await expect(editor(page).locator('.dialog-actions button')).toHaveText(['Create text revision','Archive variant…','Delete prompt…','Cancel','Save']);
+    await expect(editor(page).getByRole('button',{name:'Delete prompt…',exact:true})).toHaveClass(/\bdanger\b/);
+    await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    await expect(editor(page)).toHaveCount(0);await expect(review(page)).toBeVisible();
+}
+test('Delete prompt… on a prompt\'s page archives it by default, and deletes it permanently when chosen (#481)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    const previews=recordPosts(page,PREVIEW);
+    await deleteFromPage(page,dual.id);
+    expect(previews.map(body=>body.prompt_ids)).toEqual([[dual.id]]);
+    await expect(choice(page).getByRole('radio',{name:'Archive (hidden, restorable)'})).toBeChecked();
+    await review(page).getByRole('button',{name:'Archive 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText('Archived 1 prompt.');
+    // The page stays and shows its Archived notice.
+    await expect(page.locator('.library-archived-notice h2')).toHaveText('Archived');
+    await page.locator('.library-archived-notice').getByRole('button',{name:'Restore this prompt to the Prompt library'}).click();
+    await expect(toast(page)).toHaveText('Restored 1 prompt to the Prompt library.');
+    // Delete permanently: back to the Prompt library, the prompt gone.
+    await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await review(page).getByRole('button',{name:'Delete 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText(/^Deleted 1 prompt\. Removed 1 saved pair\. Safety backup saved: /);
+    await expect(page).toHaveURL(/#\/library$/);
+    await expect(card(page,dual.id)).toHaveCount(0);
+    expect(byText(await items(request),'Dual role portrait')).toBeUndefined();
+});
+
+test('Cancel on the page\'s review changes nothing and returns focus to Edit metadata (#481)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    const writes=recordPosts(page,DELETE);
+    await deleteFromPage(page,dual.id);
+    await review(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await expect(review(page)).toHaveCount(0);await expect(editMetadata(page)).toBeFocused();
+    expect(writes).toEqual([]);
+    expect(byText(await items(request),'Dual role portrait')?.id).toBe(dual.id);
+});
+
+test('the page\'s delete holds one review at a time, Escape returns focus, and an archived page\'s review is close-only (#481)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    const previews=recordPosts(page,PREVIEW);
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route(`**${PREVIEW}`,async item=>{await held;await item.fallback();});
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    // A second Delete prompt… while the first preview is held starts nothing.
+    await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    release();
+    await expect(review(page)).toBeVisible();
+    expect(previews).toHaveLength(1);
+    expect(previews[0].expected_epoch).toMatch(/\S/);
+    await page.keyboard.press('Escape');
+    await expect(review(page)).toHaveCount(0);await expect(editMetadata(page)).toBeFocused();
+    await page.unroute(`**${PREVIEW}`);
+    // Archived: its review has nothing to change and only closes.
+    await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    await review(page).getByRole('button',{name:'Archive 1 prompt',exact:true}).click();
+    await expect(page.locator('.library-archived-notice')).toBeVisible();
+    await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    await expect(review(page).locator('p.small').last()).toHaveText('None of the selected prompts can be deleted or archived.');
+    await expect(review(page).getByRole('button',{name:/^(Delete|Archive)/})).toHaveCount(0);
+});
+
+test('a restore since the prompt\'s page loaded is refused and the page reads the Library again (#481)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    await armUnseenRestores(page);
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
+    const backup=await request.get('/prompt_manager/backup');await expect(backup).toBeOK();const buffer=await backup.body();
+    const restore=await unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'library.db',mimeType:'application/octet-stream',buffer}}}));
+    await expect(restore).toBeOK();
+    await review(page).getByRole('button',{name:'Archive 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText('The library was restored or moved since this page loaded. Nothing was deleted or archived.');
+    await expect(page.locator('#workspace-main h1')).toBeFocused();
+    expect((await items(request,'archived')).map(item=>item.id)).toEqual([]);
+});
+
 test('an archived prompt\'s page says so and restores it from its notice',async({page,request})=>{
     const cat=byText(await items(request),'Cat portrait');
     const epoch=(await(await request.get('/prompt_manager/library/options')).json()).library_epoch;
