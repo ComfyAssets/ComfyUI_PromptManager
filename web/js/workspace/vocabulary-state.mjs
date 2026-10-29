@@ -26,6 +26,12 @@ const UNCONFIRMED_STATUS = new Set([502, 503, 504]);
 // Phases that may send a command; done, storage-changed and unknown-outcome need reset().
 const READY = new Set(['idle', 'previewed', 'write-error', 'conflict']);
 const IMPACT_FIELDS = ['positive_prompts', 'other_prompts', 'negative_variants', 'archived_negative_variants'];
+/** #444 tag sorts as [value, label]: `created` (today's order) first, then the legacy tag manager's four. */
+export const TAG_SORTS = Object.freeze([['created', 'Oldest first'], ['name', 'Name A–Z'], ['name-desc', 'Name Z–A'],
+    ['prompts', 'Most prompts'], ['prompts-asc', 'Fewest prompts']].map(pair => Object.freeze(pair)));
+// The route's cap on a tag search (database/vocabulary.py _MAX_SEARCH).
+export const TAG_SEARCH_MAX = 200;
+const DEFAULT_QUERY = Object.freeze({search: '', sort: 'created'});
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const id = value => Number.isSafeInteger(value) && value > 0;
@@ -45,9 +51,23 @@ function storageChanged() {
 // Duck-typed by name: this ES module cannot import the UMD api-client.js.
 function isApiError(error) {return error instanceof Error && error.name === 'ApiError' && Number.isInteger(error.status);}
 
-function validatePage(page, kind, cursor) {
+/** A tags query, trimmed; categories take none. Throws on anything the route would refuse. */
+function tagQuery(kind, query) {
+    if (query === undefined) return DEFAULT_QUERY;
+    requireValue(kind === 'tags' && object(query), 'Only tags take a search and sort');
+    const {search = '', sort = 'created'} = query;
+    requireValue(typeof search === 'string' && search.trim().length <= TAG_SEARCH_MAX, 'Invalid tag search');
+    requireValue(TAG_SORTS.some(([value]) => value === sort), 'Invalid tag sort');
+    return Object.freeze({search: search.trim(), sort});
+}
+
+function validatePage(page, kind, cursor, query) {
     const rows = page?.[kind];
     const {key, valid} = KINDS[kind];
+    // A search or sort the server did not echo was not applied (an older server): never show that list as filtered.
+    const plain = query.search === '' && query.sort === 'created' && page?.search === undefined && page?.sort === undefined;
+    const applied = plain || (page?.search === query.search && page?.sort === query.sort);
+    requireValue(applied && optionalCount(page?.untagged_count), `Unconfirmed ${kind} search`);
     requireValue(object(page) && page.success === true && epochOf(page.library_epoch) && Array.isArray(rows) &&
         rows.every(row => object(row) && valid(row) && count(row.prompt_count)) &&
         new Set(rows.map(key)).size === rows.length && count(page.total) && typeof page.has_more === 'boolean' &&
@@ -57,12 +77,18 @@ function validatePage(page, kind, cursor) {
 }
 
 /** One bounded, append-only list of tags or categories. */
-export function createVocabularyStream({api, kind, onChange = () => {}}) {
+/**
+ * One bounded, append-only list of tags or categories. A tags stream takes `query` (`{search, sort}`, #444) and
+ * `reset(query)` replaces it; `state.untaggedCount` is the last count a tags page reported (kept across resets so the
+ * Untagged prompts row does not flicker), `null` before any.
+ */
+export function createVocabularyStream({api, kind, onChange = () => {}, query: initialQuery}) {
     requireValue(Object.hasOwn(KINDS, kind), 'Unknown vocabulary kind');
     const {key} = KINDS[kind];
-    const initial = () => ({items: Object.freeze([]), total: 0, cursor: null, hasMore: true, loading: false, error: null,
-        epoch: null, resetRequired: false});
-    let state = Object.freeze(initial());
+    let query = tagQuery(kind, initialQuery);
+    const initial = untaggedCount => ({items: Object.freeze([]), total: 0, cursor: null, hasMore: true, loading: false, error: null,
+        epoch: null, resetRequired: false, query, untaggedCount});
+    let state = Object.freeze(initial(null));
     let request = null, disposed = false, seen = new Set();
     const emit = patch => {state = Object.freeze({...state, ...patch}); onChange(state);};
 
@@ -70,13 +96,16 @@ export function createVocabularyStream({api, kind, onChange = () => {}}) {
         if (disposed || state.loading || !state.hasMore || state.resetRequired) return 0;
         const current = request = new AbortController();
         const cursor = state.cursor;
-        const query = new URLSearchParams({limit: String(LIMIT)});
-        if (cursor !== null) query.set('cursor', cursor);
+        const asked = query;
+        const params = new URLSearchParams({limit: String(LIMIT)});
+        if (asked.search) params.set('search', asked.search);
+        if (asked.sort !== 'created') params.set('sort', asked.sort);
+        if (cursor !== null) params.set('cursor', cursor);
         emit({loading: true, error: null});
         try {
-            const page = await api.get(`${BASE}/${kind}?${query}`, {signal: current.signal, cache: 'no-store'});
+            const page = await api.get(`${BASE}/${kind}?${params}`, {signal: current.signal, cache: 'no-store'});
             if (disposed || current !== request) return 0;
-            validatePage(page, kind, cursor);
+            validatePage(page, kind, cursor, asked);
             request = null;
             if (state.epoch !== null && page.library_epoch !== state.epoch) {
                 emit({loading: false, error: storageChanged(), resetRequired: true});
@@ -85,7 +114,8 @@ export function createVocabularyStream({api, kind, onChange = () => {}}) {
             const incoming = page[kind].filter(row => !seen.has(key(row))).map(row => Object.freeze({...row}));
             incoming.forEach(row => seen.add(key(row)));
             emit({items: incoming.length ? Object.freeze([...state.items, ...incoming]) : state.items, total: page.total,
-                cursor: page.next_cursor, hasMore: page.has_more, loading: false, error: null, epoch: page.library_epoch});
+                cursor: page.next_cursor, hasMore: page.has_more, loading: false, error: null, epoch: page.library_epoch,
+                untaggedCount: page.untagged_count ?? state.untaggedCount});
             return incoming.length;
         } catch (error) {
             if (!disposed && current === request) {request = null; emit({loading: false, error});}
@@ -96,13 +126,14 @@ export function createVocabularyStream({api, kind, onChange = () => {}}) {
     return {
         get state() {return state;},
         loadMore,
-        /** Drop every loaded row and read again from the first page. */
-        reset() {
+        /** Drop every loaded row and read again from the first page, with `next` as the new query when given. */
+        reset(next) {
+            if (next !== undefined) query = tagQuery(kind, next);
             if (disposed) return Promise.resolve(0);
             request?.abort();
             request = null;
             seen = new Set();
-            emit(initial());
+            emit(initial(state.untaggedCount));
             return loadMore();
         },
         dispose() {disposed = true; request?.abort(); request = null;},
@@ -252,6 +283,11 @@ export function browseFilters(kind, value) {
     return kind === 'tags'
         ? {text: '', category: '', tags: [value], sort: 'newest'}
         : {text: '', category: value, tags: [], sort: 'newest'};
+}
+
+/** Library filters for the Untagged prompts row's Browse (#444): parents that no tag's Browse returns. */
+export function untaggedBrowseFilters() {
+    return {text: '', category: '', tags: [], sort: 'newest', tagMode: 'untagged'};
 }
 
 /**

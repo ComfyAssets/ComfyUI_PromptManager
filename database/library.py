@@ -121,7 +121,28 @@ def _archive(value: str) -> str:
     return ARCHIVE_SCOPES[value]
 
 
-def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list]:
+# A parent that no tag's Browse returns (#444 "Untagged prompts"): no tag of its
+# own and no active pair carrying one. The vocabulary's untagged count uses it too.
+UNTAGGED = (
+    "NOT EXISTS(SELECT 1 FROM prompt_tags ut WHERE ut.prompt_id=p.id) "
+    "AND NOT EXISTS(SELECT 1 FROM prompt_pairs up JOIN prompt_pair_tags upt "
+    "ON upt.pair_id=up.id WHERE up.positive_prompt_id=p.id AND up.archived=0)"
+)
+# How the Tags filter matches: every tag (AND), or parents without any tag.
+TAG_MODES = ("all", "untagged")
+
+
+def _tag_mode(tag_mode: object, tags: list[str]) -> str:
+    if not isinstance(tag_mode, str) or tag_mode not in TAG_MODES:
+        raise ValueError("tag_mode must be one of " + ", ".join(TAG_MODES))
+    if tag_mode == "untagged" and tags:
+        raise ValueError("Untagged prompts cannot also filter by tags")
+    return tag_mode
+
+
+def _filter(
+    text: str, category: str | None, tags: list[str], tag_mode: str = "all"
+) -> tuple[str, list]:
     if not isinstance(text, str) or len(text) > 500:
         raise ValueError("Search text must be a string of at most 500 characters")
     if category is not None and (not isinstance(category, str) or len(category) > 200):
@@ -132,6 +153,7 @@ def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list
         or any(not isinstance(tag, str) or not tag or len(tag) > 200 for tag in tags)
     ):
         raise ValueError("Invalid library tags")
+    untagged = _tag_mode(tag_mode, tags) == "untagged"
     parent, pair, parent_params, pair_params = [], ["pp.archived=0"], [], []
     if text:
         parent.append("(p.text LIKE ? ESCAPE '\\' OR ls.title LIKE ? ESCAPE '\\')")
@@ -168,6 +190,10 @@ def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list
         + " AND ".join(pair)
         + ")"
     )
+    if untagged:
+        # A whole-card condition: inside the parent-or-pair OR an untagged pair
+        # would let a tagged parent through.
+        condition = f"({condition}) AND {UNTAGGED}"
     return f"({_ELIGIBLE}) AND ({condition})", [*parent_params, *pair_params]
 
 
@@ -251,6 +277,7 @@ class LibraryOperations:
         text: str = "",
         category: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "all",
         sort: str = "newest",
         limit: int = 40,
         after: dict | None = None,
@@ -258,7 +285,7 @@ class LibraryOperations:
         _limit(limit)
         if sort not in _ORDERS:
             raise ValueError("Unknown library sort order")
-        where, params = _filter(text, category, [] if tags is None else tags)
+        where, params = _filter(text, category, [] if tags is None else tags, tag_mode)
         if after is not None:
             if (
                 not isinstance(after, dict)
@@ -311,6 +338,8 @@ class LibraryOperations:
             "items": rows,
             "total": total,
             "variant_total": variant_total,
+            # Echoed so a client can tell this read applied its tag match.
+            "tag_mode": tag_mode,
             "has_more": has_more,
             "next_key": next_key,
         }
@@ -321,6 +350,7 @@ class LibraryOperations:
         text: str = "",
         category: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "all",
         sort: str = "newest",
         limit: int = 40,
         after: dict | None = None,
@@ -333,6 +363,7 @@ class LibraryOperations:
                 text=text,
                 category=category,
                 tags=tags,
+                tag_mode=tag_mode,
                 sort=sort,
                 limit=limit,
                 after=after,
