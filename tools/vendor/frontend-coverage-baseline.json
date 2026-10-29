@@ -275,6 +275,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/images-collections.mjs": {
+    "lines": 98,
+    "branches": 89,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/images-export.mjs": {
     "lines": 98,
     "branches": 98,
@@ -353,6 +359,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/inspector-collections.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/library-editor-state.mjs": {
     "lines": 96,
     "branches": 92,
@@ -376,6 +388,12 @@
     "branches": 91,
     "functions": 93,
     "statements": 94
+  },
+  "workspace/library-selection.mjs": {
+    "lines": 98,
+    "branches": 86,
+    "functions": 84,
+    "statements": 98
   },
   "workspace/library-state.mjs": {
     "lines": 98,

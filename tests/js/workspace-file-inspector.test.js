@@ -441,6 +441,285 @@ test('the D117 wrap rule targets only the settings summary button', async () => 
     assert.doesNotMatch(css, /#viewer-details > div > button/);
 });
 
+// #331 D139 (design §8): the shared inspector's "Collections…" footer button and its checklist dialog.
+const collectionsDialog = await import('../../web/js/workspace/inspector-collections.mjs').catch(() => null);
+const dialogModule = () => { assert.ok(collectionsDialog, 'inspector-collections.mjs is not implemented'); return collectionsDialog; };
+const COLLECTION_SCOPE = 'a'.repeat(64);
+const FILE = {root_index:2, root_scope:COLLECTION_SCOPE, path:'a.png'};
+function collectionsStore({member = [3], membership, add, remove} = {}) {
+    const calls = [];
+    const store = {
+        calls,
+        collections:[{id:3, name:'LoRa testing', count:3, missing:0}, {id:5, name:'Portraits', count:1, missing:0}],
+        membership: async target => { calls.push(['membership', target]); return membership ? membership() : [...member]; },
+        add: async (where, items) => { calls.push(['add', where, items]); if (add) return add(where, items);
+            return {collection:{id:where.collectionId ?? 9, name:where.name ?? 'x'}, created:!!where.name, added:1, already:0, notFound:0}; },
+        remove: async (id, items) => { calls.push(['remove', id, items]); if (remove) return remove(id, items);
+            return {collection:{id, name:'x'}, removed:1}; },
+        settled: async () => ({}),
+    };
+    return store;
+}
+function footerButtons(f) {
+    return f.walk(f.container, n => n.tagName === 'button').map(n => n.textContent.trim());
+}
+test('inspector shows Collections… only for a rooted file with a store', async () => {
+    for (const variant of ['panel', 'full']) {
+        const f = mountedDom(), scope = createScope();
+        try {
+            const view = mountFileInspector(f.container, {sender:{open() {}}, parentScope:scope, variant, collections:collectionsStore()});
+            view.setState({loading:false, error:false, record:{...record(), historyTarget:'#/library/1'}});
+            const labels = footerButtons(f);
+            assert.ok(labels.includes('Collections…'), `${variant}: the button is offered`);
+            // After Prompt history, as the last footer action.
+            assert.equal(labels.at(-1), 'Collections…');
+            assert.equal(labels.at(-2), 'Prompt history');
+            const button = f.walk(f.container, n => n.tagName === 'button' && n.textContent.trim() === 'Collections…')[0];
+            assert.equal(button.children[0].tagName, 'svg', 'with the folder icon');
+            view.dispose();
+        } finally { scope.dispose(); f.restore(); }
+    }
+    // No store (Prompt library galleries, Inspect a file) or a file that is not a listed one: no button.
+    const local = await localRecord(localPng('Fox Render.png'));
+    for (const [shown, store] of [[record(), null], [local, collectionsStore()],
+        [{...record(), identity:{...record().identity, root_scope:null}}, collectionsStore()]]) {
+        const f = mountedDom(), scope = createScope();
+        try {
+            const view = mountFileInspector(f.container, {sender:{open() {}}, parentScope:scope, variant:'full', collections:store});
+            view.setState({loading:false, error:false, record:shown});
+            assert.ok(!footerButtons(f).includes('Collections…'));
+            view.dispose();
+        } finally { scope.dispose(); f.restore(); }
+    }
+});
+
+/** Open the Collections dialog over FILE; returns its nodes by role and helpers. */
+function openCollections(store, extra = {}) {
+    const {openCollectionsDialog} = dialogModule();
+    const f = mountedDom(), scope = createScope(), toasts = [], changes = [];
+    let dialog = null, closed = 0;
+    openCollectionsDialog({scope, collections:store, target:FILE, trigger:null, notify:text => toasts.push(text),
+        onChanged:change => changes.push(change), openDialog:args => { dialog = args; f.container.append(...args.nodes); },
+        // As the shell does: closing runs the dialog's onClose once.
+        closeDialog:() => { closed++; dialog?.onClose?.(); }, ...extra});
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const find = predicate => f.walk(f.container, predicate);
+    const boxes = () => find(n => n.tagName === 'input' && n.type === 'checkbox');
+    const button = text => find(n => n.tagName === 'button' && n.textContent === text)[0];
+    const text = () => find(n => n.tagName === 'p').map(n => n.textContent).filter(Boolean);
+    return {f, scope, toasts, changes, get dialog() { return dialog; }, get closed() { return closed; }, settle, find, boxes, button, text,
+        done() { scope.dispose(); f.restore(); }};
+}
+
+test('the Collections dialog loads the membership and lists every collection', async () => {
+    const store = collectionsStore();
+    const view = openCollections(store);
+    try {
+        assert.equal(view.dialog.title, 'Collections');
+        assert.ok(view.text().includes('Loading collections…'));
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), 'true');
+        await view.settle();
+        assert.deepEqual(store.calls, [['membership', FILE]]);
+        const labels = view.find(n => n.tagName === 'label' && n.className === 'tag-suggestion');
+        assert.deepEqual(labels.map(label => label.textContent), ['LoRa testing', 'Portraits']);
+        assert.deepEqual(view.boxes().map(box => box.checked), [true, false]);
+        const field = view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0];
+        assert.equal(field.maxLength, 100);
+        assert.equal(view.find(n => n.tagName === 'label' && n.htmlFor === field.id)[0].textContent, 'New collection');
+        assert.deepEqual(view.find(n => n.className === 'dialog-actions')[0].children.map(n => n.textContent), ['Cancel', 'Save']);
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), null);
+    } finally { view.done(); }
+});
+
+test('without collections the dialog says to name one', async () => {
+    const store = collectionsStore({member:[]});
+    store.collections = [];
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        assert.ok(view.text().includes('No collections yet. Name one below.'));
+        assert.equal(view.boxes().length, 0);
+    } finally { view.done(); }
+});
+
+test('a failed membership read offers Retry', async () => {
+    let failing = true;
+    const store = collectionsStore({membership:() => { if (failing) throw new TypeError('offline'); return [5]; }});
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        assert.ok(view.text().includes('Collections could not be loaded.'));
+        assert.equal(view.button('Retry').hidden, false);
+        assert.equal(view.boxes().length, 0);
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), 'true');
+        failing = false;
+        view.button('Retry').fire('click');
+        await view.settle();
+        assert.deepEqual(view.boxes().map(box => box.checked), [false, true]);
+        assert.equal(view.button('Retry').hidden, true);
+    } finally { view.done(); }
+});
+
+test('Save sends the new name, each added and each removed collection, in that order', async () => {
+    const store = collectionsStore();
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        const [lora, portraits] = view.boxes();
+        lora.checked = false; portraits.checked = true;
+        view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0].value = '  Grids  ';
+        view.button('Save').fire('click');
+        await view.settle(); await view.settle();
+        assert.deepEqual(store.calls.slice(1), [
+            ['add', {name:'Grids'}, [FILE]],
+            ['add', {collectionId:5}, [FILE]],
+            ['remove', 3, [FILE]],
+        ]);
+        assert.equal(view.closed, 1);
+        assert.deepEqual(view.toasts, ['Collections updated.']);
+        assert.deepEqual(view.changes, [{added:[9, 5], removed:[3]}]);
+    } finally { view.done(); }
+});
+
+test('Save without a change sends nothing and closes', async () => {
+    const store = collectionsStore();
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0].value = '   ';
+        view.button('Save').fire('click');
+        await view.settle();
+        assert.deepEqual(store.calls.map(call => call[0]), ['membership']);
+        assert.equal(view.closed, 1);
+        assert.deepEqual(view.toasts, []);
+        assert.deepEqual(view.changes, []);
+    } finally { view.done(); }
+});
+
+test('a failed Save keeps the dialog, says so and shows the current membership', async () => {
+    let reads = 0;
+    const store = collectionsStore({membership:() => (reads++ ? [5] : [3]),
+        remove:() => { throw Object.assign(new Error('x'), {status:500}); }});
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        const [lora, portraits] = view.boxes();
+        lora.checked = false; portraits.checked = true;
+        view.button('Save').fire('click');
+        // While it saves, × and Escape keep the dialog and Save is busy.
+        assert.equal(view.dialog.canClose(), false);
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), 'true');
+        for (let index = 0; index < 4; index++) await view.settle();
+        assert.equal(view.closed, 0);
+        assert.deepEqual(view.toasts, []);
+        const alert = view.find(n => n.getAttribute?.('role') === 'alert')[0];
+        assert.equal(alert.textContent, 'The collections could not be updated. Try again.');
+        // The add went through; the list shows what the server holds now. Review M2: the page hears about it only once
+        // the dialog closes, so a listing refresh cannot dispose the dialog before its failure is read.
+        assert.deepEqual(view.changes, []);
+        assert.deepEqual(view.boxes().map(box => box.checked), [false, true]);
+        assert.equal(view.dialog.canClose(), true);
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), null);
+        view.button('Cancel').fire('click');
+        assert.deepEqual(view.changes, [{added:[5], removed:[]}]);
+    } finally { view.done(); }
+});
+
+test('a name the store cannot take is refused on the field, keeping the edits (review L5)', async () => {
+    const store = collectionsStore();
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        const [lora, portraits] = view.boxes();
+        lora.checked = false; portraits.checked = true;
+        const field = view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0];
+        const validity = [];
+        field.setCustomValidity = text => validity.push(text);
+        field.reportValidity = () => validity.push('reported');
+        field.value = 'bad\u0001name';
+        view.button('Save').fire('click');
+        for (let index = 0; index < 3; index++) await view.settle();
+        assert.deepEqual(store.calls.map(call => call[0]), ['membership'], 'nothing sent and no re-read');
+        assert.deepEqual(validity, ['The collections could not be updated. Try again.', 'reported']);
+        assert.deepEqual(view.boxes().map(box => box.checked), [false, true], 'the checkbox edits stay');
+        assert.equal(view.closed, 0);
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), null);
+        // Editing the field clears its message.
+        field.fire('input');
+        assert.equal(validity.at(-1), '');
+    } finally { view.done(); }
+});
+
+
+test('after a failed Save, Save waits for the membership re-read (review M1)', async () => {
+    let release;
+    const store = collectionsStore({remove:() => { throw new Error('x'); }});
+    store.settled = () => new Promise(resolve => { release = resolve; });
+    const view = openCollections(store);
+    try {
+        await view.settle();
+        view.boxes()[0].checked = false;
+        view.button('Save').fire('click');
+        for (let index = 0; index < 3; index++) await view.settle();
+        assert.equal(typeof release, 'function', 'the store is settling');
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), 'true');
+        assert.ok(view.text().includes('Loading collections…'));
+        const sent = store.calls.length;
+        view.button('Save').fire('click');
+        await view.settle();
+        assert.equal(store.calls.length, sent, 'no stale plan is sent');
+        release({});
+        for (let index = 0; index < 3; index++) await view.settle();
+        assert.equal(view.button('Save').getAttribute('aria-disabled'), null);
+    } finally { view.done(); }
+});
+
+test('a typed name of an existing collection is that collection checkbox (review L4)', async () => {
+    // "portraits" names Portraits (not a member): one add by id, no name request.
+    let store = collectionsStore();
+    let view = openCollections(store);
+    try {
+        await view.settle();
+        view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0].value = '  PORTRAITS ';
+        view.button('Save').fire('click');
+        for (let index = 0; index < 3; index++) await view.settle();
+        assert.deepEqual(store.calls.slice(1), [['add', {collectionId:5}, [FILE]]]);
+    } finally { view.done(); }
+    // Unchecking LoRa testing while typing its name keeps it: nothing to send.
+    store = collectionsStore();
+    view = openCollections(store);
+    try {
+        await view.settle();
+        view.boxes()[0].checked = false;
+        view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0].value = 'lora testing';
+        view.button('Save').fire('click');
+        await view.settle();
+        assert.deepEqual(store.calls.map(call => call[0]), ['membership']);
+        assert.equal(view.closed, 1);
+    } finally { view.done(); }
+});
+
+test('focus starts on the field, moves to the first checkbox once listed, and falls back on close (review L6)', async () => {
+    const trigger = {isConnected:false, focus() { assert.fail('a detached trigger is not focused'); }};
+    const fallback = {focused:false, focus() { this.focused = true; }};
+    const view = openCollections(collectionsStore(), {trigger, focusFallback:() => fallback});
+    try {
+        const field = view.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0];
+        assert.equal(view.dialog.focusTarget, field);
+        await view.settle();
+        assert.equal(view.boxes()[0].focused, true);
+        view.button('Cancel').fire('click');
+        assert.equal(fallback.focused, true);
+    } finally { view.done(); }
+    const empty = collectionsStore({member:[]});
+    empty.collections = [];
+    const none = openCollections(empty);
+    try {
+        await none.settle();
+        assert.equal(none.find(n => n.tagName === 'input' && n.type !== 'checkbox')[0].focused, true);
+    } finally { none.done(); }
+});
+
 test('category chip names its origin visibly and shows an own category for any link status (#332 D146)', async () => {
     const base = await localRecord(localPng('a.png'));
     const chipTexts = record => {

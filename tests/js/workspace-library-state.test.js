@@ -104,3 +104,13 @@ test('archived variant reads use their own scope and cursor without changing the
  const active=[];const plain=createLibraryDetail({api:{get:async url=>{active.push(url);return {positive:item(1),variants:[]};}},onChange:()=>{}});await plain.load(1);assert.equal(new URL(active[0],'https://x').searchParams.has('archive'),false);
  assert.throws(()=>createLibraryDetail({api:{},onChange:()=>{},archive:'parents'}));
 });
+test('the stream keeps the first page\'s storage epoch and refuses a later page from another one (#437)',async()=>{
+ const {createLibraryStream}=await source;const A='11111111-1111-4111-8111-111111111111',B='22222222-2222-4222-8222-222222222222';
+ const pending=[{...page([item(1)],'next'),library_epoch:A},{...page([item(2)],'more'),library_epoch:A},{...page([item(3)]),library_epoch:B}];
+ const s=createLibraryStream({api:{get:async()=>pending.shift()}});assert.equal(s.state.epoch,null);
+ await s.reset();assert.equal(s.state.epoch,A);await s.loadMore();assert.equal(s.state.epoch,A);assert.equal(s.state.items.length,2);
+ await s.loadMore();assert.ok(s.state.error);assert.equal(s.state.items.length,2);assert.equal(s.state.epoch,A);
+ const restored=createLibraryStream({api:{},restore:{filters:{},state:s.state}});assert.equal(restored.state.epoch,A);restored.dispose();
+ const fresh=[{...page([item(4)]),library_epoch:B}];const reset=s.reset({text:'x'});assert.equal(s.state.epoch,null);
+ s.dispose();const next=createLibraryStream({api:{get:async()=>fresh.shift()}});await next.reset();assert.equal(next.state.epoch,B);next.dispose();await reset;
+});

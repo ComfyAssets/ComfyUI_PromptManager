@@ -73,7 +73,7 @@ const jobStart = page => page.waitForRequest(item => item.method() === 'POST' &&
 
 test('selection bar shows Add tags then Auto-tag selected before Set category', async ({ page }) => {
     await select(page, FIRST);
-    await expect(bar(page).locator(':scope > *')).toHaveText(['1 selected', 'Add tags', 'Auto-tag selected', 'Set category', 'Export metadata', 'Clear']);
+    await expect(bar(page).locator(':scope > *')).toHaveText(['1 selected', 'Add tags', 'Auto-tag selected', 'Set category', 'Add to collection', 'Export metadata', 'Clear']);
 });
 
 test('Add tags runs a job and the cards show the tags after it finishes', async ({ page, request }) => {

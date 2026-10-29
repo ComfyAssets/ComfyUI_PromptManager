@@ -30,6 +30,9 @@ export function mapLibraryConcept(reference) {
     // A shorter toolbar moves what follows it up by as much.
     const rise=library.toolbar.height-toolbar.height;
     const cards=library.cards.map((card,index)=>({...card,
+        // D148 (#437): each card leads with the concept's Images `.image-overlays` selection checkbox, placed absolutely
+        // over the art, so nothing else moves; it is compared with the concept's own overlay below.
+        children:['image-overlays',...card.children],
         // D23: "− N negative variants" uses the singular for one; that row is the concept's own, measured so (`oracle`).
         meta:card.meta.items[0]?.text===PLURAL_ONE?reference.oracle.meta[index]:card.meta,
         // D23: a long title wraps inside the title row, so the title button may shrink below its text (`min-width: 0`).
@@ -309,6 +312,56 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
             expect.soft(production,`${motion} behaviors`).toEqual({...concept,search:counted(concept.search),category:counted(concept.category)});
         }
     } finally {await host.evaluate(()=>window.conceptHost.dispose());await host.close();}
+});
+
+/**
+ * D148 (#437): the selection checkbox overlay of `card` and the `.bulkbar` row inside `main`, with one item checked,
+ * measured alike in the concept's Images page and production's Library: the overlay's inset in its card, the checkbox,
+ * and the bar's box, tokens and the two actions both bars have (Set category, Clear).
+ */
+const measureSelection=(page,{card,main})=>page.evaluate(({card,main})=>{
+    const css=(node,...keys)=>{const style=getComputedStyle(node);return Object.fromEntries(keys.map(key=>[key,style[key]]));};
+    const rect=node=>node.getBoundingClientRect(),px=value=>Math.round(value*100)/100;
+    const font=node=>css(node,'fontFamily','fontSize','fontWeight','lineHeight','color');
+    const edges=node=>css(node,'paddingTop','paddingRight','paddingBottom','paddingLeft','marginBottom','borderTopWidth','borderTopStyle',
+        'borderTopColor','borderTopLeftRadius','backgroundColor');
+    const host=document.querySelector(card),overlay=host.querySelector('.image-overlays'),label=overlay.querySelector(':scope > label');
+    const input=label.querySelector('input'),root=document.querySelector(main),bar=root.querySelector('.bulkbar');
+    const shared=['Set category','Clear'];
+    return {
+        overlay:{left:px(rect(overlay).left-rect(host).left),top:px(rect(overlay).top-rect(host).top),right:px(rect(host).right-rect(overlay).right),
+            ...css(overlay,'position','display','justifyContent','pointerEvents')},
+        label:css(label,'pointerEvents'),checkbox:{width:px(rect(input).width),height:px(rect(input).height),checked:input.checked,...css(input,'accentColor')},
+        bar:{left:px(rect(bar).left-rect(root).left),...css(bar,'display','alignItems','columnGap','rowGap','flexWrap'),...edges(bar),...font(bar),
+            count:{text:bar.querySelector(':scope > strong').textContent,...font(bar.querySelector(':scope > strong'))},
+            buttons:[...bar.querySelectorAll(':scope > button')].filter(button=>shared.includes(button.textContent.trim()))
+                .map(button=>({text:button.textContent.trim(),height:px(rect(button).height),...font(button),...edges(button)}))},
+    };
+},{card,main});
+async function conceptSelection(page,theme) {
+    await openConcept(page,'images',theme);
+    await page.locator('#image-grid .media-card').first().locator('input[data-select]').check();
+    await expect(page.locator('#bulkbar .bulkbar')).toBeVisible();await page.mouse.move(0,0);await settle(page);
+    return measureSelection(page,{card:'#image-grid .media-card',main:'#main'});
+}
+async function productionSelection(page,theme) {
+    await openProductionLibrary(page,theme,'no-preference');
+    await page.locator(CARDS).first().locator('.image-overlays input').check();
+    await expect(page.locator('#library-bulkbar .bulkbar')).toBeVisible();await page.mouse.move(0,0);await settle(page);
+    return measureSelection(page,{card:CARDS,main:'#workspace-main'});
+}
+for(const [width,height] of SIZES)for(const theme of THEMES)test(`the Library selection checkbox and bar match the concept's Images ones ${width}x${height} ${theme}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height});
+    const reference=await conceptSelection(page,theme);
+    await captureCanonicalState(page,testInfo,`concept-images-selection-${width}-${theme}`);
+    const actual=await productionSelection(page,theme);
+    await captureCanonicalState(page,testInfo,`production-library-selection-${width}-${theme}`);
+    await testInfo.attach('library-selection',{body:JSON.stringify({reference,actual},null,2),contentType:'application/json'});
+    expect(reference.bar.buttons.map(button=>button.text),'the concept bar has both actions').toEqual(['Set category','Clear']);
+    expect(actual).toEqual(reference);
+    // The comparison notices a moved checkbox (spec §7 mutation check).
+    await mutate(page,{css:'.prompt-card .image-overlays { inset: 20px 9px auto }'});
+    expect((await measureSelection(page,{card:CARDS,main:'#workspace-main'})).overlay.top).not.toBe(reference.overlay.top);
 });
 
 // The grid and cards at the concept's three-column breakpoint (style.css 1274–1276).
