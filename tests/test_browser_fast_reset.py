@@ -22,6 +22,9 @@ from database.operations import PromptDatabase
 from tests.browser import fast_reset
 from tests.browser.fast_reset import ScratchSeeder, table_digests
 
+# The owner lock of /dev/shm scratch folders needs POSIX flock (#419).
+HAS_FLOCK = unittest.skipUnless(os.name == "posix", "needs POSIX flock")
+
 
 def digests(db: PromptDatabase) -> dict:
     return table_digests(db.model.get_connection())
@@ -275,6 +278,7 @@ class TestScratchSeeder(unittest.TestCase):
         self.assertEqual(digests(self.live), expected)
         self.assertFalse((self.root / "unused").exists())
 
+    @HAS_FLOCK
     def test_the_scratch_lives_under_the_memory_root_when_there_is_one(self):
         memory = self.root / "memory"
         memory.mkdir()
@@ -287,6 +291,16 @@ class TestScratchSeeder(unittest.TestCase):
         self.assertFalse((self.root / "fallback").exists())
         seeder.close()
         self.assertEqual(list(memory.iterdir()), [])
+
+    @unittest.skipIf(os.name == "posix", "without flock the memory root is unused")
+    def test_without_flock_the_scratch_stays_on_disk(self):
+        memory = self.root / "memory"
+        memory.mkdir()
+        seeder = ScratchSeeder(self.api, self.root / "fallback", memory_root=memory)
+        self.addCleanup(seeder.close)
+        seeder.run(reseed)
+        self.assertEqual(list(memory.iterdir()), [])
+        self.assertTrue((self.root / "fallback" / "seed.db").exists())
 
     def test_a_full_memory_root_puts_the_scratch_on_disk(self):
         memory = self.root / "memory"
@@ -303,32 +317,128 @@ class TestScratchSeeder(unittest.TestCase):
         self.assertEqual(list(memory.iterdir()), [])
         self.assertTrue((self.root / "fallback" / "seed.db").exists())
 
-    @unittest.skipUnless(os.name == "posix", "process probe is POSIX only")
-    def test_scratch_folders_of_dead_servers_are_removed(self):
+    @HAS_FLOCK
+    def test_the_scratch_folder_is_held_by_a_lock_until_close(self):
         memory = self.root / "memory"
         memory.mkdir()
-        dead = subprocess.Popen([sys.executable, "-c", "pass"])
-        dead.wait()
-        orphan = memory / f"pm-reset-{dead.pid}-abc"
-        alive = memory / f"pm-reset-{os.getpid()}-def"
-        other = memory / "pm-reset-notapid"
-        for folder in (orphan, alive, other):
-            folder.mkdir()
-            (folder / "seed.db").write_bytes(b"x")
         seeder = ScratchSeeder(self.api, self.root / "fallback", memory_root=memory)
         self.addCleanup(seeder.close)
         seeder.run(reseed)
-        self.assertFalse(orphan.exists())
-        self.assertTrue(alive.exists())
-        self.assertTrue(other.exists())
-        own = [p for p in memory.glob(f"pm-reset-{os.getpid()}-*") if p != alive]
-        self.assertEqual(len(own), 1)
+        (folder,) = memory.iterdir()
+        self.assertTrue(folder.name.startswith(f"pm-reset-held-{os.getpid()}-"))
+        self.assertFalse(lock_is_free(folder / "owner.lock"))
+        seeder.close()
+        self.assertEqual(list(memory.iterdir()), [])
+
+    @HAS_FLOCK
+    def test_a_lock_that_cannot_be_taken_puts_the_scratch_on_disk(self):
+        memory = self.root / "memory"
+        memory.mkdir()
+        seeder = ScratchSeeder(self.api, self.root / "fallback", memory_root=memory)
+        self.addCleanup(seeder.close)
+        refuse = mock.patch.object(
+            fast_reset.fcntl, "flock", side_effect=OSError("no locks here")
+        )
+        with refuse:
+            seeder.run(reseed)
+        self.assertEqual(list(memory.iterdir()), [])
+        self.assertTrue((self.root / "fallback" / "seed.db").exists())
 
     def test_close_releases_the_scratch_files(self):
         self.seeder.run(reseed)
         self.seeder.close()
         assert_closed(self, self.root / "scratch")
         self.seeder.close()  # idempotent
+
+
+# A process that takes the owner lock of a folder, says so, and waits.
+HOLDER = """
+import fcntl, os, sys, time
+fd = os.open(os.path.join(sys.argv[1], "owner.lock"), os.O_RDWR | os.O_CREAT)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(600)
+"""
+
+
+def lock_is_free(path: Path) -> bool:
+    fd = os.open(path, os.O_RDWR)
+    try:
+        fast_reset.fcntl.flock(fd, fast_reset.fcntl.LOCK_EX | fast_reset.fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+@HAS_FLOCK
+class TestOrphanedScratch(unittest.TestCase):
+    """Only folders whose owner lock is free are orphans (#419)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.memory = Path(self.tmp.name)
+
+    def folder(self, name: str) -> Path:
+        folder = self.memory / name
+        folder.mkdir()
+        (folder / "seed.db").write_bytes(b"x")
+        return folder
+
+    def hold(self, folder: Path) -> subprocess.Popen:
+        holder = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, str(folder)],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        return holder
+
+    def test_a_folder_whose_owner_was_killed_is_removed(self):
+        folder = self.folder("pm-reset-held-123-abc")
+        holder = self.hold(folder)
+        holder.kill()
+        holder.wait()
+        fast_reset.remove_orphaned_scratch(self.memory)
+        self.assertFalse(folder.exists())
+
+    def test_a_held_folder_is_kept_whatever_pid_its_name_carries(self):
+        # Under --ipc=host the owner's pid is from another PID namespace: it
+        # does not exist here, but its lock does.
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        folder = self.folder(f"pm-reset-held-{dead.pid}-abc")
+        self.hold(folder)
+        fast_reset.remove_orphaned_scratch(self.memory)
+        self.assertTrue(folder.exists())
+        self.assertTrue((folder / "seed.db").exists())
+
+    def test_folders_without_an_owner_lock_are_kept(self):
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        legacy = self.folder(f"pm-reset-{dead.pid}-abc")
+        staging = self.folder(f"pm-reset-new-{dead.pid}-def")
+        unlocked = self.folder(f"pm-reset-held-{dead.pid}-ghi")
+        fast_reset.remove_orphaned_scratch(self.memory)
+        for folder in (legacy, staging, unlocked):
+            self.assertTrue(folder.exists(), folder.name)
+
+    def test_a_folder_held_by_another_seeder_in_this_process_is_kept(self):
+        api = types.SimpleNamespace(db=PromptDatabase(str(self.memory / "live.db")))
+        self.addCleanup(api.db.close_all)
+        root = self.memory / "shm"
+        root.mkdir()
+        other = ScratchSeeder(api, self.memory / "fallback", memory_root=root)
+        self.addCleanup(other.close)
+        other.run(reseed)
+        (folder,) = root.iterdir()
+        fast_reset.remove_orphaned_scratch(root)
+        self.assertTrue(folder.exists())
 
 
 if __name__ == "__main__":

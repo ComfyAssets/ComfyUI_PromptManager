@@ -3579,7 +3579,11 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   mid-response is not discarded by the page: the server's 15-minute expiry removes it. When a restore the page saw running
   finishes, the cached Images and Library visits are dropped, the sidebar counts and
   saved views are read again and the open route is shown again (the Activity job view
-  stays). A refused file toasts "This file can't be restored: <validator reason>.". A
+  stays). #415: an open review (`openReviewDialog`) then closes as dismissed, since its plan no
+  longer describes storage; while any other dialog is open, all of that waits until the last
+  one has closed, so a dialog keeps what was typed and its next write meets the restored-storage
+  refusal, as when the page never saw the restore. `followRestore` (tests/browser/unseen-restore.mjs)
+  makes the page see a restore run and finish deterministically. A refused file toasts "This file can't be restored: <validator reason>.". A
   review value may wrap anywhere (`#modal-body > dl.meta-grid dd`, CSS under D105), so a
   long file name keeps the concept's two equal columns at phone width.
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
