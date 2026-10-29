@@ -308,7 +308,11 @@ class TestNodeRecordsCachedRunReceipt(UsageTestCase):
             "typed text", prepend_text="pre", prompt=self.GRAPH, unique_id="1"
         )
         node.cached_runs.record_item.assert_called_once_with(
-            "1", ("pre typed text",), Facts(generate_prompt_hash("typed text"))
+            "1",
+            ("pre typed text",),
+            Facts(generate_prompt_hash("typed text")),
+            # #403: the texts the history capture got, for a cached job's history
+            (("typed text", "pre", ""),),
         )
         # Hook-visible text: the node counts nothing itself
         row = self.db.get_prompt_by_hash(generate_prompt_hash("typed text"))
@@ -319,7 +323,9 @@ class TestNodeRecordsCachedRunReceipt(UsageTestCase):
 
         node = self._node()
         node.process_text("  ", prompt=self.GRAPH, unique_id="1")
-        node.cached_runs.record_item.assert_called_once_with("1", ("  ",), Facts(None))
+        node.cached_runs.record_item.assert_called_once_with(
+            "1", ("  ",), Facts(None), (("  ", "", ""),)
+        )
 
 
 if __name__ == "__main__":

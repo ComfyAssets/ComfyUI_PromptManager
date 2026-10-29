@@ -594,6 +594,9 @@ test('an input dialog offers suggestions and a secondary action', async () => {
         const [plainField, plainActions] = byId(dom, 'modal-body').children;
         assert.equal(plainField.children[1].getAttribute('list'), null);
         assert.deepEqual(plainActions.children.map(node => node.textContent), ['Cancel', 'A']);
+        // An empty list (Add to collection with no collections yet, #331 D138) adds no datalist either.
+        openInputDialog({ scope, title: 'T', label: 'L', action: 'A', suggestions: [], onApply() {} });
+        assert.equal(dom.all(node => node.tagName === 'DATALIST').length, 0);
         assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', suggestions: [1], onApply() {} }), TypeError);
         assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', secondary: { label: '' }, onApply() {} }), TypeError);
         assert.throws(() => openInputDialog({ scope, title: 'T', label: 'L', action: 'A', secondary: { label: 'X' }, onApply() {} }), TypeError);
