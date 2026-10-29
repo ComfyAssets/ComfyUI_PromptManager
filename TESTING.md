@@ -2869,6 +2869,12 @@ mapped differences"):
   change within the workspace waits the same way: the shell renders the next route once a
   video still starting on Inspect settles (`leaveGuard`; the latest route wins). Route
   changes at `loadstart` + 0–7 ms hung 4–5 of 120 pages before and 0 of 120 after.
+  The shared viewer's own video gets the same guard (#483): a new selection while the
+  viewer D155 opened is still starting its video leaves the viewer open, untouched, until
+  that video reports metadata or an error (or 15 s), then closes it; the URL is revoked
+  after that, and a viewer asked for meanwhile (the new file's D155 open) opens then. The
+  merge queue hung once without it (run 40903238387: the PNG selection 12 ms after the
+  inline video showed, with the viewer's new video still starting).
   A real page leave cannot wait. With no page code releasing anything, navigating
   away hung 8 of 120 pages and reload 22 of 120 (3 and 8 of 120 with the page's own
   release), so that WebKit teardown stays a known limitation; dispose still releases at

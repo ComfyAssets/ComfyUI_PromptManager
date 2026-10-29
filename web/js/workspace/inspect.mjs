@@ -115,8 +115,38 @@ export function mountInspect(main, { parentScope, api, sender }) {
         retiring.delete(url);
         entry.waiting.abort(); clearTimeout(entry.timer);
         releaseMedia(entry.preview);
-        if (entry.revoke) URL.revokeObjectURL(url);
+        if (entry.revoke) revokeObjectURL(url);
         entry.done();
+    }
+    // #483 (D62): the viewer's own video, when a new selection closes the viewer while that video is still starting.
+    // The viewer stays open until the video reports metadata or an error (or D62's 15 s), then closes; its URL, which
+    // the session asked to revoke, goes after that. A viewer asked for meanwhile opens then: only the latest request,
+    // and only if its selection is still current (an automatic open waits for its own inline video again).
+    let held = null;
+    function closeViewer() {
+        const node = document.querySelector('#viewer-dialog video');
+        if (!node || !isStarting(node)) { viewer.close(); return; }
+        const waiting = new AbortController();
+        held = { url: node.getAttribute('src'), revoke: false, waiting, pending: null, timer: setTimeout(finishHeld, STARTING_VIDEO_MS) };
+        for (const type of ['loadedmetadata', 'error']) node.addEventListener(type, finishHeld, { once: true, signal: waiting.signal });
+    }
+    function endHeld() {
+        const entry = held;
+        if (!entry) return null;
+        held = null;
+        entry.waiting.abort(); clearTimeout(entry.timer);
+        return entry;
+    }
+    function finishHeld() {
+        const entry = endHeld();
+        if (!entry) return;
+        viewer.close();
+        // Through the session's hook, so an inline video still starting on the same URL keeps it until it settles.
+        if (entry.revoke) revokeObjectURL(entry.url);
+        const request = entry.pending;
+        if (!request || scope.signal.aborted || session.entry !== request.entry || session.state.phase !== 'ready') return;
+        if (request.auto) autoOpen(request.entry);
+        else openViewer(request.trigger);
     }
     function retire(preview, url) {
         const waiting = new AbortController();
@@ -129,6 +159,7 @@ export function mountInspect(main, { parentScope, api, sender }) {
     }
     const finishAllRetiring = () => { for (const url of [...retiring.keys()]) finishRetiring(url); };
     const revokeObjectURL = url => {
+        if (held?.url === url) { held.revoke = true; return; }
         const entry = retiring.get(url);
         if (entry) entry.revoke = true;
         else URL.revokeObjectURL(url);
@@ -136,7 +167,8 @@ export function mountInspect(main, { parentScope, api, sender }) {
     const session = createLocalSession({ parentScope: sessionScope, pageTarget: null, revokeObjectURL });
     const viewer = createMediaViewer({ api, container: main, parentScope: scope, inspectionController: session.controller, sender,
         adapter: localFileAdapter, onRestoreFocus: () => { if (open.isConnected) open.focus({ preventScroll: true }); },
-        onClose: () => { viewerKey = null; } });
+        // A held viewer closed by hand (Escape, Close) ends its hold at once: its video is gone.
+        onClose: () => { viewerKey = null; if (held) finishHeld(); } });
 
     let viewerKey = null, media = null, mediaUrl = null, statusLine = null, rejectionLine = null, rejectionTimer = 0, announced = null, chosen = null;
     function statusElement(message) {
@@ -209,7 +241,7 @@ export function mountInspect(main, { parentScope, api, sender }) {
     scope.cleanup(session.subscribe(state => {
         // D155: a new selection can start while the viewer shows the previous one; it closes first, so no element holds
         // the old URL when the session revokes it (the new file's viewer opens once it is ready).
-        if (viewerKey !== null && (state.phase !== 'ready' || session.entry?.key !== viewerKey)) { viewer.close(); viewerKey = null; }
+        if (viewerKey !== null && (state.phase !== 'ready' || session.entry?.key !== viewerKey)) { closeViewer(); viewerKey = null; }
         showMedia(state);
         showStatus(state.message);
         const entry = session.entry;
@@ -220,17 +252,14 @@ export function mountInspect(main, { parentScope, api, sender }) {
             // while this selection is still the current one and no other dialog is open (the viewer is replaced). D62:
             // a video opens it once the inline preview has settled, so a replacement while it starts never tears down a
             // second starting video in the viewer (that deadlocked WebKit).
-            if (AUTO_OPEN.has(state.message)) whenSettled(media, () => {
-                if (scope.signal.aborted || session.entry !== entry || session.state.phase !== 'ready' || document.querySelector('dialog[open]:not(#viewer-dialog)')) return;
-                openViewer(input);
-            });
+            if (AUTO_OPEN.has(state.message)) autoOpen(entry);
             // An unreadable or failed preview says so in its alert; the toast never claims metadata is available.
             else if (TOASTABLE.has(state.message)) showWorkspaceToast(INSPECT_COPY.toast);
         }
     }));
     // A replacement or page leave revokes the URL after this subscriber dropped the media; a dispose closes the
     // viewer (on abort), drops the media, then ends the session.
-    scope.cleanup(() => viewer.dispose());
+    scope.cleanup(() => { const entry = endHeld(); viewer.dispose(); if (entry?.revoke) revokeObjectURL(entry.url); });
     scope.cleanup(() => { releaseMedia(media); media = null; mediaUrl = null; });
     scope.cleanup(finishAllRetiring);
     scope.cleanup(() => sessionScope.dispose());
@@ -239,9 +268,11 @@ export function mountInspect(main, { parentScope, api, sender }) {
     // cleared, so a page restored from the back-forward cache never names a file beside the empty selection.
     function leave() {
         clearRejection();
+        const entry = endHeld();
         viewer.close();
         releaseMedia(media); media = null; mediaUrl = null;
         finishAllRetiring();
+        if (entry?.revoke) revokeObjectURL(entry.url);
         session.clear();
         chosen = null; input.value = '';
     }
@@ -287,10 +318,20 @@ export function mountInspect(main, { parentScope, api, sender }) {
         for (const type of ['loadedmetadata', 'error']) preview.node.addEventListener(type, done, { once: true, signal: settled.signal });
         scope.cleanup(done);
     }
+    /** D155: the viewer opens on `entry` once its inline preview has settled, while it is still the current selection. */
+    function autoOpen(entry) {
+        whenSettled(media, () => {
+            if (scope.signal.aborted || session.entry !== entry || session.state.phase !== 'ready' || document.querySelector('dialog[open]:not(#viewer-dialog)')) return;
+            // #483: the previous viewer is still closing around its starting video; this one opens once it has.
+            if (held) { held.pending = { entry, auto: true }; return; }
+            openViewer(input);
+        });
+    }
     /** The viewer on the current selection, details showing (D155 amends D97); focus returns to `trigger` on close. */
     function openViewer(trigger) {
         const entry = session.entry;
         if (!entry || session.state.phase !== 'ready') return;
+        if (held) { held.pending = { entry, trigger, auto: false }; return; }
         viewer.open({ items: [entry], selectedKey: entry.key, trigger, details: 'shown' });
         viewerKey = entry.key;
     }
