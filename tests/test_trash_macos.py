@@ -53,7 +53,9 @@ def _stat(mode=stat.S_IFREG | 0o644, uid=501, flags=0):
 
 class MacBackendTestCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="pm-mac-trash-")
+        # realpath: the backend resolves paths (/var -> /private/var on macOS, 8.3
+        # short names on Windows), so the lstat fakes must use the same spelling.
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="pm-mac-trash-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.home = os.path.join(self.tmp, "home")
         self.root = os.path.join(self.tmp, "output")

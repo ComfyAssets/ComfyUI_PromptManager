@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,6 +20,8 @@ from utils import trash  # noqa: E402
 
 NATIVE = sys.platform == "darwin" and os.environ.get("PM_NATIVE_TRASH") == "macos"
 HDIUTIL_SECONDS = 60
+# Measured: macos-15-intel kept a fresh image busy after a trash (run 40954618922).
+DETACH_WAIT_SECONDS = 30
 
 
 class SpyBridge:
@@ -46,6 +49,50 @@ def _hdiutil(*args):
     )
 
 
+def _our_open_files(mount):
+    """Files this process holds open under *mount* (``lsof -p``): the handle proof."""
+    listed = subprocess.run(
+        ["lsof", "-Fn", "-p", str(os.getpid())],
+        capture_output=True,
+        text=True,
+        timeout=HDIUTIL_SECONDS,
+    )
+    prefix = os.path.realpath(mount) + os.sep
+    return [
+        line[1:]
+        for line in listed.stdout.splitlines()
+        if line.startswith("n") and os.path.realpath(line[1:]).startswith(prefix)
+    ]
+
+
+def _detach(mount):
+    """Detach *mount*; None on success, else why (after a forced detach).
+
+    This process must hold nothing under it. A volume macOS has just written a
+    trash folder to can stay busy for a moment (Spotlight, fseventsd), so the
+    plain detach is retried until the system releases it, within a bound.
+    """
+    ours = _our_open_files(mount)
+    if ours:
+        _hdiutil("detach", mount, "-force")
+        return f"this test still held files open under {mount}: {ours}"
+    deadline = time.monotonic() + DETACH_WAIT_SECONDS
+    while True:
+        done = _hdiutil("detach", mount)
+        if done.returncode == 0:
+            return None
+        if time.monotonic() > deadline:
+            holders = subprocess.run(
+                ["lsof", "+f", "--", mount],
+                capture_output=True,
+                text=True,
+                timeout=HDIUTIL_SECONDS,
+            ).stdout
+            _hdiutil("detach", mount, "-force")
+            return f"detach {mount}: {done.stderr.strip()}; held by: {holders!r}"
+        time.sleep(1)  # poll the volume's release (a state), never a fixed wait
+
+
 @unittest.skipUnless(NATIVE, "macOS native trash proof (PM_NATIVE_TRASH=macos)")
 class MacTrashNativeTests(unittest.TestCase):
     def setUp(self):
@@ -65,10 +112,9 @@ class MacTrashNativeTests(unittest.TestCase):
             for path, mode in reversed(self._modes):
                 os.chmod(path, mode)
             for mount in reversed(self._mounts):
-                done = _hdiutil("detach", mount)
-                if done.returncode != 0:
-                    _hdiutil("detach", mount, "-force")
-                    failures.append(f"detach {mount}: {done.stderr.strip()}")
+                problem = _detach(mount)
+                if problem:
+                    failures.append(problem)
         finally:
             self._tmp.cleanup()
         self.assertEqual(failures, [])
@@ -164,8 +210,7 @@ class MacTrashNativeTests(unittest.TestCase):
     def test_n5_read_only_volume_is_no_trash(self):
         image, mount = self._image("readonly")
         source = self._file(mount, "ro.png", b"read-only bytes")
-        done = _hdiutil("detach", mount)
-        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIsNone(_detach(mount))
         self._mounts.remove(mount)
         attached = _hdiutil(
             "attach", image, "-nobrowse", "-readonly", "-mountpoint", mount
