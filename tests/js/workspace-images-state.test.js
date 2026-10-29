@@ -525,7 +525,35 @@ test('defaults apply to a new visit but not to the current view or a saved view'
     assert.deepEqual(initialImagesView({ saved: { q: '' }, preferences }), { layout: 'grid', density: 'comfortable' });
     // Without readable preferences nothing changes.
     assert.deepEqual(initialImagesView({}), { layout: 'grid', density: 'comfortable' });
-    assert.deepEqual(initialImagesView({ preferences: {} }), { layout: 'grid', density: 'comfortable' });
+    // #451: a preference object without a layout falls back to the default layout, Masonry.
+    assert.deepEqual(initialImagesView({ preferences: {} }), { layout: 'masonry', density: 'comfortable' });
+});
+
+test('a default saved after the last visit started reaches the next visit unless the toolbar changed it (#451)', async () => {
+    const { initialImagesView } = await source;
+    const preferences = { workspaceLayout: 'masonry', workspaceDensity: 'compact' };
+    const started = { layout: 'grid', density: 'comfortable' };
+    // The visit kept the defaults it started from: the newer defaults win.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'grid', density: 'comfortable', defaults: started }, preferences }),
+        { layout: 'masonry', density: 'compact' });
+    // A toolbar choice is the current view's own, whatever the defaults became; each value on its own.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'list', density: 'comfortable', defaults: started }, preferences }),
+        { layout: 'list', density: 'compact' });
+    assert.deepEqual(initialImagesView({ prior: { layout: 'grid', density: 'large', defaults: started }, preferences }),
+        { layout: 'masonry', density: 'large' });
+    // Unchanged defaults: the visit returns as it was.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'masonry', density: 'compact', defaults: { layout: 'masonry', density: 'compact' } }, preferences }),
+        { layout: 'masonry', density: 'compact' });
+    // A saved view and an embedded gallery never get a prior; without preferences the prior is kept.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'grid', density: 'comfortable', defaults: started } }),
+        { layout: 'grid', density: 'comfortable' });
+});
+
+test('the defaults a visit starts from are the fresh-visit defaults (#451)', async () => {
+    const { visitDefaults } = await source;
+    assert.deepEqual(visitDefaults({ workspaceLayout: 'list', workspaceDensity: 'large' }), { layout: 'list', density: 'large' });
+    assert.deepEqual(visitDefaults({}), { layout: 'masonry', density: 'comfortable' });
+    assert.deepEqual(visitDefaults(null), { layout: 'grid', density: 'comfortable' });
 });
 
 test('listingFilter is the listing query as an object, without paging (#392)', async () => {

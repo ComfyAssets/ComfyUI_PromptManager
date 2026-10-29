@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { captureCanonicalState, historyGeometry, compareCanonicalHistory, nativeDialogState, exerciseCurrentPairSend, assertRecordedHistory } from './history-canonical-comparison.mjs';
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { startInGrid } from './concept-inventory.mjs';
 
 test.use({ locale: 'en-US', timezoneId: 'UTC', reducedMotion: 'reduce' });
 const workspace = '/prompt_manager/workspace';
@@ -415,6 +416,8 @@ test('zoomed virtual Images keeps the visible real media mounted during native s
 
 test('supplemental extreme zoom grows real footers preserves the visible anchor and resets reservations', async ({ page, request }) => {
     await request.post('/__test__/reset', { data: { workspace_visual: true } });
+    // The Grid's footer reservations (D157: the default layout is Masonry).
+    await startInGrid(page);
     await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${workspace}#/images`);
     const cards = page.locator('article[data-image-key]'), grid = page.locator('.image-grid');
     await expect(cards).toHaveCount(24);

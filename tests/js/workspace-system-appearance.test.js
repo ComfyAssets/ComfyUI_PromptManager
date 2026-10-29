@@ -162,7 +162,8 @@ test('reset restores defaults without touching other keys', async () => {
         const reset = dom.find(surface.children.at(-1), node => node.tagName === 'BUTTON');
         assert.equal(reset.textContent, 'Reset');
         reset.click();
-        assert.deepEqual(drafts.changes('browser'), { workspaceLayout: 'grid', videoMute: true, showImageInfo: true, sidebarCollapsedByDefault: false });
+        // #451: the default layout is Masonry.
+        assert.deepEqual(drafts.changes('browser'), { workspaceLayout: 'masonry', videoMute: true, showImageInfo: true, sidebarCollapsedByDefault: false });
         // The host fields and every key outside the display defaults are left as they are.
         assert.deepEqual(drafts.changes('host'), { result_timeout: 9 });
         assert.deepEqual([...DISPLAY_KEYS].sort(), Object.keys(BROWSER).sort());
