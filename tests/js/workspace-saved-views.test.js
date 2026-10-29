@@ -231,3 +231,8 @@ test('a Library view keeps untagged, and untagged never travels with tags (#444)
     assert.equal(libraryViewState(shelf).tag_mode, 'untagged');
     assert.deepEqual(libraryFilters(libraryViewState(shelf)), shelf);
 });
+
+test('a shelf without the #444 filters saves their defaults', async () => {
+    const { libraryViewState } = await source;
+    assert.deepEqual(libraryViewState({ text: '', category: '', sort: 'newest', tags: [] }), LIBRARY_DEFAULTS);
+});

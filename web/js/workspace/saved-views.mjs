@@ -121,7 +121,8 @@ export function libraryFilters(state) {
 }
 export function libraryViewState(filters) {
     return normalizeViewState('library', { q: filters.text, category: filters.category, sort: filters.sort, tags: filters.tags,
-        tag_mode: filters.tagMode ?? 'all', folder: filters.folder ?? '' });
+        // A filter the shelf lacks (undefined) takes its key's default in normalizeViewState.
+        tag_mode: filters.tagMode, folder: filters.folder });
 }
 
 /**
