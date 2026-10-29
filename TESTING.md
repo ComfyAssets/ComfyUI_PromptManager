@@ -3174,7 +3174,7 @@ the legacy admin page's key); Later dismisses it without scanning, and Review sc
 dismisses it as the legacy Scan does. "+ Add source" asks validate-source, then adds
 the folder to the host draft of `gallery_root_paths`; Remove takes one out; "Watch for
 new outputs" (`monitoring_enabled`), "Save prompts from other workflows"
-(`save_foreign_runs`, D147) and Worker threads (`worker_threads`) are host
+(`save_foreign_runs`, D158) and Worker threads (`worker_threads`) are host
 drafts too, and Save writes them with the revision. A save the server refuses because a
 scan runs toasts "Another job is running: <title>." with a link to that job (D57) and
 keeps the drafts; a save refused for one source says the server's message as the status
@@ -3423,7 +3423,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 and D147 assigned). D94,
+Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 and D158 assigned). D94,
 the per-section hand-off panel, was retired by S12 (#329): every section is native.
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
@@ -3911,7 +3911,7 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
   the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
   label in turn.
-- **D147** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
+- **D158** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
   without a PromptManager node; the maintainer chose a visible switch over a config key.
   A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
   "Save prompts from other workflows" (`#foreign-runs`, host key `save_foreign_runs`,
@@ -3927,9 +3927,9 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   observer does.
   Pinned by `sources matches the concept` (the mapping inserts the row after the
   monitoring row), `sources comparison detects mutations` (a missing row and a changed
-  label are caught), `D147: Save prompts from other workflows saves save_foreign_runs
+  label are caught), `D158: Save prompts from other workflows saves save_foreign_runs
   live; off while monitoring is off (#247)` (keyboard on desktop, a tap on touch) and
-  `D147: saved off while the monitor still watches until a restart, the foreign row can
+  `D158: saved off while the monitor still watches until a restart, the foreign row can
   still be set (D128)` (workspace-system-sources.spec) and the system-sources node test.
 - **D109** (Logs, S12, #329): the concept's Logs surface on the live server. The toolbar
   keeps "Level", Refresh and the download (renamed "Download log": the active log,
@@ -5900,7 +5900,7 @@ handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
   settle, at the re-check and again just before the store, together with
   `MONITORING_ENABLED`: either saved off stops foreign writes at once (the running
   observer watches until a restart, D128); off logs "No PromptManager prompt in
-  workflow, skipping image" as before. System › Sources & scans "Save prompts from other workflows" (D147)
+  workflow, skipping image" as before. System › Sources & scans "Save prompts from other workflows" (D158)
   saves it through `POST /prompt_manager/settings` with no restart field; the
   diagnostics report lists it.
 

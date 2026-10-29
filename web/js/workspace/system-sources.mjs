@@ -14,7 +14,7 @@
  *   it to the host draft of `gallery_root_paths`; Remove takes one out. Both wait for the one Save row.
  * - "Watch for new outputs" (`monitoring_enabled`) and "Worker threads" (`worker_threads`, a range up to the server's
  *   `cpu_count`, D113) are host drafts too. "Enrich existing metadata" reviews a scan of every source.
- * - D147 (#247): "Save prompts from other workflows" (`save_foreign_runs`), a host draft below "Watch for new outputs",
+ * - D158 (#247): "Save prompts from other workflows" (`save_foreign_runs`), a host draft below "Watch for new outputs",
  *   applied by the server at once (the monitor reads it for every file); disabled, saying why, while monitoring is off,
  *   unless the running monitor still watches until a restart (D128 `stopping`): then it can still be set.
  * - "Thumbnail generation → Review options" opens "Thumbnail maintenance" (thumbnail-review.mjs, S5 Task 14), which
@@ -66,13 +66,13 @@ export const LOAD_FAILED_TEXT = 'Sources could not be loaded. Your saved data ha
 export const DUPLICATE_TEXT = 'This folder is already a source.';
 export const VALIDATE_FAILED_TEXT = 'The folder could not be checked. Try again.';
 export const REFRESH_FAILED_TEXT = 'Files could not be refreshed. Try again.';
-/** D147 (#247): the row the concept does not draw, below "Watch for new outputs". */
+/** D158 (#247): the row the concept does not draw, below "Watch for new outputs". */
 export const FOREIGN_RUNS = Object.freeze({ id: 'foreign-runs', key: 'save_foreign_runs', label: 'Save prompts from other workflows',
     description: 'New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.',
     off: 'Applies while Watch for new outputs is on.' });
 
 /**
- * D147: the row for the drafted `save_foreign_runs` (`value`) and `monitoring_enabled` (`monitoring`): disabled until
+ * D158: the row for the drafted `save_foreign_runs` (`value`) and `monitoring_enabled` (`monitoring`): disabled until
  * read, and while monitoring is off, when `note` says why (the value is kept and saved as it is). `stopping`: a source
  * is still watched until the restart (D128), so the value can still be set; the note stays.
  */
@@ -385,7 +385,7 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         }
     }
 
-    // D147: disabled while monitoring is drafted off, with the reason under the description.
+    // D158: disabled while monitoring is drafted off, with the reason under the description.
     function paintForeign(row, value, unavailable) {
         const stopping = sources?.effective?.some(source => source.watch === 'stopping') === true;
         const state = foreignRunsState({ value, monitoring: drafts.get('host', 'monitoring_enabled'), stopping });

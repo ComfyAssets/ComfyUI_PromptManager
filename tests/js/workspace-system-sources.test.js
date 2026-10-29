@@ -158,7 +158,7 @@ test('a valid configured source missing from the effective list is another spell
         description: 'output/. · same folder as another source', scan: null, remove: 'output/.' });
 });
 
-test('D147: "Save prompts from other workflows" drafts save_foreign_runs, disabled while monitoring is off (#247)', async () => {
+test('D158: "Save prompts from other workflows" drafts save_foreign_runs, disabled while monitoring is off (#247)', async () => {
     const { FOREIGN_RUNS, foreignRunsState } = await sourcesModule;
     assert.deepEqual(FOREIGN_RUNS, { id: 'foreign-runs', key: 'save_foreign_runs', label: 'Save prompts from other workflows',
         description: 'New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.',

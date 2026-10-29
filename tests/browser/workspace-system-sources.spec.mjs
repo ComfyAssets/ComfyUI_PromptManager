@@ -268,7 +268,7 @@ test('Watch for new outputs saves monitoring_enabled; a restart applies it', asy
     await expect(sourceList(page).locator('.operation p')).toHaveText(['output · watching', 'input · watching']);
 });
 
-test('D147: Save prompts from other workflows saves save_foreign_runs live; off while monitoring is off (#247)', async ({ page, request }, testInfo) => {
+test('D158: Save prompts from other workflows saves save_foreign_runs live; off while monitoring is off (#247)', async ({ page, request }, testInfo) => {
     try {
         const layout = await openSources(page);
         const rows = layout.locator('section.surface > .setting-row');
@@ -312,7 +312,7 @@ test('D147: Save prompts from other workflows saves save_foreign_runs live; off 
     }
 });
 
-test('D147: saved off while the monitor still watches until a restart, the foreign row can still be set (D128)', async ({ page, request }) => {
+test('D158: saved off while the monitor still watches until a restart, the foreign row can still be set (D128)', async ({ page, request }) => {
     await expect(await request.post('/__test__/system/monitor', { data: { watching: ['output', 'input'] } })).toBeOK();
     try {
         const layout = await openSources(page);
