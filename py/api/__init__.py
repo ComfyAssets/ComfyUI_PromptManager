@@ -40,6 +40,7 @@ from aiohttp import web
 from PIL import Image
 
 from .prompts import PromptRoutesMixin
+from .revalidation import revalidated_response
 from .pairs import PairRoutesMixin
 from .library import LibraryRoutesMixin
 from .vocabulary import VocabularyRoutesMixin
@@ -653,35 +654,39 @@ class PromptManagerAPI(
 
         @routes.get("/prompt_manager/workspace")
         async def serve_workspace_ui(request: web.Request) -> web.Response:
-            return self._serve_html_page("workspace.html", "Workspace")
+            return self._serve_html_page(request, "workspace.html", "Workspace")
 
         @routes.get("/prompt_manager/web")
         async def serve_web_ui(request):
-            return self._serve_html_page("index.html", "Web UI", cache=False)
+            return self._serve_html_page(request, "index.html", "Web UI", cache=False)
 
         @routes.get("/prompt_manager/gallery.html")
         async def serve_gallery_ui(request):
-            return self._serve_html_page("metadata.html", "Gallery")
+            return self._serve_html_page(request, "metadata.html", "Gallery")
 
         @routes.get("/prompt_manager/admin")
         async def serve_admin_ui(request):
-            return self._serve_html_page("admin.html", "Admin UI")
+            return self._serve_html_page(request, "admin.html", "Admin UI")
 
         @routes.get("/prompt_manager/gallery")
         async def serve_gallery_admin_ui(request):
-            return self._serve_html_page("gallery.html", "Gallery")
+            return self._serve_html_page(request, "gallery.html", "Gallery")
 
         # ── Static file serving ───────────────────────────────────────
 
         @routes.get("/prompt_manager/lib/{filepath:.*}")
         async def serve_lib_static(request):
             """Serve static library files (JS, CSS) from web/lib directory."""
-            return self._serve_static_file("lib", request.match_info.get("filepath"))
+            return self._serve_static_file(
+                request, "lib", request.match_info.get("filepath")
+            )
 
         @routes.get("/prompt_manager/js/{filepath:.*}")
         async def serve_js_static(request):
             """Serve static JavaScript files from web/js directory."""
-            return self._serve_static_file("js", request.match_info.get("filepath"))
+            return self._serve_static_file(
+                request, "js", request.match_info.get("filepath")
+            )
 
         # ── Register domain-specific routes from mixins ───────────────
 
@@ -726,8 +731,11 @@ class PromptManagerAPI(
 
         self.logger.info("All routes registered with decorator pattern")
 
-    def _serve_static_file(self, subdir, filepath):
-        """Serve ``web/<subdir>/<filepath>``; 403 outside it, 404 when missing."""
+    def _serve_static_file(self, request, subdir, filepath):
+        """Serve ``web/<subdir>/<filepath>``; 403 outside it, 404 when missing.
+
+        A served file is revalidated on every reuse (#478, ``revalidation``).
+        """
         root = os.path.join(_get_project_root(), "web", subdir)
         exact = STATIC_EXACT_FILES.get((subdir, filepath))
         # An exact file passes the same containment check, its extension only.
@@ -742,10 +750,13 @@ class PromptManagerAPI(
             return web.Response(text="Not Found", status=404)
         with open(file_path, "rb") as f:
             content = f.read()
-        return web.Response(body=content, content_type=content_type)
+        return revalidated_response(request, content, content_type)
 
-    def _serve_html_page(self, filename, title, cache=True):
-        """Serve ``web/<filename>``; 404 when missing, 500 when unreadable."""
+    def _serve_html_page(self, request, filename, title, cache=True):
+        """Serve ``web/<filename>``; 404 when missing, 500 when unreadable.
+
+        A served page is revalidated on every reuse (#478, ``revalidation``).
+        """
         html_path = os.path.join(_get_project_root(), "web", filename)
         try:
             if cache and html_path in self._html_cache:
@@ -762,7 +773,9 @@ class PromptManagerAPI(
                     content_type="text/html",
                     status=404,
                 )
-            return web.Response(text=content, content_type="text/html", charset="utf-8")
+            return revalidated_response(
+                request, content.encode("utf-8"), "text/html", charset="utf-8"
+            )
         except Exception:
             self.logger.exception(f"Failed to load {title}")
             return web.Response(
