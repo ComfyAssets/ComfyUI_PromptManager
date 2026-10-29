@@ -38,6 +38,11 @@ from .review_schema import (
     review_without_annotations_error,
 )
 from .saved_views import migrate_saved_views, saved_views_schema_error
+
+try:
+    from ..utils.hashing import register_prompt_functions
+except ImportError:
+    from utils.hashing import register_prompt_functions
 from .image_categories import image_categories_schema_error, migrate_image_categories
 from .workflow_documents import (
     DOCUMENT_ID_COLUMNS,
@@ -153,12 +158,15 @@ def configure_connection(conn: sqlite3.Connection) -> None:
     (common on Windows) let other writers' polling busy handlers starve past
     BUSY_TIMEOUT_SECONDS and fail with "database is locked" (#242). Without
     WAL (for example an in-memory database) SQLite's FULL default is kept.
+    It also registers the prompt-key SQL functions (register_prompt_functions).
     """
     journal_mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_SECONDS * 1000}")
     if str(journal_mode).lower() == "wal":
         conn.execute("PRAGMA synchronous = NORMAL")
+    # History reads and the live-hint rule call Python's prompt key (#460)
+    register_prompt_functions(conn)
 
 
 class PromptModel:

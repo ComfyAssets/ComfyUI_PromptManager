@@ -15,6 +15,7 @@ from database import execution_contexts
 from database.execution_history import HistoryEpochChanged
 from database.execution_context_schema import context_schema_error
 from database.execution_contexts import LIVE_HINT_PROMPT_IDS_SQL
+from utils.hashing import generate_prompt_hash
 from database.execution_history_schema import rotate_history_epoch
 from utils.execution_contexts import (
     ContextBundle,
@@ -466,7 +467,11 @@ class ContextDatabaseTests(unittest.TestCase):
         with conn:
             conn.execute("DELETE FROM prompts WHERE id=3")
         self.assertEqual(assert_same(), {1, 2, 4})
+        # A case-only edit keeps the prompt's hash, so the run still counts
+        # toward it (#460); another text drops the hint.
         db.update_prompt_text(4, "Other")
+        self.assertEqual(assert_same(), {1, 2, 4})
+        db.update_prompt_text(4, "another")
         self.assertEqual(assert_same(), {1, 2})
         with conn:
             conn.execute("INSERT INTO prompts(id,text) VALUES(5,'none')")
@@ -521,6 +526,83 @@ class ContextDatabaseTests(unittest.TestCase):
         self.assertIsNone(hinted["positive_prompt_id"])
         live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
         self.assertEqual(live, {1, 2})
+
+    def test_hints_follow_the_hash_for_case_variant_raw_text(self):
+        # #460: the run names the prompt the Library counted it toward.
+        db = self.database()
+        first = db.save_prompt(
+            "\u00e9t\u00e9 positive",
+            prompt_hash=generate_prompt_hash("\u00e9t\u00e9 positive"),
+        )
+        second = db.save_prompt(
+            "negative \u03c3", prompt_hash=generate_prompt_hash("negative \u03c3")
+        )
+        with db.model.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO prompt_pairs(id,positive_prompt_id,negative_prompt_id) "
+                "VALUES(7,?,?)",
+                (first, second),
+            )
+        start = self.capture(
+            db, 0, bundle("NEGATIVE \u03a3", positive="\u00c9T\u00c9 Positive")
+        )
+        context = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(
+            (
+                context["positive_prompt_id"],
+                context["negative_prompt_id"],
+                context["pair_id"],
+            ),
+            (first, second, 7),
+        )
+        conn = db.model.get_connection()
+        live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+        self.assertEqual(live, {first, second})
+        # A prompt that only shares SQLite's ASCII lower() is not a match
+        other = db.save_prompt("other", prompt_hash=generate_prompt_hash("other"))
+        start = self.capture(db, 1, bundle("x", positive="\u00d6THER"))
+        context = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertIsNone(context["positive_prompt_id"])
+        self.assertNotIn(
+            other, {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+        )
+
+    def test_hash_is_only_a_fallback_so_a_text_hint_stays_unambiguous(self):
+        # #460 review: a hash match must never make a #438 text hint ambiguous,
+        # or its prompt would lose the recorded-run prune protection.
+        db = self.database()
+        conn = db.model.get_connection()
+        with conn:
+            # A legacy row without a hash, and a case variant with the hash
+            conn.execute("INSERT INTO prompts(id,text) VALUES(1,'a lighthouse')")
+            conn.execute(
+                "INSERT INTO prompts(id,text,hash) VALUES(2,'A Lighthouse',?)",
+                (generate_prompt_hash("a lighthouse"),),
+            )
+        exact = self.capture(db, 0, bundle("x", positive="a lighthouse"))
+        variant = self.capture(db, 1, bundle("x", positive="A LIGHTHOUSE"))
+        hints = [
+            db.get_execution_contexts(start.run_id)["contexts"][0]["positive_prompt_id"]
+            for start in (exact, variant)
+        ]
+        self.assertEqual(hints, [1, 2])
+        live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+        self.assertEqual(live, {1, 2})
+        self.assertEqual(db.prune_orphaned_prompts(), 0)
+
+    def test_live_hint_prompt_lookups_use_indexes(self):
+        db = self.database()
+        conn = db.model.get_connection()
+        plan = [
+            row[3]
+            for row in conn.execute("EXPLAIN QUERY PLAN " + LIVE_HINT_PROMPT_IDS_SQL)
+        ]
+        prompt_steps = [
+            step for step in plan if " p " in f" {step} " or "TABLE p" in step
+        ]
+        self.assertTrue(prompt_steps, plan)
+        self.assertEqual([step for step in plan if step.startswith("SCAN p")], [])
+        self.assertEqual([step for step in plan if step.startswith("SCAN q")], [])
 
     def test_hints_require_exact_unique_raw_text_and_never_refresh(self):
         db = self.database()

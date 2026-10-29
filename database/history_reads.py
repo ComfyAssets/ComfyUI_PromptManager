@@ -16,9 +16,9 @@ from .execution_outputs import _capture, _REFERENCE_COLUMNS
 from .library import _ELIGIBLE
 
 try:
-    from ..utils.hashing import stored_prompt_text, stored_prompt_text_sql
+    from ..utils.hashing import prompt_key, stored_prompt_text
 except ImportError:
-    from utils.hashing import stored_prompt_text, stored_prompt_text_sql
+    from utils.hashing import prompt_key, stored_prompt_text
 
 RunKey = tuple[int, str, int, str]
 
@@ -115,12 +115,12 @@ _MATCHING = (
 )
 
 
-def _scope_text_ids(conn: sqlite3.Connection, scope: str) -> str:
-    """Every recorded raw text whose stored form is ``scope``, as a JSON array.
+def _scope_text_ids(conn: sqlite3.Connection, key: str) -> str:
+    """Every recorded raw text whose prompt key is ``key``, as a JSON array.
 
-    The Library stores ``text.strip()`` while a run keeps its exact raw text,
-    so a raw text joins the scope of the prompt it saves (#438). The values
-    are compared, never only their digests.
+    A run keeps its exact raw text, while the Library saves and counts it as
+    the prompt with its key (outer whitespace #438, case #460). The values are
+    compared, never only their digests; ``pm_prompt_key`` is Python's key.
     """
     return json.dumps(
         [
@@ -130,16 +130,16 @@ def _scope_text_ids(conn: sqlite3.Connection, scope: str) -> str:
                 "SELECT t.text_id FROM (SELECT DISTINCT raw_text_id AS text_id "
                 "FROM execution_prompt_snapshots) s CROSS JOIN "
                 "execution_context_texts t WHERE t.text_id=s.text_id AND "
-                f"{stored_prompt_text_sql('t.text_value')}=? COLLATE BINARY",
-                (scope,),
+                "pm_prompt_key(t.text_value)=? COLLATE BINARY",
+                (key,),
             )
         ]
     )
 
 
 def _scope_text_id(raw: str | None) -> str | None:
-    """The scope digest of a raw text: that of the text the Library stores."""
-    return None if raw is None else content_digest("text", (stored_prompt_text(raw),))
+    """The scope digest of a raw text: that of its prompt key."""
+    return None if raw is None else content_digest("text", (prompt_key(raw),))
 
 
 def _limit(limit: int) -> None:
@@ -290,7 +290,14 @@ class HistoryReadOperations:
             return None
         text = saved["text"]
         raw_id = _scope_text_id(text)
-        if after is not None and after.raw_text_id != raw_id:
+        # A position from before #460 names the scope by the stripped text
+        # alone; it is the same scope, so a page open across the upgrade resumes.
+        legacy_id = (
+            None
+            if text is None
+            else content_digest("text", (stored_prompt_text(text),))
+        )
+        if after is not None and after.raw_text_id not in (raw_id, legacy_id):
             raise ValueError("History position text scope changed")
         group = {
             "positive_id": positive_id,
@@ -309,7 +316,7 @@ class HistoryReadOperations:
         )
         if raw_id is None:
             return result
-        scope = _scope_text_ids(conn, stored_prompt_text(text))
+        scope = _scope_text_ids(conn, prompt_key(text))
         where = f"r.run_id IN ({_MATCHING})"
         params = [scope]
         if after is not None:
@@ -465,7 +472,7 @@ class HistoryReadOperations:
         if saved["text"] is None:
             return {"run": None}
         epoch = self.get_execution_epoch()
-        stored = stored_prompt_text(saved["text"])
+        key = prompt_key(saved["text"])
         candidates = conn.execute(
             "SELECT r.run_id,rc.anchor_id,rc.context_id,"
             "c.positive_snapshot_id,c.negative_snapshot_id "
@@ -477,7 +484,7 @@ class HistoryReadOperations:
             "AND rc.reference_epoch=? "
             f"ORDER BY {_ORDER},rc.anchor_id COLLATE BINARY LIMIT ?",
             (
-                _scope_text_ids(conn, stored),
+                _scope_text_ids(conn, key),
                 pair_id,
                 epoch,
                 _PAIR_RUN_CANDIDATES,
@@ -489,7 +496,7 @@ class HistoryReadOperations:
             if (
                 positive is None
                 or positive["raw"] is None
-                or stored_prompt_text(positive["raw"]) != stored
+                or prompt_key(positive["raw"]) != key
             ):
                 continue
             hints = _hints(conn, positive["raw"], negative["raw"] if negative else None)
