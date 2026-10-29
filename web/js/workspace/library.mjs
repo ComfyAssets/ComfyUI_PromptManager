@@ -178,7 +178,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         let categoryNames=[];
         const selection=mountLibrarySelection({scope,api,grid,getItems:()=>state?.items ?? [],getEpoch:()=>state?.epoch ?? null,
             getCategories:()=>categoryNames,focusFallback:{focus:()=>focusHeading(main)},
-            onCommitted:receipt=>invalidateLibraryAfterWrite({kind:'bulk-category',receipt}),onReload:()=>{loadCategories();reset();}});
+            onCommitted:(kind,receipt)=>invalidateLibraryAfterWrite({kind:`bulk-${kind}`,receipt}),onReload:()=>{loadCategories();reset();}});
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
@@ -364,6 +364,9 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         scope.listen(grid,'keydown',event=>{
             const card=event.target.closest('article[data-prompt-id]');if(!card) return;
             const index=Number(card.dataset.index);
+            // D151 (#444 ruling): Ctrl/Cmd+A selects every loaded prompt and Escape clears, as on Images (focus stays).
+            if((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==='a') {event.preventDefault();selection.selectAll();return;}
+            if(event.key==='Escape' && selection.hasSelection()) {event.preventDefault();selection.clear();return;}
             if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1),false,true);}
             else if(event.key==='Tab') {
                 const controls=card.querySelectorAll(CARD_CONTROLS);const next=index+(event.shiftKey?-1:1);
@@ -372,7 +375,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             }
         });
         function render(next) {
-            if(items!==next.items) {
+            const batch=items!==next.items;
+            if(batch) {
                 pendingAnchor ||= captureAnchor();items=next.items;indexesById=new Map(items.map((item,index)=>[item.id,index]));dirty=true;
                 if(!items.length) {
                     anchor=null;pendingAnchor=null;heights.clear();layout={rows:[],height:0};
@@ -381,6 +385,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
                 } else if(retainedAnchor) {pendingAnchor=retainedAnchor;retainedAnchor=null;}
             }
             state=next;
+            // A loaded batch: the selection bar's count and Select all N loaded follow it (D151).
+            if(batch) selection.listingChanged();
             if(next.variantTotal!==null) {
                 const count=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
                 if(captionCount.textContent!==count) captionCount.textContent=count;caption.hidden=false;

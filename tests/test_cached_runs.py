@@ -666,7 +666,7 @@ class TestOwnCounts(unittest.TestCase):
         return counts
 
 
-class TestReceipts(unittest.TestCase):
+class ReceiptCase(unittest.TestCase):
     def setUp(self):
         self.context = ("j1", None)
         self.runs = CachedRuns(
@@ -686,6 +686,8 @@ class TestReceipts(unittest.TestCase):
     def keys(self):
         return list(self.runs._receipts)
 
+
+class TestReceipts(ReceiptCase):
     def test_least_recently_used_run_keys_are_dropped(self):
         self.begin(1)
         for name in ("a", "b", "c"):
@@ -724,6 +726,196 @@ class TestReceipts(unittest.TestCase):
     def test_job_nodes_follow_the_outputs_to_execute(self):
         self.runs.begin_attempt(((1, "j1", self.g, {}, ["b"], {}), 1))
         self.assertEqual(list(self.runs._attempt.nodes), ["b"])
+
+
+class TestRecordedFields(ReceiptCase):
+    """The texts a receipt keeps for the history capture of a cached job (#403)."""
+
+    F = (("raw a", " pre ", ""),)
+
+    def record(self, item_id, name="a", output="x", fields=F, facts=None):
+        self.begin(item_id)
+        self.runs.record_item(name, (output,), facts or Facts("h"), fields)
+        self.runs.end_attempt(item_id)
+
+    def lookup(self, name="a", values=(("x",),), prompt_id="j9", item_id=9):
+        self.begin(item_id, prompt_id)
+        return self.runs.recorded_fields(prompt_id, name, values)
+
+    def test_a_cached_job_reads_the_fields_of_the_execution_it_reuses(self):
+        self.record(1)
+        self.assertEqual(self.lookup(), [self.F])
+
+    def test_list_items_return_their_own_fields_in_order(self):
+        self.begin(1)
+        for index, text in enumerate(("x", "y")):
+            self.context = ("j1", index)
+            self.runs.record_item("a", (text,), Facts("h"), ((text, "", ""),))
+        self.runs.end_attempt(1)
+        self.assertEqual(
+            self.lookup(values=(("x", "y"),)), [(("x", "", ""),), (("y", "", ""),)]
+        )
+
+    def test_fails_closed(self):
+        self.record(1)
+        for case, kwargs in (
+            ("other output", dict(values=(("changed",),))),
+            ("other node", dict(name="b")),
+            ("unknown node", dict(name="zzz")),
+            ("no values", dict(values=())),
+            ("malformed values", dict(values="x")),
+        ):
+            with self.subTest(case=case):
+                self.assertIsNone(self.lookup(**kwargs))
+        with self.subTest(case="another job"):
+            self.begin(9, "j9")
+            self.assertIsNone(self.runs.recorded_fields("j8", "a", (("x",),)))
+        with self.subTest(case="no job"):
+            self.runs.end_attempt(9)
+            self.assertIsNone(self.runs.recorded_fields("j9", "a", (("x",),)))
+
+    def test_an_execution_without_fields_gives_none(self):
+        for fields in (None, (("a", "b"),), ((1, "", ""),), (), "abc"):
+            with self.subTest(fields=fields):
+                self.runs = CachedRuns(context=lambda: self.context)
+                self.record(1, fields=fields)
+                self.assertIsNone(self.lookup())
+
+    def test_a_lookup_never_counts_or_marks_the_node_replayed(self):
+        self.record(1)
+        self.lookup()
+        self.assertFalse(self.runs.replayed("a"))
+
+    def test_equal_outputs_with_other_raw_text_conflict_and_still_count(self):
+        key = prompt_node_key(self.g, "a")
+        self.record(1, fields=(("x ", "", ""),))
+        self.record(2, fields=(("x", "", ""),))
+        # Counting dedupes by outputs as before; the fields cannot name either
+        self.assertEqual([r.item_id for r in self.runs._receipts[key]], [2])
+        self.assertIsNone(self.lookup())
+        self.assertIsNotNone(self.runs._match(key, (("x",),)))
+        # The conflict stays: a later execution cannot tell which text it was
+        self.record(3, fields=(("x", "", ""),))
+        self.assertIsNone(self.lookup())
+
+    def test_equal_outputs_with_other_facts_still_count_the_newest(self):
+        key = prompt_node_key(self.g, "a")
+        self.record(1, facts=Facts("old"), fields=(("a x", "", ""),))
+        self.record(2, facts=Facts("new"), fields=(("x", "a ", ""),))
+        items = self.runs._match(key, (("x",),))
+        self.assertEqual([item.facts for item in items], [Facts("new")])
+
+    def test_equal_outputs_and_fields_still_replace(self):
+        key = prompt_node_key(self.g, "a")
+        self.record(1)
+        self.record(2)
+        self.assertEqual([r.item_id for r in self.runs._receipts[key]], [2])
+        self.assertEqual(self.lookup(), [self.F])
+
+    def test_fields_dropped_by_the_budget_do_not_conflict(self):
+        self.runs = CachedRuns(context=lambda: self.context, max_field_bytes=0)
+        self.record(1)
+        self.runs._max_field_bytes = 100
+        self.record(2)
+        self.assertEqual(self.lookup(), [self.F])
+
+    def test_oversized_or_invalid_fields_are_not_kept(self):
+        for raw in ("x" * (module.MAX_FIELD_BYTES + 1), "\ud800"):
+            with self.subTest(size=len(raw)):
+                self.runs = CachedRuns(context=lambda: self.context)
+                self.record(1, fields=((raw, "", ""),))
+                self.assertIsNone(self.lookup())
+                self.assertEqual(self.runs._field_bytes, 0)
+
+    def test_old_receipts_give_up_their_fields_to_new_ones(self):
+        self.runs = CachedRuns(
+            context=lambda: self.context, max_keys=3, max_field_bytes=10
+        )
+        self.record(1, "a", fields=(("123456", "", ""),))
+        self.record(2, "b", fields=(("123456", "", ""),))
+        self.assertEqual(self.runs._field_bytes, 6)
+        self.assertIsNone(self.lookup("a"))
+        self.assertEqual(self.lookup("b"), [(("123456", "", ""),)])
+        # "a" still counts
+        self.assertIsNotNone(self.runs._match(prompt_node_key(self.g, "a"), (("x",),)))
+        # Larger than the whole budget: not kept, nothing else given up
+        self.record(3, "c", fields=(("12345678901", "", ""),))
+        self.assertEqual(self.runs._field_bytes, 6)
+        self.assertEqual(self.lookup("b"), [(("123456", "", ""),)])
+
+    def test_one_receipt_holds_at_most_one_runs_history(self):
+        with mock.patch.object(module, "MAX_RECEIPT_FIELD_BYTES", 8):
+            self.begin(1)
+            for index, raw in enumerate(("12345", "12345")):
+                self.context = ("j1", index)
+                self.runs.record_item("a", (raw,), Facts("h"), ((raw, "", ""),))
+            self.runs.end_attempt(1)
+        self.assertEqual(self.runs._field_bytes, 5)
+        self.assertIsNone(self.lookup(values=(("12345", "12345"),)))
+
+    def test_the_byte_count_follows_replacement_and_eviction(self):
+        self.begin(1)
+        self.runs.record_item("a", ("x",), Facts("h"), (("12345", "", ""),))
+        self.runs.record_item("a", ("x",), Facts("h"), (("123", "", ""),))
+        self.assertEqual(self.runs._field_bytes, 3)
+        self.runs.end_attempt(1)
+        for item_id, raw in ((2, "1"), (3, "22"), (4, "333")):
+            self.record(item_id, output=raw, fields=((raw, "", ""),))
+        # max_receipts=2: only the receipts of jobs 4 and 3 remain
+        self.assertEqual(self.runs._field_bytes, 5)
+        for item_id, name in ((5, "b"), (6, "c")):  # max_keys=2: "a" is dropped
+            self.record(item_id, name, fields=(("1", "", ""),))
+        self.assertEqual(self.runs._field_bytes, 2)
+        self.assertEqual(
+            self.runs._field_bytes,
+            sum(module._bytes(r) for r in self.runs._receipts.values()),
+        )
+
+
+class TestCachedJobsRecordFields(JobCase):
+    """The real nodes keep the texts they gave the history capture (#403)."""
+
+    def lookup(self, g, node_id="pm", prompt_id="job-x"):
+        self.item_id += 1
+        self.runs.begin_attempt(
+            ((self.item_id, prompt_id, g, {}, ["save"], {}), self.item_id)
+        )
+        values = cached_string_outputs(self.executor, node_id, g[node_id]["class_type"])
+        found = self.runs.recorded_fields(prompt_id, node_id, values)
+        self.runs.end_attempt(self.item_id)
+        return found
+
+    def test_each_node_kind_keeps_its_runtime_fields(self):
+        for kind in (
+            "PromptManager",
+            "PromptManagerFocused",
+            "PromptManagerSplit",
+            "PromptManagerText",
+        ):
+            with self.subTest(kind=kind):
+                g = graph(kind)
+                self.first(g, text=f" {LLM} ")
+                self.assertEqual(
+                    self.lookup(graph(kind, seed=2)), [((f" {LLM} ", "", ""),)]
+                )
+
+    def test_pair_keeps_positive_and_negative_fields(self):
+        g = graph("PromptManagerPair", negative_text="typed negative")
+        self.first(g, negative="typed negative")
+        self.assertEqual(
+            self.lookup(
+                graph("PromptManagerPair", negative_text="typed negative", seed=2)
+            ),
+            [((LLM, "", ""), ("typed negative", "", ""))],
+        )
+
+    def test_a_disabled_node_keeps_no_fields(self):
+        g = graph()
+        g["pm"]["inputs"]["save_to_library"] = False
+        self.first(g)
+        g2 = graph(seed=2)
+        g2["pm"]["inputs"]["save_to_library"] = False
+        self.assertIsNone(self.lookup(g2))
 
 
 class TestCacheReader(unittest.TestCase):

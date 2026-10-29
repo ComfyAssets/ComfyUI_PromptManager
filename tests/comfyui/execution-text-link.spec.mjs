@@ -287,6 +287,14 @@ async function capturedContext(execution, id) {
     return result.captures[result.rows[0].run_id].contexts[0];
 }
 
+// #403: the prompt's history "tracked runs", once every job's capture reached SQLite.
+async function expectTrackedRuns(execution, promptId, expected) {
+    await expect.poll(async () => {
+        const response = await execution.request.get(`/prompt_manager/library/${promptId}/history`);
+        return response.ok() ? (await response.json()).recorded_run_count : null;
+    }, { timeout: 10000, message: 'history tracked runs equal the Library run count' }).toBe(expected);
+}
+
 async function firstRun(execution, page, testCase) {
     const prefix = `textlink/${randomUUID()}`;
     const built = await build(page, { ...testCase, prefix });
@@ -309,6 +317,8 @@ for (const kind of ['PromptManager', 'PromptManagerFocused', 'PromptManagerSplit
         const counts = await runCounts(execution, first.context);
         expect(counts.positive).toBe(3);
         if (pair) expect(counts).toMatchObject({ negative: 0, pair: 3 });
+        // #403: the cached jobs are tracked runs of the prompt too
+        await expectTrackedRuns(execution, first.context.positive_prompt_id, 3);
     });
 }
 
@@ -329,6 +339,7 @@ test.describe('cached runs in one renderer (#347)', () => {
                     else expect(again.cached).toContain(first.promptNode);
                 }
                 expect((await runCounts(execution, first.context)).positive).toBe(3);
+                await expectTrackedRuns(execution, first.context.positive_prompt_id, 3);
             } finally { await setCache(execution, 'RAM_PRESSURE'); }
         });
     }
@@ -352,6 +363,9 @@ test.describe('cached runs in one renderer (#347)', () => {
             const bContext = await capturedContext(execution, second.id);
             expect(bContext.positive.raw).toBe(b);
             expect((await runCounts(execution, bContext)).positive).toBe(1);
+            // #403: the third job reuses A's execution, not the newest (B's)
+            await expectTrackedRuns(execution, first.context.positive_prompt_id, 2);
+            await expectTrackedRuns(execution, bContext.positive_prompt_id, 1);
         } finally { await setCache(execution, 'RAM_PRESSURE'); }
     });
 
@@ -390,10 +404,14 @@ test.describe('cached runs in one renderer (#347)', () => {
         } });
         expect(rewired.cached).toContain(first.promptNode);
         expect((await runCounts(execution, first.context)).positive).toBe(1);
-        // The history capture of a cached job is unchanged: effective text from the cache, no stored-prompt hint
+        // #403: a cached job's history takes the raw text of the execution it reuses and names the prompt
         const cachedContext = await capturedContext(execution, (await queueAgain(execution, first, { seed: 3 })).id);
         expect(cachedContext.positive.effective).toBe(first.context.positive.effective);
-        expect(cachedContext.positive_prompt_id).toBeNull();
+        expect(cachedContext.positive.raw).toBe(first.context.positive.raw);
+        expect(cachedContext.evidence.positive.raw).toMatchObject({ provenance: 'inferred', source: 'graph_semantics' });
+        expect(cachedContext.positive_prompt_id).toBe(first.context.positive_prompt_id);
         expect((await runCounts(execution, first.context)).positive).toBe(2);
+        // The rewired job used the prompt as its negative: neither number counts it
+        await expectTrackedRuns(execution, first.context.positive_prompt_id, 2);
     });
 });
