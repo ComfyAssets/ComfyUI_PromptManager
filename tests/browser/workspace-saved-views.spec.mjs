@@ -230,6 +230,31 @@ test('a view stored under older rules still lists and opens with its usable valu
     await expect(promptCards(page)).toHaveCount(1);
 });
 
+// D153 (#447): the workspace no longer offers "Highest rated"; the API still stores such a view as it was saved.
+test('a view saved under Highest rated opens on Recently added on Images and the Library', async ({ page, request }) => {
+    const images = await create(request, { page: 'images', name: 'Rated cats', state: { ...IMAGE_DEFAULTS, q: 'cat', sort: 'rating' } });
+    const library = await create(request, { page: 'library', name: 'Rated dogs', state: { q: 'dog', category: '', sort: 'rating', tags: [] } });
+    expect((await listed(request)).map(view => view.state.sort)).toEqual(['rating', 'rating']);
+    const listings = [];
+    page.on('request', item => {
+        const url = new URL(item.url());
+        if (['/prompt_manager/images/output', '/prompt_manager/library'].includes(url.pathname)) listings.push(url.searchParams.get('sort'));
+    });
+    await page.goto(`${workspace}#/saved/${images.id}`);
+    await expect(heading(page)).toHaveText('Rated cats');
+    await expect(sortBy(page)).toHaveValue('newest');
+    expect(await sortBy(page).locator('option').allTextContents()).not.toContain('Highest rated');
+    await expect(search(page)).toHaveValue('cat');
+    await expect(imageCards(page)).toHaveCount(1);
+    await savedNav(page).getByRole('link', { name: 'Rated dogs', exact: true }).click();
+    await expect(heading(page)).toHaveText('Rated dogs');
+    await expect(sortBy(page)).toHaveValue('newest');
+    await expect(search(page)).toHaveValue('dog');
+    await expect(promptCards(page)).toHaveCount(1);
+    expect(listings.length).toBeGreaterThan(1);
+    expect(listings).not.toContain('rating');
+});
+
 test('leaving a saved view returns Images and the Library to their own last state (#249 M2)', async ({ page, request }) => {
     const dogs = await create(request, { page: 'images', name: 'Dogs', state: { ...IMAGE_DEFAULTS, q: 'dogs' } });
     const cats = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
