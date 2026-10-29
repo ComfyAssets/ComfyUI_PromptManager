@@ -8,8 +8,10 @@ import sqlite3
 from aiohttp import web
 
 try:
+    from ...database.library_commands import LibraryCommandError
     from ...database.pairs import PairDependencyError
 except ImportError:
+    from database.library_commands import LibraryCommandError
     from database.pairs import PairDependencyError
 from urllib.parse import quote
 
@@ -1128,7 +1130,14 @@ class PromptRoutesMixin:
     async def bulk_add_tags(self, request):
         """Bulk add tags to prompts."""
         try:
-            data = await request.json()
+            try:
+                data = await request.json()
+            except ValueError:
+                return bad_request("Invalid JSON body")
+            if not isinstance(data, dict):
+                return bad_request("Expected a JSON object")
+            if "expected_epoch" in data:
+                return await self._bulk_library_tags(data)
             prompt_ids = data.get("prompt_ids", [])
             new_tags = data.get("tags", [])
 
@@ -1180,6 +1189,8 @@ class PromptRoutesMixin:
                 )
             if "images_filter" in data:
                 return await self._bulk_category_by_filter(data)
+            if "expected_epoch" in data:
+                return await self._bulk_library_category(data)
             if not data.get("prompt_ids"):
                 return web.json_response(
                     {"success": False, "error": "No prompt IDs provided"}, status=400
@@ -1215,6 +1226,54 @@ class PromptRoutesMixin:
                 },
                 status=500,
             )
+
+    async def _bulk_library_tags(self, data: dict) -> web.Response:
+        """The workspace Library's fenced form (#442).
+
+        ``{prompt_ids, tags, expected_epoch}``: prompt tags only, never image tags.
+        """
+        return await self._fenced_library_write(
+            data, "tags", self.db.bulk_add_library_tags
+        )
+
+    async def _fenced_library_write(
+        self, data: dict, field: str, write
+    ) -> web.Response:
+        """One fenced Library bulk write: exact keys, checked ids, 409 on a restore."""
+        fields = {"prompt_ids", field, "expected_epoch"}
+        if set(data) != fields:
+            return bad_request(
+                "Request must contain exactly " + ", ".join(sorted(fields))
+            )
+        try:
+            prompt_ids = parse_bulk_prompt_ids(data["prompt_ids"])
+            result = await self._run_in_executor(
+                write, prompt_ids, data[field], expected_epoch=data["expected_epoch"]
+            )
+        except LibraryCommandError as exc:
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": exc.code,
+                    "library_epoch": exc.epoch,
+                    "error": "Prompt storage was restored; refresh the library",
+                },
+                status=409,
+            )
+        except ValueError as exc:
+            return bad_request(str(exc))
+        return web.json_response({"success": True, **result})
+
+    async def _bulk_library_category(self, data: dict) -> web.Response:
+        """The workspace Library's fenced form (#437).
+
+        ``{prompt_ids, category, expected_epoch}``: a non-blank category on
+        the selected Library parents, refused with 409 ``storage-changed``
+        when prompt storage was restored since the page read its epoch.
+        """
+        return await self._fenced_library_write(
+            data, "category", self.db.bulk_set_library_category
+        )
 
     async def _bulk_category_by_filter(self, data: dict) -> web.Response:
         """Set the category on every linked positive a listing filter admits.

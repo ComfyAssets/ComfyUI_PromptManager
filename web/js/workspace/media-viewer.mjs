@@ -20,7 +20,12 @@ function element(tag, className, text) {
     return node;
 }
 
-export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter}) {
+/**
+ * #331 D139: with the client store `collections`, the viewer's inspector offers "Collections…"; the changes it confirms
+ * reach `onCollectionsChanged({added, removed})` once the viewer closes, so the viewer keeps its place while open.
+ */
+export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter,
+    collections = null,onCollectionsChanged = null}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -37,7 +42,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         active?.close(false);
         const {items,selectedKey,trigger = document.activeElement,details:detailsMode} = options;
         let mounted = false, initial, entry, currentKey, viewer = null, withoutViewer = false, mediaScope = null, closed = false;
-        let originalDownload = null, inspectionState = inspectionController.state;
+        let originalDownload = null, inspectionState = inspectionController.state, collectionChanges = null;
         const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
             if (!mounted) { initial = [state,selected]; return; }
             update(state,selected);
@@ -113,7 +118,11 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
         const inspector = mountFileInspector(details,{api,sender:localSender,parentScope:local,variant:'full',onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
             onLoad:() => inspectionController.load?.(),
-            onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined});
+            onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined,collections,
+            onCollectionsChanged:({added,removed}) => {
+                collectionChanges ??= {added:[],removed:[]};
+                collectionChanges.added.push(...added);collectionChanges.removed.push(...removed);
+            }});
         function closeViewer(restore = true) {
             if (closed) return;
             closed = true;active = null;local.dispose();
@@ -122,6 +131,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 else onRestoreFocus?.(entry);
             }
             if (!scope.signal.aborted) onClose?.();
+            if (collectionChanges && !scope.signal.aborted) onCollectionsChanged?.(collectionChanges);
         }
         active = {close:closeViewer,stop:() => session.stop()};
         local.cleanup(() => {
