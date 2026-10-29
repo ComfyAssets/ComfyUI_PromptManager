@@ -188,6 +188,7 @@ test('an inline Viewer still loading its image is destroyed only after it has vi
     } finally { view.dispose(); parentScope.dispose(); f.restore(); Object.assign(globalThis, globals); }
 });
 
+const left0 = dialog => dialog.children[1].children[0];
 test('viewer renders the concept shell and toolbar order', async () => {
     const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
     const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')];
@@ -199,7 +200,14 @@ test('viewer renders the concept shell and toolbar order', async () => {
         assert.equal(dialog.attributes['aria-label'],undefined,'the title names the dialog');
         const [header,layout] = dialog.children;
         assert.equal(header.className,'dialog-header');
-        const [heading,close] = header.children, [title,subtitle] = heading.children;
+        const [heading,mode,close] = header.children, [title,subtitle] = heading.children;
+        // #450 D156: the view switch before ✕ names the view it switches to (Centered is the stored default).
+        assert.deepEqual([mode.tagName,mode.id,mode.className,mode.attributes['aria-label'],mode.title],['button','viewer-mode','icon-btn','Full screen view','Full screen view']);
+        mode.fire('click');
+        assert.equal(mode.attributes['aria-label'],'Centered view');
+        assert.ok(f.walk(left0(dialog),n => n.textContent === 'Hide details').length === 1,'full screen adds the details toggle');
+        mode.fire('click');
+        assert.equal(mode.attributes['aria-label'],'Full screen view');
         assert.deepEqual([heading.tagName,title.tagName,title.id,title.textContent],['div','h2','viewer-title','a.png']);
         assert.deepEqual([subtitle.tagName,subtitle.className,subtitle.textContent],['p','muted small','One viewer · image, prompts, generation data, workflow']);
         assert.deepEqual([close.tagName,close.id,close.textContent,close.attributes['aria-label']],['button','viewer-close','×','Close image viewer']);
