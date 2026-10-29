@@ -168,7 +168,7 @@ test('library toolbar matches the concept and tags live in Refine this view',asy
     // D44: the active Tags filter shows on the button; the category is the toolbar's own and is not counted.
     await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters · 1']);
     await toolbar.getByRole('button',{name:'Filters · 1',exact:true}).click();
-    await expect(refine(page).locator('.field label')).toHaveText(['Tags']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
+    await expect(refine(page).locator('.field label')).toHaveText(['Tags','Tag match']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
     await refine(page).getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
     await expect(toolbar.getByRole('button',{name:'Filters',exact:true})).toBeFocused();
     await expect(page.getByRole('combobox',{name:'Filter by category',exact:true})).toHaveValue('');await expect(cards(page)).toHaveCount(3);

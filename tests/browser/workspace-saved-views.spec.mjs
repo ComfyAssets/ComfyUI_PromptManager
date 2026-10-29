@@ -208,7 +208,7 @@ test('a view stored under older rules still lists and opens with its usable valu
     await raw({ page: 'library', name: '', state: JSON.stringify({ q: 'dog', sort: 'name-desc' }) });
     expect(await listed(request)).toEqual([
         { id: imagesId, page: 'images', name: 'Old cats', state: { ...IMAGE_DEFAULTS, q: 'cat' } },
-        expect.objectContaining({ page: 'library', name: 'Saved view', state: { q: 'dog', category: '', sort: 'newest', tags: [] } }),
+        expect.objectContaining({ page: 'library', name: 'Saved view', state: { q: 'dog', category: '', sort: 'newest', tags: [], tag_mode: 'all' } }),
     ]);
     // A state that is no JSON object is never listed, and its link behaves like a missing view.
     const corruptId = await raw({ page: 'images', name: 'Corrupt', state: '{not json' });
@@ -232,7 +232,7 @@ test('a view stored under older rules still lists and opens with its usable valu
 
 test('leaving a saved view returns Images and the Library to their own last state (#249 M2)', async ({ page, request }) => {
     const dogs = await create(request, { page: 'images', name: 'Dogs', state: { ...IMAGE_DEFAULTS, q: 'dogs' } });
-    const cats = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
+    const cats = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [], tag_mode: 'all' } });
     await page.goto(`${workspace}#/images`);
     await search(page).fill('cat');
     await expect(imageCards(page)).toHaveCount(1);
@@ -275,7 +275,7 @@ test('a toolbar change while sources load keeps the saved Source and Folder (#24
 });
 
 test('a saved view left while its list or rename is pending leaves the next page alone', async ({ page, request }) => {
-    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
+    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [], tag_mode: 'all' } });
     let releaseList = () => {};
     const holdList = async () => {
         const held = new Promise(resolve => { releaseList = resolve; });
@@ -323,7 +323,7 @@ test('an unknown saved view opens Images, and a failed listing offers Retry', as
     await expect(page).toHaveURL(/#\/images$/);
     await expect(main(page).getByRole('heading', { level: 1 })).toHaveText('Images');
 
-    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
+    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [], tag_mode: 'all' } });
     let failing = true;
     await page.route(`**${API}`, route => failing && route.request().method() === 'GET'
         ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"down"}' })
@@ -514,7 +514,7 @@ test('Edit renames an open view, and deletes it only after confirming inside the
 });
 
 test('a deleted Library view returns to the Library, and failed edits say so', async ({ page, request }) => {
-    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [] } });
+    const view = await create(request, { page: 'library', name: 'Cats', state: { q: 'cat', category: '', sort: 'newest', tags: [], tag_mode: 'all' } });
     await page.goto(`${workspace}#/saved/${view.id}`);
     await expect(heading(page)).toHaveText('Cats');
     const edit = main(page).locator('.heading-actions > button').first();

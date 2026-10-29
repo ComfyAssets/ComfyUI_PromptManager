@@ -2,7 +2,7 @@ import {createScope,createButton} from '../shared/toolkit/core.js';
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
-import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './library-state.mjs';
+import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_MODES} from './library-state.mjs';
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
@@ -30,6 +30,8 @@ const metadataDrafts=new Map();
 const archivedVisible=new Map();
 // The concept's three sorts first, then the Library's appended Oldest first (D14).
 const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+// Refine › Tag match (#444 D149), in LIBRARY_TAG_MODES order.
+const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['untagged','Prompts without tags']]);
 const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
 const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative variants.';
 function el(tag,text,className) {
@@ -80,9 +82,9 @@ export function onLibraryWrite(listener) {
  * with the existing Library filters, and the heading takes focus as after a save.
  */
 export function browseLibrary(filters) {
-    const {text='',category='',tags=[],sort='newest'}=filters || {};
-    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string') throw new TypeError('Invalid Library filters');
-    shelfVisit={filters:{text,category,tags:[...tags],sort},anchor:null};
+    const {text='',category='',tags=[],sort='newest',tagMode='all'}=filters || {};
+    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string' || !LIBRARY_TAG_MODES.includes(tagMode)) throw new TypeError('Invalid Library filters');
+    shelfVisit={filters:{text,category,tags:[...tags],sort,tagMode},anchor:null};
     focusHeadingOnMount=true;window.location.hash='#/library';
 }
 /** Remember the selection a reconciled save names, so the destination history opens on it once. */
@@ -155,13 +157,14 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const visit=saved?null:shelfVisit, mountedGeneration=writeGeneration;
         // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
         const restorable=visit?.state?visit:null;
-        const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters,...saved};
+        const filters={text:'',category:'',tags:[],sort:'newest',tagMode:'all',...visit?.filters,...saved};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
         const toolbarScope=createScope();
-        // D44: Filters reads "Filters · 1" while a Tags filter (from Refine or a Browse) narrows the shelf.
-        const refinements=()=>filters.tags.length?1:0;
+        // D44: Filters reads "Filters · N" while Refine filters (from Refine or a Browse) narrow the shelf: Tags, and a
+        // Tag match other than All (#444 D149).
+        const refinements=()=>(filters.tags.length?1:0)+(filters.tagMode!=='all'?1:0);
         const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
             value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters,
             onSaveView:trigger=>{const value=toolbar.value();onSaveView(trigger,libraryViewState({...filters,text:value.q.trim(),category:value.category,sort:value.sort}));}});
@@ -402,15 +405,17 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             if(Object.entries(next).every(([key,item])=>filters[key]===item)) return;
             Object.assign(filters,next);reset();
         }
-        /** "Refine this view" with the Library's one extra filter, Tags (D14); Clear also clears the toolbar category. */
+        /** "Refine this view" with the Library's extra filters, Tags (D14) and Tag match (D149); Clear also clears the toolbar category. */
         function openFilters(trigger) {
-            openRefineDialog({scope,trigger,fields:[{key:'tags'}],values:{tags:filters.tags.join(', ')},onApply:applyRefinement,
+            openRefineDialog({scope,trigger,fields:[{key:'tags'},{key:'tagMode',options:TAG_MATCH_OPTIONS}],
+                values:{tags:filters.tags.join(', '),tagMode:filters.tagMode},onApply:applyRefinement,
                 onClear:cleared=>{toolbar.setValue({category:cleared.category});applyRefinement(cleared);}});
         }
-        function applyRefinement({tags,category=filters.category}) {
-            const next=[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
-            if(category===filters.category && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
-            filters.category=category;filters.tags=next;reset();
+        function applyRefinement({tags,tagMode='all',category=filters.category}) {
+            // "Prompts without tags" takes no Tags (the dialog disables them).
+            const next=tagMode==='untagged'?[]:[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
+            if(category===filters.category && tagMode===filters.tagMode && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
+            filters.category=category;filters.tags=next;filters.tagMode=tagMode;reset();
         }
         scope.listen(more,'click',()=>stream.loadMore());
         // Retry also re-reads a category list that failed (D15: Refresh is gone).

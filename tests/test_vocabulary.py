@@ -364,6 +364,162 @@ class TestVocabularyReads(unittest.TestCase):
             self.assertTrue(conn.in_transaction)
 
 
+class _ReadFixture(unittest.TestCase):
+    """TestVocabularyReads' database and helpers, without re-running its tests."""
+
+    setUp = TestVocabularyReads.setUp
+    tearDown = TestVocabularyReads.tearDown
+    save = TestVocabularyReads.save
+    read = TestVocabularyReads.read
+    add_unused = TestVocabularyReads.add_unused
+    all_tags = TestVocabularyReads.all_tags
+
+
+class TestVocabularyTagSearchAndSort(_ReadFixture):
+    """#444: tag search, tag sort and the untagged prompts count."""
+
+    def names(self, **options):
+        rows, after = [], None
+        while True:
+            page = self.read("list_vocabulary_tags", limit=2, after=after, **options)
+            rows.extend(row["name"] for row in page["tags"])
+            if not page["has_more"]:
+                return rows
+            after = page["next_key"]
+
+    def seed_counts(self):
+        self.save("One", tags=["beta", "Alpha"])
+        self.save("Two", tags=["beta", "gamma"])
+        self.save("Three", tags=["beta"])
+        self.add_unused("delta", "100%_off", "100x-off")
+
+    def test_search_is_a_case_insensitive_literal_substring(self):
+        self.seed_counts()
+        self.assertEqual(self.names(search="ALP"), ["Alpha"])
+        self.assertEqual(self.names(search="%"), ["100%_off"])
+        self.assertEqual(self.names(search="_"), ["100%_off"])
+        self.assertEqual(
+            self.names(search="  a  "), ["beta", "Alpha", "gamma", "delta"]
+        )
+        page = self.read("list_vocabulary_tags", search="a")
+        self.assertEqual(page["total"], 4)
+        self.assertEqual(self.read("list_vocabulary_tags", search="")["total"], 6)
+
+    def test_each_sort_orders_rows_and_continues_without_gaps(self):
+        self.seed_counts()
+        self.assertEqual(
+            self.names(), ["beta", "Alpha", "gamma", "delta", "100%_off", "100x-off"]
+        )
+        self.assertEqual(self.names(sort="created"), self.names())
+        self.assertEqual(
+            self.names(sort="name"),
+            ["100%_off", "100x-off", "Alpha", "beta", "delta", "gamma"],
+        )
+        self.assertEqual(
+            self.names(sort="name-desc"),
+            ["gamma", "delta", "beta", "Alpha", "100x-off", "100%_off"],
+        )
+        # Ties keep creation order: Alpha and gamma (1), then the unused tags (0).
+        self.assertEqual(
+            self.names(sort="prompts"),
+            ["beta", "Alpha", "gamma", "delta", "100%_off", "100x-off"],
+        )
+        self.assertEqual(
+            self.names(sort="prompts-asc"),
+            ["delta", "100%_off", "100x-off", "Alpha", "gamma", "beta"],
+        )
+        self.assertEqual(
+            self.names(sort="name", search="a"), ["Alpha", "beta", "delta", "gamma"]
+        )
+
+    def test_count_sort_uses_the_row_counts(self):
+        self.save("Parent", tags=["direct"])
+        self.db.save_prompt_pair("Owner", "Noise", tags=["pair"])
+        self.db.save_prompt_pair("Owner two", "Noise two", tags=["pair"])
+        archived = self.db.save_prompt_pair("Gone", "Gone noise", tags=["archived"])
+        self.db.archive_prompt_pair(archived)
+        page = self.read("list_vocabulary_tags", sort="prompts")
+        self.assertEqual(
+            [(row["name"], row["prompt_count"]) for row in page["tags"]],
+            [("pair", 2), ("direct", 1), ("archived", 0)],
+        )
+
+    def test_invalid_search_sort_and_keys_are_refused(self):
+        self.seed_counts()
+        for options in (
+            {"sort": "count"},
+            {"sort": None},
+            {"search": "x" * 201},
+            {"search": 3},
+            {"sort": "name", "after": 3},
+            {"sort": "name", "after": ["a"]},
+            {"sort": "prompts", "after": ["a", 1]},
+            {"sort": "created", "after": ["a", 1]},
+        ):
+            with self.assertRaises(ValueError, msg=options):
+                self.read("list_vocabulary_tags", **options)
+
+    def test_untagged_count_is_every_parent_no_tag_browse_returns(self):
+        self.save("Plain")
+        self.save("Tagged", tags=["t"])
+        self.db.save_prompt_pair("Pair tagged", "Noise", tags=["p"])
+        self.db.save_prompt_pair("Pair plain", "Noise plain")
+        archived = self.db.save_prompt_pair("Archived tag", "Old", tags=["old"])
+        self.db.archive_prompt_pair(archived)
+        self.add_unused("unused")
+        page = self.read("list_vocabulary_tags", search="zzz")
+        untagged = self.db.list_library(tag_mode="untagged")
+        self.assertEqual(
+            sorted(item["text"] for item in untagged["items"]),
+            ["Archived tag", "Pair plain", "Plain"],
+        )
+        self.assertEqual(page["untagged_count"], untagged["total"])
+        self.assertEqual(page["untagged_count"], 3)
+        tagged = set()
+        for row in self.all_tags():
+            tagged |= {
+                item["id"] for item in self.db.list_library(tags=[row["name"]])["items"]
+            }
+        everyone = {item["id"] for item in self.db.list_library()["items"]}
+        self.assertEqual({item["id"] for item in untagged["items"]}, everyone - tagged)
+
+
+class TestLibraryTagMode(_ReadFixture):
+    def test_untagged_mode_combines_with_text_and_category(self):
+        self.save("Red plain", category="Colors")
+        self.save("Blue plain")
+        self.save("Red tagged", category="Colors", tags=["red"])
+        self.assertEqual(
+            [
+                i["text"]
+                for i in self.db.list_library(text="red", tag_mode="untagged")["items"]
+            ],
+            ["Red plain"],
+        )
+        self.assertEqual(
+            [
+                i["text"]
+                for i in self.db.list_library(category="Colors", tag_mode="untagged")[
+                    "items"
+                ]
+            ],
+            ["Red plain"],
+        )
+        self.assertEqual(
+            self.db.list_library(tag_mode="all")["total"],
+            self.db.list_library()["total"],
+        )
+
+    def test_untagged_mode_refuses_tags_and_unknown_modes(self):
+        for options in (
+            {"tag_mode": "untagged", "tags": ["x"]},
+            {"tag_mode": "none"},
+            {"tag_mode": None},
+        ):
+            with self.assertRaises(ValueError, msg=options):
+                self.db.list_library(**options)
+
+
 _TAG_TABLES = ('"tags"', '"prompt_tags"', '"prompt_pair_tags"', '"sqlite_sequence"')
 
 

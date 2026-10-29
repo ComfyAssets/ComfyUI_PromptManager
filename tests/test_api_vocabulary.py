@@ -35,7 +35,17 @@ class TestVocabularyAPI(ImageAPITestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(
             set(first),
-            {"success", "library_epoch", "tags", "total", "has_more", "next_cursor"},
+            {
+                "success",
+                "library_epoch",
+                "tags",
+                "total",
+                "untagged_count",
+                "search",
+                "sort",
+                "has_more",
+                "next_cursor",
+            },
         )
         self.assertEqual(first["library_epoch"], epoch)
         self.assertEqual(first["total"], 3)
@@ -110,6 +120,41 @@ class TestVocabularyAPI(ImageAPITestCase):
         self.assertNotEqual(fresh["library_epoch"], tags["library_epoch"])
         response, _ = await self.get("tags", limit=1, cursor=fresh["next_cursor"])
         self.assertEqual(response.status, 200)
+
+    async def test_tag_search_and_sort_page_with_scoped_cursors(self):
+        self._save_prompt("One", tags=["beta", "alpha"])
+        self._save_prompt("Two", tags=["beta"])
+        self._save_prompt("Plain")
+        self.add_unused("gamma")
+        _, first = await self.get("tags", limit=1, sort="name", search="A")
+        self.assertEqual([row["name"] for row in first["tags"]], ["alpha"])
+        self.assertEqual(first["total"], 3)
+        self.assertEqual(first["untagged_count"], 1)
+        self.assertEqual((first["search"], first["sort"]), ("A", "name"))
+        _, second = await self.get(
+            "tags", limit=1, sort="name", search="A", cursor=first["next_cursor"]
+        )
+        self.assertEqual([row["name"] for row in second["tags"]], ["beta"])
+        _, ranked = await self.get("tags", sort="prompts")
+        self.assertEqual(
+            [(row["name"], row["prompt_count"]) for row in ranked["tags"]],
+            [("beta", 2), ("alpha", 1), ("gamma", 0)],
+        )
+        # A cursor belongs to one search and one sort.
+        for params in (
+            {"sort": "name-desc", "search": "A"},
+            {"sort": "name", "search": "B"},
+            {"sort": "created", "search": "A"},
+        ):
+            response, result = await self.get(
+                "tags", limit=1, cursor=first["next_cursor"], **params
+            )
+            self.assertEqual(response.status, 400, params)
+            self.assertIn("refresh", result["error"])
+        for params in ({"sort": "count"}, {"search": "x" * 201}):
+            response, result = await self.get("tags", **params)
+            self.assertEqual(response.status, 400, params)
+            self.assertEqual(result["success"], False)
 
     async def test_read_failures_keep_the_read_envelope(self):
         with patch.object(

@@ -3,7 +3,7 @@ import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
 import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
-import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog} from './vocabulary-canonical-comparison.mjs';
+import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog,d149Of,toolbarInventoryOf} from './vocabulary-canonical-comparison.mjs';
 
 const route='/prompt_manager/workspace#/tags';
 // Prompts per concept tag (app.js:71-165): first appearance order, Library Browse counts.
@@ -761,6 +761,15 @@ async function openProductionTags(page,theme,motion) {
     await expect(rows(page)).toHaveCount(manifest.tags.length);await expect(categoryRow(page,'Landscapes')).toHaveCount(1);
 }
 const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf);
+/** D149 donor: the concept's own page toolbar (Prompt library), whose search field and select the tag search reuses. */
+async function conceptToolbar(page,theme) {
+    await page.goto('about:blank');await page.goto(`${concept}#library`);
+    await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+    const inventory=await page.locator('#main search.toolbar').evaluate(toolbarInventoryOf);
+    await page.goto('about:blank');await page.goto(`${concept}#tags`);await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+    return inventory;
+}
+const tagToolbar=page=>page.locator('#workspace-main .two-col > section.surface:first-child > search.toolbar').evaluate(toolbarInventoryOf);
 /** Breadcrumb, document title (D7: "Tags", only the concept suffix differs) and the keyboard focus ring on a row action. */
 async function chromeOf(page,production) {
     const scope=page.locator(production?'#workspace-main':'#main');
@@ -780,7 +789,7 @@ async function chromeOf(page,production) {
 }
 /** Concept rows are the concept's own sample tags; production appends the fixture-only tags after them (D4 creation order). */
 function comparePage(reference,actual) {
-    const expected=mapVocabularyConcept(reference);
+    const expected=mapVocabularyConcept(reference,{},d149Of(actual));
     const shared=expected.table.rows.length;
     return {diff:diffInventory(expected,{...actual,table:{...actual.table,rows:actual.table.rows.slice(0,shared)}}),
         extra:actual.table.rows.slice(shared).map(row=>row.tag)};
@@ -793,13 +802,18 @@ for(const [width,height] of SIZES)for(const theme of ['dark','light'])test(`tags
         await openConceptTags(page,theme,motion);const reference=await pageOf(page,false);
         if(motion==='no-preference')await captureCanonicalState(page,testInfo,`concept-tags-${width}-${theme}`,'#main');
         const referenceChrome=await chromeOf(page,false);
+        const referenceTools=await conceptToolbar(page,theme);
         await openProductionTags(page,theme,motion);const actual=await pageOf(page,true);
+        const actualTools=await tagToolbar(page);
         if(motion==='no-preference')await captureCanonicalState(page,testInfo,`production-tags-${width}-${theme}`,'#workspace-main');
-        result[motion]={reference,actual,...comparePage(reference,actual),referenceChrome,actualChrome:await chromeOf(page,true)};
+        result[motion]={reference,actual,...comparePage(reference,actual),referenceChrome,actualChrome:await chromeOf(page,true),
+            toolbarDiff:diffInventory(referenceTools,actualTools)};
     }
     const path=testInfo.outputPath('tags-geometry.json');await writeFile(path,JSON.stringify(result,null,2));
     await testInfo.attach('tags-geometry',{path,contentType:'application/json'});
-    for(const [motion,{reference,diff,extra,referenceChrome,actualChrome}] of Object.entries(result)) {
+    for(const [motion,{reference,diff,extra,referenceChrome,actualChrome,toolbarDiff}] of Object.entries(result)) {
+        // D149 (#444): the tag search and sort carry the concept page toolbar's tokens.
+        expect.soft(toolbarDiff,`${motion} tag search and sort against the concept toolbar`).toEqual([]);
         expect.soft(referenceChrome,`${motion} concept chrome`).toMatchObject({breadcrumb:'Tags',title:'Tags',ring:{visible:true},linkRing:{outlineOffset:'3px'}});
         expect.soft(actualChrome,`${motion} breadcrumb, title and focus ring`).toEqual(referenceChrome);
         expect.soft(reference.heading.actions.buttons.map(item=>item.text),`${motion} concept heading actions`).toEqual(['+ Create tag','Auto-tag images']);
@@ -869,6 +883,13 @@ test('mutation check: the comparison reports a changed surface padding and a cha
     expect(paths).toContain('surfaces.1.paddingLeft');
     expect(paths).toContain('table.rows.0.actions.0');
     expect(paths).toContain('table.rowActions.buttons.0.text');
+    // D149: a moved Untagged prompts row and a restyled tag search are reported too.
+    await page.addStyleTag({content:'.vocabulary-main .surface > .operation{margin-top:6px!important}.vocabulary-tools .search-field{border-radius:9px!important}'});
+    const moved=comparePage(reference,await pageOf(page,true)).diff.map(item=>item.path);
+    expect(moved).toContain('d149.offset');
+    const tools=await conceptToolbar(page,'dark');await openProductionTags(page,'dark','no-preference');
+    await page.addStyleTag({content:'.vocabulary-tools .search-field{border-radius:9px!important}'});
+    expect(diffInventory(tools,await tagToolbar(page)).map(item=>item.path)).toContain('field.borderTopLeftRadius');
     // The dialog comparison is not vacuous either: a removed Cancel and a recolored field are reported.
     const donors=await conceptDonors(page,'dark');
     await openConceptTags(page,'dark','no-preference');await conceptDialogs.create(page);
