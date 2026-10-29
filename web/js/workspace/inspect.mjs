@@ -1,6 +1,6 @@
 // The concept's "Inspect a file" page (docs/concepts/workspace/app.js renderMetadata 740–748, selection 1715–1729):
-// one local file, chosen or dropped, previews inline; the heading's one action opens the shared viewer with the full
-// inspector on a record read entirely in this browser. Nothing is uploaded, imported or stored. The selection, its
+// one local file, chosen or dropped, previews inline and (D155, #448) opens the shared viewer with its details showing
+// at once; the heading's one action opens it again. The record is read entirely in this browser. Nothing is uploaded, imported or stored. The selection, its
 // blob: URL and its record belong to one local session (local-session.mjs) that ends with this page.
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { pageHeading } from './heading.mjs';
@@ -17,7 +17,8 @@ export const INSPECT_COPY = Object.freeze({
     heading: 'Inspect without importing',
     intro: 'Read embedded metadata in this browser. The file is not uploaded or added to your library.',
     chooser: 'Choose an image or video for a local preview',
-    note: 'Your file stays in this browser. Its metadata opens with “Open file metadata”.',
+    // D155 (#448): choosing a file opens its metadata (D61's note named the heading action).
+    note: 'Your file stays in this browser. Choosing it opens its metadata.',
     toast: 'Local preview only. No file uploaded; metadata is available above.',
 });
 // D62: the concept's image list plus the videos the local readers support (AVI/WMV preview only).
@@ -38,8 +39,11 @@ function element(tag, className, text) {
     return node;
 }
 
-// The status shown for the selection; AVI/WMV's note and an empty status keep the toast's "metadata is available".
-const TOASTABLE = new Set(['', LOCAL_SESSION_MESSAGES.containerOnly]);
+// D155 (#448): a selection with no status, or one without a preview URL (its copy points at the viewer), opens the viewer
+// at once. AVI/WMV's note keeps the toast instead (the viewer could not play it and reads no metadata), and an
+// unreadable file stays on the page with its alert; the heading action opens either.
+const AUTO_OPEN = new Set(['', LOCAL_SESSION_MESSAGES.previewFailed]);
+const TOASTABLE = new Set([LOCAL_SESSION_MESSAGES.containerOnly]);
 // How long a replaced video still starting may stay in place before it is released anyway.
 const STARTING_VIDEO_MS = 15000;
 
@@ -131,9 +135,10 @@ export function mountInspect(main, { parentScope, api, sender }) {
     };
     const session = createLocalSession({ parentScope: sessionScope, pageTarget: null, revokeObjectURL });
     const viewer = createMediaViewer({ api, container: main, parentScope: scope, inspectionController: session.controller, sender,
-        adapter: localFileAdapter, onRestoreFocus: () => { if (open.isConnected) open.focus({ preventScroll: true }); } });
+        adapter: localFileAdapter, onRestoreFocus: () => { if (open.isConnected) open.focus({ preventScroll: true }); },
+        onClose: () => { viewerKey = null; } });
 
-    let media = null, mediaUrl = null, statusLine = null, rejectionLine = null, rejectionTimer = 0, announced = null, chosen = null;
+    let viewerKey = null, media = null, mediaUrl = null, statusLine = null, rejectionLine = null, rejectionTimer = 0, announced = null, chosen = null;
     function statusElement(message) {
         // /* D63 */ one status line for the states the mock never shows.
         const line = element('p', 'small spaced-16', message);
@@ -202,14 +207,25 @@ export function mountInspect(main, { parentScope, api, sender }) {
         else preview.prepend(node);
     }
     scope.cleanup(session.subscribe(state => {
+        // D155: a new selection can start while the viewer shows the previous one; it closes first, so no element holds
+        // the old URL when the session revokes it (the new file's viewer opens once it is ready).
+        if (viewerKey !== null && (state.phase !== 'ready' || session.entry?.key !== viewerKey)) { viewer.close(); viewerKey = null; }
         showMedia(state);
         showStatus(state.message);
         const entry = session.entry;
         setAvailable(state.phase === 'ready' && !!entry);
         if (state.phase === 'ready' && entry && announced !== entry.key) {
             announced = entry.key;
+            // The session selects the record right after it publishes `ready`, so the viewer opens after that, and only
+            // while this selection is still the current one and no other dialog is open (the viewer is replaced). D62:
+            // a video opens it once the inline preview has settled, so a replacement while it starts never tears down a
+            // second starting video in the viewer (that deadlocked WebKit).
+            if (AUTO_OPEN.has(state.message)) whenSettled(media, () => {
+                if (scope.signal.aborted || session.entry !== entry || session.state.phase !== 'ready' || document.querySelector('dialog[open]:not(#viewer-dialog)')) return;
+                openViewer(input);
+            });
             // An unreadable or failed preview says so in its alert; the toast never claims metadata is available.
-            if (TOASTABLE.has(state.message)) showWorkspaceToast(INSPECT_COPY.toast);
+            else if (TOASTABLE.has(state.message)) showWorkspaceToast(INSPECT_COPY.toast);
         }
     }));
     // A replacement or page leave revokes the URL after this subscriber dropped the media; a dispose closes the
@@ -261,10 +277,25 @@ export function mountInspect(main, { parentScope, api, sender }) {
     });
     // A drop that misses the area never navigates away from the page while it is mounted.
     for (const type of ['dragover', 'drop']) scope.listen(window, type, event => event.preventDefault());
-    scope.listen(open, 'click', () => {
+    /** Runs `run` after this task, or once `preview`'s video stops starting (metadata, an error, or the D62 limit). */
+    function whenSettled(preview, run) {
+        if (!preview || !isStarting(preview.node)) { queueMicrotask(run); return; }
+        // `run` checks that the page and the selection are still current, so the page's end may call `done` too.
+        const settled = new AbortController();
+        const done = () => { settled.abort(); clearTimeout(timer); run(); };
+        const timer = setTimeout(done, STARTING_VIDEO_MS);
+        for (const type of ['loadedmetadata', 'error']) preview.node.addEventListener(type, done, { once: true, signal: settled.signal });
+        scope.cleanup(done);
+    }
+    /** The viewer on the current selection, details showing (D155 amends D97); focus returns to `trigger` on close. */
+    function openViewer(trigger) {
         const entry = session.entry;
-        if (open.getAttribute('aria-disabled') === 'true' || !entry || session.state.phase !== 'ready') return;
-        viewer.open({ items: [entry], selectedKey: entry.key, trigger: open });
+        if (!entry || session.state.phase !== 'ready') return;
+        viewer.open({ items: [entry], selectedKey: entry.key, trigger, details: 'shown' });
+        viewerKey = entry.key;
+    }
+    scope.listen(open, 'click', () => {
+        if (open.getAttribute('aria-disabled') !== 'true') openViewer(open);
     });
     /** Settles when no video on the page is still starting; `null` when none is. */
     function leaveGuard() {

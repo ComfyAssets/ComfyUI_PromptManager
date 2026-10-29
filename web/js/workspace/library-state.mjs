@@ -11,7 +11,7 @@ function parameters(filters,limit) {
     if(filters.tags!==undefined && (!Array.isArray(filters.tags) || filters.tags.some(tag=>typeof tag!=='string'))) throw new TypeError('Invalid library tags');
     for(const tag of filters.tags || []) if(tag.trim()) query.append('tag',tag.trim());
     const sort=filters.sort || 'newest';
-    if(!['newest','oldest','name','rating'].includes(sort)) throw new TypeError('Invalid library sort');
+    if(!['newest','oldest','name'].includes(sort)) throw new TypeError('Invalid library sort');
     query.set('sort',sort);return query;
 }
 // `variant_total` is the filtered parents' active negative variants (the concept caption's "M negative variants").

@@ -64,12 +64,15 @@ test("infinite scrolling is off by default and must be a boolean", () => {
 
 test("the workspace keys have their own defaults and validation", () => {
     const { WORKSPACE_LAYOUTS, WORKSPACE_DENSITIES } = require("../../web/js/gallery-settings.js");
-    assert.equal(DEFAULT_SETTINGS.workspaceLayout, "grid");
+    // #451: Images opens in Masonry unless the browser chose otherwise.
+    assert.equal(DEFAULT_SETTINGS.workspaceLayout, "masonry");
     assert.equal(DEFAULT_SETTINGS.workspaceDensity, "comfortable");
     assert.deepEqual(WORKSPACE_LAYOUTS, ["grid", "list", "masonry"]);
     assert.deepEqual(WORKSPACE_DENSITIES, ["comfortable", "large", "compact"]);
     assert.equal(normalizeGallerySettings({ workspaceLayout: "masonry" }).workspaceLayout, "masonry");
-    assert.equal(normalizeGallerySettings({ workspaceLayout: "mosaic" }).workspaceLayout, "grid");
+    assert.equal(normalizeGallerySettings({ workspaceLayout: "grid" }).workspaceLayout, "grid");
+    assert.equal(normalizeGallerySettings({ workspaceLayout: "mosaic" }).workspaceLayout, "masonry");
+    assert.equal(normalizeGallerySettings(null).workspaceLayout, "masonry");
     assert.equal(normalizeGallerySettings({ workspaceDensity: "large" }).workspaceDensity, "large");
     assert.equal(normalizeGallerySettings({ workspaceDensity: 3 }).workspaceDensity, "comfortable");
     // The legacy gallery's own view mode is separate: it has no masonry.

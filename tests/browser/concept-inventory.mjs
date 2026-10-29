@@ -118,9 +118,27 @@ export async function openConcept(page,route,theme,motion='no-preference') {
     await expect(page.locator('#main #page-title')).toBeVisible();
 }
 
+/**
+ * D157 (#451): production opens Images in Masonry when the browser has no Default layout; the concept starts at Grid.
+ * A comparison (and a test of the Grid's own geometry) starts production from the concept's state, a stored Default
+ * layout of Grid, once per tab and only while this browser stored nothing (a test's own settings win).
+ */
+export async function startInGrid(page) {
+    if (page.conceptLayoutSeeded) return;
+    page.conceptLayoutSeeded = true;
+    await page.addInitScript(() => {
+        try {
+            if (!location.pathname.startsWith('/prompt_manager/') || sessionStorage.getItem('pm-d157-seeded')) return;
+            sessionStorage.setItem('pm-d157-seeded', '1');
+            if (localStorage.getItem('gallerySettings') === null) localStorage.setItem('gallerySettings', JSON.stringify({ workspaceLayout: 'grid' }));
+        } catch { /* A page without storage keeps the production default. */ }
+    });
+}
+
 /** Production at `#/<route>` with the D4 Theme select, once the sidebar's real counts (D27) have settled. */
 export async function openProduction(page,route,theme,motion='no-preference') {
     await page.emulateMedia({reducedMotion:motion});
+    await startInGrid(page);
     await page.goto('about:blank');await page.goto(`${PRODUCTION_URL}#/${route}`);
     await selectTheme(page,theme);
     await expect(page.locator('#workspace-main #page-title')).toBeVisible();

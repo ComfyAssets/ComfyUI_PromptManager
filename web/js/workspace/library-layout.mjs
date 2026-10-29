@@ -60,9 +60,3 @@ export function usedLabel(lastUsedAt, now = new Date()) {
     const year = used.getFullYear() === now.getFullYear() ? '' : `, ${used.getFullYear()}`;
     return `Used ${MONTHS[used.getMonth()]} ${used.getDate()}${year}`;
 }
-
-/** The concept's stars (`★` × rating) with their visually hidden reading; an unrated parent shows neither. */
-export function ratingLabel(rating) {
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return {stars: '', hidden: ''};
-    return {stars: '★'.repeat(rating), hidden: `Rated ${rating} out of 5`};
-}

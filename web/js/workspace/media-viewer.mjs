@@ -39,7 +39,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
     function open(options) {
         if (scope.signal.aborted) return;
         active?.close(false);
-        const {items,selectedKey,trigger = document.activeElement} = options;
+        const {items,selectedKey,trigger = document.activeElement,details:detailsMode} = options;
         let mounted = false, initial, entry, currentKey, viewer = null, withoutViewer = false, mediaScope = null, closed = false;
         let originalDownload = null, inspectionState = inspectionController.state, collectionChanges = null;
         const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
@@ -79,11 +79,12 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
         const next = button('Next media','Next →',() => session.navigate(1));
-        // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle.
-        const collapsed = displayPreferences()?.sidebarCollapsedByDefault === true;
+        // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle. D155
+        // (#448): `details: 'shown'` (Inspect a file) keeps the toggle but opens with the details showing.
+        const collapsible = displayPreferences()?.sidebarCollapsedByDefault === true, collapsed = collapsible && detailsMode !== 'shown';
         let detailsToggle = null;
-        if (collapsed) {
-            detailsToggle = createButton('Show details');detailsToggle.setAttribute('aria-expanded','false');
+        if (collapsible) {
+            detailsToggle = createButton(collapsed ? 'Show details' : 'Hide details');detailsToggle.setAttribute('aria-expanded',String(!collapsed));
             detailsToggle.setAttribute('aria-controls','viewer-details');controls.append(detailsToggle);
         }
         const position = element('p','media-position muted');position.id = `media-viewer-position-${++viewerId}`;
@@ -93,7 +94,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         controls.append(position,reason,slideshowReason);left.append(stage,controls);
         const details = element('aside');details.id = 'viewer-details';details.setAttribute('aria-label','Image metadata');
         if (detailsToggle) {
-            details.hidden = true;
+            details.hidden = collapsed;
             local.listen(detailsToggle,'click',() => {
                 details.hidden = !details.hidden;
                 detailsToggle.textContent = details.hidden ? 'Show details' : 'Hide details';
