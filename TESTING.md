@@ -2700,7 +2700,7 @@ failed backup, busy, unconfirmed, restore fence); `tests/browser/library-delete-
 
 ### Deleting a prompt in a saved pair permanently (#482)
 
-**D154** (beyond legacy, maintainer ruling 2026-10-29; follow-up to D152): when the Delete… selection
+**D160** (beyond legacy, maintainer ruling 2026-10-29; follow-up to D152): when the Delete… selection
 holds prompts in a saved pair that no other positive uses as its negative ("deletable"), the review
 asks, in a D90 radio row "Prompts in a saved pair" after the grid: **Archive (hidden, restorable)**
 (checked on every open, never remembered, so the review is D152's) or **Delete permanently, with
