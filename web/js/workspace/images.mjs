@@ -61,8 +61,9 @@ function selectOf(id, options, value) {
     return select;
 }
 
-// The concept's three sorts first, then the production ones it lacks (D14); values are the listing's sorts (B3).
-const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated'],
+// The concept's sorts first, then the production ones it lacks (D14); values are the listing's sorts (B3). D153 (#447)
+// drops the concept's "Highest rated".
+const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'],
     ['oldest', 'Oldest first'], ['name-desc', 'Name Z–A']]);
 const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
 const RETRY_RESCAN = 'Rescan from Import to retry.';

@@ -211,11 +211,12 @@ test('custom collection pages reuse image-stream cancellation, cursors and ident
     assert.throws(()=>createImageStream({api:{get:async()=>{}},fetchPage:'invalid'}),/page/i);
 });
 
-test('stream sends category, tags and the rating sort and validates them', async () => {
+test('stream sends category, tags and the sort and validates them; the rating sort is gone (D153)', async () => {
     const {createImageStream}=await source;const calls=[];
     const stream=createImageStream({api:{get:async url=>{calls.push(new URL(url,'http://local').searchParams);return page([]);}}});
-    await stream.reset({q:'cat',category:'Animals',tags:['cats','studio'],sort:'rating'});
-    assert.equal(calls[0].get('category'),'Animals');assert.equal(calls[0].get('tags'),'cats,studio');assert.equal(calls[0].get('sort'),'rating');
+    await stream.reset({q:'cat',category:'Animals',tags:['cats','studio'],sort:'name-desc'});
+    assert.equal(calls[0].get('category'),'Animals');assert.equal(calls[0].get('tags'),'cats,studio');assert.equal(calls[0].get('sort'),'name-desc');
+    await assert.rejects(stream.reset({sort:'rating'}),/sort/i);
     await stream.reset({category:'',tags:[]});
     assert.equal(calls[1].has('category'),false);assert.equal(calls[1].has('tags'),false);
     for(const filters of [{category:3},{tags:'cats'},{tags:[1]},{tags:['a,b']},{tags:['']}]) await assert.rejects(stream.reset(filters),/filter/i);
@@ -277,7 +278,7 @@ test('the caption date names the newest result day under Newest first only', asy
     assert.equal(captionDate([at(2026,9,10),at(2026,9,16,23)],'oldest',now),'');
     assert.equal(captionDate([at(2026,9,13)],'newest',now),'Tuesday · October 13');
     assert.equal(captionDate([at(2025,2,3)],'newest',now),'Monday · March 3, 2025');
-    for(const sort of ['name','name-desc','rating']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');
+    for(const sort of ['name','name-desc']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');
     assert.equal(captionDate([],'newest',now),'');
     assert.equal(captionDate([{modified_time:'bad'}],'newest',now),'');
 });

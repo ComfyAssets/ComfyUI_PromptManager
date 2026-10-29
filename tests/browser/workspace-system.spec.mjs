@@ -79,7 +79,7 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     expect(await rowsOf(layout, 'Workspace preferences')).toEqual([
         ['One display configuration', 'Grid and density settings are shared across views.', 'Appearance'],
         ['2 output sources', 'Monitoring and enrichment share one source list.', 'Manage sources'],
-        ['Statistics', 'Runs and ratings by category, with library totals.', 'Explore'],
+        ['Statistics', 'Runs by category, with library totals.', 'Explore'],
     ]);
     expect(writes).toEqual([]);
 });
@@ -373,13 +373,12 @@ test('statistics dialog lists runs by category and library totals', async ({ pag
     await expect(dialog.locator('#modal-title')).toHaveText('Usage statistics');
     const tables = dialog.locator('#modal-body > table');
     await expect(tables.locator('caption')).toHaveText(['Runs by category', 'Library totals']);
-    await expect(tables.first().locator('thead th')).toHaveText(['Category', 'Runs', 'Avg. rating']);
+    // D153 (#447): no rating column and no rated-images total.
+    await expect(tables.first().locator('thead th')).toHaveText(['Category', 'Runs']);
     const cells = table => table.locator('tbody tr').evaluateAll(rows => rows.map(row => [...row.cells].map(cell => cell.textContent)));
-    expect(await cells(tables.first())).toEqual(statistics.by_category.map(row => [row.category ?? 'Uncategorized',
-        number(row.runs), row.average_rating === null ? 'Not rated' : `${number(row.average_rating)} / 5`]));
+    expect(await cells(tables.first())).toEqual(statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]));
     expect(await cells(tables.nth(1))).toEqual([['Prompts', number(statistics.totals.total_prompts)],
-        ['Tags', number(statistics.totals.total_tags)], ['Images', number(statistics.totals.total_images)],
-        ['Rated images', number(statistics.rated_images)]]);
+        ['Tags', number(statistics.totals.total_tags)], ['Images', number(statistics.totals.total_images)]]);
     await page.keyboard.press('Escape');
     await expect(explore).toBeFocused();
     // A statistics read that fails says so; the Overview stays.
