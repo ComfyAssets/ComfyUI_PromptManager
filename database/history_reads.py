@@ -15,6 +15,11 @@ from .execution_history import HistoryEpochChanged
 from .execution_outputs import _capture, _REFERENCE_COLUMNS
 from .library import _ELIGIBLE
 
+try:
+    from ..utils.hashing import stored_prompt_text, stored_prompt_text_sql
+except ImportError:
+    from utils.hashing import stored_prompt_text, stored_prompt_text_sql
+
 RunKey = tuple[int, str, int, str]
 
 
@@ -100,12 +105,41 @@ _ORDER = (
 )
 # Stale-hint rows a newest-pair lookup inspects before it reports none.
 _PAIR_RUN_CANDIDATES = 16
+# The recorded texts of one scope, as a JSON array parameter (_scope_text_ids).
+_IN_SCOPE = "IN (SELECT value FROM json_each(?))"
 _MATCHING = (
     "SELECT DISTINCT rc.run_id FROM execution_prompt_snapshots s "
     "JOIN execution_contexts c ON c.positive_snapshot_id=s.snapshot_id "
     "JOIN execution_run_contexts rc ON rc.context_id=c.context_id "
-    "WHERE s.raw_text_id=?"
+    f"WHERE s.raw_text_id {_IN_SCOPE}"
 )
+
+
+def _scope_text_ids(conn: sqlite3.Connection, scope: str) -> str:
+    """Every recorded raw text whose stored form is ``scope``, as a JSON array.
+
+    The Library stores ``text.strip()`` while a run keeps its exact raw text,
+    so a raw text joins the scope of the prompt it saves (#438). The values
+    are compared, never only their digests.
+    """
+    return json.dumps(
+        [
+            row[0]
+            for row in conn.execute(
+                # Only snapshot raw texts: effective and affix texts are skipped
+                "SELECT t.text_id FROM (SELECT DISTINCT raw_text_id AS text_id "
+                "FROM execution_prompt_snapshots) s CROSS JOIN "
+                "execution_context_texts t WHERE t.text_id=s.text_id AND "
+                f"{stored_prompt_text_sql('t.text_value')}=? COLLATE BINARY",
+                (scope,),
+            )
+        ]
+    )
+
+
+def _scope_text_id(raw: str | None) -> str | None:
+    """The scope digest of a raw text: that of the text the Library stores."""
+    return None if raw is None else content_digest("text", (stored_prompt_text(raw),))
 
 
 def _limit(limit: int) -> None:
@@ -255,7 +289,7 @@ class HistoryReadOperations:
         if saved is None:
             return None
         text = saved["text"]
-        raw_id = None if text is None else content_digest("text", (text,))
+        raw_id = _scope_text_id(text)
         if after is not None and after.raw_text_id != raw_id:
             raise ValueError("History position text scope changed")
         group = {
@@ -273,18 +307,11 @@ class HistoryReadOperations:
             next_position=None,
             resume_position=None,
         )
-        if (
-            raw_id is None
-            or conn.execute(
-                "SELECT 1 FROM execution_context_texts WHERE text_id=? "
-                "AND text_value=? COLLATE BINARY",
-                (raw_id, text),
-            ).fetchone()
-            is None
-        ):
+        if raw_id is None:
             return result
+        scope = _scope_text_ids(conn, stored_prompt_text(text))
         where = f"r.run_id IN ({_MATCHING})"
-        params = [raw_id]
+        params = [scope]
         if after is not None:
             where += f" AND {_KEY}<=(?,?,?,?)"
             params.extend(after.upper)
@@ -338,9 +365,9 @@ class HistoryReadOperations:
             "LEFT JOIN execution_prompt_snapshots n "
             "ON n.snapshot_id=c.negative_snapshot_id "
             "LEFT JOIN execution_context_texts t ON t.text_id=n.raw_text_id "
-            f"WHERE rc.run_id IN ({placeholders}) AND p.raw_text_id=? "
+            f"WHERE rc.run_id IN ({placeholders}) AND p.raw_text_id {_IN_SCOPE} "
             "ORDER BY rc.anchor_id COLLATE BINARY,rc.run_id COLLATE BINARY",
-            (*by_run, raw_id),
+            (*by_run, scope),
         )
         summaries = {}
         evidence_by_context = {}
@@ -438,6 +465,7 @@ class HistoryReadOperations:
         if saved["text"] is None:
             return {"run": None}
         epoch = self.get_execution_epoch()
+        stored = stored_prompt_text(saved["text"])
         candidates = conn.execute(
             "SELECT r.run_id,rc.anchor_id,rc.context_id,"
             "c.positive_snapshot_id,c.negative_snapshot_id "
@@ -445,10 +473,11 @@ class HistoryReadOperations:
             "ON rc.run_id=r.run_id JOIN execution_contexts c "
             "ON c.context_id=rc.context_id JOIN execution_prompt_snapshots s "
             "ON s.snapshot_id=c.positive_snapshot_id "
-            "WHERE s.raw_text_id=? AND rc.pair_id=? AND rc.reference_epoch=? "
+            f"WHERE s.raw_text_id {_IN_SCOPE} AND rc.pair_id=? "
+            "AND rc.reference_epoch=? "
             f"ORDER BY {_ORDER},rc.anchor_id COLLATE BINARY LIMIT ?",
             (
-                content_digest("text", (saved["text"],)),
+                _scope_text_ids(conn, stored),
                 pair_id,
                 epoch,
                 _PAIR_RUN_CANDIDATES,
@@ -457,7 +486,11 @@ class HistoryReadOperations:
         for row in candidates:
             positive = _values(conn, row["positive_snapshot_id"])
             negative = _values(conn, row["negative_snapshot_id"])
-            if positive is None or positive["raw"] != saved["text"]:
+            if (
+                positive is None
+                or positive["raw"] is None
+                or stored_prompt_text(positive["raw"]) != stored
+            ):
                 continue
             hints = _hints(conn, positive["raw"], negative["raw"] if negative else None)
             if hints[2] == pair_id:
@@ -477,11 +510,9 @@ class HistoryReadOperations:
         snapshots = {
             row["anchor_id"]: row
             for row in conn.execute(
-                "SELECT rc.anchor_id,c.positive_snapshot_id,c.negative_snapshot_id,"
-                "p.raw_text_id AS positive_raw_text_id "
+                "SELECT rc.anchor_id,c.positive_snapshot_id,c.negative_snapshot_id "
                 "FROM execution_run_contexts rc JOIN execution_contexts c "
-                "ON c.context_id=rc.context_id LEFT JOIN execution_prompt_snapshots p "
-                "ON p.snapshot_id=c.positive_snapshot_id WHERE rc.run_id=?",
+                "ON c.context_id=rc.context_id WHERE rc.run_id=?",
                 (run_id,),
             )
         }
@@ -491,12 +522,12 @@ class HistoryReadOperations:
             context.update(
                 {
                     key: row[key]
-                    for key in (
-                        "positive_snapshot_id",
-                        "negative_snapshot_id",
-                        "positive_raw_text_id",
-                    )
-                }
+                    for key in ("positive_snapshot_id", "negative_snapshot_id")
+                },
+                # The history scope this context belongs to (#438)
+                positive_raw_text_id=_scope_text_id(
+                    (context["positive"] or {}).get("raw")
+                ),
             )
             pair = context["pair_id"]
             context["navigation"] = {
