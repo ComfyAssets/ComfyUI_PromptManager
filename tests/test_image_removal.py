@@ -33,8 +33,13 @@ class _RemovalCase(unittest.TestCase):
         base = Path(self.temp.name)
         self.root = base / "output"
         self.root.mkdir()
+        # A second spelling of the folder (a symlink); Windows without the
+        # privilege has none, and the records then carry one spelling.
         self.alias = base / "alias"
-        self.alias.symlink_to(self.root, target_is_directory=True)
+        try:
+            self.alias.symlink_to(self.root, target_is_directory=True)
+        except OSError:
+            self.alias = None
         self.db = PromptDatabase(str(base / "prompts.db"))
         self.addCleanup(self.db.close_all)
         self.epoch = self.db.get_execution_epoch()
@@ -47,7 +52,8 @@ class _RemovalCase(unittest.TestCase):
     def removal(self, path):
         root_key = os.path.normcase(os.path.realpath(str(self.root)))
         return {
-            "spellings": [str(path), str(self.alias / path.name)],
+            "spellings": [str(path)]
+            + ([str(self.alias / path.name)] if self.alias else []),
             "locator": _locator(path),
             "favorites": [(root_key, path.name.lower())],
             "category": (root_key, path.name.lower()),
@@ -113,8 +119,8 @@ class ImageRemovalRecordsTests(_RemovalCase):
         orphan, _ = self.link(path, "only this image")
         shared, _ = self.link(path, "two images")
         self.db.link_image_to_prompt(str(shared), str(other))
-        # A record under the symlinked folder spelling.
-        self.link(path, "aliased", spelled=self.alias / "a.png")
+        # A record under the symlinked folder spelling (or a third prompt).
+        self.link(path, "aliased", spelled=(self.alias or self.root) / "a.png")
         removal = self.decorate(path)
         self.assertTrue(self.queue(path))
 

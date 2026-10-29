@@ -8,6 +8,7 @@ first (trash mode, the fake trash here). No path unlinks a media file.
 
 import asyncio
 import os
+import sys
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -257,8 +258,11 @@ class TestFileCheck(ImageDeleteTestCase):
         outside = Path(self.tmpdir) / "elsewhere"
         outside.mkdir()
         (outside / "x.png").write_bytes(b"x")
-        os.symlink(outside / "x.png", self.output_dir / "link.png")
-        os.symlink(outside, self.output_dir / "linked")
+        try:
+            os.symlink(outside / "x.png", self.output_dir / "link.png")
+            os.symlink(outside, self.output_dir / "linked", target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks are not permitted here")
         self.assertEqual(
             file_check(str(self.output_dir / "link.png"), root, "link.png")[0], "link"
         )
@@ -279,3 +283,24 @@ class TestFileCheck(ImageDeleteTestCase):
 
         for code in trash.CODES:
             self.assertIn(code, image_delete.REASONS)
+
+
+class TestNativeBackend(ImageDeleteTestCase):
+    """The real backend of this OS: Windows and macOS have no trash yet (#480)."""
+
+    async def test_library_only_works_and_the_trash_is_unavailable_here(self):
+        fake_trash.uninstall()
+        self.write("a.png", b"aaa")
+        self.link("a.png")
+        plan = await self.review(["a.png"])
+        native_trash = sys.platform not in ("win32", "darwin")
+        if not native_trash:
+            self.assertEqual(plan["trash"], {"count": 0})
+            self.assertEqual(plan["trash_refused"]["counts"], {"no-trash": 1})
+        body = await self.post(APPLY, {"token": plan["token"], "mode": "library"}, 202)
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)
+        self.assertEqual(job.counters["removed"], 1, job.summary())
+        self.assertTrue((self.output_dir / "a.png").exists())
+        self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 0)
+        self.assertEqual(await self.listed(), [])

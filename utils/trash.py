@@ -115,10 +115,12 @@ def _ismount_walk(path: str) -> str:
 
 
 def _libc_renameat2():
+    if os.name != "posix":
+        return None  # Windows: no libc, and no freedesktop backend
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         function = libc.renameat2
-    except (OSError, AttributeError):
+    except (OSError, AttributeError, TypeError):
         return None
     function.argtypes = [
         ctypes.c_int,
@@ -191,7 +193,9 @@ class FreedesktopBackend:
         self._data_home = data_home
         self._mounts = mounts or _proc_mounts
         self._rename = rename or rename_noreplace
-        self._uid = os.getuid() if uid is None else uid
+        if uid is None:
+            uid = os.getuid() if hasattr(os, "getuid") else -1
+        self._uid = uid
         self._now = now or datetime.datetime.now
 
     def _home_data(self) -> str:
