@@ -12,10 +12,21 @@ function parameters(filters,limit) {
     for(const tag of filters.tags || []) if(tag.trim()) query.append('tag',tag.trim());
     const sort=filters.sort || 'newest';
     if(!['newest','oldest','name','rating'].includes(sort)) throw new TypeError('Invalid library sort');
+    // #444: how Tags match (every tag or any of them) and the output folder below a root.
+    const tagMode=filters.tagMode ?? 'all',folder=filters.folder ?? '';
+    if(!LIBRARY_TAG_MODES.includes(tagMode)) throw new TypeError('Invalid library tag mode');
+    if(typeof folder!=='string' || folder.length>1024) throw new TypeError('Invalid library folder');
+    if(tagMode!=='all') query.set('tag_mode',tagMode);
+    if(folder) query.set('folder',folder);
     query.set('sort',sort);return query;
 }
+/** The Library's tag match values (#444); the first is the default, sent as no parameter. */
+export const LIBRARY_TAG_MODES=Object.freeze(['all','any']);
 // `variant_total` is the filtered parents' active negative variants (the concept caption's "M negative variants").
-function validatePage(page,cursor) {
+function validatePage(page,cursor,query) {
+    // A tag match or folder the server did not echo was not applied (an older server): never show the whole shelf as filtered.
+    if(query?.has('tag_mode') && page?.tag_mode!==query.get('tag_mode')) throw new TypeError('Unconfirmed library tag mode');
+    if(query?.has('folder') && page?.folder!==query.get('folder')) throw new TypeError('Unconfirmed library folder');
     if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || !Number.isSafeInteger(page.variant_total) || page.variant_total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
 }
 export function createLibraryStream({api,onChange=()=>{},restore}) {
@@ -37,7 +48,7 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
         try {
             const page=await api.get(`/prompt_manager/library?${params}`,{signal:current.signal});
             if(disposed || current!==request) return 0;
-            validatePage(page,cursor);const incoming=[];const added=new Set();
+            validatePage(page,cursor,query);const incoming=[];const added=new Set();
             for(const item of page.items) if(!seen.has(item.id) && !added.has(item.id)) {added.add(item.id);incoming.push(Object.freeze({...item}));}
             for(const value of added) seen.add(value);
             request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,total:page.total,variantTotal:page.variant_total,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;

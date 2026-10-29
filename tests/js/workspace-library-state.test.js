@@ -104,3 +104,17 @@ test('archived variant reads use their own scope and cursor without changing the
  const active=[];const plain=createLibraryDetail({api:{get:async url=>{active.push(url);return {positive:item(1),variants:[]};}},onChange:()=>{}});await plain.load(1);assert.equal(new URL(active[0],'https://x').searchParams.has('archive'),false);
  assert.throws(()=>createLibraryDetail({api:{},onChange:()=>{},archive:'parents'}));
 });
+test('tag mode any and a folder are sent, echoed and validated (#444)',async()=>{
+ const {createLibraryStream,LIBRARY_TAG_MODES}=await source;assert.deepEqual(LIBRARY_TAG_MODES,['all','any']);
+ const calls=[];const pending=[{...page([item(1)]),tag_mode:'any',folder:'2026/Aug'},{...page([item(2)]),tag_mode:'all',folder:''},page([item(3)]),{...page([item(4)]),tag_mode:'all'}];
+ const s=createLibraryStream({api:{get:async(url)=>{calls.push(new URL(url,'https://x').searchParams);return pending.shift();}}});
+ assert.equal(await s.reset({tags:['a','b'],tagMode:'any',folder:'2026/Aug'}),1);
+ assert.equal(calls[0].get('tag_mode'),'any');assert.equal(calls[0].get('folder'),'2026/Aug');assert.deepEqual(calls[0].getAll('tag'),['a','b']);
+ // An older server that ignored them answers without the echo: an error, never the unfiltered shelf.
+ assert.equal(await s.reset({tags:['a','b'],tagMode:'any',folder:'2026/Aug'}),0);assert.ok(s.state.error instanceof TypeError);
+ // The defaults send neither, so they need no echo.
+ assert.equal(await s.reset({tagMode:'all',folder:''}),1);assert.equal(calls[2].has('tag_mode'),false);assert.equal(calls[2].has('folder'),false);
+ assert.equal(await s.reset({folder:'x'}),0);assert.ok(s.state.error instanceof TypeError,'a folder without its echo is refused');
+ await assert.rejects(s.reset({tagMode:'or'}),TypeError);await assert.rejects(s.reset({folder:3}),TypeError);
+ assert.equal(calls.length,4);s.dispose();
+});

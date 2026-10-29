@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from .library_folders import folder_condition, list_library_folders
 from .library_tokens import library_edit_token
 
 _ELIGIBLE = """(EXISTS(SELECT 1 FROM prompt_pairs ep WHERE ep.positive_prompt_id=p.id)
@@ -121,7 +122,44 @@ def _archive(value: str) -> str:
     return ARCHIVE_SCOPES[value]
 
 
-def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list]:
+# How the Tags filter matches (#444): every tag (AND) or any of them (OR).
+TAG_MODES = ("all", "any")
+
+
+def _tag_mode(tag_mode: object) -> str:
+    if not isinstance(tag_mode, str) or tag_mode not in TAG_MODES:
+        raise ValueError("tag_mode must be one of " + ", ".join(TAG_MODES))
+    return tag_mode
+
+
+def _tag_conditions(tags: list[str], any_tag: bool) -> tuple[list, list, list]:
+    """Parent-arm and pair-arm tag conditions and the tags' parameters."""
+    parent_exists = (
+        "EXISTS(SELECT 1 FROM prompt_tags pt JOIN tags t ON t.id=pt.tag_id "
+        "WHERE pt.prompt_id=p.id AND t.name{test})"
+    )
+    pair_exists = (
+        "EXISTS(SELECT 1 FROM prompt_pair_tags pt JOIN tags t ON t.id=pt.tag_id "
+        "WHERE pt.pair_id=pp.id AND t.name{test})"
+    )
+    if any_tag and tags:
+        # One condition per arm: the card, or one active pair, carries any tag.
+        test = " IN (" + ",".join("?" for _ in tags) + ")"
+        return [parent_exists.format(test=test)], [pair_exists.format(test=test)], tags
+    return (
+        [parent_exists.format(test="=?") for _ in tags],
+        [pair_exists.format(test="=?") for _ in tags],
+        tags,
+    )
+
+
+def _filter(
+    text: str,
+    category: str | None,
+    tags: list[str],
+    tag_mode: str = "all",
+    folder_prefixes: list[str] | None = None,
+) -> tuple[str, list]:
     if not isinstance(text, str) or len(text) > 500:
         raise ValueError("Search text must be a string of at most 500 characters")
     if category is not None and (not isinstance(category, str) or len(category) > 200):
@@ -146,17 +184,13 @@ def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list
         pair.append("pp.category=?")
         parent_params.append(category)
         pair_params.append(category)
-    for tag in tags:
-        parent.append(
-            "EXISTS(SELECT 1 FROM prompt_tags pt JOIN tags t ON t.id=pt.tag_id "
-            "WHERE pt.prompt_id=p.id AND t.name=?)"
-        )
-        pair.append(
-            "EXISTS(SELECT 1 FROM prompt_pair_tags pt JOIN tags t ON t.id=pt.tag_id "
-            "WHERE pt.pair_id=pp.id AND t.name=?)"
-        )
-        parent_params.append(tag)
-        pair_params.append(tag)
+    parent_tags, pair_tags, tag_params = _tag_conditions(
+        tags, _tag_mode(tag_mode) == "any"
+    )
+    parent.extend(parent_tags)
+    pair.extend(pair_tags)
+    parent_params.extend(tag_params)
+    pair_params.extend(tag_params)
     condition = (
         "("
         + (" AND ".join(parent) or "1=1")
@@ -168,7 +202,13 @@ def _filter(text: str, category: str | None, tags: list[str]) -> tuple[str, list
         + " AND ".join(pair)
         + ")"
     )
-    return f"({_ELIGIBLE}) AND ({condition})", [*parent_params, *pair_params]
+    params = [*parent_params, *pair_params]
+    if folder_prefixes:
+        # A whole-card condition around both arms: images link to the parent.
+        folder, folder_params = folder_condition(folder_prefixes)
+        condition = f"({condition}) AND {folder}"
+        params.extend(folder_params)
+    return f"({_ELIGIBLE}) AND ({condition})", params
 
 
 class LibraryOperations:
@@ -251,6 +291,8 @@ class LibraryOperations:
         text: str = "",
         category: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "all",
+        folder_prefixes: list[str] | None = None,
         sort: str = "newest",
         limit: int = 40,
         after: dict | None = None,
@@ -258,7 +300,9 @@ class LibraryOperations:
         _limit(limit)
         if sort not in _ORDERS:
             raise ValueError("Unknown library sort order")
-        where, params = _filter(text, category, [] if tags is None else tags)
+        where, params = _filter(
+            text, category, [] if tags is None else tags, tag_mode, folder_prefixes
+        )
         if after is not None:
             if (
                 not isinstance(after, dict)
@@ -311,6 +355,8 @@ class LibraryOperations:
             "items": rows,
             "total": total,
             "variant_total": variant_total,
+            # Echoed so a client can tell this read applied its tag match.
+            "tag_mode": tag_mode,
             "has_more": has_more,
             "next_key": next_key,
         }
@@ -321,6 +367,8 @@ class LibraryOperations:
         text: str = "",
         category: str | None = None,
         tags: list[str] | None = None,
+        tag_mode: str = "all",
+        folder_prefixes: list[str] | None = None,
         sort: str = "newest",
         limit: int = 40,
         after: dict | None = None,
@@ -333,6 +381,8 @@ class LibraryOperations:
                 text=text,
                 category=category,
                 tags=tags,
+                tag_mode=tag_mode,
+                folder_prefixes=folder_prefixes,
                 sort=sort,
                 limit=limit,
                 after=after,
@@ -463,9 +513,13 @@ class LibraryOperations:
             "categories": [row["category"] for row in rows],
         }
 
-    def get_library_options(self) -> dict:
+    def get_library_options(self, folder_roots=None) -> dict:
+        """Categories; with *folder_roots* (root spellings) also ``folders``."""
         with self.library_snapshot() as (conn, epoch, _ceiling):
-            return self._get_library_options(conn, epoch)
+            result = self._get_library_options(conn, epoch)
+            if folder_roots is not None:
+                result["folders"] = list_library_folders(conn, folder_roots, _ELIGIBLE)
+            return result
 
     def get_library_previews(self, positive_ids: list[int]) -> dict[int, list[dict]]:
         """Read at most two links per parent in one bounded page query."""

@@ -2,7 +2,7 @@ import {createScope,createButton} from '../shared/toolkit/core.js';
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
-import {createLibraryStream,createLibraryDetail,libraryPromptRoles} from './library-state.mjs';
+import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_MODES} from './library-state.mjs';
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
@@ -30,6 +30,16 @@ const metadataDrafts=new Map();
 const archivedVisible=new Map();
 // The concept's three sorts first, then the Library's appended Oldest first (D14).
 const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+// Refine › Tag match (#444 D150), in LIBRARY_TAG_MODES order.
+const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['any','Any of these tags']]);
+/**
+ * Refine › Folder options (#444 D150): the concept's "All output folders" first, then each folder indented by its depth
+ * with its last segment as the label (the legacy admin select), and the current folder kept even when it is not listed.
+ */
+export function libraryFolderOptions(folders,current='') {
+    const listed=[...folders];if(current && !listed.includes(current)) listed.push(current);
+    return [['','All output folders'],...listed.map(folder=>{const parts=folder.split('/');return [folder,`${'\u00a0\u00a0'.repeat(parts.length-1)}${parts.at(-1)}`];})];
+}
 const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';
 const ARCHIVED_MESSAGE='Archived. Find it under Show archived in Negative variants.';
 function el(tag,text,className) {
@@ -80,9 +90,9 @@ export function onLibraryWrite(listener) {
  * with the existing Library filters, and the heading takes focus as after a save.
  */
 export function browseLibrary(filters) {
-    const {text='',category='',tags=[],sort='newest'}=filters || {};
-    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string') throw new TypeError('Invalid Library filters');
-    shelfVisit={filters:{text,category,tags:[...tags],sort},anchor:null};
+    const {text='',category='',tags=[],sort='newest',tagMode='all',folder=''}=filters || {};
+    if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string' || !LIBRARY_TAG_MODES.includes(tagMode) || typeof folder!=='string') throw new TypeError('Invalid Library filters');
+    shelfVisit={filters:{text,category,tags:[...tags],sort,tagMode,folder},anchor:null};
     focusHeadingOnMount=true;window.location.hash='#/library';
 }
 /** Remember the selection a reconciled save names, so the destination history opens on it once. */
@@ -155,13 +165,14 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const visit=saved?null:shelfVisit, mountedGeneration=writeGeneration;
         // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
         const restorable=visit?.state?visit:null;
-        const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters,...saved};
+        const filters={text:'',category:'',tags:[],sort:'newest',tagMode:'all',folder:'',...visit?.filters,...saved};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
         const toolbarScope=createScope();
-        // D44: Filters reads "Filters · 1" while a Tags filter (from Refine or a Browse) narrows the shelf.
-        const refinements=()=>filters.tags.length?1:0;
+        // D44: Filters reads "Filters · N" while Refine filters narrow the shelf: Tags, a Folder and a Tag match other
+        // than All (#444 D150) each count once.
+        const refinements=()=>(filters.tags.length?1:0)+(filters.folder?1:0)+(filters.tagMode!=='all'?1:0);
         const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
             value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters,
             onSaveView:trigger=>{const value=toolbar.value();onSaveView(trigger,libraryViewState({...filters,text:value.q.trim(),category:value.category,sort:value.sort}));}});
@@ -203,7 +214,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         // Nothing follows the grid in the concept; the legacy Library stays one click away on Overview (spec §5).
         continuation.append(message,retry,more);section.append(optionsStatus,exportStatus,caption,grid,continuation);main.append(section);
         const cards=new Map(), rowNodes=new Map(), spacers=new Map(), heights=new Map(), pendingMeasurements=new Map();
-        let state,frame=0,loadFrame=0,observer,optionsRequest,focusOverride=-1;
+        let state,frame=0,loadFrame=0,observer,optionsRequest,folderRequest,focusOverride=-1;
         const columns=()=>window.innerWidth>=1700?3:window.innerWidth<=700?1:2;
         const readInlineSize=()=>Math.round(grid.getBoundingClientRect().width*64)/64;
         let inlineSize=readInlineSize(), columnCount=columns(), layout={rows:[],height:0}, dirty=true, items, indexesById=new Map();
@@ -402,15 +413,25 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             if(Object.entries(next).every(([key,item])=>filters[key]===item)) return;
             Object.assign(filters,next);reset();
         }
-        /** "Refine this view" with the Library's one extra filter, Tags (D14); Clear also clears the toolbar category. */
+        /**
+         * "Refine this view" with the Library's filters: the concept's Folder (#444 D150, its options read when the dialog
+         * opens), Tags (D14) and Tag match (D150); Clear also clears the toolbar category.
+         */
         function openFilters(trigger) {
-            openRefineDialog({scope,trigger,fields:[{key:'tags'}],values:{tags:filters.tags.join(', ')},onApply:applyRefinement,
-                onClear:cleared=>{toolbar.setValue({category:cleared.category});applyRefinement(cleared);}});
+            const refine=openRefineDialog({scope,trigger,fields:[{key:'folder',options:libraryFolderOptions([],filters.folder)},{key:'tags'},
+                {key:'tagMode',options:TAG_MATCH_OPTIONS}],values:{folder:filters.folder,tags:filters.tags.join(', '),tagMode:filters.tagMode},
+                onApply:applyRefinement,onClear:cleared=>{toolbar.setValue({category:cleared.category});applyRefinement(cleared);}});
+            folderRequest?.abort();const request=folderRequest=new AbortController();
+            // A failed read leaves "All output folders" and the current folder; nothing else depends on it.
+            api.get('/prompt_manager/library/options?include=folders',{signal:request.signal}).then(data=>{
+                if(scope.signal.aborted || folderRequest!==request || !Array.isArray(data?.folders) || data.folders.some(folder=>typeof folder!=='string')) return;
+                refine.setOptions('folder',libraryFolderOptions(data.folders,filters.folder));
+            },()=>{});
         }
-        function applyRefinement({tags,category=filters.category}) {
+        function applyRefinement({tags,tagMode='all',folder='',category=filters.category}) {
             const next=[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
-            if(category===filters.category && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
-            filters.category=category;filters.tags=next;reset();
+            if(category===filters.category && tagMode===filters.tagMode && folder===filters.folder && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
+            filters.category=category;filters.tags=next;filters.tagMode=tagMode;filters.folder=folder;reset();
         }
         scope.listen(more,'click',()=>stream.loadMore());
         // Retry also re-reads a category list that failed (D15: Refresh is gone).
@@ -423,7 +444,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             // A write while mounted makes this stream stale: keep only what still means something.
             // A saved view is not the plain shelf, so it never replaces the Library return state (#249 M2, as Favorites).
             if(!saved) shelfVisit=mountedGeneration!==writeGeneration?{filters:savedFilters,anchor:savedAnchor}:state?{filters:savedFilters,state,scrollY:window.scrollY,layout:{inlineSize,columns:columnCount,heights:[...heights],anchor:savedAnchor}}:null;
-            toolbarScope.dispose();stream.dispose();optionsRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
+            toolbarScope.dispose();stream.dispose();optionsRequest?.abort();folderRequest?.abort();observer?.disconnect();measurementObserver?.disconnect();cancelAnimationFrame(frame);cancelAnimationFrame(loadFrame);for(const card of cards.values())removeCard(card);cards.clear();});
         loadCategories();if(restorable) {render(stream.state);if(restorable.state.loading || restorable.state.error)stream.loadMore();} else reset();
     }
 

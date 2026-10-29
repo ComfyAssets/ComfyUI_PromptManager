@@ -24,7 +24,8 @@
 import { createButton, createSwitch } from '../shared/toolkit/core.js';
 import { noun } from './plural.mjs';
 
-const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags' });
+// `tagMode` (#444, D150): the Library's Tag match select after Tags.
+const FIELD_LABELS = Object.freeze({ source: 'Source', folder: 'Folder', media: 'Media', tags: 'Tags', tagMode: 'Tag match' });
 const FIELD_ORDER = Object.keys(FIELD_LABELS);
 
 let shell = null;
@@ -171,7 +172,7 @@ export function openRefineDialog({ scope, fields, values = {}, onApply, onClear,
     requireScope(scope);
     requireCallbacks({ onApply, onClear });
     if (!Array.isArray(fields) || fields.some(item => !FIELD_ORDER.includes(item?.key))) {
-        throw new TypeError('Refine fields are source, folder, media and tags');
+        throw new TypeError('Refine fields are source, folder, media, tags and tagMode');
     }
     const controls = FIELD_ORDER.flatMap(key => {
         const item = fields.find(candidate => candidate.key === key);

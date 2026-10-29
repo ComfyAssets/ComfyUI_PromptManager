@@ -2157,10 +2157,35 @@ Recorded deviations on this page:
   view" filters are active, and plain "Filters" otherwise; the text is its accessible
   name, so the count is spoken. The concept has no indicator, and without one a Tags
   filter set by Tags & categories Browse was invisible on the shelf. The Library counts
-  Tags; Images counts Source, Folder, Media and Tags (each once). The toolbar category is
+  Tags, Folder and Tag match (D150); Images counts Source, Folder, Media and Tags (each once). The toolbar category is
   not a Refine filter and is not counted. The caption's count is a `role="status"`
   region, written only when it changes and kept shown while the shelf reloads, so
   Load more and scrolling never re-announce it.
+- **D150** (#444, cutover #334): "Refine this view" on the Library holds the concept
+  Filters dialog's **Folder** ("All output folders", then each folder below an output
+  root indented by depth, read from `GET /prompt_manager/library/options?include=folders`
+  when the dialog opens; the chosen folder stays listed even when the list lacks it) and
+  **Tags**, plus **Tag match** ("All of these tags" / "Any of these tags") drawn as the
+  concept's own select; the concept's "Prompt evidence" and prototype note are absent.
+  `GET /prompt_manager/library` takes `folder` (`/`-joined, `\` read as `/`; `.`, `..`,
+  empty segments and drives are 400) and `tag_mode` (`all` default, `any`), and echoes
+  both; a client whose non-default value is not echoed (an un-restarted older server)
+  shows the read error, never the unfiltered shelf. A folder keeps a parent with one
+  linked image (`generated_images.prompt_id`) in it or below it under any spelling of
+  any output root (the root as configured or detected and after `realpath`, so a
+  symlinked output folder works): `file_path` (`normcase(normpath(abspath))`) is
+  compared with prefixes built by the same normalization, so case folding is the
+  platform's own, including non-ASCII on Windows. The folder is an outer AND around the
+  parent and pair arms; Any puts one `t.name IN (...)` in each arm, so a card matches
+  when the parent or one active pair carries any tag (text and category still AND
+  inside each arm); with one tag Any equals All. Filters counts Tags, Folder and a Tag
+  match other than All (D44). Saved Library views store `tag_mode` (`all|any`) and
+  `folder` (text 1024); older rows read the defaults. Tests:
+  `tests/test_library_folders.py` (pure prefixes and names with `posixpath`/`ntpath`,
+  drive, UNC, non-ASCII, symlinked root, the any-tag union), `test_api_library.py`,
+  `test_saved_views.py`, the library-state and saved-views JS units, and
+  `tests/browser/workspace-library-filters.spec.mjs` (behavior, the Refine dialog against
+  the concept Filters dialog, artifact captures). Windows: run `portability.yml` on the PR.
 
 `tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
 concept-shaped fixture, which creates the concept's prompts last to first so Recently
@@ -6036,8 +6061,8 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for tag search and sort, the untagged entry and
-multi-tag AND/OR browsing; bulk prompt actions (delete, tag, category) stay on the
+"Open existing tag manager" card for tag search and sort and the untagged entry
+(multi-tag OR moved to the Library's Tag match with D150, #444); bulk prompt actions (delete, tag, category) stay on the
 legacy admin page. A prompt's category is changed in the Prompt library editor or with
 the legacy admin page's "Set Category" (`POST /prompt_manager/bulk/category`, unchanged);
 the Images selection bar's Set category sets images' own categories only (D140, #332),

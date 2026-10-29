@@ -135,7 +135,8 @@ test('Retry re-reads a failed category list with the shelf',async({page})=>{
     await page.locator('#workspace-main search.toolbar').getByRole('button',{name:'Filters',exact:true}).click();
     await refine(page).getByRole('button',{name:'Apply filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
     const search=page.getByRole('searchbox',{name:'Search workspace',exact:true});await search.fill(' ');
-    await page.waitForTimeout(400);expect(reads).toEqual([]);await expect(cards(page)).toHaveCount(3);
+    // Only the folder list Refine reads on opening (D150), never the shelf.
+    await page.waitForTimeout(400);expect(reads).toEqual(['/prompt_manager/library/options']);await expect(cards(page)).toHaveCount(3);
 });
 
 test('failed library reads retry while late search responses cannot overwrite newer results',async({page})=>{
@@ -168,7 +169,7 @@ test('library toolbar matches the concept and tags live in Refine this view',asy
     // D44: the active Tags filter shows on the button; the category is the toolbar's own and is not counted.
     await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters · 1']);
     await toolbar.getByRole('button',{name:'Filters · 1',exact:true}).click();
-    await expect(refine(page).locator('.field label')).toHaveText(['Tags']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
+    await expect(refine(page).locator('.field label')).toHaveText(['Folder','Tags','Tag match']);await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('studio');
     await refine(page).getByRole('button',{name:'Clear filters',exact:true}).click();await expect(refine(page)).toHaveCount(0);
     await expect(toolbar.getByRole('button',{name:'Filters',exact:true})).toBeFocused();
     await expect(page.getByRole('combobox',{name:'Filter by category',exact:true})).toHaveValue('');await expect(cards(page)).toHaveCount(3);

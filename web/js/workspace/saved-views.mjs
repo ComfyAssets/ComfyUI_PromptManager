@@ -46,6 +46,8 @@ const FIELDS = Object.freeze({
     }),
     library: Object.freeze({
         q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'rating'], 'newest'), tags,
+        // #444: how the Tags match and the output folder ('/'-joined, below a root).
+        tag_mode: choice(['all', 'any'], 'all'), folder: text(1024),
     }),
 });
 
@@ -112,10 +114,11 @@ export function imagesViewState(filters) {
 /** Library shelf filters (library.mjs `filters`) from a saved state, and the state of the current filters. */
 export function libraryFilters(state) {
     const view = normalizeViewState('library', state);
-    return { text: view.q, category: view.category, sort: view.sort, tags: view.tags };
+    return { text: view.q, category: view.category, sort: view.sort, tags: view.tags, tagMode: view.tag_mode, folder: view.folder };
 }
 export function libraryViewState(filters) {
-    return normalizeViewState('library', { q: filters.text, category: filters.category, sort: filters.sort, tags: filters.tags });
+    return normalizeViewState('library', { q: filters.text, category: filters.category, sort: filters.sort, tags: filters.tags,
+        tag_mode: filters.tagMode ?? 'all', folder: filters.folder ?? '' });
 }
 
 /**

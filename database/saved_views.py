@@ -33,6 +33,8 @@ MAX_TAG_LENGTH = 50
 _IMAGE_SORTS = ("newest", "oldest", "name", "name-desc", "rating")
 _LIBRARY_SORTS = ("newest", "oldest", "name", "rating")
 _MEDIA = ("all", "image", "video")
+# How a Library view's Tags match (#444): every tag or any of them.
+_TAG_MODES = ("all", "any")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _SOURCE = re.compile(r"all|0|[1-9][0-9]{0,8}")
 # A collection id as the listing's ``collection`` query takes it (#331): none
@@ -67,6 +69,9 @@ _STATE_FIELDS = {
         "category": ("text", 100, ""),
         "sort": ("choice", _LIBRARY_SORTS, "newest"),
         "tags": ("tags", None, ()),
+        # #444: the Tags match and the output folder (relative, "/"-joined).
+        "tag_mode": ("choice", _TAG_MODES, "all"),
+        "folder": ("text", 1024, ""),
     },
 }
 
