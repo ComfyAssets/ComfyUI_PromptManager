@@ -2460,6 +2460,29 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   back records of files that are in the trash (Missing-file links cleans them up). The
   legacy gallery lists every file on disk, removed or not. Hard links have one mark per
   path, and on FAT/exFAT/SMB a same-size replacement can stay hidden.
+  Since #501 the thumbnail jobs (System › Thumbnails' counts and its missing, rebuild and
+  convert runs, and the previews after a scan) and the legacy `GET /scan_output_dir`
+  listing skip hidden files too; an on-demand preview the legacy gallery asks for is still
+  made, and a one-image auto-tag (`/autotag/single` + `/autotag/apply`) is an explicit
+  write that shows the file again. System › Maintenance **Missing-file links** also
+  forgets the marks that hide nothing any more (the file is gone from a folder that still
+  exists, or its bytes changed), counted in its scope ("K removed images whose files are
+  gone or changed") and job line, judged only under a source that is readable and lists
+  something (an unplugged drive's empty mount point keeps its marks), never for a source
+  no longer configured, and re-checked at apply (`plan-changed`). The sidebar's Images,
+  Favorites and Needs review counts and the collection counts are read again when an
+  `image_delete` job ends in the tab that followed it (`JOB_END_COUNTS`, `state.mjs`).
+  Tests: `tests/test_image_removal_gaps.py`, the sidebar case in
+  `tests/browser/workspace-images-delete.spec.mjs`.
+- **Trash folders inside an output root** (#501, `utils/media_folders.py`): no walker
+  descends a folder below a root named `.Trash`, `.Trash-<digits>`, `.Trashes` or
+  `$RECYCLE.BIN` (any case), as none descends `thumbnails`: the workspace and legacy
+  listings (`_walk_media`, `_settled_entry`), the metadata scan and duplicate find
+  (`_collect_media_files`), the legacy auto-tag listing (`_collect_scan_files`) and the
+  delete review (`trash-folder`). The image monitor tests every folder of the new file's
+  absolute path, so it also ignores outputs written into a source that itself lies
+  inside such a folder. Tests: `tests/test_media_folders.py`,
+  `tests/test_image_removal_gaps.py`.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with

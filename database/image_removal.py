@@ -144,6 +144,23 @@ def removed_from_library(conn, path) -> bool:
     return False
 
 
+def mark_hides(marks: dict, locator: str, path) -> bool:
+    """Whether a removal mark in *marks* hides the file at *path* (blocking).
+
+    *marks* is ``{locator: (size, mtime_ns)}``. The mark of *locator* hides
+    the file while ``os.lstat(path)`` still has the size and ``mtime_ns`` it
+    was removed with; a file that cannot be looked at is not hidden.
+    """
+    mark = marks.get(locator)
+    if mark is None:
+        return False
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return (info.st_size, info.st_mtime_ns) == tuple(mark)
+
+
 def write_mark(conn, locator, size, mtime_ns):
     _write_mark(conn, locator, size, mtime_ns, utc_now_iso())
 
