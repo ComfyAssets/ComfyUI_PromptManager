@@ -458,27 +458,32 @@ test('virtualized cards release listeners on unmount', async ({ page, request })
     expect(await count()).toBe(mounted);
 });
 
-// Task C3 (D88): the side panel and the viewer details draw the file's own current image tags first, then D21's linked
-// tags not already shown (case-insensitive). Panel image tags are Tags filter buttons; the viewer's chips are plain.
+// Task C3 (D88), #449 (D154): the side panel and the viewer details draw the file's own current image tags in their own
+// "Image tags" section, then D21's linked tags in a "Prompt tags" or "Recipe tags" section after it. Panel image tags are
+// Tags filter buttons; the viewer's chips are plain.
 const panel = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
-const tagRow = page => panel(page).locator('.detail-inner > .tags').last();
+const imageTags = page => panel(page).getByRole('region', { name: 'Image tags', exact: true }).locator('.tags');
+const linkedTags = page => panel(page).locator('.tag-section.linked-tags > .tags');
 const inspected = (page, path) => page.waitForResponse(item => new URL(item.url()).pathname === `/prompt_manager/images/inspect/${path}`);
 const infoButton = (page, path) => card(page, path).getByRole('button', { name: `Inspect ${path.split('/').pop()}`, exact: true });
 
 test('inspector shows saved image tags after Save without reselecting', async ({ page }) => {
     await page.goto(images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
-    // D21/D39: the linked recipe's own tag, plain.
-    await expect(tagRow(page).locator('.chip')).toHaveText(manifest.pair_tags);
-    await expect(tagRow(page).locator('button.chip')).toHaveCount(0);
+    // D21/D39: the linked recipe's own tag, plain, and no image tags yet.
+    await expect(linkedTags(page).locator('.chip')).toHaveText(manifest.pair_tags);
+    await expect(linkedTags(page).locator('button.chip')).toHaveCount(0);
+    await expect(panel(page).locator('.tag-section.image-tags')).toHaveCount(0);
     await openTag(page, FIRST, { goto: false });
     await manual(page).fill('dunes_tag, Editorial');
     const reread = inspected(page, FIRST);
     await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
     expect((await (await reread).json()).image_tags).toEqual({ state: 'current', tags: ['dunes_tag', 'Editorial'] });
-    // The image tags lead as filter buttons; the recipe's "editorial" is already shown as "Editorial".
-    await expect(tagRow(page).locator('.chip')).toHaveText(['dunes_tag', 'Editorial']);
-    await expect(tagRow(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial']);
+    // The image tags lead as filter buttons in their own section; the recipe keeps its "editorial" in its own (D154).
+    await expect(imageTags(page).locator('.chip')).toHaveText(['dunes_tag', 'Editorial']);
+    await expect(imageTags(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial']);
+    await expect(panel(page).locator('.tag-section.image-tags .role-label')).toHaveText('Image tags · 2');
+    await expect(linkedTags(page).locator('.chip')).toHaveText(manifest.pair_tags);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
     await expect(panel(page).locator('.panel-heading h2')).toHaveText(manifest.title);
 });
@@ -490,9 +495,10 @@ test('clicking an image tag chip filters Images to the tagged unlinked file', as
     await infoButton(page, UNLINKED).click();
     await read;
     await expect(panel(page).locator('.panel-heading h2')).toHaveText('unlinked.png');
-    await expect(tagRow(page).locator('.chip')).toHaveText(['loose_tag']);
+    await expect(imageTags(page).locator('.chip')).toHaveText(['loose_tag']);
+    await expect(panel(page).locator('.tag-section.linked-tags')).toHaveCount(0);
     const listing = page.waitForRequest(item => item.url().includes('/images/output?') && new URL(item.url()).searchParams.get('tags') === 'loose_tag');
-    await tagRow(page).getByRole('button', { name: 'loose_tag', exact: true }).click();
+    await imageTags(page).getByRole('button', { name: 'loose_tag', exact: true }).click();
     await listing;
     await expect(page.locator('.gallery-body article[data-image-key]')).toHaveCount(1);
     await expect(card(page, UNLINKED)).toBeVisible();
@@ -502,18 +508,53 @@ test('clicking an image tag chip filters Images to the tagged unlinked file', as
 test('viewer details show the same chips', async ({ page, request }) => {
     await saveImageTags(request, FIRST, ['dunes_tag', 'Editorial', 'sunlit']);
     await page.goto(images);
-    await expect(tagRow(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial', 'sunlit']);
+    await expect(imageTags(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial', 'sunlit']);
     await card(page, FIRST).locator('.image-open').click();
     const details = page.locator('#viewer-dialog[open] #viewer-details');
     await expect(details.locator('.panel-heading h2')).toHaveText(manifest.title);
-    const row = details.locator('.tags').last();
+    const row = details.getByRole('region', { name: 'Image tags', exact: true }).locator('.tags');
     await expect(row.locator('.chip')).toHaveText(['dunes_tag', 'Editorial', 'sunlit']);
     await expect(row.locator('span.chip')).toHaveCount(3);
     await expect(row.locator('button')).toHaveCount(0);
+    await expect(details.locator('.tag-section.linked-tags .chip')).toHaveText(manifest.pair_tags);
     // A file without image tags: the viewer shows only D21's linked tags.
     await page.getByRole('button', { name: 'Next media', exact: true }).click();
     await expect(page.locator('#viewer-dialog[open] #viewer-title')).toHaveText(`${manifest.title} · dunes_00002.png`);
-    await expect(details.locator('.tags').last().locator('.chip')).toHaveText(manifest.pair_tags);
+    await expect(details.locator('.tag-section.linked-tags .chip')).toHaveText(manifest.pair_tags);
+    await expect(details.locator('.tag-section.image-tags')).toHaveCount(0);
+});
+
+// #449 (D154): the image tags are a labelled region of their own after the negative prompt, framed like a prompt section,
+// so they never read as part of it; the same in the side panel and the viewer details.
+async function tagSectionPlacement(root) {
+    return root.evaluate(node => {
+        const negative = node.querySelector('section.prompt-section.negative'), tags = node.querySelector('section.tag-section.image-tags');
+        const style = getComputedStyle(tags), label = getComputedStyle(tags.querySelector('.prompt-heading .role-label'));
+        return {
+            after: Boolean(negative.compareDocumentPosition(tags) & Node.DOCUMENT_POSITION_FOLLOWING), inside: negative.contains(tags),
+            below: tags.getBoundingClientRect().top >= negative.getBoundingClientRect().bottom,
+            border: `${style.borderTopWidth} ${style.borderTopStyle}`, paddingTop: style.paddingTop, marginTop: style.marginTop,
+            label: {transform: label.textTransform, size: label.fontSize, sameColorAsNegative: label.color === getComputedStyle(negative.querySelector('.role-label')).color},
+        };
+    });
+}
+const PLACED = {after: true, inside: false, below: true, border: '1px solid', paddingTop: '15px', marginTop: '15px',
+    label: {transform: 'uppercase', size: '10px', sameColorAsNegative: false}};
+
+test('D154: image tags sit in their own labelled section after the negative prompt, in the panel and the viewer', async ({ page, request }) => {
+    await saveImageTags(request, FIRST, ['dunes_tag', 'sunlit']);
+    await page.goto(images);
+    const section = panel(page).getByRole('region', { name: 'Image tags', exact: true });
+    await expect(section.locator('.role-label')).toHaveText('Image tags · 2');
+    await expect(section.locator('.tags > button.chip')).toHaveText(['dunes_tag', 'sunlit']);
+    expect(await tagSectionPlacement(panel(page))).toEqual(PLACED);
+    await card(page, FIRST).locator('.image-open').click();
+    const details = page.locator('#viewer-dialog[open] #viewer-details');
+    await expect(details.locator('.panel-heading h2')).toHaveText(manifest.title);
+    const viewerSection = details.getByRole('region', { name: 'Image tags', exact: true });
+    await expect(viewerSection.locator('.role-label')).toHaveText('Image tags · 2');
+    await expect(viewerSection.locator('.tags > span.chip')).toHaveText(['dunes_tag', 'sunlit']);
+    expect(await tagSectionPlacement(details)).toEqual(PLACED);
 });
 
 test('search finds an image by its image tag', async ({ page, request }) => {
@@ -570,7 +611,7 @@ const listingOf = (page, check) => page.waitForResponse(item => item.url().inclu
 test('the post-save re-read keeps the panel content until the new read lands', async ({ page }) => {
     await page.goto(images);
     await expect(card(page, FIRST)).toHaveClass(/\bselected\b/);
-    await expect(tagRow(page).locator('.chip')).toHaveText(manifest.pair_tags);
+    await expect(linkedTags(page).locator('.chip')).toHaveText(manifest.pair_tags);
     await page.evaluate(() => {
         const node = document.querySelector('aside[aria-label="Selected image details"]');
         window.__loadingSeen = false;
@@ -589,12 +630,13 @@ test('the post-save re-read keeps the panel content until the new read lands', a
     await expect(toast(page)).toHaveText('1 tags saved for dunes_00001.png.');
     // While the re-read is held, the panel still shows the file's details.
     await expect(panel(page).locator('.panel-heading h2')).toHaveText(manifest.title);
-    await expect(tagRow(page).locator('.chip')).toHaveText(manifest.pair_tags);
+    await expect(linkedTags(page).locator('.chip')).toHaveText(manifest.pair_tags);
     expect(await page.evaluate(() => window.__loadingSeen)).toBe(false);
     const landed = inspected(page, FIRST);
     release();
     await landed;
-    await expect(tagRow(page).locator('.chip')).toHaveText(['held_tag', ...manifest.pair_tags]);
+    await expect(imageTags(page).locator('.chip')).toHaveText(['held_tag']);
+    await expect(linkedTags(page).locator('.chip')).toHaveText(manifest.pair_tags);
     expect(await page.evaluate(() => { window.__loadingWatch.disconnect(); return window.__loadingSeen; })).toBe(false);
     await page.unroute(matcher);
 });
@@ -607,7 +649,7 @@ test('a save under a Tags filter re-reads the listing: the selection stays while
     await infoButton(page, SECOND).click();
     await read;
     const filtered = listingOf(page, query => query.get('tags') === 'shared');
-    await tagRow(page).getByRole('button', { name: 'shared', exact: true }).click();
+    await imageTags(page).getByRole('button', { name: 'shared', exact: true }).click();
     await filtered;
     await expect(cards(page)).toHaveCount(2);
     // The newest match (SECOND) is selected once the filter applies.
@@ -767,7 +809,7 @@ test('a tag save from Tags reloads a filtered Images visit instead of restoring 
     await page.goto(images);
     await infoButton(page, SECOND).click();
     const filtered = listingOf(page, query => query.get('tags') === 'shared');
-    await tagRow(page).getByRole('button', { name: 'shared', exact: true }).click();
+    await imageTags(page).getByRole('button', { name: 'shared', exact: true }).click();
     await filtered;
     await expect(cards(page)).toHaveCount(2);
     await expect(card(page, SECOND)).toHaveClass(/\bselected\b/);
@@ -792,7 +834,7 @@ test('a failed listing re-read after a save says so and keeps the cards (M2)', a
     await page.goto(images);
     await infoButton(page, SECOND).click();
     const filtered = listingOf(page, query => query.get('tags') === 'shared');
-    await tagRow(page).getByRole('button', { name: 'shared', exact: true }).click();
+    await imageTags(page).getByRole('button', { name: 'shared', exact: true }).click();
     await filtered;
     await expect(cards(page)).toHaveCount(2);
     await openTag(page, SECOND, { goto: false });
