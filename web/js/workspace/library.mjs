@@ -500,14 +500,20 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             onDeletePrompt:()=>deletePrompt()});
         /** #481: this prompt through the Library's Delete… review; a delete returns to the shelf, an archive shows its notice. */
         let deleting=false;
+        // While the review or its write runs, Edit metadata is held (as the selection bar holds its actions), so no save
+        // can race the delete; aria-disabled keeps it focusable for the return.
+        function holdEdit(held) {
+            deleting=held;
+            if(held) edit.setAttribute('aria-disabled','true');else edit.removeAttribute('aria-disabled');
+        }
         function deletePrompt() {
             const shown=detail;if(deleting || !shown?.positive) return;
             // One review at a time, as the selection bar holds itself (a second press during the preview starts nothing).
-            deleting=true;
+            holdEdit(true);
             reviewPromptDelete({api,scope,trigger:edit,ids:[shown.positive.id],epoch:shown.library_epoch,
-                titleOf:()=>displayTitle(shown.positive),onDismiss:()=>{deleting=false;if(edit.isConnected) edit.focus({preventScroll:true});},
+                titleOf:()=>displayTitle(shown.positive),onDismiss:()=>{holdEdit(false);if(edit.isConnected) edit.focus({preventScroll:true});},
                 onSettled:(outcome,result,failure)=>{
-                    deleting=false;
+                    holdEdit(false);
                     if(outcome.committed) invalidateLibraryAfterWrite({kind:'bulk-delete',receipt:result ?? {phase:'unconfirmed'}});
                     // A left page still invalidates what it cached, but says nothing (as the bar's write).
                     if(scope.signal.aborted) return;
@@ -520,6 +526,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         }
         scope.listen(back,'click',()=>{window.location.hash='#/library';});
         scope.listen(edit,'click',()=>{
+            if(deleting) return;
             const draft=metadataDrafts.get(positiveId);metadataDrafts.delete(positiveId);
             editor.open({mode:'metadata',positiveId,pairId:current?.activePairId() ?? null,trigger:edit,draft:draft || null});
         });
