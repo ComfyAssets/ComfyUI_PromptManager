@@ -543,7 +543,7 @@ if __name__ == "__main__":
 
 
 class TestPairedDelete(LibraryDeleteCase):
-    """#482 (D160): Delete permanently also removes a prompt's own saved pairs."""
+    """#482 (D154): Delete permanently also removes a prompt's own saved pairs."""
 
     def pair_rows(self, positive):
         return rows(

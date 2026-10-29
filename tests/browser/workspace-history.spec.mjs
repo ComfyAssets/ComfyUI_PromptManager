@@ -496,7 +496,7 @@ test('the inline current file names its prompts apart from the frozen run fields
     expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);
 });
 
-// #449 (D160), #457: History's inline current file draws the file's own image tags in the shared labelled section, named
+// #449 (D154), #457: History's inline current file draws the file's own image tags in the shared labelled section, named
 // with its context so they stay apart from the frozen run's fields. The tags are saved on the real file through the Tag
 // routes and come from History's own current-file read (its `image_tags` facet), as Images reads them.
 test('the inline current file labels its image tags after its negative prompt',async({page,request})=>{

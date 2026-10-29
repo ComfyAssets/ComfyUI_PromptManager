@@ -212,7 +212,7 @@ function tagged(imageTags, library = {status:'linked', tags:['Minimal', 'warm_li
 test('renders current image tags before linked tags, each without repeats within its source', async () => {
     const {inspectorTagChips} = await load();
     assert.equal(typeof inspectorTagChips, 'function', 'inspectorTagChips is exported');
-    // D160 amends D88: a linked tag that is also an image tag stays in its own labelled section.
+    // D154 amends D88: a linked tag that is also an image tag stays in its own labelled section.
     assert.deepEqual(inspectorTagChips(tagged({state:'current', tags:['dunes', 'minimal', 'Dunes']}), {filterable:true}),
         [{name:'dunes', filter:true, source:'image'}, {name:'minimal', filter:true, source:'image'},
             {name:'Minimal', filter:true, source:'linked'}, {name:'warm_light', filter:true, source:'linked'}, {name:'editorial', filter:true, source:'linked'}]);
@@ -238,7 +238,7 @@ test('none and unavailable render no image chips', async () => {
     }
 });
 
-// #449 (D160): the image's own tags and the linked prompt's or recipe's tags each get a labelled section after the
+// #449 (D154): the image's own tags and the linked prompt's or recipe's tags each get a labelled section after the
 // prompt blocks, so per-image tags never read as part of the negative prompt.
 function renderVariant(record, variant, options = {}) {
     const f = mountedDom(), scope = createScope();

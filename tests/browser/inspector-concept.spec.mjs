@@ -51,7 +51,7 @@ function withCategoryScope(inventory) {
 }
 
 /**
- * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117, D139, D146 and D160, whose labelled
+ * Recorded inspector deviations only (spec §8, TESTING.md D3, D20–D22, D34, D38, D117, D139, D146 and D154, whose labelled
  * tag sections the concept page gets at runtime from `withTagSections`); everything else must
  * equal production. `reference.viewerPlain` is the concept's own full details
  * with its tag chips made plain (D20), D117's summary button added and, under a coarse pointer, D34's targets, all at
@@ -131,7 +131,7 @@ async function withCollectionsButton(page,selector) {
 }
 
 /**
- * The concept's tag chips in the open viewer in D160's labelled sections (`sections`) as plain `span.chip`s (D20), D34's
+ * The concept's tag chips in the open viewer in D154's labelled sections (`sections`) as plain `span.chip`s (D20), D34's
  * coarse targets and D117's "Copy settings summary" after the six facts (LI-4), drawn as the concept's own plain button
  * (its "Download sample JSON", without its action); returns an undo.
  */
@@ -190,7 +190,7 @@ async function viewerOf(page,concept,mutation=null,sections=PROMPT_TAGS) {
     return {viewerDetails,viewerPlain,fileControls};
 }
 async function inventory(page,concept=false,sections=PROMPT_TAGS) {
-    // D146: the concept panel's category chip with its visible origin; D139: Collections… after Prompt history; D160's
+    // D146: the concept panel's category chip with its visible origin; D139: Collections… after Prompt history; D154's
     // labelled tag sections (by default the fixture's D39 positive tags under "Prompt tags"), laid out by the concept page.
     const restoreSource=concept?await withChipSource(page,'#image-inspector',ORIGIN):null;
     const restoreCollections=concept?await withCollectionsButton(page,'#image-inspector > .detail-footer'):null;
@@ -264,7 +264,7 @@ async function productionSendOf(page,context) {
 /** A tag chip: the collection it leaves (the count line), then the chip pressed again for the same result. */
 async function tagOf(page) {
     const before=await page.locator('#result-count').textContent();
-    // The concept's bare row, or production's linked-tags section (D160): the last chip row either way.
+    // The concept's bare row, or production's linked-tags section (D154): the last chip row either way.
     await panelOf(page).locator('.detail-inner .tags').last().getByRole('button',{name:'cinematic',exact:true}).click();
     // Production's caption reads "Loading images…" until the tag's listing answers (#391); the concept's search is instant.
     await expect.poll(async()=>{const text=await page.locator('#result-count').textContent();return text!==before&&text!=='Loading images…';}).toBe(true);
@@ -330,7 +330,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`inspector pane
     expect.soft(panel.badges.chips.map(chip=>chip.text),'concept badges').toEqual(['Execution recorded','Landscapes · prompt']);
     expect.soft(reference.viewerDetails.structure.inner.slice(-2),'concept full details').toEqual(['details','details']);
 
-    // D160: both documents measured the labelled section, so the comparison covers it (never two absent sections).
+    // D154: both documents measured the labelled section, so the comparison covers it (never two absent sections).
     for(const [name,inventory] of [['concept panel',reference.panel],['concept viewer',reference.viewerPlain],['panel',actual.panel],['viewer',actual.viewerDetails]])
         expect.soft(inventory.tagSections.map(section=>section.label.text),`${name} tag sections`).toEqual(['Prompt tags · 3']);
     expect.soft(diff,'differences after the recorded deviations').toEqual([]);
@@ -368,7 +368,7 @@ test('a recipe-linked image without recipe metadata shows its positive prompt me
     await expect(badges.locator('.chip .ca-visually-hidden')).toHaveText('Positive prompt category: ');
     // D146 (#332): the visible origin names where the value came from.
     await expect(badges.locator('.chip .chip-source')).toHaveText(' · prompt');
-    // D160: the positive's tags, so the section is "Prompt tags", not "Recipe tags".
+    // D154: the positive's tags, so the section is "Prompt tags", not "Recipe tags".
     const tags=panelOf(page).getByRole('region',{name:'Prompt tags',exact:true});
     await expect(tags.locator('.role-label')).toHaveText('Prompt tags · 3');
     await expect(tags.locator('.tags > button.chip')).toHaveText(['minimal','warm_light','editorial']);
@@ -396,7 +396,7 @@ test('a tag chip collection reads as loading, not empty, until its listing answe
 });
 
 // Task C3 (D88, #249 PR C): the concept's chip row is the image's own tags (`i.tags`, app.js a402). With those names
-// saved as the file's current image tags, production draws them in D160's "Image tags" section (Tags filter buttons in
+// saved as the file's current image tags, production draws them in D154's "Image tags" section (Tags filter buttons in
 // the panel, plain in the viewer) and the linked positive's equal tags in its "Prompt tags" section after it (#449),
 // and equals the concept with its row in those two sections, in both sizes.
 for(const [width,height] of SIZES)test(`image tags saved on the concept image keep the inspector equal to the concept ${width}x${height} (D88)`,async({page,request},testInfo)=>{
@@ -438,7 +438,7 @@ test('inspector comparison detects mutations',async({page})=>{
     await restoreCss();await settle(page);
     assertInspectorMatch(reference,await measure(),viewport);
 
-    // D160: the tag section's muted label and its row's spacing are part of the mapped concept.
+    // D154: the tag section's muted label and its row's spacing are part of the mapped concept.
     for(const [css,path] of [['#image-inspector .tag-section .role-label { color: rgb(255, 0, 0) }',/panel\.tagSections\.0\.label\.color/],
         ['#image-inspector .tag-section > .tags { margin-top: 12px }',/panel\.tagSections\.0\.row\.marginTop/],
         ['#image-inspector .tag-section { border-top-width: 0 }',/panel\.tagSections\.0\.borderTopWidth/]]) {

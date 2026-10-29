@@ -139,7 +139,7 @@ test('panel matches the concept order and copy',async({page,request})=>{
     // #332 MC8: the chip names where its value came from, in visible text after the category.
     await expect(badges.locator('span.chip:not(.blue)')).toHaveText('Recipe category: Inspection · recipe');
     await expect(badges.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
-    // Recipe tags are not the positive tags the Images Tags filter matches, so they stay plain chips (D21 ruling); D160
+    // Recipe tags are not the positive tags the Images Tags filter matches, so they stay plain chips (D21 ruling); D154
     // (#449) labels their own section after the negative prompt, named for the recipe as D146's category chip is.
     const recipeTags=panel.getByRole('region',{name:'Recipe tags',exact:true});
     await expect(recipeTags).toHaveClass('tag-section linked-tags');
@@ -317,7 +317,7 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await expect(provenance.getByText('Prompt evidence: workflow inferred',{exact:true})).toBeVisible();
     await expect(provenance.getByText('Saved association; not verified against current file',{exact:true})).toBeVisible();
     await expect(provenance.getByRole('link',{name:'Download original',exact:true})).toBeVisible();
-    // D160 (#449) labels the recipe's tags in their own section; the other legacy labels stay gone.
+    // D154 (#449) labels the recipe's tags in their own section; the other legacy labels stay gone.
     await expect(details).not.toContainText(/Configuration evidence|Embedded parameter evidence|prompt evidence|extension/);
     await expect(details.locator('.tag-section.linked-tags .role-label')).toHaveText('Recipe tags · 2');
     // Workflow & raw metadata: the concept's focusable `pre`, then the downloads with their unavailable reasons.

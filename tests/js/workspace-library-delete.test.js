@@ -150,7 +150,7 @@ test('the archived notice says why (the saved pair) and names negative variants 
     assert.equal(archivedNoticeText(undefined), archivedNoticeText(0));
 });
 
-// #482 (D160): prompts in a saved pair can be deleted permanently, with their own saved pairs.
+// #482 (D154): prompts in a saved pair can be deleted permanently, with their own saved pairs.
 const D1 = 'a'.repeat(64), D2 = 'b'.repeat(64);
 const paired = (patch = {}) => preview({archive: [3, 4, 5], deletable: [3, 4], review_digests: {3: D1, 4: D2},
     paired_counts: {pairs: 3, archived_pairs: 1, variants: 2, kept_negatives: 2}, paired_image_links: 4, ...patch});
