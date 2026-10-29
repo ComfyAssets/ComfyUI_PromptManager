@@ -17,6 +17,7 @@ from utils.execution_contexts import (
 )
 from utils.execution_outputs import OutputBundle
 from tests.test_execution_context_database import bundle, snapshot
+from utils.hashing import generate_prompt_hash
 from tests.test_execution_output_database import bundle as outputs
 from tests import test_execution_history_database as history_tests
 
@@ -32,6 +33,10 @@ class HistoryReadTests(unittest.TestCase):
         with db.model.get_connection() as conn:
             conn.execute("INSERT INTO prompts(id,text) VALUES(?,?)", (identity, text))
         return identity
+
+    def hashed(self, db, text):
+        """A prompt saved as the nodes save it: with its dedup hash."""
+        return db.save_prompt(text, prompt_hash=generate_prompt_hash(text))
 
     def capture(self, db, item=0, context=None, output=None, time=100):
         start = self.start(db, item, time)
@@ -151,9 +156,9 @@ class HistoryReadTests(unittest.TestCase):
             )
         self.require_reads(db)
         with db.recorded_history_snapshot():
-            # Outer whitespace joins the stored form's scope (#438); case and
-            # Unicode normalization stay distinct.
-            expected = (4, 1, 4, 4, 1, 1, 2, 2)
+            # Outer whitespace (#438) and case (#460) join one scope;
+            # Unicode normalization stays distinct.
+            expected = (5, 5, 5, 5, 1, 1, 2, 2)
             for i, count in enumerate(expected, 1):
                 self.assertEqual(db.list_history_window(i)["recorded_run_count"], count)
             self.assertIsNone(db.list_history_window(100))
@@ -1047,3 +1052,70 @@ class HistoryReadTests(unittest.TestCase):
         with db.recorded_history_snapshot():
             found = db.get_newest_pair_run(positive, pair)
         self.assertEqual(found["run"]["run_id"], newest.run_id)
+
+    def test_case_variant_raw_text_joins_the_saved_prompt_scope(self):
+        # #460: the hash folds case, so these runs count toward this prompt.
+        db = self.database()
+        positive = self.hashed(db, "\u00e9t\u00e9 lighthouse \u03c3")
+        raws = (
+            "\u00c9T\u00c9 Lighthouse \u03a3\n",
+            "\u00e9t\u00e9 lighthouse \u03c3",
+            " \u00c9t\u00e9 LIGHTHOUSE \u03a3",
+        )
+        starts = [
+            self.capture(db, i, bundle(positive=raw), time=100 + i)
+            for i, raw in enumerate(raws)
+        ]
+        # Unicode normalization and inner text stay distinct
+        self.capture(db, 7, bundle(positive="e\u0301te\u0301 lighthouse \u03c3"))
+        self.capture(db, 8, bundle(positive="\u00e9t\u00e9  lighthouse \u03c3"))
+        dotted = self.hashed(db, "\u0130stanbul")
+        dotted_run = self.capture(db, 9, bundle(positive="\u0130STANBUL"), time=300)
+        with db.recorded_history_snapshot():
+            page = db.list_history_window(positive)
+            details = [db.get_history_run(start.run_id) for start in starts]
+            turkish = db.list_history_window(dotted)
+        self.assertEqual(page["recorded_run_count"], 3)
+        self.assertEqual(
+            [r["run_id"] for r in page["items"]], [s.run_id for s in starts]
+        )
+        for raw, detail in zip(raws, details):
+            context = detail["contexts"][0]
+            self.assertEqual(context["positive"]["raw"], raw)
+            self.assertEqual(
+                context["positive_raw_text_id"], page["group"]["raw_text_id"]
+            )
+            self.assertEqual(context["positive_prompt_id"], positive)
+        self.assertEqual([r["run_id"] for r in turkish["items"]], [dotted_run.run_id])
+
+    def test_newest_pair_run_follows_case_variant_raw_text(self):
+        db = self.database()
+        pair = db.save_prompt_pair("a lighthouse", "fog")
+        positive = db.get_prompt_pair(pair)["positive_prompt_id"]
+        newest = self.capture(db, 0, bundle("FOG", positive="A Lighthouse"), time=100)
+        with db.recorded_history_snapshot():
+            found = db.get_newest_pair_run(positive, pair)
+        self.assertEqual(found["run"]["run_id"], newest.run_id)
+
+    def test_a_position_from_before_460_resumes_the_same_scope(self):
+        db = self.database()
+        positive = self.hashed(db, "A Lighthouse")
+        for i in range(3):
+            self.capture(db, i, bundle(positive="a lighthouse"), time=100 + i)
+        with db.recorded_history_snapshot():
+            first = db.list_history_window(positive, limit=2)
+            position = first["next_position"]
+            legacy = replace(
+                position, raw_text_id=content_digest("text", ("A Lighthouse",))
+            )
+            rest = db.list_history_window(positive, limit=2, after=legacy)
+            with self.assertRaises(ValueError):
+                db.list_history_window(
+                    positive,
+                    after=replace(position, raw_text_id=content_digest("text", ("x",))),
+                )
+        self.assertEqual(first["recorded_run_count"], 3)
+        self.assertEqual(len(rest["items"]), 1)
+        self.assertEqual(
+            rest["group"]["raw_text_id"], content_digest("text", ("a lighthouse",))
+        )

@@ -58,11 +58,7 @@ def generate_prompt_hash(text: str) -> str:
     if not isinstance(text, str):
         raise TypeError("Text must be a string")
 
-    # Normalize the text by stripping whitespace and converting to lowercase
-    # for consistent hashing regardless of minor formatting differences
-    normalized_text = text.strip().lower()
-
-    return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(prompt_key(text).encode("utf-8")).hexdigest()
 
 
 def stored_prompt_text(text: str) -> str:
@@ -91,6 +87,34 @@ STRIPPED_CODE_POINTS = (
     0x3000,
 )
 _STRIP_CODES = ",".join(map(str, STRIPPED_CODE_POINTS))
+
+
+def prompt_key(text: str) -> str:
+    """The dedup key: the stored text with case folded by ``str.lower()``.
+
+    Two texts with one key are one prompt (the hash is sha256 of the key), so
+    a run belongs to the history of the prompt with its key (#460).
+    """
+    return stored_prompt_text(text).lower()
+
+
+def _sql_key(value):
+    return prompt_key(value) if isinstance(value, str) else None
+
+
+def _sql_hash(value):
+    return generate_prompt_hash(value) if isinstance(value, str) else None
+
+
+def register_prompt_functions(conn) -> None:
+    """Give ``conn`` ``pm_prompt_key(x)`` and ``pm_prompt_hash(x)`` (#460).
+
+    SQLite's lower() folds ASCII only; these call Python, so SQL gets exactly
+    ``prompt_key`` / ``generate_prompt_hash`` (NULL for a non-text value).
+    Never used in schema objects, so the file stays readable without them.
+    """
+    conn.create_function("pm_prompt_key", 1, _sql_key, deterministic=True)
+    conn.create_function("pm_prompt_hash", 1, _sql_hash, deterministic=True)
 
 
 def stored_prompt_text_sql(expression: str) -> str:

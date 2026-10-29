@@ -17,6 +17,8 @@ from utils.hashing import (
     generate_prompt_hash,
     is_duplicate_prompt,
     STRIPPED_CODE_POINTS,
+    prompt_key,
+    register_prompt_functions,
     stored_prompt_text,
     stored_prompt_text_sql,
 )
@@ -156,6 +158,57 @@ class TestStoredPromptText(unittest.TestCase):
         for value in ("\u200ba\u200b", "\ufeffa", "a\u0301", "", "x"):
             with self.subTest(value=repr(value)):
                 self.assertEqual(self.sql_strip(value), stored_prompt_text(value))
+
+
+class TestPromptKey(unittest.TestCase):
+    """History compares the hash's own key; SQL calls Python for it (#460)."""
+
+    CASES = (
+        "A Lighthouse",
+        " \u00c9t\u00c9\n",
+        "\u03a3\u03a3",
+        "\u0130stanbul",
+        "\u1e9e",
+        "\u212a",
+        "ok",
+    )
+
+    def test_key_is_the_hash_normalization(self):
+        import hashlib
+
+        for value in self.CASES:
+            with self.subTest(value=repr(value)):
+                self.assertEqual(
+                    generate_prompt_hash(value),
+                    hashlib.sha256(prompt_key(value).encode("utf-8")).hexdigest(),
+                )
+        self.assertEqual(prompt_key("  A Lighthouse\n"), "a lighthouse")
+
+    def test_sql_functions_give_pythons_result_where_sql_lower_does_not(self):
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            register_prompt_functions(conn)
+            for value in self.CASES:
+                with self.subTest(value=repr(value)):
+                    key, digest = conn.execute(
+                        "SELECT pm_prompt_key(?), pm_prompt_hash(?)", (value, value)
+                    ).fetchone()
+                    self.assertEqual(key, prompt_key(value))
+                    self.assertEqual(digest, generate_prompt_hash(value))
+            self.assertEqual(
+                conn.execute(
+                    "SELECT pm_prompt_key(1), pm_prompt_hash(NULL)"
+                ).fetchone(),
+                (None, None),
+            )
+            # SQLite's own lower() folds ASCII only
+            self.assertNotEqual(
+                conn.execute("SELECT lower(?)", ("\u00c9",)).fetchone()[0], "\u00e9"
+            )
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

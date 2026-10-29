@@ -212,11 +212,15 @@ test('every browser job sets PM_TEST_WORKERS and runs in the pinned image', () =
     assert.match(mergeJob(), PINNED_IMAGE, 'the merge sees the same workspace paths as the shards');
 });
 
-test('page workflows run each browser in two shards', () => {
+// #473: two shards split by test count put the slow concept specs in shard 1, which reached the 18-minute step limit.
+test('page workflows run each browser in three shards', () => {
     const workflows = allJobs.get('browser-workflows');
     assert.deepEqual(matrixList(workflows, 'browser'), ['firefox', 'webkit']);
-    assert.deepEqual(matrixList(workflows, 'shard'), ['1', '2']);
-    assert.match(workflows, /test:workflows -- --project \$\{\{ matrix\.browser \}\} --shard \$\{\{ matrix\.shard \}\}\/2/);
+    assert.deepEqual(matrixList(workflows, 'shard'), ['1', '2', '3']);
+    assert.match(workflows, /test:workflows -- --project \$\{\{ matrix\.browser \}\} --shard \$\{\{ matrix\.shard \}\}\/3/);
+    assert.match(workflows, /^ {4}name: page workflows \(\$\{\{ matrix\.browser \}\}, shard \$\{\{ matrix\.shard \}\}\/3\)$/m);
+    assert.match(workflows, /name: Page workflows in \$\{\{ matrix\.browser \}\}, shard \$\{\{ matrix\.shard \}\}\/3$/m);
+    assert.doesNotMatch(workflows, /\/2\b/, 'no step still names two shards');
     assert.match(workflows, /^ {6}fail-fast: false$/m);
     assert.match(workflows, /name: browser-traces-\$\{\{ matrix\.browser \}\}-shard-\$\{\{ matrix\.shard \}\}/);
 });
