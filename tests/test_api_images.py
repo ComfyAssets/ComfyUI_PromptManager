@@ -35,6 +35,7 @@ from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 from PIL import Image  # noqa: E402
 
+from database.models import PromptModel  # noqa: E402
 from database.operations import PromptDatabase  # noqa: E402
 import py.api.images as images_module
 from py.api import gallery_listing  # noqa: E402
@@ -92,14 +93,41 @@ class ImageAPITestCase(AioHTTPTestCase):
         self._anchor_patch.stop()
         # Windows refuses to unlink a database that still has open handles.
         self.api.db.close_all()
-        for path in (
-            self._temp_db.name,
-            self._temp_db.name + "-wal",
-            self._temp_db.name + "-shm",
-        ):
-            if os.path.exists(path):
-                os.unlink(path)
-        self._output_tmp.cleanup()
+        try:
+            leaked = self._close_leaked_connections()
+        finally:
+            for path in (
+                self._temp_db.name,
+                self._temp_db.name + "-wal",
+                self._temp_db.name + "-shm",
+            ):
+                if os.path.exists(path):
+                    os.unlink(path)
+            self._output_tmp.cleanup()
+        if leaked:
+            raise AssertionError(
+                f"{leaked} connection(s) to the test database were still open at "
+                "teardown; Windows cannot unlink it (WinError 32). Close every "
+                "extra PromptDatabase before tearDownAsync, not in a cleanup."
+            )
+
+    def _close_leaked_connections(self):
+        """Close and count connections other models still hold on the temp DB.
+
+        Linux unlinks an open SQLite file, Windows does not; counting here makes
+        a handle left open past teardown fail on every OS (#475).
+        """
+        key = os.path.normcase(os.path.realpath(self._temp_db.name))
+        with PromptModel._instances_lock:
+            models = list(PromptModel._instances)
+        leaked = 0
+        for model in models:
+            if model._schema_key() != key:
+                continue
+            with model._conn_lock:
+                leaked += len(model._connections)
+            model.close_all()
+        return leaked
 
     # -- helpers ---------------------------------------------------------
 
