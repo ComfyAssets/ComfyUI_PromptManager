@@ -38,6 +38,9 @@ async function chooseDestination(page) {
 
 test('collection viewer rejects stale source and sends only refreshed API evidence',async({page,request,context})=>{
     const host=await fakeHost(context,page);
+    // #430: the file is never found again here, so the manual Refresh is what this covers (the found-again path is
+    // workspace-stale-source.spec.mjs).
+    await page.route('**/prompt_manager/images/rescope',route=>route.fulfill({status:409,json:{success:false,code:'source-changed',error:'The source of this image changed or was removed.'}}));
     await page.addInitScript(()=>{window.copied=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>window.copied.push(text)}});});
     try {
         const loaded=await(await request.get('/prompt_manager/images/output?mode=workspace&limit=40')).json();const stale=loaded.images.find(image=>image.root_index===0&&image.path==='shared/same.png');

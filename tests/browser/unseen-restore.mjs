@@ -52,3 +52,43 @@ export async function unseenRestore(page, restoring) {
         open();
     }
 }
+
+// A restore the open page does see run and finish (#415), driven by the test instead of the 15 s poll's timing. The
+// job is shaped as the server's (py/api/backup_restore.py: kind `restore`, one `errors` group, not cancellable).
+const RESTORE_JOB_ID = '415415415415415415415415415415ab';
+const restoreJob = state => ({ id: RESTORE_JOB_ID, kind: 'restore', title: 'Database restore', state, started_at: 1,
+    finished_at: state === 'running' ? null : 2, progress: 0, status_line: state === 'running' ? '' : 'Restored the test snapshot.',
+    processed: 0, total: 0, counters: { errors: 0 }, scope: {}, listed: { errors: 0 }, log_length: 0, cancellable: false });
+/** The Activity pill's link while the page follows that restore. */
+export const SEEN_RESTORE_PILL = `#/activity/${RESTORE_JOB_ID}`;
+/** The toast the page shows when it sees that restore finish (activity-kinds.mjs `restore.finishToast`). */
+export const SEEN_RESTORE_TOAST = 'Database restore finished · Restored the test snapshot.';
+
+/**
+ * Call before the page's first navigation, after `armUnseenRestores(page)` (a later route wins). The page's first
+ * job-list read lists a restore job running, so its Activity store follows it; its job stream is refused, so the store
+ * reads the list again, and every later read is held until `finish()`, which answers them with the job finished and
+ * resolves once one of those answers reached the page. The real restore the test runs meanwhile goes through the API.
+ */
+export async function followRestore(page) {
+    let release;
+    const released = new Promise(resolve => { release = resolve; });
+    let first = true;
+    await page.route(`${JOBS}/*/events`, route => route.abort().catch(() => {}));
+    await page.route(JOBS, async route => {
+        if (first) {
+            first = false;
+            return route.fulfill({ json: { success: true, jobs: [restoreJob('running')] } }).catch(() => {});
+        }
+        await released;
+        // A read the page has aborted since (a newer read supersedes it) can no longer be answered.
+        return route.fulfill({ json: { success: true, jobs: [restoreJob('finished')] } }).catch(() => {});
+    });
+    return {
+        async finish() {
+            const answered = page.waitForResponse(response => new URL(response.url()).pathname === '/prompt_manager/jobs');
+            release();
+            await answered;
+        },
+    };
+}

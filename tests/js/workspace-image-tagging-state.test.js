@@ -253,15 +253,16 @@ test('an unreadable or malformed models read falls back to the documented defaul
 
 test('observe failures and malformed answers end in observe-error and retry observes again', async () => {
     const { createImageTaggingController } = await load();
-    let answer = () => fail(409, 'source-changed', 'The source changed. Refresh the image collection before tagging this file.');
+    let answer = () => fail(500, 'observe-failed');
     const h = harness(defaultRoutes({ [`POST ${OBSERVE}`]: () => answer() }));
     const c = createImageTaggingController({ api: h.api, target: TARGET });
     await c.open();
     assert.equal(c.state.phase, 'observe-error');
-    assert.equal(c.state.statusText, 'The source changed. Refresh the image collection before tagging this file.');
+    assert.equal(c.state.statusText, 'The image could not be opened for tagging.');
     assert.equal(c.state.canSave, false);
     assert.equal(c.state.canGenerate, false);
     assert.equal(c.state.canRetry, true);
+    assert.equal(c.state.blocked, true, 'a failed capture blocks Generate and Save with its reason');
     answer = () => response(200, observed({ tag_revision: -1 }));
     await c.retry();
     assert.equal(c.state.phase, 'observe-error');
@@ -274,7 +275,69 @@ test('observe failures and malformed answers end in observe-error and retry obse
     await c.retry();
     await settle();
     assert.equal(c.state.phase, 'ready');
+    assert.equal(c.state.blocked, false);
     assert.equal(h.of('POST', OBSERVE).length, 4);
+});
+
+test('#430: a changed source blocks the dialog until it is retargeted, keeping the draft', async () => {
+    const { createImageTaggingController } = await load();
+    const SOURCE = 'The source changed. Refresh the image collection before tagging this file.';
+    const fresh = { root_index: 1, root_scope: 'e'.repeat(64), path: TARGET.path };
+    const h = harness(defaultRoutes({
+        [`POST ${OBSERVE}`]: call => (call.body.target.root_scope === SCOPE ? fail(409, 'source-changed', SOURCE) : response(200, observed())),
+    }));
+    const c = createImageTaggingController({ api: h.api, target: TARGET });
+    await c.open();
+    assert.equal(c.state.phase, 'source-changed');
+    assert.equal(c.state.statusText, SOURCE);
+    assert.deepEqual([c.state.canSave, c.state.canGenerate, c.state.canRetry, c.state.blocked], [false, false, false, true]);
+    assert.equal(await c.retry(), false, 'the same stale target is never observed again');
+    assert.equal(h.of('POST', OBSERVE).length, 1);
+    assert.throws(() => c.retarget({ ...fresh, root_scope: 'bad' }), TypeError);
+    await c.retarget(fresh);
+    await settle();
+    assert.equal(c.state.phase, 'ready');
+    assert.deepEqual(h.of('POST', OBSERVE).at(-1).body.target, fresh);
+    assert.deepEqual({ ...c.target }, fresh);
+    // Generate and Save now carry the new target.
+    c.setManual('kept draft');
+    await c.generate();
+    assert.deepEqual(h.of('POST', SUGGEST)[0].body.target, fresh);
+});
+
+test('#430: a source change answered to Generate or Save also blocks; retarget keeps the typed draft', async () => {
+    for (const route of [SUGGEST, TAGS]) {
+        const method = route === TAGS ? 'PUT' : 'POST';
+        let stale = true;
+        const { c, h } = await opened({
+            [`${method} ${route}`]: call => (stale ? fail(409, 'source-changed', 'server says source') :
+                route === TAGS ? response(200, receipt(call.body.tags)) : response(200, suggested())),
+        });
+        c.setManual('kept draft');
+        if (route === TAGS) await c.save(); else await c.generate();
+        assert.equal(c.state.phase, 'source-changed');
+        assert.equal(c.state.statusText, 'server says source');
+        stale = false;
+        await c.retarget({ root_index: 2, root_scope: 'f'.repeat(64), path: TARGET.path });
+        await settle();
+        assert.equal(c.state.phase, 'ready');
+        assert.equal(c.state.manual, 'kept draft');
+        assert.equal(h.of('DELETE', CAPTURE).length, 1, 'the old capture is released');
+    }
+});
+
+test('#430: retarget waits for nothing: it refuses while a save is in flight and after close', async () => {
+    const gate = deferred();
+    const { c, h } = await opened({ [`PUT ${TAGS}`]: () => gate.promise });
+    const saving = c.save();
+    await flush();
+    assert.equal(c.state.phase, 'saving');
+    assert.equal(await c.retarget({ ...TARGET, root_index: 3 }), false);
+    gate.resolve(response(200, receipt(['Minimal'])));
+    await saving;
+    c.cancel();
+    assert.equal(await c.retarget({ ...TARGET, root_index: 3 }), false);
+    assert.equal(h.of('POST', OBSERVE).length, 1);
 });
 
 test('model change clears suggestions count and status but keeps manual', async () => {
@@ -547,7 +610,7 @@ test('write errors keep the draft and allow another save', async () => {
 });
 
 test('storage-changed and file-changed disable save until reopen', async () => {
-    for (const [code, phase] of [['storage-changed', 'storage-changed'], ['file-changed', 'file-changed'], ['source-changed', 'file-changed'], ['capture-expired', 'capture-expired']]) {
+    for (const [code, phase] of [['storage-changed', 'storage-changed'], ['file-changed', 'file-changed'], ['source-changed', 'source-changed'], ['capture-expired', 'capture-expired']]) {
         const message = `server says ${code}`;
         let answer = () => fail(409, code, message);
         const { c, h } = await opened({ [`PUT ${TAGS}`]: () => answer() });

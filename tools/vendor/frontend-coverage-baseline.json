@@ -266,7 +266,7 @@
   "workspace/image-tagging.mjs": {
     "lines": 97,
     "branches": 92,
-    "functions": 88,
+    "functions": 89,
     "statements": 97
   },
   "workspace/images-category.mjs": {
@@ -296,6 +296,12 @@
   "workspace/images-selection.mjs": {
     "lines": 98,
     "branches": 93,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/images-source-recovery.mjs": {
+    "lines": 98,
+    "branches": 98,
     "functions": 98,
     "statements": 98
   },

@@ -13,6 +13,7 @@ import re
 import stat
 import subprocess  # nosec B404 - ffmpeg frames through run_encoder, fixed argv
 import sys
+import threading
 import time as _time
 import urllib.parse
 from bisect import bisect_left, bisect_right, insort
@@ -81,6 +82,7 @@ try:
         reveal_executor,
         reveal_in_file_manager,
     )
+    from ...utils.workspace_keys import gallery_root_scope, workspace_keys_for
 except ImportError:
     from database.image_collections import CollectionMissing
     from database.image_favorites import MAX_KEY_LENGTH
@@ -105,6 +107,7 @@ except ImportError:
         reveal_executor,
         reveal_in_file_manager,
     )
+    from utils.workspace_keys import gallery_root_scope, workspace_keys_for
 
 
 IMAGE_EXTENSIONS = _IMAGE_EXTENSIONS
@@ -518,7 +521,8 @@ MAX_JSON_BODY_BYTES = 1024 * 1024
 _READ_CHUNK = 64 * 1024
 
 
-_WORKSPACE_CURSOR_SECRET = os.urandom(32)
+# Guards the first load of an API's workspace keys (#430, _workspace_keys).
+_WORKSPACE_KEYS_LOCK = threading.Lock()
 
 
 def _workspace_root(query: dict, roots: list[Path]) -> int | None:
@@ -618,15 +622,37 @@ def _rated_key(entry: _Listed, rank: int) -> tuple:
     return (-rank, *_workspace_key(entry, "rating"))
 
 
-def _workspace_cursor(key: tuple, scope: str) -> str:
+# Bump whenever the cursor's key tuple changes shape: a cursor now outlives a
+# restart and an upgrade (#430), so an old shape must be refused, not parsed.
+_CURSOR_VERSION = 2
+_CURSOR_STALE = "The image collection changed; refresh the gallery"
+
+
+class CursorStale(ValueError):
+    """A well-formed cursor this listing cannot verify (#430).
+
+    Another key, another root list or other filters: the page refreshes its
+    collection instead of retrying the same cursor.
+    """
+
+
+def _cursor_mac(secret: bytes, scope: str, payload: bytes) -> bytes:
+    # The listing scope (it hashes every absolute root) is bound in the MAC
+    # only, never sent: the scope is 64 hex, so the "\n" join is unambiguous.
+    return hmac.new(secret, scope.encode() + b"\n" + payload, hashlib.sha256).digest()
+
+
+def _workspace_cursor(key: tuple, scope: str, secret: bytes) -> str:
+    """The signed keyset cursor of *key*; *secret* is the API's cursor key."""
     payload = json.dumps(
-        {"v": 1, "scope": scope, "key": key}, separators=(",", ":"), ensure_ascii=False
+        {"v": _CURSOR_VERSION, "key": key}, separators=(",", ":"), ensure_ascii=False
     ).encode()
-    signature = hmac.new(_WORKSPACE_CURSOR_SECRET, payload, hashlib.sha256).digest()
+    signature = _cursor_mac(secret, scope, payload)
     return base64.urlsafe_b64encode(signature + payload).decode().rstrip("=")
 
 
-def _workspace_cursor_key(token: str, scope: str, order: str) -> tuple:
+def _workspace_cursor_key(token: str, scope: str, order: str, secret: bytes) -> tuple:
+    """The keyset key of *token*; CursorStale when it is not this listing's."""
     try:
         if len(token) > 4096:
             raise ValueError()
@@ -634,13 +660,14 @@ def _workspace_cursor_key(token: str, scope: str, order: str) -> tuple:
             token + "=" * (-len(token) % 4), altchars=b"-_", validate=True
         )
         signature, payload = raw[:32], raw[32:]
-        expected = hmac.new(_WORKSPACE_CURSOR_SECRET, payload, hashlib.sha256).digest()
-        if not hmac.compare_digest(signature, expected):
+        if len(signature) != 32 or not payload:
             raise ValueError()
+        if not hmac.compare_digest(signature, _cursor_mac(secret, scope, payload)):
+            raise CursorStale(_CURSOR_STALE)
         data = json.loads(payload)
         key = data["key"]
-        if data["v"] != 1 or data["scope"] != scope or not isinstance(key, list):
-            raise ValueError()
+        if data["v"] != _CURSOR_VERSION or not isinstance(key, list):
+            raise CursorStale(_CURSOR_STALE)
         types = (
             (str, str, int, (float, int))
             if order in ("name", "name-desc")
@@ -654,6 +681,8 @@ def _workspace_cursor_key(token: str, scope: str, order: str) -> tuple:
         ):
             raise ValueError()
         return tuple(key)
+    except CursorStale:
+        raise
     except (ValueError, KeyError, TypeError, UnicodeError, binascii.Error):
         raise ValueError("Invalid gallery cursor; refresh the gallery") from None
 
@@ -1338,13 +1367,27 @@ def _in_subfolder(rel_dir, subfolder):
 class ImageRoutesMixin:
     """Mixin providing image and gallery-related API endpoints."""
 
+    def _workspace_keys(self):
+        """This API's scope and cursor keys, loaded once (#430).
+
+        They derive from the secret persisted beside the database, so a restart
+        keeps every scope and cursor an open page holds. The first call reads
+        (or writes) one small file; later calls return the cached keys, which
+        a live library move or restore does not change before a restart.
+        """
+        keys = self.__dict__.get("_workspace_keys_cache")
+        if keys is None:
+            with _WORKSPACE_KEYS_LOCK:
+                keys = self.__dict__.get("_workspace_keys_cache")
+                if keys is None:
+                    db = getattr(self, "db", None)
+                    model = getattr(db, "model", None)
+                    keys = workspace_keys_for(getattr(model, "db_path", None))
+                    self.__dict__["_workspace_keys_cache"] = keys
+        return keys
+
     def _gallery_root_scope(self, root: Path, index: int) -> str:
-        payload = json.dumps(
-            ["prompt-manager-gallery-root-v1", index, str(_canonical(root))],
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-        return hmac.new(_WORKSPACE_CURSOR_SECRET, payload, hashlib.sha256).hexdigest()
+        return gallery_root_scope(self._workspace_keys(), str(_canonical(root)), index)
 
     def _gallery_scope_error(
         self, query: Mapping, roots: list[Path]
@@ -2008,6 +2051,8 @@ class ImageRoutesMixin:
             limit, _offset = parse_page_params(request.query, default_limit=100)
         except ValueError:
             return bad_request("limit and offset must be integers")
+        # #430: the first use may create the key file; never on the event loop.
+        cursor_secret = (await self._run_in_executor(self._workspace_keys)).cursor
         try:
             root_index = _workspace_root(request.query, output_dirs)
             filters = _workspace_filters(request.query)
@@ -2031,7 +2076,15 @@ class ImageRoutesMixin:
             ).hexdigest()
             token = request.query.get("cursor")
             after = (
-                _workspace_cursor_key(token, scope, filters["order"]) if token else None
+                _workspace_cursor_key(token, scope, filters["order"], cursor_secret)
+                if token
+                else None
+            )
+        except CursorStale as exc:
+            return web.json_response(
+                {"success": False, "code": "cursor-stale", "error": str(exc)},
+                status=400,
+                headers={"Cache-Control": "no-store"},
             )
         except ValueError as exc:
             return bad_request(str(exc))
@@ -2472,7 +2525,11 @@ class ImageRoutesMixin:
             positive_count = _COUNT_OMITTED
         has_more = len(page) > limit
         page = page[:limit]
-        next_cursor = _workspace_cursor(key(page[-1]), scope) if has_more else None
+        next_cursor = (
+            _workspace_cursor(key(page[-1]), scope, self._workspace_keys().cursor)
+            if has_more
+            else None
+        )
         return (
             [(entry.path, entry.mtime, entry.root, entry.index) for entry in page],
             total,

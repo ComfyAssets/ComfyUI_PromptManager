@@ -192,6 +192,71 @@ test('views reload once after a restore this page saw finish; a failed restore c
     assert.equal(listeners.size, 0);
 });
 
+// #415: a fake document whose open dialogs the test sets, and a MutationObserver stand-in it triggers.
+function dialogPage() {
+    const page = { open: 0, observers: new Set() };
+    page.doc = { documentElement: {}, querySelector: selector => (selector === 'dialog[open]' && page.open > 0 ? {} : null) };
+    page.Observer = class {
+        constructor(callback) { this.callback = callback; }
+        observe(target, options) { this.target = target; this.options = options; page.observers.add(this); }
+        disconnect() { page.observers.delete(this); }
+    };
+    page.mutate = open => { page.open = open; for (const observer of [...page.observers]) observer.callback([]); };
+    return page;
+}
+
+test('the restore reload runs at once when no dialog is open', async () => {
+    const { createRestoreReload } = await backups;
+    const page = dialogPage();
+    let reloads = 0;
+    const reload = createRestoreReload(() => { reloads += 1; }, { doc: page.doc, Observer: page.Observer });
+    reload.request();
+    assert.equal(reloads, 1);
+    assert.equal(page.observers.size, 0, 'nothing waits');
+    reload.request();
+    assert.equal(reloads, 2);
+});
+
+test('the restore reload waits for every open dialog to close, then runs once (#415)', async () => {
+    const { createRestoreReload } = await backups;
+    const page = dialogPage();
+    page.open = 1;
+    let reloads = 0;
+    const reload = createRestoreReload(() => { reloads += 1; }, { doc: page.doc, Observer: page.Observer });
+    reload.request();
+    reload.request();
+    assert.equal(reloads, 0, 'an open dialog holds the reload');
+    assert.equal(page.observers.size, 1, 'one observer for repeated requests');
+    const [observer] = page.observers;
+    assert.equal(observer.target, page.doc.documentElement);
+    assert.deepEqual(observer.options, { subtree: true, childList: true, attributes: true, attributeFilter: ['open'] });
+    page.mutate(1);
+    assert.equal(reloads, 0, 'a dialog swapped for another keeps it waiting');
+    page.mutate(0);
+    assert.equal(reloads, 1);
+    assert.equal(page.observers.size, 0, 'the observer stops once it ran');
+    page.mutate(0);
+    assert.equal(reloads, 1);
+    page.open = 1;
+    reload.request();
+    page.mutate(0);
+    assert.equal(reloads, 2, 'a later restore waits again');
+});
+
+test('disposing drops a waiting restore reload', async () => {
+    const { createRestoreReload } = await backups;
+    const page = dialogPage();
+    page.open = 1;
+    let reloads = 0;
+    const reload = createRestoreReload(() => { reloads += 1; }, { doc: page.doc, Observer: page.Observer });
+    reload.request();
+    reload.dispose();
+    assert.equal(page.observers.size, 0);
+    page.mutate(0);
+    assert.equal(reloads, 0);
+    reload.dispose();
+});
+
 test('a downloaded backup the server could not verify says so', async () => {
     const { downloadDatabaseBackup, BACKUP_DONE, backupUnverified } = await scan;
     const toasts = [];
