@@ -193,6 +193,10 @@ test('Delete… on the archived shelf deletes an archived prompt and its saved p
     await openReview(page);
     await expect(review(page)).toHaveAccessibleName('Delete archived prompts');
     await expect(choice(page)).toHaveCount(0);
+    // A permanent delete only: the review opens on Cancel, and its copy says it cannot be undone and takes the pairs.
+    await expect(review(page).getByRole('button',{name:'Cancel',exact:true})).toBeFocused();
+    await expect(review(page).locator('p.small').first()).toHaveText(/^Deleting a prompt in a saved pair also removes its saved pairs/);
+    await expect(review(page).locator('p.small').nth(1)).toContainText('the only way back is to restore the safety backup taken first');
     await expect(row(page,'Delete permanently')).toHaveText('1 prompt in a saved pair');
     await expect(row(page,'Saved pairs removed')).toHaveText(/^1 saved pair/);
     await expect(row(page,'Backup')).toHaveText('Create and verify before deleting');

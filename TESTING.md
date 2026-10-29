@@ -2819,7 +2819,8 @@ is #482's Delete permanently grid ("Saved pairs removed" and "Negatives kept" on
 pair); an archived prompt used as another prompt's negative cannot be deleted and **stays archived** ("Stays archived: R
 prompts used as another prompt's negative"); one restored since the shelf was read is "No longer archived (kept)" and
 never written; a review with nothing to delete is close-only ("None of the selected prompts can be deleted."). The
-primary is "Delete N prompts". The same preview, safety backup, review digests, `records` hold and epoch fence apply.
+primary is "Delete N prompts"; the review opens with focus on Cancel (it is only a permanent delete; `openReviewDialog`'s
+`focusCancel`). The same preview, safety backup, review digests, `records` hold and epoch fence apply.
 
 The routes take an optional `shelf` (`"active"`, the default, or `"archived"`; anything else 400). Under it an archived
 prompt is classified by its pairs and a prompt without an archive row is `not_archived`; the held write classifies the

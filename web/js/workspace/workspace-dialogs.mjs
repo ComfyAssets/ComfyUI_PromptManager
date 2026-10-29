@@ -477,7 +477,7 @@ function requireGrid(grid) {
  * an option, and `{setTitle(term, text)}` for a value's hover title.
  */
 export function openReviewDialog({ scope, title, heading = null, grid, options = [], sentence = null, backup = null,
-    cancelLabel, primary, onStart, trigger = null, onDismiss = null }) {
+    cancelLabel, primary, onStart, trigger = null, onDismiss = null, focusCancel = false }) {
     requireScope(scope);
     requireCallbacks({ onStart, ...(onDismiss ? { onDismiss } : {}) });
     for (const [name, text] of Object.entries({ title, cancelLabel, label: primary?.label })) {
@@ -519,7 +519,9 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
     actions.append(cancel, start);
     nodes.push(actions);
     // Cancel, ×, Escape, a replacing dialog or the page leaving: everything but the primary is a dismissal.
-    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null, review: true });
+    // `focusCancel` (#492): a review whose primary cannot be undone opens on Cancel instead of ×.
+    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null, review: true,
+        ...(focusCancel ? { focusTarget: cancel } : {}) });
     return {
         setValue(term, text) {
             const dd = values.get(term);

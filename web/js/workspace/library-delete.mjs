@@ -240,7 +240,8 @@ export function openDeleteReview({ scope, trigger, review, titleOf, onStart, onD
     const choice = hasPairedChoice(review) ? pairedChoice(value => update(value)) : null;
     const dialog = openReviewDialog({ scope, trigger, title, grid, options: choice ? [choice, ...sentences] : sentences,
         cancelLabel: 'Cancel', primary: { label: primaryLabel(current), danger: true },
-        onStart: () => onStart(current), onDismiss });
+        // #492: the archived shelf's review is only a permanent delete, so it opens on Cancel.
+        focusCancel: onArchivedShelf(current), onStart: () => onStart(current), onDismiss });
     function update(value) {
         current = withChoice(review, value);
         dialog.setRows(reviewGrid(current, titleOf));
