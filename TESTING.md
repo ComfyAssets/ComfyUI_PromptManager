@@ -1830,8 +1830,9 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   blocks' context ("Current file image tags" in History). An empty source draws no
   section. Repeats are removed within a source only, so a linked tag that is also an
   image tag shows in both sections and each count is true. D21's filter rules are
-  unchanged. History's current-file read carries no `image_tags` facet (D88), so there
-  only the linked section shows. `tests/browser/inspector-concept.spec.mjs` wraps the
+  unchanged. History's current-file read carries the same `image_tags` facet as the Images
+  read (#457), so History's inline current file and its viewer show the image tags section
+  too (`test_current_inspection_carries_the_files_image_tags`). `tests/browser/inspector-concept.spec.mjs` wraps the
   concept's row in the same sections at runtime (`withTagSections`, the D154 rule
   injected) and compares the measured sections (frame, heading, label, row); a
   mutation of the label color, the row margin or the top rule fails it. Browser tests:
@@ -6332,7 +6333,7 @@ The versioned public reads are:
 | `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest` | The pair's newest recorded run for the history run dot (#249 D26): `{run: {run_id, anchor_id, context_id}}` or `{run: null}` |
 | `GET /prompt_manager/history/runs/{run_id}` | Frozen fields, per-field provenance, capture and outcome for a known UUID |
 | `GET /prompt_manager/history/runs/{run_id}/outputs` | Ordered host-reported occurrences, including repeated locations |
-| `GET /prompt_manager/history/runs/{run_id}/output/current/{media,thumbnail,inspection}` | Authorized current file at that reported location, using the returned epoch/scope URL |
+| `GET /prompt_manager/history/runs/{run_id}/output/current/{media,thumbnail,inspection}` | Authorized current file at that reported location, using the returned epoch/scope URL; `inspection` carries the shared inspector envelope including the file's `image_tags` facet (#457) |
 
 The newest-pair read takes no query. It answers 404 when the positive is not an
 eligible saved prompt or the pair is not one of its pairs. It walks the positive's exact

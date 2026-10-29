@@ -887,6 +887,36 @@ class TestImageTagsFacet(unittest.TestCase):
         self.assertNotIn("image_tags", json.loads(encode(inspection({}))))
         self.assertNotIn("image_tags", self.encoded(None))
 
+    def history_encoded(self, facet):
+        from utils.inspection_response import encode_history_inspection_response
+
+        body = encode_history_inspection_response(
+            current_output={"history_epoch": "epoch"},
+            file={"observation": "current-file", "size": 100},
+            prompts=PROMPTS,
+            resolution={"state": "resolved", "sampler_id": "3", "reason": ""},
+            inspection=inspection({"prompt": graph_text()}),
+            library={"status": "none"},
+            image_tags=facet,
+        )
+        return json.loads(body)
+
+    def test_history_envelope_validates_image_tags_like_the_rooted_one(self):
+        """#457: History's current-file read carries the same facet."""
+        for facet in (
+            {"state": "current", "tags": ["dunes", "warm_light"]},
+            {"state": "none", "tags": []},
+            {"state": "unavailable", "tags": []},
+            {"state": "current", "tags": ["a,b"]},
+            {"state": "current", "tags": [], "locator": "/abs/path.png"},
+        ):
+            with self.subTest(facet=facet):
+                self.assertEqual(
+                    self.history_encoded(facet)["image_tags"],
+                    self.encoded(facet)["image_tags"],
+                )
+        self.assertNotIn("image_tags", self.history_encoded(None))
+
 
 class TestVideoProbeBoundsMatchPngBudgets(unittest.TestCase):
     """ffprobe escapes tag text; the stdout bounds must never gate a record
