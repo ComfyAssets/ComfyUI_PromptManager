@@ -17,7 +17,7 @@ import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 import {mountLibrarySelection} from './library-selection.mjs';
 import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
-import {COPY as DELETE_COPY,RESTORE_URL,restoreOutcome} from './library-delete.mjs';
+import {COPY as DELETE_COPY,RESTORE_URL,archivedNoticeText,restoreOutcome} from './library-delete.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -521,7 +521,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const notice=el('div',undefined,'notice library-archived-notice'),copy=el('div'),row=el('div',undefined,'row-actions');
             const status=el('p','','small');status.setAttribute('role','status');status.hidden=true;
             const restore=createButton('Restore');restore.setAttribute('aria-label','Restore this prompt to the Prompt library');
-            copy.append(el('h2','Archived'),el('p',DELETE_COPY.archivedNotice),status);row.append(restore);notice.append(copy,row);
+            copy.append(el('h2','Archived'),el('p',archivedNoticeText(shown.positive.variant_count)),status);row.append(restore);notice.append(copy,row);
             content.listen(restore,'click',async()=>{
                 if(restore.getAttribute('aria-disabled')==='true') return;
                 restore.setAttribute('aria-disabled','true');status.hidden=true;

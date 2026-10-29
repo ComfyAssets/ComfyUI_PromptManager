@@ -136,3 +136,15 @@ test('reviewOf keeps only well-formed ids and counts from an answer', async () =
     assert.deepEqual(review, {epoch: null, delete: [1, 2], archive: [], protected: [], alreadyArchived: 0, notFound: 0,
         imageLinks: 2, backup: 'on', disk: null});
 });
+
+test('the archived notice says why (the saved pair) and names negative variants only when there are any', async () => {
+    const {archivedNoticeText} = await source;
+    assert.equal(archivedNoticeText(0), 'This prompt is archived because it is in a saved pair. It is hidden from the Prompt ' +
+        'library; nothing was removed.');
+    assert.equal(archivedNoticeText(1), 'This prompt is archived because it is in a saved pair. It and its 1 negative variant ' +
+        'are hidden from the Prompt library; nothing was removed.');
+    assert.equal(archivedNoticeText(3), 'This prompt is archived because it is in a saved pair. It and its 3 negative variants ' +
+        'are hidden from the Prompt library; nothing was removed.');
+    // An unknown count (an older server) never claims variants.
+    assert.equal(archivedNoticeText(undefined), archivedNoticeText(0));
+});

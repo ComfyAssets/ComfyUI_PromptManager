@@ -28,7 +28,6 @@ export const COPY = Object.freeze({
     restoreStorage: 'The library was restored or moved since this page loaded. No prompt was returned to the Library.',
     restoreUnconfirmed: 'Returning the prompts could not be confirmed. The Library was reloaded.',
     restoreFailed: 'The prompts could not be returned to the Library. Try again.',
-    archivedNotice: 'This prompt and its negative variants are hidden from the Prompt library; nothing was removed.',
     archivedText: 'This text is an archived prompt. Restore it to show it in the Prompt library again.',
 });
 
@@ -59,6 +58,14 @@ export function protectedNames(review, titleOf) {
     const shown = names.slice(0, 3).join(', ');
     const more = review.protected.length - Math.min(3, names.length);
     return more > 0 ? `${shown}${shown ? ' and ' : ''}${more.toLocaleString('en-US')} more` : shown;
+}
+
+/** An archived prompt's page notice: why it is archived, and its negative variants only when it has any. */
+export function archivedNoticeText(variantCount) {
+    const hidden = Number.isSafeInteger(variantCount) && variantCount > 0
+        ? `It and its ${countOf(variantCount, 'negative variant')} are hidden`
+        : 'It is hidden';
+    return `This prompt is archived because it is in a saved pair. ${hidden} from the Prompt library; nothing was removed.`;
 }
 
 /** The review's `[term, value]` rows (design §7.2); rows that do not apply are left out. */

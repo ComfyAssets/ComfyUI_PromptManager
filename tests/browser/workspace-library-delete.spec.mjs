@@ -111,7 +111,9 @@ test('an archived prompt\'s page says so and restores it from its notice',async(
     await page.goto(`/prompt_manager/workspace#/library/${cat.id}`);
     const notice=page.locator('.library-archived-notice');
     await expect(notice.locator('h2')).toHaveText('Archived');
-    await expect(notice.locator('p').first()).toHaveText('This prompt and its negative variants are hidden from the Prompt library; nothing was removed.');
+    // The notice says why (the saved pair) and counts the prompt's negative variants (live note on #470).
+    expect(cat.variant_count).toBeGreaterThan(1);
+    await expect(notice.locator('p').first()).toHaveText(`This prompt is archived because it is in a saved pair. It and its ${cat.variant_count} negative variants are hidden from the Prompt library; nothing was removed.`);
     await notice.getByRole('button',{name:'Restore this prompt to the Prompt library'}).click();
     await expect(toast(page)).toHaveText('Restored 1 prompt to the Prompt library.');
     await expect(notice).toHaveCount(0);

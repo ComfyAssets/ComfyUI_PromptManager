@@ -2668,8 +2668,9 @@ rulings of 2026-10-28):
   shelf. Restore posts `{prompt_ids, expected_epoch}` to `POST
   /prompt_manager/library/restore` (every requested archived id, protected or not): "Restored
   N prompts to the Prompt library."
-- An archived prompt's page shows the concept's `.notice` ("Archived" / "This prompt and its
-  negative variants are hidden from the Prompt library; nothing was removed.") with Restore;
+- An archived prompt's page shows the concept's `.notice` ("Archived" / "This prompt is archived
+  because it is in a saved pair. It and its N negative variants are hidden from the Prompt library; nothing was
+  removed.", or "It is hidden from…" when it has none) with Restore;
   everything else on the page works. New prompt or Add negative on an archived prompt's
   text keeps it archived and toasts "This text is an archived prompt. Restore it to show it
   in the Prompt library again."
