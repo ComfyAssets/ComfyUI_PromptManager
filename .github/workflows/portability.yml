@@ -54,14 +54,19 @@ jobs:
       # The runner's TEMP is on C:, the OS disk, where a flush took about 6 ms
       # and a test database's create-to-delete about 111 ms; on the D: work
       # disk the same took 0.5 ms and 23 ms (macOS: 19 ms). Tests write their
-      # databases under TEMP, so it moves to the runner's temp folder on D:
-      # (measured in #487, run 40915866444).
+      # databases under TEMP, so it moves to a folder on D: (measured in #487,
+      # run 40915866444). The runner's TEMP was an 8.3 short name
+      # (C:\Users\RUNNER~1\...), so the new one is spelled by its short name too
+      # when the disk has them, and paths still have to be resolved.
       - name: Keep test files on the work disk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
-          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          $folder = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "PromptManagerTests")
+          $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($folder.FullName).ShortPath
+          Write-Output "test TEMP: $short (long name $($folder.FullName))"
+          "TEMP=$short" >> $env:GITHUB_ENV
+          "TMP=$short" >> $env:GITHUB_ENV
 
       - name: Run tests
         env:
