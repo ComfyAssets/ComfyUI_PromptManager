@@ -130,7 +130,7 @@ test('panel matches the concept order and copy',async({page,request})=>{
     // Linked, workflow inferred: every concept element.
     await expect(panel.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);
     expect(await panelStructure(panel)).toEqual({outer:['img.detail-cover','div.detail-inner','div.detail-footer'],
-        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid']});
+        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','section.tag-section.linked-tags','dl.meta-grid']});
     await expect(panel.locator('img.detail-cover')).toHaveAttribute('alt','');
     await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');
     await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');
@@ -139,9 +139,13 @@ test('panel matches the concept order and copy',async({page,request})=>{
     // #332 MC8: the chip names where its value came from, in visible text after the category.
     await expect(badges.locator('span.chip:not(.blue)')).toHaveText('Recipe category: Inspection · recipe');
     await expect(badges.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
-    // Recipe tags are not the positive tags the Images Tags filter matches, so they stay plain chips (D21 ruling).
-    await expect(panel.locator('.detail-inner > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);
-    await expect(panel.locator('.detail-inner > .tags button')).toHaveCount(0);
+    // Recipe tags are not the positive tags the Images Tags filter matches, so they stay plain chips (D21 ruling); D154
+    // (#449) labels their own section after the negative prompt, named for the recipe as D146's category chip is.
+    const recipeTags=panel.getByRole('region',{name:'Recipe tags',exact:true});
+    await expect(recipeTags).toHaveClass('tag-section linked-tags');
+    await expect(recipeTags.locator('.prompt-heading .role-label')).toHaveText('Recipe tags · 2');
+    await expect(recipeTags.locator('.tags > span.chip')).toHaveText(['fixture','geometric']);
+    await expect(panel.locator('.tag-section button')).toHaveCount(0);
     await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);
     await expect(panel.locator('.meta-grid dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     const footer=panel.locator('.detail-footer');
@@ -149,7 +153,7 @@ test('panel matches the concept order and copy',async({page,request})=>{
     await expect(footer.locator('button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
     await expect(footer.locator('button.send')).toHaveAccessibleName(`Send prompt pair to ComfyUI: ${POSITIVE_TITLE}`);
     await expect(footer.locator('button.send svg.icon')).toHaveCount(1);await expect(footer.locator('button:not(.send) svg.icon')).toHaveCount(2);
-    await expect(panel).not.toContainText(/prompt evidence|Recipe tags|Positive prompt tags/);
+    await expect(panel).not.toContainText(/prompt evidence|Positive prompt tags/);
     // Execution recorded and embedded parameters (D21), with the extension chip naming an unverified format.
     reads.patch=data=>{for (const role of ['positive','negative']) data.prompts[role].source='execution';};
     await selectFile(page,'explicit-empty.png');await expect(panel.locator('.panel-heading h2')).toHaveText('explicit-empty.png');
@@ -168,18 +172,20 @@ test('panel matches the concept order and copy',async({page,request})=>{
     // Ambiguous saved association: the same honest absence.
     reads.patch=data=>{data.library={...data.library,status:'ambiguous',positive_id:null,pair_id:null,title:null,category:null,tags:[],category_scope:null,tags_scope:null};};
     await selectFile(page,'workflow-only.png');await expect(panel.locator('.panel-heading h2')).toHaveText('workflow-only.png');
-    await expect(panel.locator('.chip:not(.blue)')).toHaveCount(1);await expect(panel.locator('.detail-inner > .tags button')).toHaveCount(0);
+    await expect(panel.locator('.chip:not(.blue)')).toHaveCount(1);await expect(panel.locator('.tag-section')).toHaveCount(0);
     await expect(panel.getByRole('button',{name:'Prompt history',exact:true})).toHaveCount(0);
     // D39 mixed scopes: each field follows its own source, so the prefix and the tag chips can disagree.
-    const tagRow=panel.locator('.detail-inner > .tags').last();
+    const tagRow=panel.locator('.tag-section.linked-tags > .tags');
     reads.patch=data=>{data.library={...data.library,status:'linked',category:'Subject',category_scope:'pair',tags_scope:'positive',tags:['alpha','beta']};};
     await selectFile(page,'complete.png');
     await expect(panel.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Recipe category: ');
     await expect(tagRow.getByRole('button')).toHaveText(['alpha','beta']);
+    await expect(panel.locator('.tag-section.linked-tags .role-label')).toHaveText('Prompt tags · 2');
     reads.patch=data=>{data.library={...data.library,status:'linked',category:'Subject',category_scope:'positive',tags_scope:'pair',tags:['alpha','beta']};};
     await selectFile(page,'workflow-only.png');
     await expect(panel.locator('span.chip:not(.blue) .ca-visually-hidden')).toHaveText('Positive prompt category: ');
     await expect(tagRow.locator('span.chip')).toHaveText(['alpha','beta']);await expect(tagRow.getByRole('button')).toHaveCount(0);
+    await expect(panel.locator('.tag-section.linked-tags .role-label')).toHaveText('Recipe tags · 2');
     // Loading and error states render in `.detail-inner` as `.small` text with the existing buttons.
     reads.patch=null;await page.unroute('**/images/inspect/**');
     await page.route('**/images/inspect/**',route=>route.fulfill({status:500,json:{success:false,error:'broken'}}));
@@ -243,7 +249,7 @@ test('tag chip filters Images by that tag',async({page,request})=>{
     await page.goto('/prompt_manager/workspace#/images');await selectFile(page,'workflow-only.png');
     const panel=page.getByRole('complementary',{name:'Selected image details',exact:true});
     const listing=page.waitForRequest(item=>item.url().includes('/images/output?')&&new URL(item.url()).searchParams.has('tags'));
-    await panel.locator('.detail-inner > .tags').getByRole('button',{name:'geometric',exact:true}).click();
+    await panel.getByRole('region',{name:'Prompt tags',exact:true}).getByRole('button',{name:'geometric',exact:true}).click();
     expect(new URL((await listing).url()).searchParams.get('tags')).toBe('geometric');
     await expect(page.locator('article[data-image-key="0:inspector/workflow-only.png"]')).toBeVisible();
     await expect(page.locator('article[data-image-key="0:inspector/complete.png"]')).toBeVisible();
@@ -290,14 +296,14 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     // The panel content without the cover, D117's Copy settings summary after the facts, then the two disclosures,
     // then the pair send and history buttons (D20) and D139's Collections….
     expect(await viewerStructure(details)).toEqual({outer:['div','button.send','button','button'],
-        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','div.tags','dl.meta-grid','button.settings-summary','details','details']});
+        inner:['div.panel-heading','p.small','div.tags','section.prompt-section.positive','section.prompt-section.negative','section.tag-section.linked-tags','dl.meta-grid','button.settings-summary','details','details']});
     await expect(details.locator(':scope > div > button')).toHaveText('Copy settings summary');
     await expect(details.locator(':scope > div > button.settings-summary')).toHaveCSS('white-space','normal');
     await expect(details.locator('.detail-cover,.detail-inner,.detail-footer')).toHaveCount(0);
     await expect(details.locator('.panel-heading h2')).toHaveText(POSITIVE_TITLE);await expect(details.locator('.panel-heading .chip')).toHaveText('PNG');
     await expect(details.locator(':scope > div > p.small')).toHaveText('complete.png');
     await expect(details.locator('span.chip.blue')).toHaveText('Workflow inferred');
-    await expect(details.locator(':scope > div > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);
+    await expect(details.getByRole('region',{name:'Recipe tags',exact:true}).locator('.tags > span.chip')).toHaveText(['fixture','geometric']);
     await expect(details.locator('.meta-grid').first().locator('dd')).toHaveText(['9007199254740993','28','6.5','dpmpp_2m','karras','fixture-model.safetensors']);
     await expect(details.locator('summary')).toHaveText(['File & provenance','Workflow & raw metadata']);
     await expect(details.locator(':scope > button')).toHaveText(['Send to ComfyUI','Prompt history','Collections…']);
@@ -311,7 +317,9 @@ test('viewer details hold provenance, raw records and downloads',async({page,req
     await expect(provenance.getByText('Prompt evidence: workflow inferred',{exact:true})).toBeVisible();
     await expect(provenance.getByText('Saved association; not verified against current file',{exact:true})).toBeVisible();
     await expect(provenance.getByRole('link',{name:'Download original',exact:true})).toBeVisible();
-    await expect(details).not.toContainText(/Configuration evidence|Embedded parameter evidence|prompt evidence|extension|Recipe tags/);
+    // D154 (#449) labels the recipe's tags in their own section; the other legacy labels stay gone.
+    await expect(details).not.toContainText(/Configuration evidence|Embedded parameter evidence|prompt evidence|extension/);
+    await expect(details.locator('.tag-section.linked-tags .role-label')).toHaveText('Recipe tags · 2');
     // Workflow & raw metadata: the concept's focusable `pre`, then the downloads with their unavailable reasons.
     const raw=details.locator('details').last();await raw.locator('summary').click();
     await expect(raw.locator('pre[tabindex="0"] > code').first()).toBeVisible();
@@ -467,7 +475,7 @@ test('full inspector keeps long literal content reachable on mobile',async({page
 
 test('embedded gallery uses the same full inspector',async({page,request})=>{
     await expect(await request.post('/__test__/reset',{data:{full_inspector:true}})).toBeOK();const list=await(await request.get('/prompt_manager/library')).json();const id=list.items.find(item=>item.text.startsWith('Inspector portrait')).id;
-    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel.locator('.detail-inner > .tags').last().locator('span.chip')).toHaveText(['fixture','geometric']);await expect(panel).not.toHaveAttribute('id','image-inspector');await openSelected(page);await expect(page.locator('#viewer-dialog .file-inspector')).toHaveCount(1);
+    await page.goto(`/prompt_manager/workspace#/library/${id}`);await selectFile(page,'complete.png');const panel=inspector(page);await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.meta-grid dt')).toHaveText(['Seed','Steps','CFG','Sampler','Scheduler','Model']);await expect(panel.getByRole('region',{name:'Recipe tags',exact:true}).locator('.tags > span.chip')).toHaveText(['fixture','geometric']);await expect(panel).not.toHaveAttribute('id','image-inspector');await openSelected(page);await expect(page.locator('#viewer-dialog .file-inspector')).toHaveCount(1);
 });
 
 test('Prompt history to the shown route closes the viewer and re-renders it, as the concept go() does',async({page,request})=>{

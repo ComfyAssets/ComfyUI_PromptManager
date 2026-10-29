@@ -731,8 +731,9 @@ The shared inline and collection inspector reads the current rooted file's suppo
 embedded records, exact generation facts and recorded or inferred prompt evidence.
 It renders in two concept surfaces (#249 D20–D22, D38). The Images side panel shows
 only the concept content: cover, title, filename, the evidence badge with a category
-chip naming its origin (D146), the + and − prompt blocks with copy and send, tag chips (the file's own image
-tags first, D88, then the linked tags; image tags and the linked positive's own tags
+chip naming its origin (D146), the + and − prompt blocks with copy and send, the tag chips in labelled
+sections after the negative prompt (D154: "Image tags · N" for the file's own image tags, D88, then "Prompt
+tags · N" or "Recipe tags · N" for the linked tags; image tags and the linked positive's own tags
 filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
 "Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
 scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
@@ -1396,7 +1397,7 @@ The Images page renders the concept's DOM with real data. Its controls, top to b
   (click, Enter, Space); Info selects the card into the side panel; the star toggles
   the favorite; arrows, Home and End move between cards. Bounded rendering keeps the
   DOM small, and returning to Images restores filters, layout, size, selection and
-  scroll.
+  scroll (a layout or size the toolbar never changed follows newer defaults, D157).
 - **Continuation** (`#gallery-continuation`): scrolling near it loads the next page;
   `Load more images` and `Retry` do the same by hand, with a toast per batch.
 - **Viewer** (`dialog#viewer-dialog`): "<title> · <filename>", the concept toolbar
@@ -1523,6 +1524,9 @@ Recorded deviations on this page (spec §8):
   filters, while recipe, recorded-run and embedded tags stay plain `span.chip`.
   Amended by D88 (#249 PR C): the file's own current image tags lead the same row
   and are filters too; a linked tag already shown (case-insensitive) is left out.
+  Amended by D154 (#449): the image tags and the linked tags each sit in their own
+  labelled section, and a linked tag stays in its section even when an image tag
+  has the same name.
   Amended by D146 (#332): the category chip also names its origin in visible text
   after the category (" · this image", " · prompt", " · recipe"), and an image's own
   category shows for an unlinked or ambiguous file too.
@@ -1682,6 +1686,29 @@ Recorded deviations on this page (spec §8):
   `scroll-margin-block-end: 96px`, so it is never under the toast.
   `Rescan toast does not cover the discovery alert it leaves` ends the window inside
   the toast's band at 1600 and 390 pixels and measures both boxes.
+- **D157** (#451, maintainer request, beyond the concept): Images opens in **Masonry**
+  when this browser has no Default layout (`gallery-settings.js`
+  `DEFAULT_SETTINGS.workspaceLayout`); the concept starts at Grid (`state.view`, app.js
+  208). A stored choice is kept, and an invalid value reads as Masonry. Saved views,
+  favorites, collections and the embedded galleries keep their fixed Grid/Comfortable.
+  The return to Images (the last visit) keeps a layout or thumbnail size its toolbar
+  changed; a value it kept from the defaults it started with follows a Default layout or
+  Thumbnail size saved since, in this tab or another (a toolbar List then Default =
+  Masonry stays List; a toolbar List then back to Grid counts as untouched). A cover crop
+  of a generated image (Grid and List card art, Library card art, the side panel's and
+  History's inspector cover, the Tag image preview) uses `object-position: 50% 20%`
+  instead of the concept's centre: it acts only when the image is taller than its box
+  (portraits keep heads and faces), and a wider image stays centred. Masonry shows the
+  whole image and keeps the centre. The concept comparisons (`openProduction`) and the
+  specs of the Grid's own geometry start production from the concept's state, a stored
+  Default layout of Grid (`startInGrid`, concept-inventory.mjs, only while the browser
+  stored nothing); the comparisons do not measure `object-position`.
+  `a fresh browser opens Images in Masonry (#451)`, `a Default layout saved later reaches
+  the next Images visit in this tab (#451)`, `... in another tab ... (#451)` and `cover
+  crops keep the top of a portrait image; Masonry stays centred (#451)`
+  (workspace-system.spec.mjs) cover it. A browser whose legacy gallery wrote the old
+  default (`"grid"`) keeps Grid until Default layout is changed or "Reset display
+  defaults" is saved.
 
 `tests/browser/inspector-concept.spec.mjs` compares the side panel and the viewer's
 full details (#249 D4) for alpine_00001.png, at 1600x1100 and 390x844 in both themes:
@@ -1787,6 +1814,30 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   concept image's tags saved as its image tags production still equals the concept.
   After a Tag save the selected file's inspection is re-read, so the panel redraws
   the row without reselecting and the viewer, which shares that inspection, shows it.
+  Amended by D154 (#449): the one row is now two labelled sections.
+- **D154** (#449, beyond the concept): the inspector's tags no longer follow the
+  negative prompt as a bare `.tags` row, where they read as part of it. Every surface of
+  the shared inspector (the Images side panel, the viewer details, History's inline
+  current file, the Library-embedded gallery and Activity) draws them in
+  `section.tag-section` regions in the concept's prompt-section frame (the
+  `.prompt-section` top rule with 15px padding and margin, a `.prompt-heading` with a
+  `.role-label`, the row's own 12px top margin dropped; workspace.css). The label is
+  muted (`--ca-muted`, as `.meta-grid dt`), because tags are neither prompt role. First
+  `section.tag-section.image-tags` "Image tags · N" (the file's current image tags, D88),
+  then `section.tag-section.linked-tags` "Prompt tags · N" for the linked positive's
+  tags or "Recipe tags · N" for a recipe's own (`tags_scope`, named as D146's category
+  chip names its origin). Each region is named without its count and with the prompt
+  blocks' context ("Current file image tags" in History). An empty source draws no
+  section. Repeats are removed within a source only, so a linked tag that is also an
+  image tag shows in both sections and each count is true. D21's filter rules are
+  unchanged. History's current-file read carries no `image_tags` facet (D88), so there
+  only the linked section shows. `tests/browser/inspector-concept.spec.mjs` wraps the
+  concept's row in the same sections at runtime (`withTagSections`, the D154 rule
+  injected) and compares the measured sections (frame, heading, label, row); a
+  mutation of the label color, the row margin or the top rule fails it. Browser tests:
+  "D154: image tags sit in their own labelled section after the negative prompt, in
+  the panel and the viewer" and "the inline current file labels its image tags after
+  its negative prompt".
 - **D115** (beyond the plan's list): the concept always has a selected image, so
   its "Auto-tag images" always opens the dialog. Production opens it for the image
   selected in Images when it was last left; with none it is `aria-disabled` and
@@ -1872,6 +1923,7 @@ production-versus-concept difference of PR C and its record:
 | Suggestions count field | D91 (ruling T3-bulk) |
 | No prototype note, "Suggestions from …", no " in this tab" | D29 |
 | Image tags first in the inspector and viewer chip row | D88 (ruling T7/C2) |
+| Image tags and linked tags in labelled sections after the negative prompt | D154 (#449) |
 | Auto-tag images `aria-disabled` without a selected image | D115 |
 | Retry leads the actions when the controller allows it | D116 (ruling T5) |
 | States the concept lacks (busy, conflict, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
