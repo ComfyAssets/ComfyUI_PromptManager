@@ -884,7 +884,7 @@ class AdminRoutesMixin:
         media_files = []
         seen = set()
         # #480: a file removed from the library is never a copy or a keeper.
-        marks = self.db.removal_marks()
+        marks = self._removal_marks()
         for slot, root in enumerate(roots):
             for path in _collect_media_files([root], extensions):
                 try:

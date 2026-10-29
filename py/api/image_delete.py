@@ -46,9 +46,11 @@ from .job_routes import busy_response
 from .maintenance import MAINTENANCE_PREVIEW_LEASE, _fail_job, _failure, backup_note
 
 try:
+    from ...database import image_removal_schema
     from ...database.annotation_schema import MAX_LOCATOR_LENGTH
     from ...utils import trash
 except ImportError:
+    from database import image_removal_schema
     from database.annotation_schema import MAX_LOCATOR_LENGTH
     from utils import trash
 
@@ -417,6 +419,19 @@ class ImageDeleteMixin:
 
     # ── the workspace listing ─────────────────────────────────────────
 
+    def _removal_marks(self) -> dict:
+        """The removal marks, cached until a mark changes or the database does.
+
+        A listing page reads no table while nothing changed: the cache follows
+        this process's marks generation and the database identity (a restore).
+        """
+        key = (self._database_identity(self.db), image_removal_schema.generation())
+        cached = getattr(self, "_marks_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, self.db.removal_marks())
+            self._marks_cache = cached
+        return cached[1]
+
     def _hidden_entries(self, listings) -> set:
         """Normalized paths of listed files a removal mark hides (blocking).
 
@@ -424,7 +439,7 @@ class ImageDeleteMixin:
         ``lstat``'ed: a mark hides a file while its size and ``mtime_ns`` are
         still the ones it was removed with.
         """
-        marks = self.db.removal_marks()
+        marks = self._removal_marks()
         if not marks:
             return set()
         located = self._workspace_locators(listings)
@@ -443,7 +458,7 @@ class ImageDeleteMixin:
 
     def _removed_paths(self, paths) -> set:
         """The absolute paths among *paths* a removal mark hides (blocking)."""
-        marks = self.db.removal_marks()
+        marks = self._removal_marks()
         if not marks:
             return set()
         hidden = set()

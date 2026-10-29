@@ -425,6 +425,12 @@ class PromptManagerAPI(
         # Reviewed maintenance plans under single-use tokens; a restart
         # forgets them (py/api/maintenance.py).
         self._maintenance_plans = PlanStore()
+        # #480: the removal marks the workspace listing hides, read once now so
+        # a listing page reads no table until a mark or the database changes.
+        try:
+            self._removal_marks()
+        except Exception:
+            self.logger.warning("Removal marks could not be read", exc_info=True)
 
         # A safety backup interrupted by a crash leaves its temp copy behind.
         try:

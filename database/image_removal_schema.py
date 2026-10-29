@@ -140,6 +140,21 @@ BUMP_MARKS_SQL = (
 )
 
 
+# Bumped whenever this process writes or clears a mark (even in a transaction
+# that later rolls back): readers that cache the marks reload when it moves.
+_generation = 0
+
+
+def generation() -> int:
+    """The marks generation of this process (see ``_generation``)."""
+    return _generation
+
+
+def _bump() -> None:
+    global _generation
+    _generation += 1
+
+
 def has_marks_table(conn: sqlite3.Connection) -> bool:
     return (
         conn.execute(
@@ -167,6 +182,7 @@ def write_mark(
 ):
     conn.execute(_MARK_SQL, (locator, int(size), int(mtime_ns), now))
     conn.execute(BUMP_MARKS_SQL)
+    _bump()
 
 
 def clear_marks(conn: sqlite3.Connection, locators) -> int:
@@ -183,6 +199,7 @@ def clear_marks(conn: sqlite3.Connection, locators) -> int:
         removed += conn.execute(_UNMARK_SQL, (locator,)).rowcount
     if removed:
         conn.execute(BUMP_MARKS_SQL)
+        _bump()
     return removed
 
 
