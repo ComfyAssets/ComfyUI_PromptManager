@@ -39,6 +39,7 @@ from .review_schema import (
 )
 from .saved_views import migrate_saved_views, saved_views_schema_error
 from .image_categories import image_categories_schema_error, migrate_image_categories
+from .prompt_archive import migrate_prompt_archive, prompt_archive_schema_error
 from .workflow_documents import (
     DOCUMENT_ID_COLUMNS,
     migrate_workflow_documents,
@@ -358,6 +359,8 @@ class PromptModel:
         migrate_autotag_state(conn)
         # Image categories (#332): independent of every table above.
         migrate_image_categories(conn)
+        # The Library parent archive (#443): independent of every table above.
+        migrate_prompt_archive(conn)
         # Last: the older generated_images rebuilds run only before file_path.
         migrate_workflow_documents(conn)
 
@@ -1234,6 +1237,11 @@ class PromptModel:
             )
             if categories_error:
                 return False, categories_error
+            archive_error = prompt_archive_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if archive_error:
+                return False, archive_error
             views_error = saved_views_schema_error(
                 conn, allow_missing=not require_library_state
             )

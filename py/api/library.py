@@ -155,6 +155,13 @@ def _archive_scope(request: web.Request) -> str:
     return value
 
 
+def _shelf(request: web.Request) -> str:
+    value = request.query.get("shelf", "active")
+    if value not in ("active", "archived"):
+        raise ValueError("shelf must be active or archived")
+    return value
+
+
 def _missing() -> web.Response:
     return web.json_response(
         {"success": False, "error": "Positive prompt not found"}, status=404
@@ -295,6 +302,9 @@ class LibraryRoutesMixin:
             "category": request.query.get("category"),
             "tags": sorted(set(request.query.getall("tag", []))),
             "sort": request.query.get("sort", "newest"),
+            # #443: which shelf; part of the cursor scope, so a cursor never
+            # crosses shelves. Not the variant ``archive`` scope of /{id}.
+            "shelf": _shelf(request),
         }
         limit = _page_limit(request)
         cursor = request.query.get("cursor")

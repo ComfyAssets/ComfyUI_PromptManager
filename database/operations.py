@@ -24,6 +24,7 @@ from .review import ReviewOperations
 from .review_decisions import ReviewDecisionOperations
 from .saved_views import SavedViewOperations
 from .library_commands import LibraryCommandOperations
+from .library_archive import LibraryArchiveOperations, delete_prompt_rows
 from .vocabulary import VocabularyOperations
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations
@@ -448,6 +449,7 @@ class PromptDatabase(
     PairOperations,
     LibraryOperations,
     LibraryCommandOperations,
+    LibraryArchiveOperations,
     VocabularyOperations,
     ExecutionHistoryOperations,
     ExecutionContextOperations,
@@ -2344,16 +2346,10 @@ class PromptDatabase(
         Returns:
             Number of prompts actually deleted.
         """
-        count = 0
         with self._pair_transaction() as conn:
             self._ensure_prompts_unpaired(conn, prompt_ids)
-            documents = documents_of_rows(conn, "prompt_id", prompt_ids)
-            for pid in prompt_ids:
-                conn.execute("DELETE FROM generated_images WHERE prompt_id = ?", (pid,))
-                cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (pid,))
-                if cursor.rowcount > 0:
-                    count += 1
-            release_documents(conn, documents)
+            # The workspace Library's delete runs the same statements (#443).
+            count = delete_prompt_rows(conn, list(dict.fromkeys(prompt_ids)))
             conn.commit()
         return count
 

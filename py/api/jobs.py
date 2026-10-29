@@ -123,6 +123,9 @@ MODEL_DOWNLOAD_JOB_KIND = "model_download"
 DUPLICATES_JOB_KIND = "duplicates"
 DUPLICATE_GROUP_NAMES = ("groups_found",)
 DUPLICATE_CLEANUP_GROUP_NAMES = ("removed", "kept", "errors")
+# The workspace Library's Delete… (#443, py/api/library_delete.py): a
+# ``records`` hold around its safety backup and write.
+PROMPT_DELETE_JOB_KIND = "prompt_delete"
 # The System health check (py/api/system.py): a read-only ``read`` job with
 # no file outcomes, so it may run beside a scan.
 HEALTH_JOB_KIND = "health"

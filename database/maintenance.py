@@ -81,6 +81,12 @@ PROTECTIONS = (
         "with Library state (a title or an explicit parent)",
     ),
     (
+        # #443: an archived prompt is restorable, never pruned.
+        "EXISTS (SELECT 1 FROM prompt_archive pa WHERE pa.prompt_id = p.id)",
+        "archived in the Library",
+        "archived in the Library",
+    ),
+    (
         "p.id IN (SELECT prompt_id FROM live_hint_prompts)",
         "used by recorded runs",
         "used by a recorded run",
@@ -88,7 +94,8 @@ PROTECTIONS = (
 )
 
 # Exempt references: images, pairs, the __protected__ tag, Library parent
-# state, and live recorded-run hints (computed once, see LIVE_HINT_CTES).
+# state, the Library archive, and live recorded-run hints (computed once,
+# see LIVE_HINT_CTES).
 ORPHANED_PROMPTS_SQL = (
     "WITH "
     + LIVE_HINT_CTES

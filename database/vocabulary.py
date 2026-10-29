@@ -20,7 +20,8 @@ counted, hashed into the token and renamed with the prompts and pairs.
 
 import sqlite3
 
-from .library import _ELIGIBLE, _limit
+from .library import _ELIGIBLE, SHELVED_PAIR, _limit
+from .prompt_archive import SHELVED
 from .library_commands import _TOKEN, LibraryCommandError, _validate_epoch
 from .library_tokens import canonical_token
 from .models import utc_now_iso
@@ -40,17 +41,21 @@ _IMAGE_FILES = (
 
 def _tag_rows(page: str) -> str:
     """Count rows for the registry rows selected by ``page`` (id, name)."""
-    # Eligible parent components carrying a tag in the page, plus the
-    # positive parent of every active pair carrying it (always eligible).
+    # Eligible parent components on the shelf carrying a tag in the page,
+    # plus the positive parent of every active pair carrying it (always
+    # eligible) when that parent is on the shelf: archived parents (#443)
+    # are hidden with their pairs, so Browse lists what was counted.
     return (
         "WITH page AS (" + page + "),"
         "owners(tag_id,pid) AS ("
         "SELECT pt.tag_id,p.id FROM prompts p "
         "JOIN prompt_tags pt ON pt.prompt_id=p.id "
         "WHERE pt.tag_id IN (SELECT id FROM page) AND " + _ELIGIBLE + " "
+        "AND " + SHELVED + " "
         "UNION SELECT ppt.tag_id,pp.positive_prompt_id FROM prompt_pairs pp "
         "JOIN prompt_pair_tags ppt ON ppt.pair_id=pp.id "
-        "WHERE pp.archived=0 AND ppt.tag_id IN (SELECT id FROM page)),"
+        "WHERE pp.archived=0 AND " + SHELVED_PAIR + " "
+        "AND ppt.tag_id IN (SELECT id FROM page)),"
         "images(tag_id,n) AS (" + _IMAGE_FILES + " "
         "WHERE mit.tag_id IN (SELECT id FROM page) GROUP BY mit.tag_id) "
         "SELECT page.id,page.name,COUNT(DISTINCT owners.pid) AS prompt_count,"
@@ -100,7 +105,9 @@ def _validate_tag_id(tag_id: object) -> None:
 
 
 # Category values in Tags & categories (#332 §7): the prompt-backed values
-# (nonblank values on eligible parents or on active pairs, grouped exactly, so
+# (nonblank values on eligible parents or on active pairs; ``prompt_count``
+# counts only parents on the shelf, so a value only archived parents (#443)
+# hold stays listed with 0, as a tag does; grouped exactly, so
 # whitespace and case variants stay distinct; /library/options lists the same
 # prompt-backed set with its own query) plus the values only image rows hold.
 # A prompt-backed value is ordered by its oldest owning positive; an image-only
@@ -109,15 +116,17 @@ def _validate_tag_id(tag_id: object) -> None:
 # files missing on disk. No FULL OUTER JOIN, so it runs on SQLite 3.31+.
 _IMAGE_ONLY_FIRST_PID = 2**63 - 1
 _CATEGORY_ROWS = (
-    "WITH owners(value,pid) AS ("
-    "SELECT p.category,p.id FROM prompts p WHERE p.category IS NOT NULL "
-    "AND TRIM(p.category)!='' AND " + _ELIGIBLE + " "
-    "UNION SELECT pp.category,pp.positive_prompt_id FROM prompt_pairs pp "
+    "WITH owners(value,pid,shelved) AS ("
+    "SELECT p.category,p.id," + SHELVED + " FROM prompts p "
+    "WHERE p.category IS NOT NULL AND TRIM(p.category)!='' AND " + _ELIGIBLE + " "
+    "UNION SELECT pp.category,pp.positive_prompt_id," + SHELVED_PAIR + " "
+    "FROM prompt_pairs pp "
     "WHERE pp.archived=0 AND pp.category IS NOT NULL AND TRIM(pp.category)!=''),"
     "image_values(value,image_count) AS ("
     "SELECT category,COUNT(*) FROM image_categories GROUP BY category),"
     "grouped(value,first_pid,prompt_count) AS ("
-    "SELECT value,MIN(pid),COUNT(DISTINCT pid) FROM owners GROUP BY value "
+    "SELECT value,MIN(pid),COUNT(DISTINCT CASE WHEN shelved THEN pid END) "
+    "FROM owners GROUP BY value "
     "UNION ALL SELECT value," + str(_IMAGE_ONLY_FIRST_PID) + ",0 FROM image_values "
     "WHERE value NOT IN (SELECT value FROM owners)),"
     "counted AS (SELECT g.value,g.first_pid,g.prompt_count,"

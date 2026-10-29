@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from .library_tokens import library_edit_token
+from .prompt_archive import ARCHIVED, SHELVED
 
 _ELIGIBLE = """(EXISTS(SELECT 1 FROM prompt_pairs ep WHERE ep.positive_prompt_id=p.id)
  OR EXISTS(SELECT 1 FROM generated_images eg WHERE eg.prompt_id=p.id)
@@ -103,6 +104,12 @@ ARCHIVE_SCOPES = {
     "archived": " AND pp.archived=1",
     "all": "",
 }
+
+
+# Shelves (#443): the parents on the shelf, or the archived ones.
+PARENT_SCOPES = {"active": SHELVED, "archived": ARCHIVED}
+# A positive pair owner that is on the shelf, as a condition on alias pp.
+SHELVED_PAIR = SHELVED.replace("p.id", "pp.positive_prompt_id")
 
 
 def _escape(value: str) -> str:
@@ -216,6 +223,8 @@ class LibraryOperations:
         rows = conn.execute(
             "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes,p.created_at,"
             "p.run_count,p.last_used_at,"
+            + ARCHIVED
+            + " AS archived,"
             + (f"{sort_expression} AS _sort," if sort_expression else "")
             + "(SELECT COUNT(*) FROM prompt_pairs v WHERE v.positive_prompt_id=p.id "
             "AND v.archived=0) AS variant_count,"
@@ -239,6 +248,7 @@ class LibraryOperations:
             # Usage is shown, never compared: the token hashes owner fields only.
             row["run_count"] = row["run_count"] if type(row["run_count"]) is int else 0
             row["last_used_at"] = utc_iso(row["last_used_at"])
+            row["archived"] = bool(row["archived"])
             row["edit_token"] = library_edit_token(epoch, row)
         return result
 
@@ -254,10 +264,13 @@ class LibraryOperations:
         sort: str = "newest",
         limit: int = 40,
         after: dict | None = None,
+        shelf: str = "active",
     ) -> dict:
         _limit(limit)
         if sort not in _ORDERS:
             raise ValueError("Unknown library sort order")
+        if not isinstance(shelf, str) or shelf not in PARENT_SCOPES:
+            raise ValueError("shelf must be active or archived")
         where, params = _filter(text, category, [] if tags is None else tags)
         if after is not None:
             if (
@@ -270,15 +283,18 @@ class LibraryOperations:
             ceiling = after["ceiling"]
         where += " AND p.id<=?"
         params.append(ceiling)
-        # One SELECT counts the filtered parents and their active variants.
-        total, variant_total = conn.execute(
-            "SELECT COUNT(*),COALESCE(SUM((SELECT COUNT(*) FROM prompt_pairs v "
-            "WHERE v.positive_prompt_id=p.id AND v.archived=0)),0) FROM "
-            + _FROM
-            + " WHERE "
-            + where,
+        # One SELECT counts the filtered parents of this scope, their active
+        # variants, and the filtered archived parents (Show archived, #443).
+        scope = PARENT_SCOPES[shelf]
+        total, variant_total, archived_total = conn.execute(
+            f"SELECT COALESCE(SUM({scope}),0),"
+            f"COALESCE(SUM(CASE WHEN {scope} THEN (SELECT COUNT(*) "
+            "FROM prompt_pairs v WHERE v.positive_prompt_id=p.id "
+            "AND v.archived=0) ELSE 0 END),0),"
+            f"COALESCE(SUM({ARCHIVED}),0) FROM " + _FROM + " WHERE " + where,
             params,
         ).fetchone()
+        where += f" AND {scope}"
         expression, direction = _ORDERS[sort]
         if after is not None:
             operator = ">" if direction == "ASC" else "<"
@@ -311,6 +327,7 @@ class LibraryOperations:
             "items": rows,
             "total": total,
             "variant_total": variant_total,
+            "archived_total": archived_total,
             "has_more": has_more,
             "next_key": next_key,
         }
@@ -324,6 +341,7 @@ class LibraryOperations:
         sort: str = "newest",
         limit: int = 40,
         after: dict | None = None,
+        shelf: str = "active",
     ) -> dict:
         with self.library_snapshot(include_ceiling=True) as (conn, epoch, ceiling):
             return self._list_library(
@@ -336,6 +354,7 @@ class LibraryOperations:
                 sort=sort,
                 limit=limit,
                 after=after,
+                shelf=shelf,
             )
 
     def _is_library_positive(self, conn: sqlite3.Connection, positive_id: int) -> bool:
@@ -576,7 +595,9 @@ class LibraryOperations:
             owners = {}
             order = []
             for row in conn.execute(
-                "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes FROM "
+                "SELECT p.id,p.text,ls.title,p.category,p.rating,p.notes,"
+                + ARCHIVED
+                + " AS archived FROM "
                 + _FROM
                 + " WHERE "
                 + _ELIGIBLE
@@ -589,6 +610,7 @@ class LibraryOperations:
                     "tags": [],
                     "rating": row["rating"],
                     "notes": row["notes"],
+                    "archived": bool(row["archived"]),
                     "variants": [],
                 }
                 order.append(row["id"])
@@ -633,8 +655,9 @@ class LibraryOperations:
         """System › Overview counts from one snapshot, writing nothing.
 
         ``positive_prompts`` and ``negative_variants`` are the unfiltered
-        Library's ``total`` and ``variant_total``: eligible parents and active
-        pairs (every pair's positive is eligible). ``images`` counts indexed
+        Library's ``total`` and ``variant_total``: eligible parents on the
+        shelf (not archived, #443) and their active pairs (every pair's
+        positive is eligible). ``images`` counts indexed
         ``generated_images`` rows, not files on disk. An image has no rating
         of its own (it shows its linked prompt's), so ``rated_images`` counts
         the indexed images whose linked prompt is rated. ``review_pending`` is
@@ -642,8 +665,14 @@ class LibraryOperations:
         """
         with self.library_snapshot() as (conn, _epoch, _ceiling):
             row = conn.execute(
-                "SELECT (SELECT COUNT(*) FROM prompts p WHERE " + _ELIGIBLE + "),"
-                "(SELECT COUNT(*) FROM prompt_pairs WHERE archived=0),"
+                "SELECT (SELECT COUNT(*) FROM prompts p WHERE "
+                + _ELIGIBLE
+                + " AND "
+                + SHELVED
+                + "),"
+                "(SELECT COUNT(*) FROM prompt_pairs pp WHERE pp.archived=0 AND "
+                + SHELVED_PAIR
+                + "),"
                 "(SELECT COUNT(*) FROM generated_images),"
                 "(SELECT COUNT(*) FROM generated_images gi JOIN prompts r "
                 "ON r.id=gi.prompt_id WHERE r.rating IS NOT NULL),"
