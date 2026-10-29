@@ -38,10 +38,24 @@ def _payload(token):
 
 class TestRestartKeepsTheOpenPage(ImageAPITestCase):
     async def get_application(self):
+        self._restarts = []
         app = await super().get_application()
         for index in range(3):
             make_png(self.output_dir / f"image_{index}.png")
         return app
+
+    async def tearDownAsync(self):
+        # Before the base teardown unlinks the database: cleanups run after
+        # tearDownAsync, and Windows cannot unlink a file still open (#475).
+        errors = []
+        while self._restarts:
+            try:
+                await self._restarts.pop()()
+            except Exception as error:  # every closer runs; the first error wins
+                errors.append(error)
+        await super().tearDownAsync()
+        if errors:
+            raise errors[0]
 
     async def first_page(self, client=None, **params):
         response = await (client or self.client).get(
@@ -67,7 +81,7 @@ class TestRestartKeepsTheOpenPage(ImageAPITestCase):
             api.close_auto_thumbnails()
             api.db.close_all()
 
-        self.addAsyncCleanup(close)
+        self._restarts.append(close)
         return api, client
 
     async def test_a_restart_keeps_every_held_scope_and_cursor_valid(self):
@@ -152,8 +166,13 @@ class TestRestartKeepsTheOpenPage(ImageAPITestCase):
         other_db = self.comfy_dir / "elsewhere" / "prompts.db"
         other_db.parent.mkdir()
         api = PromptManagerAPI(db=PromptDatabase(str(other_db)))
-        self.addCleanup(api.db.close_all)
-        self.addCleanup(api.close_auto_thumbnails)
+
+        async def close():
+            api.close_auto_thumbnails()
+            api.db.close_all()
+
+        # Closed before teardown removes the folder that holds its database.
+        self._restarts.append(close)
         self.assertNotEqual(
             api._gallery_root_scope(self.output_dir, 0), page["images"][0]["root_scope"]
         )
