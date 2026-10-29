@@ -211,11 +211,12 @@ test('custom collection pages reuse image-stream cancellation, cursors and ident
     assert.throws(()=>createImageStream({api:{get:async()=>{}},fetchPage:'invalid'}),/page/i);
 });
 
-test('stream sends category, tags and the rating sort and validates them', async () => {
+test('stream sends category, tags and the sort and validates them; the rating sort is gone (D153)', async () => {
     const {createImageStream}=await source;const calls=[];
     const stream=createImageStream({api:{get:async url=>{calls.push(new URL(url,'http://local').searchParams);return page([]);}}});
-    await stream.reset({q:'cat',category:'Animals',tags:['cats','studio'],sort:'rating'});
-    assert.equal(calls[0].get('category'),'Animals');assert.equal(calls[0].get('tags'),'cats,studio');assert.equal(calls[0].get('sort'),'rating');
+    await stream.reset({q:'cat',category:'Animals',tags:['cats','studio'],sort:'name-desc'});
+    assert.equal(calls[0].get('category'),'Animals');assert.equal(calls[0].get('tags'),'cats,studio');assert.equal(calls[0].get('sort'),'name-desc');
+    await assert.rejects(stream.reset({sort:'rating'}),/sort/i);
     await stream.reset({category:'',tags:[]});
     assert.equal(calls[1].has('category'),false);assert.equal(calls[1].has('tags'),false);
     for(const filters of [{category:3},{tags:'cats'},{tags:[1]},{tags:['a,b']},{tags:['']}]) await assert.rejects(stream.reset(filters),/filter/i);
@@ -277,7 +278,7 @@ test('the caption date names the newest result day under Newest first only', asy
     assert.equal(captionDate([at(2026,9,10),at(2026,9,16,23)],'oldest',now),'');
     assert.equal(captionDate([at(2026,9,13)],'newest',now),'Tuesday · October 13');
     assert.equal(captionDate([at(2025,2,3)],'newest',now),'Monday · March 3, 2025');
-    for(const sort of ['name','name-desc','rating']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');
+    for(const sort of ['name','name-desc']) assert.equal(captionDate([at(2026,9,17)],sort,now),'');
     assert.equal(captionDate([],'newest',now),'');
     assert.equal(captionDate([{modified_time:'bad'}],'newest',now),'');
 });
@@ -525,7 +526,35 @@ test('defaults apply to a new visit but not to the current view or a saved view'
     assert.deepEqual(initialImagesView({ saved: { q: '' }, preferences }), { layout: 'grid', density: 'comfortable' });
     // Without readable preferences nothing changes.
     assert.deepEqual(initialImagesView({}), { layout: 'grid', density: 'comfortable' });
-    assert.deepEqual(initialImagesView({ preferences: {} }), { layout: 'grid', density: 'comfortable' });
+    // #451: a preference object without a layout falls back to the default layout, Masonry.
+    assert.deepEqual(initialImagesView({ preferences: {} }), { layout: 'masonry', density: 'comfortable' });
+});
+
+test('a default saved after the last visit started reaches the next visit unless the toolbar changed it (#451)', async () => {
+    const { initialImagesView } = await source;
+    const preferences = { workspaceLayout: 'masonry', workspaceDensity: 'compact' };
+    const started = { layout: 'grid', density: 'comfortable' };
+    // The visit kept the defaults it started from: the newer defaults win.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'grid', density: 'comfortable', defaults: started }, preferences }),
+        { layout: 'masonry', density: 'compact' });
+    // A toolbar choice is the current view's own, whatever the defaults became; each value on its own.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'list', density: 'comfortable', defaults: started }, preferences }),
+        { layout: 'list', density: 'compact' });
+    assert.deepEqual(initialImagesView({ prior: { layout: 'grid', density: 'large', defaults: started }, preferences }),
+        { layout: 'masonry', density: 'large' });
+    // Unchanged defaults: the visit returns as it was.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'masonry', density: 'compact', defaults: { layout: 'masonry', density: 'compact' } }, preferences }),
+        { layout: 'masonry', density: 'compact' });
+    // A saved view and an embedded gallery never get a prior; without preferences the prior is kept.
+    assert.deepEqual(initialImagesView({ prior: { layout: 'grid', density: 'comfortable', defaults: started } }),
+        { layout: 'grid', density: 'comfortable' });
+});
+
+test('the defaults a visit starts from are the fresh-visit defaults (#451)', async () => {
+    const { visitDefaults } = await source;
+    assert.deepEqual(visitDefaults({ workspaceLayout: 'list', workspaceDensity: 'large' }), { layout: 'list', density: 'large' });
+    assert.deepEqual(visitDefaults({}), { layout: 'masonry', density: 'comfortable' });
+    assert.deepEqual(visitDefaults(null), { layout: 'grid', density: 'comfortable' });
 });
 
 test('listingFilter is the listing query as an object, without paging (#392)', async () => {

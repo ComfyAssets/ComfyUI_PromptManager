@@ -117,8 +117,9 @@ test('new prompt from Images waits for a fresh options epoch', async () => {
     assert.equal(sentBody.expected_epoch, EPOCH);
     assert.deepEqual(sentBody, {
         expected_epoch: EPOCH, positive_text: 'a portrait', negative_text: '',
-        parent_metadata: { title: 'Portrait', category: 'Uncategorized', tags: [], rating: null, notes: '' },
+        parent_metadata: { title: 'Portrait', category: 'Uncategorized', tags: [], notes: '' },
     });
+    assert.equal(Object.hasOwn(sentBody.parent_metadata, 'rating'), false, 'D153: a new prompt sends no rating');
     assert.equal(controller.state.phase, 'complete');
     assert.equal(committed.length, 1);
     assert.equal(committed[0].kind, 'create');
@@ -230,11 +231,11 @@ test('editor recovery preserves hyphenated ApiError codes', async () => {
         const server = harness(library({ write: () => response(409, { success: false, code, error: 'Conflict', library_epoch: EPOCH, ...extra }) }));
         const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
         await controller.initialize();
-        controller.setField('rating', 5);
+        controller.setField('notes', 'kept');
         await controller.submit();
         phases.push(controller.state.phase);
         if (controller.state.phase !== 'write-error') errors.push(controller.state.error);
-        assert.equal(controller.state.draft.rating, 5, 'draft preserved');
+        assert.equal(controller.state.draft.notes, 'kept', 'draft preserved');
         assert.equal(controller.state.receipt, null);
         controller.dispose();
     }
@@ -306,7 +307,7 @@ test('confirmed save refresh retry is read only', async () => {
     assert.equal(typeof createLibraryEditorController, 'function', 'controller export');
     let failReads = 1;
     const committed = [], reconciled = [];
-    const receipt = { success: true, library_epoch: EPOCH, positive: positive({ rating: null, notes: 'keep\ntext', edit_token: TOKEN2 }) };
+    const receipt = { success: true, library_epoch: EPOCH, positive: positive({ notes: 'keep\ntext', edit_token: TOKEN2 }) };
     const base = library({ write: () => response(200, receipt) });
     const server = harness(call => {
         if (call.method === 'GET' && server.writes().length && failReads-- > 0) return Promise.reject(new TypeError('offline'));
@@ -315,7 +316,6 @@ test('confirmed save refresh retry is read only', async () => {
     const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31,
         onCommitted: commit => committed.push(commit), onReconciled: result => reconciled.push(result) });
     await controller.initialize();
-    controller.setField('rating', null);
     controller.setField('notes', 'keep\ntext');
     await controller.submit();
     assert.equal(controller.state.phase, 'saved-refresh-error');
@@ -338,7 +338,7 @@ test('confirmed save refresh retry is read only', async () => {
 test('legacy title fallback is not an edit', async () => {
     const { createLibraryEditorController } = await source;
     assert.equal(typeof createLibraryEditorController, 'function', 'controller export');
-    const receipt = { success: true, library_epoch: EPOCH, positive: positive({ rating: null, notes: 'keep\ntext' }) };
+    const receipt = { success: true, library_epoch: EPOCH, positive: positive({ notes: 'keep\ntext' }) };
     const server = harness(library({ write: () => response(200, receipt) }));
     const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
     await controller.initialize();
@@ -346,7 +346,6 @@ test('legacy title fallback is not an edit', async () => {
     assert.equal(controller.state.baseline.title, null, 'stored title stays distinct');
     assert.equal(controller.state.draft.tags, 'soft, warm');
     assert.equal(controller.state.draft.negative_text, 'blurry', 'the selected pair negative');
-    controller.setField('rating', null);
     controller.setField('notes', 'keep\ntext');
     controller.setField('tags', 'warm, soft,');
     controller.setField('category', ' Studio ');
@@ -357,7 +356,7 @@ test('legacy title fallback is not an edit', async () => {
     const sentBody = write.body;
     assert.equal(sentBody.expected_epoch, EPOCH);
     assert.equal(sentBody.if_match, TOKEN);
-    assert.deepEqual(sentBody.metadata, { rating: null, notes: 'keep\ntext' });
+    assert.deepEqual(sentBody.metadata, { notes: 'keep\ntext' });
 
     const unchanged = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
     await unchanged.initialize();
@@ -421,12 +420,12 @@ test('metadata conflict reload keeps changed fields for review and never replays
     assert.equal(typeof createLibraryEditorController, 'function', 'controller export');
     let owner = positive();
     const server = harness(call => library({ owner, write: write => write.body.if_match === TOKEN2
-        ? response(200, { success: true, library_epoch: EPOCH, positive: { ...owner, rating: 5 } })
+        ? response(200, { success: true, library_epoch: EPOCH, positive: { ...owner, notes: 'mine' } })
         : response(409, { success: false, code: 'metadata-conflict', error: 'changed', library_epoch: EPOCH, positive: owner }) })(call));
     const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
     await controller.initialize();
-    controller.setField('rating', '5');
-    owner = positive({ title: 'Renamed elsewhere', notes: 'other writer', edit_token: TOKEN2 });
+    controller.setField('notes', 'mine');
+    owner = positive({ title: 'Renamed elsewhere', category: 'Elsewhere', edit_token: TOKEN2 });
     await controller.submit();
     assert.equal(controller.state.phase, 'conflict');
     await controller.submit();
@@ -434,20 +433,20 @@ test('metadata conflict reload keeps changed fields for review and never replays
     await controller.reloadOwner({ keepDraft: true });
     assert.equal(controller.state.phase, 'ready');
     assert.equal(controller.state.reviewRequired, true);
-    assert.equal(controller.state.draft.rating, 5, 'changed field kept');
+    assert.equal(controller.state.draft.notes, 'mine', 'changed field kept');
     assert.equal(controller.state.draft.title, 'Renamed elsewhere', 'untouched field follows the current owner');
-    assert.equal(controller.state.draft.notes, 'other writer');
+    assert.equal(controller.state.draft.category, 'Elsewhere');
     assert.equal(server.writes().length, 1);
     await controller.submit();
-    assert.deepEqual(server.writes()[1].body, { expected_epoch: EPOCH, if_match: TOKEN2, metadata: { rating: 5 } });
+    assert.deepEqual(server.writes()[1].body, { expected_epoch: EPOCH, if_match: TOKEN2, metadata: { notes: 'mine' } });
     assert.equal(controller.state.phase, 'complete');
     controller.dispose();
 
     const discard = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
     await discard.initialize();
-    discard.setField('rating', 1);
+    discard.setField('notes', 'dropped');
     await discard.reloadOwner({ keepDraft: false });
-    assert.equal(discard.state.draft.rating, 3);
+    assert.equal(discard.state.draft.notes, '');
     assert.equal(discard.state.reviewRequired, false);
     discard.dispose();
 });
@@ -457,12 +456,12 @@ test('metadata unknown outcome retry reloads the owner instead of replaying', as
     assert.equal(typeof createLibraryEditorController, 'function', 'controller export');
     let owner = positive();
     const server = harness(call => library({ owner, write: () => {
-        owner = positive({ rating: 5, edit_token: TOKEN2 });
+        owner = positive({ notes: 'applied', edit_token: TOKEN2 });
         return Promise.reject(new TypeError('Failed to fetch'));
     } })(call));
     const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31 });
     await controller.initialize();
-    controller.setField('rating', 5);
+    controller.setField('notes', 'applied');
     await controller.submit();
     assert.equal(controller.state.phase, 'unknown-outcome');
     await controller.retryUnconfirmed();
@@ -570,8 +569,10 @@ test('revision seeds text from the selected pair and sends Uncategorized for a b
     await controller.submit();
     assert.deepEqual(server.writes()[0].body, {
         expected_epoch: EPOCH, positive_text: 'First line\nrevised', negative_text: 'blurry',
-        parent_metadata: { title: 'Portrait', category: 'Uncategorized', tags: ['a', 'b'], rating: 3, notes: 'n' },
+        parent_metadata: { title: 'Portrait', category: 'Uncategorized', tags: ['a', 'b'], notes: 'n' },
     });
+    // D153: the revision's new positive is unrated; the owner's stored rating (3) is neither copied nor written.
+    assert.equal(Object.hasOwn(server.writes()[0].body.parent_metadata, 'rating'), false);
     controller.dispose();
 });
 
@@ -589,7 +590,9 @@ test('invalid drafts and server failures keep the draft without a receipt', asyn
     assert.equal(controller.state.phase, 'ready');
     assert.match(controller.state.error.message, /Title/);
     assert.throws(() => controller.setField('unknown', 'x'), TypeError);
-    assert.throws(() => controller.setField('rating', 7), TypeError);
+    // D153: the editor has no rating field.
+    assert.throws(() => controller.setField('rating', 4), /Unknown editor field: rating/);
+    assert.throws(() => controller.setField('notes', 4), TypeError);
     controller.setField('title', 'T');
     await controller.submit();
     assert.equal(controller.state.phase, 'write-error');
@@ -806,4 +809,45 @@ test('a blank category reused against an uncategorized owner is not unapplied me
         assert.equal(controller.state.outcome.metadataNotApplied, expected, `stored ${stored} entered ${JSON.stringify(entered)}`);
         controller.dispose();
     }
+});
+
+// D153 (#447): the workspace no longer edits the 1–5 rating, and a save never clears a stored one.
+test('editing a prompt rated 4 sends no rating and the saved prompt keeps 4', async () => {
+    const { createLibraryEditorController, EDITOR_FIELDS } = await source;
+    assert.deepEqual(EDITOR_FIELDS, ['title', 'positive_text', 'negative_text', 'category', 'tags', 'notes']);
+    let owner = positive({ rating: 4, title: 'Portrait' });
+    const server = harness(call => library({ owner, write: write => {
+        owner = positive({ ...owner, ...write.body.metadata, edit_token: TOKEN2 });
+        return response(200, { success: true, library_epoch: EPOCH, positive: owner });
+    } })(call));
+    const reconciled = [];
+    const controller = createLibraryEditorController({ api: server.api, mode: 'metadata', positiveId: 7, pairId: 31,
+        onReconciled: result => reconciled.push(result) });
+    await controller.initialize();
+    assert.equal(Object.hasOwn(controller.state.draft, 'rating'), false, 'the draft has no rating');
+    assert.equal(Object.hasOwn(controller.state.baseline, 'rating'), false, 'the baseline has no rating');
+    controller.setField('title', 'Portrait, edited');
+    await controller.submit();
+    const [write] = server.writes();
+    assert.deepEqual(write.body.metadata, { title: 'Portrait, edited' });
+    assert.equal(controller.state.phase, 'complete');
+    assert.equal(controller.state.receipt.positive.rating, 4);
+    assert.equal(reconciled[0].detail.positive.rating, 4, 'the re-read prompt still has its rating');
+    controller.dispose();
+});
+
+test('a reused rated positive is not reported as unapplied metadata for its rating', async () => {
+    const { createLibraryEditorController } = await source;
+    const reused = recipe({ positive_created: false, pair_created: true, parent_metadata_applied: false,
+        positive: positive({ id: 9, text: 'a portrait', title: 'Portrait', category: 'Uncategorized', tags: [], rating: 4, notes: '' }) });
+    const server = harness(created(() => response(200, reused)));
+    const controller = createLibraryEditorController({ api: server.api, mode: 'new' });
+    await controller.initialize();
+    controller.setField('title', 'Portrait');
+    controller.setField('positive_text', 'a portrait');
+    await controller.submit();
+    assert.equal(Object.hasOwn(server.writes()[0].body.parent_metadata, 'rating'), false);
+    assert.equal(controller.state.phase, 'complete');
+    assert.equal(controller.state.outcome.metadataNotApplied, false);
+    controller.dispose();
 });

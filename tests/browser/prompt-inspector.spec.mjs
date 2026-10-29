@@ -1,5 +1,6 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
+import { startInGrid } from './concept-inventory.mjs';
 
 const workspace='/prompt_manager/workspace#/images';
 const details=page=>page.getByRole('complementary',{name:'Selected image details',exact:true});
@@ -252,6 +253,8 @@ test('responsive gallery defers observed size writes and still fits the new view
             });}
         };
     });
+    // The Grid's observed sizes (D157: the default layout is Masonry).
+    await startInGrid(page);
     await page.setViewportSize({width:1280,height:900});await page.goto(workspace);
     await expect(page.locator('.media-card')).toHaveCount(4);
     await page.setViewportSize({width:390,height:844});
