@@ -323,6 +323,43 @@ class TestMonitoringSetting(SourcesTestCase):
         self.assertIs(GalleryConfig.MONITORING_ENABLED, False)
 
 
+class TestSaveForeignRunsSetting(SourcesTestCase):
+    """#247 D-Q4: "Save prompts from other workflows", applied live."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        saved = GalleryConfig.SAVE_FOREIGN_RUNS
+        self.addCleanup(setattr, GalleryConfig, "SAVE_FOREIGN_RUNS", saved)
+        GalleryConfig.SAVE_FOREIGN_RUNS = True
+
+    async def test_read_and_write_published_live_without_a_restart(self):
+        self.assertIs((await self._get())["settings"]["save_foreign_runs"], True)
+        self._install_monitor(FakeMonitor([self.output_dir]))
+        status, data = await self._post(
+            "/prompt_manager/settings", {"save_foreign_runs": False}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["persisted"])
+        self.assertEqual(data["restart_required_fields"], [])
+        saved = self._read_config()
+        self.assertIs(saved["gallery"]["monitoring"]["save_foreign_runs"], False)
+        self.assertIs(GalleryConfig.SAVE_FOREIGN_RUNS, False)
+        self.assertIs((await self._get())["settings"]["save_foreign_runs"], False)
+
+    async def test_only_true_or_false_is_accepted(self):
+        self._write_config({"custom": {"keep": True}})
+        before = self._config_bytes()
+        for value in ("false", 0, None, []):
+            with self.subTest(value=value):
+                status, data = await self._post(
+                    "/prompt_manager/settings", {"save_foreign_runs": value}
+                )
+                self.assertEqual(status, 400, data)
+                self.assertIn("save_foreign_runs must be true or false", data["error"])
+                self.assertEqual(self._config_bytes(), before)
+                self.assertIs(GalleryConfig.SAVE_FOREIGN_RUNS, True)
+
+
 class TestSourceChangeHold(SourcesTestCase):
     async def test_root_save_refused_while_scan_job_runs(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.a)]

@@ -93,6 +93,35 @@ def _in_host_temp(path: Path) -> bool:
         return False
 
 
+def image_tags_reader(
+    db: Any, locator: str, logger: Any, *, close: bool = False
+) -> Callable[[int, int], dict]:
+    """The inspector's ``image_tags`` reader for one file *locator* (S1).
+
+    The returned function takes the inspection's own stable stat and answers
+    ``current`` only for a byte record verified at exactly that
+    ``(size, mtime_ns)``; a failed read is ``unavailable``, never an error.
+    ``close`` closes the calling thread's connection afterwards, for routes
+    that close theirs after reading (History).
+    """
+
+    def read(size: int, mtime_ns: int) -> dict:
+        try:
+            found = db.current_image_tags({locator: (size, mtime_ns)})
+        except Exception:
+            logger.warning("Inspection image tags could not be read", exc_info=True)
+            return {"state": "unavailable", "tags": []}
+        finally:
+            if close:
+                db.model.close()
+        tags = found.get(locator)
+        if tags is None:
+            return {"state": "none", "tags": []}
+        return {"state": "current", "tags": list(tags)}
+
+    return read
+
+
 def inspect_current_file(
     path: Path,
     *,

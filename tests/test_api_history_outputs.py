@@ -1015,6 +1015,122 @@ class HistoryOutputAPITests(ImageAPITestCase):
             response = await self.current(descriptor["inspection_url"])
             self.assert_error(response, await response.json(), 422, "response-limit")
 
+    async def tag_image(self, relative, tags):
+        """Save *tags* on Images root 0's *relative* file through the Tag routes.
+
+        The real observe and save routes store the locator the Tag dialog
+        stores (``media_capture._resolve``), so History must find it (#457).
+        """
+        self.addCleanup(self.api.close_annotation_captures)
+        roots = self.api._get_all_output_dirs()
+        target = {
+            "root_index": 0,
+            "root_scope": self.api._gallery_root_scope(roots[0], 0),
+            "path": relative,
+        }
+        response = await self.client.post(
+            "/prompt_manager/image-annotations/observe", json={"target": target}
+        )
+        observed = await response.json()
+        self.assertEqual(response.status, 200, observed)
+        token = observed["capture"]["token"]
+        try:
+            response = await self.client.put(
+                "/prompt_manager/image-annotations/tags",
+                json={
+                    "target": target,
+                    "capture_token": token,
+                    "sha256": observed["capture"]["sha256"],
+                    "expected_epoch": observed["library_epoch"],
+                    "expected_tag_revision": observed["tag_revision"],
+                    "tags": list(tags),
+                },
+            )
+            saved = await response.json()
+            self.assertEqual(response.status, 200, saved)
+        finally:
+            await self.client.delete(
+                f"/prompt_manager/image-annotations/capture/{token}"
+            )
+        return saved["tags"]
+
+    async def test_current_inspection_carries_the_files_image_tags(self):
+        """#457: History reads the file's own image tags, as Images does (S1)."""
+        sub = self.output_dir / "batch"
+        sub.mkdir()
+        tagged = png(sub / "tagged.png", prompt=graph("Tagged file"))
+        png(self.output_dir / "plain.png", prompt=graph("Plain file"))
+        self.assertEqual(
+            await self.tag_image("batch/tagged.png", ["dunes", "warm_light"]),
+            ["dunes", "warm_light"],
+        )
+        start = self.capture(
+            [
+                self.ref("1", subfolder="batch", filename="tagged.png"),
+                self.ref("2", filename="plain.png"),
+            ]
+        )
+        _, page = await self.outputs(start)
+        urls = [
+            item["current_candidate"]["media"]["inspection_url"]
+            for item in page["items"]
+        ]
+        bodies = []
+        for url in urls:
+            response = await self.current(url)
+            body = await response.json()
+            self.assertEqual(response.status, 200, body)
+            bodies.append(body)
+        self.assertEqual(
+            bodies[0].get("image_tags"),
+            {"state": "current", "tags": ["dunes", "warm_light"]},
+        )
+        # Image tags are the file's own search metadata, never prompt tags.
+        self.assertEqual(bodies[0]["prompts"]["positive"]["text"], "Tagged file")
+        self.assertEqual(bodies[1].get("image_tags"), {"state": "none", "tags": []})
+        # New bytes at the same path: the tags belong to the old byte record.
+        stat = tagged.stat()
+        os.utime(tagged, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+        response = await self.current(urls[0])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["image_tags"], {"state": "none", "tags": []})
+
+    async def test_current_inspection_finds_image_tags_under_a_symlinked_output(self):
+        """An output folder reached through a link (another drive) still matches."""
+        link = self.comfy_dir / "linked_output"
+        self._make_symlink(self.output_dir, link, target_is_directory=True)
+        self.api._get_all_output_dirs = lambda: [link]
+        self.host_output = str(link)
+        png(self.output_dir / "image.png", prompt=graph("Linked folder"))
+        self.assertEqual(await self.tag_image("image.png", ["dunes"]), ["dunes"])
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["image_tags"], {"state": "current", "tags": ["dunes"]})
+
+    async def test_current_inspection_image_tag_failure_is_unavailable(self):
+        png(self.output_dir / "image.png", prompt=graph("File evidence"))
+        await self.tag_image("image.png", ["dunes"])
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        with (
+            self.assertLogs(self.api.logger, "WARNING") as logs,
+            patch.object(
+                type(self.api.db),
+                "current_image_tags",
+                side_effect=sqlite3.OperationalError("locked"),
+            ),
+        ):
+            response = await self.current(descriptor["inspection_url"])
+            body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["image_tags"], {"state": "unavailable", "tags": []})
+        self.assertEqual(body["prompts"]["positive"]["text"], "File evidence")
+        self.assertNotIn(str(self.output_dir), "\n".join(logs.output))
+
     async def test_optional_candidate_failure_preserves_every_occurrence_without_urls(
         self,
     ):

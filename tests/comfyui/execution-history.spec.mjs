@@ -309,6 +309,21 @@ test('fresh registered PM variants preserve exact raw whitespace and known empty
         expect(value.negative.raw).toBe('');
         expect(value.negative.effective).toBe('');
         expect(value.evidence.positive.raw).toMatchObject({ provenance: 'recorded', source: 'runtime_return' });
+        // #438: the Library stores the stripped text; the run is in that prompt's history
+        expect(value.positive_prompt_id, 'the run names the prompt the Library saved').toEqual(expect.any(Number));
+        const runId = (await readExecutionRuns(execution.databasePath, id)).rows[0].run_id;
+        const response = await execution.request.get(`/prompt_manager/library/${value.positive_prompt_id}/history`);expect(response.ok()).toBe(true);
+        expect((await response.json()).items.map(item => item.run_id)).toContain(runId);
+        if (kind !== 'PromptManager') continue;
+        // #460: an upper-case re-queue counts toward the same prompt and joins its history
+        const upper = await submit(execution.request, recipeGraph({ kind, text: `${kind.toUpperCase()} E\u0301` }));
+        await history(execution.request, upper);
+        const variant = (await capture(execution, upper)).contexts[0];
+        expect(variant.positive.raw).toBe(`${kind.toUpperCase()} E\u0301`);
+        expect(variant.positive_prompt_id, 'the case variant names the same prompt').toBe(value.positive_prompt_id);
+        const variantRun = (await readExecutionRuns(execution.databasePath, upper)).rows[0].run_id;
+        const scoped = await execution.request.get(`/prompt_manager/library/${value.positive_prompt_id}/history`);
+        expect((await scoped.json()).items.map(item => item.run_id)).toContain(variantRun);
     }
 });
 

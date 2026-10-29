@@ -19,6 +19,7 @@ from unittest.mock import patch
 from tests.history_waits import drain_writer
 from database import PromptDatabase
 from utils import usage_tracking
+from utils.hashing import generate_prompt_hash
 from utils.execution_history_writer import HistoryWriter
 
 try:
@@ -916,3 +917,42 @@ class CachedRuntimeHistoryTests(HooksCase):
         from database.run_attribution import named_prompt
 
         self.assertIsNone(named_prompt(self.db, self.rows()[1]["run_id"]))
+
+
+class CachedRuntimeCaseHistoryTests(CachedRuntimeHistoryTests):
+    """Raw text that differs only in case joins the saved prompt's history (#460).
+
+    The hash folds case, so the run counts toward the lower-case prompt saved
+    first; the run keeps its exact raw spelling.
+    """
+
+    TEXT = "\u00c9 LIGHTHOUSE the LLM wrote"
+
+    def setUp(self):
+        super().setUp()
+        self.db.delete_prompt(self.prompt_id)
+        lower = self.TEXT.lower()
+        self.prompt_id = self.db.save_prompt(
+            text=lower, prompt_hash=generate_prompt_hash(lower)
+        )
+
+    def test_the_library_counts_the_case_variant_as_this_prompt(self):
+        self.assertEqual(
+            self.db.get_prompt_by_hash(generate_prompt_hash(self.TEXT))["id"],
+            self.prompt_id,
+        )
+
+
+class CachedRuntimeWhitespaceHistoryTests(CachedRuntimeHistoryTests):
+    """Raw text with outer whitespace joins the history of the prompt it saves (#438).
+
+    The Library stores ``"a lighthouse the LLM wrote"``; the run keeps the exact
+    frozen raw text, newline included, yet is a tracked run of that prompt.
+    """
+
+    TEXT = "\u3000 a lighthouse the LLM wrote\n"
+
+    def test_the_library_stores_the_stripped_text(self):
+        self.assertEqual(
+            self.db.get_prompt_by_id(self.prompt_id)["text"], self.TEXT.strip()
+        )

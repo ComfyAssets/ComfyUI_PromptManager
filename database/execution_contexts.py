@@ -7,6 +7,11 @@ from typing import Callable, ContextManager, Iterator
 
 try:
     from ..utils.execution_history_events import RunFinish, encode_command
+    from ..utils.hashing import (
+        generate_prompt_hash,
+        stored_prompt_text,
+        stored_prompt_text_sql,
+    )
     from ..utils.execution_contexts import (
         CAPTURE_REASONS,
         ContextBundle,
@@ -15,6 +20,11 @@ try:
     )
 except ImportError:
     from utils.execution_history_events import RunFinish, encode_command
+    from utils.hashing import (
+        generate_prompt_hash,
+        stored_prompt_text,
+        stored_prompt_text_sql,
+    )
     from utils.execution_contexts import (
         CAPTURE_REASONS,
         ContextBundle,
@@ -134,7 +144,8 @@ def _insert_exact(
 
 def _role_hints(role: str) -> str:
     return (
-        f"SELECT r.{role}_prompt_id, tx.text_value "
+        f"SELECT r.{role}_prompt_id, tx.text_value, "
+        f"{stored_prompt_text_sql('tx.text_value')} "
         "FROM execution_run_contexts r "
         "JOIN execution_contexts c ON c.context_id = r.context_id "
         f"JOIN execution_prompt_snapshots s ON s.snapshot_id = c.{role}_snapshot_id "
@@ -146,57 +157,78 @@ def _role_hints(role: str) -> str:
 
 # Set form of the read-time prompt-hint rule in get_execution_contexts():
 # a stored role hint is live only in the current storage epoch, and only when
-# its exact raw snapshot text matches exactly one prompt, which is the hinted
-# one (_prompt_hint). Evaluated once per statement, never per prompt row.
+# the hinted prompt is the one match of _prompt_hint: by text (the raw
+# snapshot text or its stored form, outer whitespace stripped, #438), or, only
+# when no prompt has either text, by dedup hash (case folded too, #460).
+# The hash is a fallback, so a hint #438 kept is never made ambiguous.
+# Needs register_prompt_functions (pm_prompt_hash). The hint rows are the
+# outer loop (CROSS JOIN), so each prompts lookup is by index.
 # Defines the CTE ``live_hint_prompts(prompt_id)``; prefix it with WITH.
 LIVE_HINT_CTES = (
-    "stored_hints(prompt_id, raw) AS ("
+    "stored_hints(prompt_id, raw, stored) AS ("
     + _role_hints("positive")
     + " UNION "
     + _role_hints("negative")
-    + "), unique_hint_texts(prompt_id, raw) AS ("
-    "SELECT MIN(id), text COLLATE BINARY FROM prompts "
-    "WHERE text COLLATE BINARY IN (SELECT raw FROM stored_hints) "
-    "GROUP BY text COLLATE BINARY HAVING COUNT(*) = 1"
+    + "), hint_matches(prompt_id, raw, stored, match_id) AS ("
+    "SELECT h.prompt_id, h.raw, h.stored, p.id FROM stored_hints h "
+    "CROSS JOIN prompts p ON p.text COLLATE BINARY IN (h.raw, h.stored) "
+    "UNION ALL "
+    "SELECT h.prompt_id, h.raw, h.stored, p.id FROM stored_hints h "
+    "CROSS JOIN prompts p ON p.hash = pm_prompt_hash(h.raw) "
+    "WHERE NOT EXISTS (SELECT 1 FROM prompts q "
+    "WHERE q.text COLLATE BINARY IN (h.raw, h.stored))"
     "), live_hint_prompts(prompt_id) AS ("
-    "SELECT h.prompt_id FROM stored_hints h JOIN unique_hint_texts u "
-    "ON u.prompt_id = h.prompt_id AND u.raw = h.raw COLLATE BINARY)"
+    "SELECT prompt_id FROM hint_matches GROUP BY prompt_id, raw, stored "
+    "HAVING COUNT(*) = 1 AND MIN(match_id) = prompt_id)"
 )
 LIVE_HINT_PROMPT_IDS_SQL = (
     "WITH " + LIVE_HINT_CTES + " SELECT DISTINCT prompt_id FROM live_hint_prompts"
 )
 
+_BY_TEXT = "SELECT id FROM prompts WHERE text COLLATE BINARY IN (?,?) LIMIT 2"
+
+
+def _text_matches(conn: sqlite3.Connection, raw: str) -> list:
+    return [row[0] for row in conn.execute(_BY_TEXT, (raw, stored_prompt_text(raw)))]
+
 
 def _prompt_hint(conn: sqlite3.Connection, raw: str | None) -> int | None:
+    """The one prompt that stores ``raw`` (#438), else the one it counts toward.
+
+    By text first: ``raw`` or ``raw.strip()`` (the exact form keeps hints of
+    older rows that kept outer whitespace). Only when no prompt has either
+    text, by the dedup hash, which also folds case (#460).
+    """
     if raw is None:
         return None
-    rows = conn.execute(
-        "SELECT id FROM prompts WHERE text=? COLLATE BINARY LIMIT 2", (raw,)
-    ).fetchall()
-    return rows[0][0] if len(rows) == 1 else None
+    matches = _text_matches(conn, raw)
+    if not matches:
+        matches = [
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM prompts WHERE hash=? LIMIT 2",
+                (generate_prompt_hash(raw),),
+            )
+        ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _hints(
     conn: sqlite3.Connection, positive: str | None, negative: str | None
 ) -> tuple:
     pos_id, neg_id = _prompt_hint(conn, positive), _prompt_hint(conn, negative)
+    stored = None if negative is None else stored_prompt_text(negative)
     pair_id = None
+    # A known negative that names no prompt because several share its text
     negative_ambiguous = (
-        negative is not None
-        and neg_id is None
-        and conn.execute(
-            "SELECT 1 FROM prompts WHERE text=? COLLATE BINARY LIMIT 1", (negative,)
-        ).fetchone()
-        is not None
+        stored is not None and neg_id is None and bool(_text_matches(conn, negative))
     )
-    if pos_id is not None and negative is not None and not negative_ambiguous:
+    if pos_id is not None and stored is not None and not negative_ambiguous:
         rows = conn.execute(
-            "SELECT pp.id FROM prompt_pairs pp LEFT JOIN prompts n ON "
-            "n.id=pp.negative_prompt_id "
+            "SELECT pp.id FROM prompt_pairs pp "
             "WHERE pp.positive_prompt_id=? AND ((pp.negative_prompt_id IS NULL AND "
-            "?='') "
-            "OR (pp.negative_prompt_id=? AND n.text=? COLLATE BINARY)) LIMIT 2",
-            (pos_id, negative, neg_id, negative),
+            "?='') OR pp.negative_prompt_id=?) LIMIT 2",
+            (pos_id, stored, neg_id),
         ).fetchall()
         if len(rows) == 1:
             pair_id = rows[0][0]

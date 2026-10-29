@@ -59,6 +59,28 @@ class TestGalleryConfig(unittest.TestCase):
         self.assertFalse(GalleryConfig.MONITORING_ENABLED)
         self.assertEqual(GalleryConfig.PROCESSING_DELAY, 5.0)
 
+    def test_save_foreign_runs_defaults_on_and_only_booleans_apply(self):
+        """#247: gallery.monitoring.save_foreign_runs, default true."""
+        self.assertIs(
+            GalleryConfig.get_config()["monitoring"]["save_foreign_runs"], True
+        )
+        GalleryConfig.update_config({"monitoring": {"save_foreign_runs": False}})
+        self.assertIs(GalleryConfig.SAVE_FOREIGN_RUNS, False)
+        for junk in ("true", 1, None):
+            with self.subTest(value=junk):
+                with self.assertLogs("prompt_manager.config", "WARNING") as logs:
+                    GalleryConfig.update_config(
+                        {"monitoring": {"save_foreign_runs": junk}}
+                    )
+                self.assertIn(
+                    "Ignoring gallery monitoring save_foreign_runs: expected true "
+                    "or false",
+                    "\n".join(logs.output),
+                )
+                self.assertIs(GalleryConfig.SAVE_FOREIGN_RUNS, False)
+        GalleryConfig.update_config({"monitoring": {"save_foreign_runs": True}})
+        self.assertIs(GalleryConfig.SAVE_FOREIGN_RUNS, True)
+
     def test_update_tracking(self):
         GalleryConfig.update_config({"tracking": {"prompt_timeout": 300}})
         self.assertEqual(GalleryConfig.PROMPT_TIMEOUT, 300)

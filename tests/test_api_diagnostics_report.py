@@ -85,6 +85,7 @@ CONFIG = {
         "max_image_age_days",
         "max_concurrent_processing",
         "metadata_extraction_timeout",
+        "save_foreign_runs",
     },
     "integrations": {"lora_manager_enabled", "has_civitai_api_key"},
 }

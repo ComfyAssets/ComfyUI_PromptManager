@@ -1830,8 +1830,9 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   blocks' context ("Current file image tags" in History). An empty source draws no
   section. Repeats are removed within a source only, so a linked tag that is also an
   image tag shows in both sections and each count is true. D21's filter rules are
-  unchanged. History's current-file read carries no `image_tags` facet (D88), so there
-  only the linked section shows. `tests/browser/inspector-concept.spec.mjs` wraps the
+  unchanged. History's current-file read carries the same `image_tags` facet as the Images
+  read (#457), so History's inline current file and its viewer show the image tags section
+  too (`test_current_inspection_carries_the_files_image_tags`). `tests/browser/inspector-concept.spec.mjs` wraps the
   concept's row in the same sections at runtime (`withTagSections`, the D154 rule
   injected) and compares the measured sections (frame, heading, label, row); a
   mutation of the label color, the row margin or the top rule fails it. Browser tests:
@@ -3391,7 +3392,8 @@ until this browser dismissed the 3.2.0 update notice (`pm_update_notice_dismisse
 the legacy admin page's key); Later dismisses it without scanning, and Review scan
 dismisses it as the legacy Scan does. "+ Add source" asks validate-source, then adds
 the folder to the host draft of `gallery_root_paths`; Remove takes one out; "Watch for
-new outputs" (`monitoring_enabled`) and Worker threads (`worker_threads`) are host
+new outputs" (`monitoring_enabled`), "Save prompts from other workflows"
+(`save_foreign_runs`, D158) and Worker threads (`worker_threads`) are host
 drafts too, and Save writes them with the revision. A save the server refuses because a
 scan runs toasts "Another job is running: <title>." with a link to that job (D57) and
 keeps the drafts; a save refused for one source says the server's message as the status
@@ -3640,7 +3642,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 assigned). D94,
+Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 and D158 assigned). D94,
 the per-section hand-off panel, was retired by S12 (#329): every section is native.
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
@@ -4160,6 +4162,26 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
   the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
   label in turn.
+- **D158** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
+  without a PromptManager node; the maintainer chose a visible switch over a config key.
+  A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
+  "Save prompts from other workflows" (`#foreign-runs`, host key `save_foreign_runs`,
+  config.json `gallery.monitoring.save_foreign_runs`, default on), "New outputs of
+  workflows without a PromptManager node add their prompt to the library when it is
+  certain.". It is saved with the revision like the other host rows and applied at once
+  (the monitor reads it for every file), so a save names no restart. While "Watch for
+  new outputs" is drafted off, a `p.small` under the description says "Applies while
+  Watch for new outputs is on." (the switch's `aria-describedby`; the value is kept) and
+  the switch is disabled, except while a source still reads "watching until restart"
+  (D128): the running observer still delivers files then, so the value can be set. The
+  server stores no foreign prompt while `monitoring_enabled` is saved off, whatever the
+  observer does.
+  Pinned by `sources matches the concept` (the mapping inserts the row after the
+  monitoring row), `sources comparison detects mutations` (a missing row and a changed
+  label are caught), `D158: Save prompts from other workflows saves save_foreign_runs
+  live; off while monitoring is off (#247)` (keyboard on desktop, a tap on touch) and
+  `D158: saved off while the monitor still watches until a restart, the foreign row can
+  still be set (D128)` (workspace-system-sources.spec) and the system-sources node test.
 - **D109** (Logs, S12, #329): the concept's Logs surface on the live server. The toolbar
   keeps "Level", Refresh and the download (renamed "Download log": the active log,
   `/logs/download/prompt_manager.log`, through the api client), with all six minimum
@@ -6087,6 +6109,70 @@ Tests: `tests/test_file_prompt.py` (one test per ladder step and junk class),
 saver, a legacy-linked file left as it is, `_BatchHistory.recorded`) and
 `tests/test_recorded_saver_anchor.py` `TestInspectionResolution`.
 
+**In the monitor.** An output whose workflow has no positive PromptManager node
+(`_find_prompt_from_metadata` says `foreign`) used to be logged and skipped. It now
+goes through the same ladder with the `MONITOR` policy (`utils/foreign_runs.py`, the
+handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
+
+- **At settle.** The ladder runs without history. Certain (`pair` or `positive`): the
+  prompt is stored and the file linked at once. `history` (an undecided graph inside
+  ComfyUI's output folder): the file is registered in its own waiting set, then the
+  ladder runs again at once with the file's recorded output, because the run may have
+  been sealed before the file settled. When that lookup finds a record, its answer is
+  final: certain is stored, anything else is logged "No certain prompt for <file>;
+  left unlinked" and the file stops waiting (no seal is coming). When it finds none,
+  only the inspector's or the recorded saver's answer is stored; anything else (the
+  legacy floor included) keeps waiting for the re-check. Anything else at the first
+  pass is logged "No certain prompt for <file>; left unlinked".
+- **After the run ends.** When the run's outputs are sealed, each waiting foreign file
+  gets one re-check (`ForeignRecheck(reference)`) with the sealed output reference,
+  so history is asked with the spelling it recorded (a Windows folder whose case
+  differs from the disk still links). Not certain: "No certain prompt for <file>
+  after its run ended; left unlinked". An ambiguous inspector answer is never given
+  the legacy floor in the monitor (D-Q3); an untraceable one still is.
+- **Waiting sets.** `_awaiting_foreign` and `_foreign_due` sit beside the keyless sets
+  with the same bounds (1000 files, one hour) but are separate, so a large foreign run
+  never evicts a waiting keyless file. An expired entry is logged "No recorded run
+  for <file>; left unlinked", an evicted one (waiting or due) "Too many files wait for
+  their run; <file> left unlinked", both after the lock is released. A due re-check
+  is dropped only when it was scheduled, never a newer reference for the same file. `awaiting_foreign()` lists them;
+  `shutdown()` and `close()` clear them, and a closed handler re-checks nothing.
+- **Store.** One write through `survive_switch` (rerun after a Move library): a pair
+  through `ingest_resolved_pair(..., marks=RUN_MARKS)`, a positive through
+  `store_scanned_prompt_or_raise(..., RUN_MARKS)`. A created prompt carries category
+  `scanned`, tag `auto-scanned` and the note `Saved from a workflow run: <file>`; a
+  file linked to another prompt is `conflict` and keeps its link. Logged at info
+  "Foreign run: <status> prompt <id> for <file> (<source>)"; a failure is logged and
+  the file stays unlinked.
+- **Never.** No tracker FIFO entry is read or consumed, nothing is counted (run count
+  stays 0, no `last_used_at`), and nothing is queued for Needs review.
+- **The setting.** `GalleryConfig.SAVE_FOREIGN_RUNS` (`gallery.monitoring.
+  save_foreign_runs`, default true, only a bool applies) is read for every file, at
+  settle, at the re-check and again just before the store, together with
+  `MONITORING_ENABLED`: either saved off stops foreign writes at once (the running
+  observer watches until a restart, D128); off logs "No PromptManager prompt in
+  workflow, skipping image" as before. System › Sources & scans "Save prompts from other workflows" (D158)
+  saves it through `POST /prompt_manager/settings` with no restart field; the
+  diagnostics report lists it.
+
+Tests: `tests/test_run_attribution.py` `TestMonitorForeignRuns` (dataset branches
+linked after the seal, a seal before settle, a name two runs reported, the setting
+off at settle and at the re-check, a plain workflow linked at settle with no run
+count and the tracker queue untouched, the sealed reference's spelling, the separate
+bound, expiry, a seal while the pending set is full, shutdown, a failed store, no
+record at settle keeps waiting, a record without an answer ends the wait, monitoring
+saved off, the setting read before the store, a seal between registering and the
+settle lookup, a newer due reference kept, evictions logged, one link per file),
+`tests/test_image_linking.py` `TestForeignWorkflows`, `tests/test_image_monitor_singleton.py`
+(close drops a foreign re-check), `tests/test_config.py`,
+`tests/test_settings_sources.py` `TestSaveForeignRunsSetting`, and the real-host
+`tests/comfyui/image-attribution.spec.mjs` case "an output of a workflow without a
+PromptManager node creates and links its prompt; a second run reuses it" (ComfyUI's
+own `CLIPTextEncode`, `KSampler` and `SaveImage`), and "each branch of a
+shared-prefix workflow without a PromptManager node links to its own prompt after the
+run" (two branches, one save prefix: the recorded saver names each file's branch).
+The fixture route's GET also lists `foreign`, the waiting foreign files.
+
 ## Linked prompt text (#343)
 
 A link drives `text` on every PromptManager node, and `negative_text` on the Pair,
@@ -6367,7 +6453,7 @@ The versioned public reads are:
 | `GET /prompt_manager/library/{positive_id}/history/pairs/{pair_id}/newest` | The pair's newest recorded run for the history run dot (#249 D26): `{run: {run_id, anchor_id, context_id}}` or `{run: null}` |
 | `GET /prompt_manager/history/runs/{run_id}` | Frozen fields, per-field provenance, capture and outcome for a known UUID |
 | `GET /prompt_manager/history/runs/{run_id}/outputs` | Ordered host-reported occurrences, including repeated locations |
-| `GET /prompt_manager/history/runs/{run_id}/output/current/{media,thumbnail,inspection}` | Authorized current file at that reported location, using the returned epoch/scope URL |
+| `GET /prompt_manager/history/runs/{run_id}/output/current/{media,thumbnail,inspection}` | Authorized current file at that reported location, using the returned epoch/scope URL; `inspection` carries the shared inspector envelope including the file's `image_tags` facet (#457) |
 
 The newest-pair read takes no query. It answers 404 when the positive is not an
 eligible saved prompt or the pair is not one of its pairs. It walks the positive's exact

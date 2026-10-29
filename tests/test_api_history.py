@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 from aiohttp import FormData, web
 
+from utils.hashing import generate_prompt_hash
+
 try:
     from test_api_images import ImageAPITestCase
 except ImportError:
@@ -191,7 +193,11 @@ class HistoryAPITests(ImageAPITestCase):
             context["evidence"]["positive"]["raw"]["provenance"], "recorded"
         )
         with self.api.db.model.get_connection() as conn:
-            conn.execute("UPDATE prompts SET text='edited' WHERE id=?", (positive,))
+            # An edit changes the text and its dedup hash together (#460)
+            conn.execute(
+                "UPDATE prompts SET text='edited',hash=? WHERE id=?",
+                (generate_prompt_hash("edited"), positive),
+            )
         _, changed = await self.detail(start.run_id)
         self.assertEqual(changed["contexts"][0]["positive"], context["positive"])
         self.assertFalse(changed["contexts"][0]["navigation"]["positive_available"])
