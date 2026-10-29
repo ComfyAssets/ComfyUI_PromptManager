@@ -36,6 +36,11 @@ concurrency:
 # 12m53s, node units and the viewer suite before 11.8m of workflows), so coverage is the tight one
 # in its 18 minutes. This holds only when the npm cache hits: a cold cache adds up to 5m to npm ci,
 # and then the job limit can still end the job before the step limit does.
+# #473: firefox/webkit shard 1/2 reached its 18-minute step limit (queue run 40866252975: webkit 622 tests
+# passed in 17m56s, 48.5 worker-minutes vs 28.0 in shard 2/2; recent shard 1/2 jobs 13.7m-18.9m, shard 2/2
+# 7.3m-12.2m), because --shard splits by test count and the slow concept specs sort into shard 1. The page
+# workflows now run in three shards per browser with the limits unchanged; the per-shard times are
+# re-measured after three green main runs.
 jobs:
   frontend-coverage:
     name: frontend coverage (shard ${{ matrix.shard }}/3)
@@ -175,7 +180,7 @@ jobs:
           retention-days: 14
 
   browser-workflows:
-    name: page workflows (${{ matrix.browser }}, shard ${{ matrix.shard }}/2)
+    name: page workflows (${{ matrix.browser }}, shard ${{ matrix.shard }}/3)
     # Merge queue, main and manual runs only (#420); pull requests run the Chromium/touch coverage shards.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -194,7 +199,7 @@ jobs:
       fail-fast: false
       matrix:
         browser: [firefox, webkit]
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
@@ -221,9 +226,9 @@ jobs:
           path: ~/.npm
           key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
       - run: npm ci --prefix tools/vendor --ignore-scripts
-      - name: Page workflows in ${{ matrix.browser }}, shard ${{ matrix.shard }}/2
+      - name: Page workflows in ${{ matrix.browser }}, shard ${{ matrix.shard }}/3
         timeout-minutes: 18
-        run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }} --shard ${{ matrix.shard }}/2
+        run: npm run --prefix tools/vendor test:workflows -- --project ${{ matrix.browser }} --shard ${{ matrix.shard }}/3
       # Traces and the blob report (test-results/blob/) of a failed, timed-out or cancelled step.
       - name: Upload browser traces
         if: always()
