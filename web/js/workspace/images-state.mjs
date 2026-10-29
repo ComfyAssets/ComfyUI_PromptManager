@@ -32,8 +32,8 @@ export function imageKey(image) {
     return `${image.root_index}:${image.path}`;
 }
 
-/** The workspace listing's sorts: the concept's Recently added, Name A–Z and Highest rated, plus Oldest and Z–A (D14). */
-export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc', 'rating']);
+/** The workspace listing's sorts: the concept's Recently added and Name A–Z, plus Oldest and Z–A (D14; no rating, D153). */
+export const IMAGE_SORTS = Object.freeze(['newest', 'oldest', 'name', 'name-desc']);
 
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
 // The largest page a refresh asks for (the listing clamps at 500).
@@ -315,7 +315,7 @@ const startOfDay = date => new Date(date.getFullYear(), date.getMonth(), date.ge
 
 /**
  * D17: the caption's right-hand date, "<Today|Yesterday|weekday> · <Month D>" of the newest result under Newest first,
- * with ", YYYY" outside the current year; '' under Oldest first and the name or rating sorts.
+ * with ", YYYY" outside the current year; '' under Oldest first and the name sorts.
  */
 export function captionDate(items, sort, now = new Date()) {
     if (sort !== 'newest') return '';

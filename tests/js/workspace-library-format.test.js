@@ -46,9 +46,8 @@ test('used label boundaries in UTC and local time', async () => {
     for (const missing of [null, undefined, '', 'not a date', 42]) assert.equal(usedLabel(missing, new Date()), 'Not used yet');
 });
 
-test('rating label omits unrated', async () => {
-    const { ratingLabel } = await source;
-    assert.deepEqual(ratingLabel(5), { stars: '★★★★★', hidden: 'Rated 5 out of 5' });
-    assert.deepEqual(ratingLabel(1), { stars: '★', hidden: 'Rated 1 out of 5' });
-    for (const unrated of [null, undefined, 0, 6, -1, 2.5, '3', true]) assert.deepEqual(ratingLabel(unrated), { stars: '', hidden: '' });
+// D153 (#447): cards show no rating, so the layout module has no rating label.
+test('the layout module offers no rating label', async () => {
+    const layout = await source;
+    assert.equal(Object.hasOwn(layout, 'ratingLabel'), false);
 });
