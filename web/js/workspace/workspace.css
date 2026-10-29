@@ -482,3 +482,14 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 .tagging-modal .tag-action-notice { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--ca-text); font-size: 12px; /* D147 */ }
 .tagging-modal .tag-action-notice > span { flex: 1 1 16em; }
 .tag-image-preview.tag-preview-empty { display: grid; place-items: center; padding: 8px; text-align: center; font-size: 12px; color: var(--ca-muted); background: var(--ca-field); box-sizing: border-box; /* D147 */ }
+
+/* D162 (#512): the prompt page's "⋯" More menu. The concept has no menu; it uses the concept's button, surface, border
+   and toast shadow, opens under its button, right-aligned so it stays inside a 390px viewport. */
+.more-menu { position: relative; display: inline-flex; }
+.more-menu-list {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: flex; flex-direction: column; gap: 4px;
+    min-width: 160px; padding: 6px; background: var(--ca-surface); border: 1px solid var(--ca-border); border-radius: 6px;
+    box-shadow: 0 8px 35px #0004;
+}
+.more-menu-list[hidden] { display: none; }
+.more-menu-list > button { justify-content: flex-start; text-align: left; width: 100%; white-space: nowrap; }

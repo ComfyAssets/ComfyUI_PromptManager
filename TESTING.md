@@ -2850,6 +2850,34 @@ concept's danger "Archive…" maps to "Archive variant…" followed by a "Delete
 Tests: `tests/browser/workspace-library-delete.spec.mjs` (#481 cases), and `workspace-library-editor.spec.mjs` (the
 hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the renamed button. JS only: no restart.
 
+### Delete review and prompt-page polish (#512)
+
+Found in the live test of #505/#507/#509. **D162** (beyond the concept, maintainer ruling 2026-10-29: delete was hard to
+find on a prompt's page): the prompt page heading ends with a **"⋯" More menu** button after Send to ComfyUI
+(`more-menu.mjs`: `aria-haspopup="menu"`, `aria-expanded`; Enter, Space or ArrowDown opens it on its first item, ArrowUp
+on its last; arrows, Home and End move; Escape closes it and returns focus to ⋯; Tab, an outside press or a choice
+closes it). It holds one danger item, "Delete prompt…", which opens the same review as Edit metadata's Delete prompt…
+(D161, kept) and returns focus to ⋯. The menu uses the concept's button, surface, border and toast shadow, opens
+right-aligned under ⋯, and opens rightwards where the heading wraps it to the left edge (390px). It is held with Edit
+metadata while the page's review or write runs, and disabled on a gone prompt's page.
+
+Also:
+- The Delete… review leaves out rows with nothing in them ("Delete permanently: 0 …", "Archive: 0 …"), close-only
+  reviews included.
+- A review opened from a prompt's page is titled "Delete this prompt" or "Archive this prompt" (following the choice),
+  and its close-only sentence reads "This prompt cannot be deleted or archived."
+- An archived prompt that is another prompt's negative is named so: "1 prompt used as another prompt's negative:
+  hidden, restorable" (or "N prompts in a saved pair (M used as another prompt's negative)"), with the sentence that its
+  variant stays.
+- A prompt page whose prompt no longer exists (404, after a delete or from a stale link) reads "This prompt no longer
+  exists. It may have been deleted." with "Open the Prompt library", no Retry; Edit metadata and ⋯ are disabled.
+- Item 5 of #512 does not fail on the code after #505: the archived shelf's button reads "← Prompt library", and under a
+  remembered search the heading's count equals what the archived shelf lists. A regression test pins both.
+
+Tests: `tests/js/workspace-library-delete.test.js` (#512) and `tests/browser/workspace-library-delete.spec.mjs` (#512
+cases: the menu by mouse, keyboard and at 390px, the gone page, the titles, the count under a search). JS only: no
+restart.
+
 ### No 1–5 prompt rating in the workspace (#447)
 
 **D153** (maintainer ruling 2026-10-28: the star is only for favorites; the concept keeps
