@@ -99,7 +99,10 @@ class TestPairUsageTracking(unittest.TestCase):
             unique_id="1",
         )
         node.cached_runs.record_item.assert_called_once_with(
-            "1", ("cat", ""), Facts(usage_tracking.generate_prompt_hash("cat"), None)
+            "1",
+            ("cat", ""),
+            Facts(usage_tracking.generate_prompt_hash("cat"), None),
+            (("cat", "", ""), ("", "", "")),
         )
 
     def test_validation_rejection_never_counts_or_saves(self):
