@@ -244,7 +244,7 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
    details, and an unavailable download stays visibly inert next to its reason. */
 .file-inspector { min-inline-size: 0; overflow-wrap: anywhere; }
 .file-inspector [aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
-/* #449 D154: the image's own tags and the linked prompt's or recipe's tags sit in the prompt sections' frame (concept
+/* #449 D160: the image's own tags and the linked prompt's or recipe's tags sit in the prompt sections' frame (concept
    .prompt-section), under a muted .role-label; the heading's 8px spaces the chips, as it spaces a prompt's text. */
 .file-inspector .tag-section { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 15px; }
 .file-inspector .tag-section .role-label { color: var(--ca-muted); }

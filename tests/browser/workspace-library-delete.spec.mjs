@@ -109,7 +109,7 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await expect(page.locator('.library-status')).toHaveText('No archived prompts.');
 });
 
-// #482 (D154): a prompt in a saved pair can be deleted permanently, with its own saved pairs; Archive stays the default.
+// #482 (D160): a prompt in a saved pair can be deleted permanently, with its own saved pairs; Archive stays the default.
 const choice=page=>review(page).getByRole('radiogroup',{name:'Prompts in a saved pair'});
 const row=(page,term)=>review(page).locator('dl.meta-grid > div').filter({has:page.locator('dt',{hasText:new RegExp(`^${term}$`)})}).locator('dd');
 test('Delete permanently removes a paired prompt with its own saved pair; its negative stays (#482)',async({page,request})=>{

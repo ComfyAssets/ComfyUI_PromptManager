@@ -315,7 +315,7 @@ class TestLibraryDeleteRoutes(LibraryDeleteRouteCase):
 
 
 class TestPairedDeleteRoutes(LibraryDeleteRouteCase):
-    """#482 (D154): Delete permanently with a prompt's own saved pairs."""
+    """#482 (D160): Delete permanently with a prompt's own saved pairs."""
 
     async def confirm_paired(self, review, ids, backup=None, digests=None):
         return await self.post(

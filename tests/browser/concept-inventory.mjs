@@ -233,17 +233,17 @@ export async function withChipSource(page,root,origin,category=null) {
 }
 
 /**
- * #449 D154: the inspector's tag sections in the concept's prompt-section frame (workspace.css `.tag-section`). The concept
+ * #449 D160: the inspector's tag sections in the concept's prompt-section frame (workspace.css `.tag-section`). The concept
  * has one bare `.tags` row after its prompt blocks (app.js a402), so the recorded rule is added and that row wrapped at
  * runtime, the browser laying out what follows: `sections` lists `[className, label, name]` per section, the first
  * holding the concept's row and each further one a copy of it. Returns the undo.
  */
-export const D154_TAG_SECTION=`.tag-section { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 15px; }
+export const D160_TAG_SECTION=`.tag-section { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 15px; }
 .tag-section .role-label { color: var(--ca-muted); }
 .tag-section > .tags { margin-top: 0; }`;
 export const PROMPT_TAGS=[['linked-tags','Prompt tags','Prompt tags']];
 export async function withTagSections(page,root,sections=PROMPT_TAGS) {
-    const restoreRule=await mutate(page,{css:D154_TAG_SECTION});
+    const restoreRule=await mutate(page,{css:D160_TAG_SECTION});
     const token=await page.evaluate(({root,sections})=>{
         const container=document.querySelector(root);
         const inner=container?.querySelector(':scope > .detail-inner')??container?.querySelector(':scope > div');
@@ -755,7 +755,7 @@ export function measureInspector(selector) {
         badges:when(rows.find(row=>parts.indexOf(row)<firstSection),rowOf),
         sections:sections.map(sectionOf),
         tags:when(rows.find(row=>parts.indexOf(row)>firstSection),rowOf),
-        // #449 D154: the labelled tag sections after the prompt blocks, each with its frame, heading, label and chip row.
+        // #449 D160: the labelled tag sections after the prompt blocks, each with its frame, heading, label and chip row.
         tagSections:parts.filter(item=>item.matches('section.tag-section')).map(tagSectionOf),
         facts:when(parts.find(item=>item.matches('dl.meta-grid')),factsOf),
         // Disclosures (viewer only) by their summary and frame; their content is the D20 production facts.

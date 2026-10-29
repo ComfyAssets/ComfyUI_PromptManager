@@ -176,8 +176,8 @@ function extensionOf(record) {
     return (record.file?.extension || record.identity.path.split('.').at(-1)).replace(/^\./, '').toUpperCase();
 }
 /**
- * The tag chips after the prompt blocks (D88, D154): the file's current image tags (`source: 'image'`), then D21's linked
- * tags (`source: 'linked'`), each without case-insensitive repeats within its own source (D154: a linked tag that is also
+ * The tag chips after the prompt blocks (D88, D160): the file's current image tags (`source: 'image'`), then D21's linked
+ * tags (`source: 'linked'`), each without case-insensitive repeats within its own source (D160: a linked tag that is also
  * an image tag stays in both labelled sections). With `filterable` (a Tags filter exists, as in the Images panel) every
  * image tag sets it, and a linked tag only when it is the positive's own (D21); otherwise, as in the viewer, every chip
  * is plain.
@@ -197,7 +197,7 @@ export function inspectorTagChips(record, {filterable}) {
     if (library?.status === 'linked') add(library.tags, filterable && library.tags_scope === 'positive', 'linked');
     return chips;
 }
-/** D154 (#449): a tag section's visible heading; linked tags name their owner as D146's category chip does. */
+/** D160 (#449): a tag section's visible heading; linked tags name their owner as D146's category chip does. */
 export function tagSectionLabel(source, library) {
     if (source === 'image') return 'Image tags';
     return library?.tags_scope === 'pair' ? 'Recipe tags' : 'Prompt tags';
@@ -303,7 +303,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain. With the
         // D39 fallback a recipe without tags shows its positive's, which are filter buttons again. D88: the file's own
         // image tags lead the row and, where a Tags filter exists, always set it (it matches them too).
-        // D154 (#449): each source gets its own labelled section, so image tags never read as part of the negative prompt.
+        // D160 (#449): each source gets its own labelled section, so image tags never read as part of the negative prompt.
         const chips = inspectorTagChips(record, {filterable:!!onTagFilter});
         for (const source of ['image', 'linked']) {
             const own = chips.filter(chip => chip.source === source);
@@ -342,7 +342,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         if (!full && footer.childNodes.length) container.append(footer);
     }
     /**
-     * D154: `section.tag-section` in the prompt sections' frame, its `.role-label` heading naming the source and count.
+     * D160: `section.tag-section` in the prompt sections' frame, its `.role-label` heading naming the source and count.
      * The region's name leaves the count out and carries the prompt blocks' context ("Current file image tags").
      */
     function tagSection(source, label, chips) {

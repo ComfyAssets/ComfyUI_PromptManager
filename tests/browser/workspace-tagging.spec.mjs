@@ -458,7 +458,7 @@ test('virtualized cards release listeners on unmount', async ({ page, request })
     expect(await count()).toBe(mounted);
 });
 
-// Task C3 (D88), #449 (D154): the side panel and the viewer details draw the file's own current image tags in their own
+// Task C3 (D88), #449 (D160): the side panel and the viewer details draw the file's own current image tags in their own
 // "Image tags" section, then D21's linked tags in a "Prompt tags" or "Recipe tags" section after it. Panel image tags are
 // Tags filter buttons; the viewer's chips are plain.
 const panel = page => page.getByRole('complementary', { name: 'Selected image details', exact: true });
@@ -479,7 +479,7 @@ test('inspector shows saved image tags after Save without reselecting', async ({
     const reread = inspected(page, FIRST);
     await dialog(page).getByRole('button', { name: 'Save manual tags', exact: true }).click();
     expect((await (await reread).json()).image_tags).toEqual({ state: 'current', tags: ['dunes_tag', 'Editorial'] });
-    // The image tags lead as filter buttons in their own section; the recipe keeps its "editorial" in its own (D154).
+    // The image tags lead as filter buttons in their own section; the recipe keeps its "editorial" in its own (D160).
     await expect(imageTags(page).locator('.chip')).toHaveText(['dunes_tag', 'Editorial']);
     await expect(imageTags(page).locator('button.chip')).toHaveText(['dunes_tag', 'Editorial']);
     await expect(panel(page).locator('.tag-section.image-tags .role-label')).toHaveText('Image tags · 2');
@@ -524,7 +524,7 @@ test('viewer details show the same chips', async ({ page, request }) => {
     await expect(details.locator('.tag-section.image-tags')).toHaveCount(0);
 });
 
-// #449 (D154): the image tags are a labelled region of their own after the negative prompt, framed like a prompt section,
+// #449 (D160): the image tags are a labelled region of their own after the negative prompt, framed like a prompt section,
 // so they never read as part of it; the same in the side panel and the viewer details.
 async function tagSectionPlacement(root) {
     return root.evaluate(node => {
@@ -541,7 +541,7 @@ async function tagSectionPlacement(root) {
 const PLACED = {after: true, inside: false, below: true, border: '1px solid', paddingTop: '15px', marginTop: '15px',
     label: {transform: 'uppercase', size: '10px', sameColorAsNegative: false}};
 
-test('D154: image tags sit in their own labelled section after the negative prompt, in the panel and the viewer', async ({ page, request }) => {
+test('D160: image tags sit in their own labelled section after the negative prompt, in the panel and the viewer', async ({ page, request }) => {
     await saveImageTags(request, FIRST, ['dunes_tag', 'sunlit']);
     await page.goto(images);
     const section = panel(page).getByRole('region', { name: 'Image tags', exact: true });
