@@ -21,8 +21,8 @@ export function mapLibraryConcept(reference) {
     // Save view is the concept's own (saved views, #249 D16 retired).
     const toolbar={...library.toolbar};
     toolbar.items=toolbar.items.map(item=>{
-        // D14: the Library appends its Oldest first after the concept's three sorts.
-        if(item.id==='sort')return {...item,options:[...item.options,'Oldest first']};
+        // D14: the Library appends its Oldest first after the concept's sorts; D153 (#447) drops "Highest rated".
+        if(item.id==='sort')return {...item,options:[...item.options.filter(option=>option!=='Highest rated'),'Oldest first']};
         // D36: the category list is the Library's real list, sorted alphabetically; the concept lists prompt order.
         if(item.id==='category-filter')return {...item,options:[item.options[0],...item.options.slice(1).sort(nocase)]};
         return item;
@@ -39,11 +39,11 @@ export function mapLibraryConcept(reference) {
         title:{...card.title,items:card.title.items.map(item=>item.tag==='button'?{...item,minWidth:'0px'}:item)},
         // D43: tag chips come in the store's alphabetical order; the row flows again from the concept's own chips.
         tags:sortedTags(card.tags),
-        // D23: the stars are aria-hidden, with a visually hidden "Rated N out of 5" spoken in their place. The fixture's
-        // run_count (4) and last_used_at (its own "now", where the page's clock stands) give the concept's own "4 runs"
-        // and "Used today". The two-line clamp is
+        // D153 (#447): no rating stars; the concept page itself is measured without them (`dropConceptRatings`). The
+        // fixture's run_count (4) and last_used_at (its own "now", where the page's clock stands) give the concept's own
+        // "4 runs" and "Used today". The two-line clamp is
         // applied below through `clampedCards`, measured on the concept with `CLAMP_CSS` (its samples wrap at 390px).
-        footer:{...card.footer,facts:{...card.footer.facts,spoken:card.footer.facts.spoken.replace(/^(★+)/,stars=>`Rated ${stars.length} out of 5`)}}}));
+        footer:card.footer}));
     return {...reference,library:{...library,toolbar,
         // D35: the caption uses the singular for one.
         caption:{...library.caption,top:library.caption.top-rise,spans:library.caption.spans.map(span=>({...span,text:countCopy(span.text)}))},
@@ -139,9 +139,20 @@ async function sortConceptTags(page) {
     return ()=>page.evaluate(()=>{for(const [row,chips] of window.__conceptTagOrder)row.append(...chips);delete window.__conceptTagOrder;});
 }
 
+/**
+ * D153 (#447): production draws no 1–5 rating. The concept's card footers read "★★★★★ · Used today"; the stars and
+ * their separator are taken out of the concept page itself, so the footer facts are measured as production draws them.
+ * Returns the concept's original footer texts.
+ */
+async function dropConceptRatings(page) {
+    return page.evaluate(()=>[...document.querySelectorAll('.prompt-card .card-footer > span')].map(span=>{
+        const original=span.textContent;span.textContent=original.replace(/^★+ · /,'');return original;}));
+}
 async function openConceptLibrary(page,theme,motion) {
     await openConcept(page,'library',theme,motion);
     await expect(page.locator(CARDS)).toHaveCount(CONCEPT_PROMPTS);
+    const footers=await dropConceptRatings(page);
+    expect(footers,'the concept rates every card (D153 removes it)').toEqual(Array(CONCEPT_PROMPTS).fill().map((_,index)=>expect.stringMatching(/^★+ · \S/)));
     await page.mouse.move(0,0);await decoded(page);await settle(page);
 }
 async function openProductionLibrary(page,theme,motion) {
@@ -295,7 +306,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
             expect.soft(card.meta,`${motion} concept meta`).toMatchObject({fontSize:'10px',columnGap:'9px'});
             expect.soft(card.meta.items.map(item=>item.text),`${motion} concept meta text`).toEqual(['− 3 negative variants','4 runs','4 images']);
             expect.soft(card.footer,`${motion} concept footer`).toMatchObject({paddingTop:'11px',paddingRight:'18px',paddingBottom:'11px',paddingLeft:'18px',borderTopWidth:'1px',borderTopStyle:'solid'});
-            expect.soft(card.footer.facts.text,`${motion} concept footer facts`).toBe('★★★★★ · Used today');
+            expect.soft(card.footer.facts.text,`${motion} concept footer facts (D153: without the stars)`).toBe('Used today');
             expect.soft(diffInventory(stripExact(cards.map(item=>sortedTags(item.tags))),stripExact(sorted)),`${motion} tags in alphabetical order`).toEqual([]);
             expect.soft(diffInventory(stripExact(clampedCards(reference.library)),stripExact({grid:clamped.grid,cards:clamped.cards})),`${motion} clamped cards`).toEqual([]);
             expect.soft(diff,`${motion} differences after the recorded deviations`).toEqual([]);
@@ -394,7 +405,7 @@ test('a run that crosses midnight still reads the concept fixture\'s day',async(
     const reference=await conceptInventory(page);
     await openProductionLibrary(page,'dark','no-preference');
     const actual=await inventoryOf(page,'#workspace-main');
-    expect(actual.library.cards.map(card=>card.footer.facts.text.replace(/^★+ · /,''))).toEqual(Array(CONCEPT_PROMPTS).fill('Used today'));
+    expect(actual.library.cards.map(card=>card.footer.facts.text)).toEqual(Array(CONCEPT_PROMPTS).fill('Used today'));
     expect(compare(reference,actual,{sections:['library'],library:['grid','cards','trailing']})).toEqual([]);
 });
 

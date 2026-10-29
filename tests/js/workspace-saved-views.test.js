@@ -72,9 +72,9 @@ test('the listing keeps usable views in order and normalizes their state', async
 
 test('page filters and saved states convert both ways', async () => {
     const { imagesFilters, imagesViewState, libraryFilters, libraryViewState } = await source;
-    const filters = { q: 'castle', category: 'Portraits', sort: 'rating', root: '1', subfolder: 'x', media: 'image', tags: ['fog'], favorites: true, collection: '' };
+    const filters = { q: 'castle', category: 'Portraits', sort: 'name-desc', root: '1', subfolder: 'x', media: 'image', tags: ['fog'], favorites: true, collection: '' };
     const state = imagesViewState(filters);
-    assert.deepEqual(state, { q: 'castle', category: 'Portraits', sort: 'rating', source: '1', folder: 'x', media: 'image', tags: ['fog'], favorites: true, collection: '' });
+    assert.deepEqual(state, { q: 'castle', category: 'Portraits', sort: 'name-desc', source: '1', folder: 'x', media: 'image', tags: ['fog'], favorites: true, collection: '' });
     assert.deepEqual(imagesFilters(state), filters);
     assert.deepEqual(imagesFilters({}), { q: '', category: '', sort: 'newest', root: 'all', subfolder: '', media: 'all', tags: [], favorites: false, collection: '' });
     // #331 D140: the open collection round-trips; a missing one is ''.
@@ -214,4 +214,14 @@ test('a state over the API 4 KB cap is refused before anything is sent (#249 M5)
     const store = createSavedViews(api);
     await assert.rejects(store.create('images', 'Big', big), error => error instanceof SavedViewTooLarge && error instanceof RangeError);
     assert.deepEqual(api.calls, []);
+});
+
+test('a view saved under the retired Highest rated sort opens on Recently added (D153)', async () => {
+    const { normalizeViewState, imagesFilters, libraryFilters } = await source;
+    assert.equal(normalizeViewState('images', { sort: 'rating' }).sort, 'newest');
+    assert.equal(normalizeViewState('library', { sort: 'rating' }).sort, 'newest');
+    assert.equal(imagesFilters({ sort: 'rating' }).sort, 'newest');
+    assert.equal(libraryFilters({ sort: 'rating' }).sort, 'newest');
+    assert.equal(normalizeViewState('images', { sort: 'name-desc' }).sort, 'name-desc');
+    assert.equal(normalizeViewState('library', { sort: 'oldest' }).sort, 'oldest');
 });
