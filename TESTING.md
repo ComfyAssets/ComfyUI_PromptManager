@@ -251,12 +251,29 @@ the process exits non-zero.
   stacks.
 - When the watchdog fires under coverage, that run's coverage data is lost; the
   job fails anyway and the dump is what matters.
+- `PM_TEST_SLOWEST=N` (off by default) lists the N slowest tests after the
+  summary, each timed from its `start:` line to the next one like the hang
+  limit. The Windows and macOS jobs (`portability.yml`) set it to 40, so every
+  run shows where its time went (#487). The list prints only when the run
+  ends: a job GitHub cancels or a watchdog exit prints none, so read the
+  timestamps between `start:` lines instead.
+- On the Windows runners `TEMP` sits on the OS disk C:, where a flush took about
+  6 ms and a test database's create-to-delete about 111 ms (D: 0.5 ms and 23 ms,
+  macOS 19 ms). `portability.yml` points `TEMP`/`TMP` at a folder under
+  `RUNNER_TEMP` on D: before the suite. It switches 8.3 short names on for D:
+  and spells the folder by its short name, as the runner's own TEMP was
+  (`C:\Users\RUNNER~1\...`), logs it, and warns when there is none.
+  A test that waits on a fixed busy timeout, a network name (`\\server\share`:
+  use `\\localhost\<missing share>`) or a default TLS context (it reads the
+  Windows certificate store) costs seconds there; the slowest list shows it.
 
-Every job in `test.yml`, `code-quality.yml` and `viewerjs-check.yml` has
-`timeout-minutes` (`tests/vendor/ci-workflow.test.mjs` checks it). The rule is
-ceil(1.5 x the slowest of three recent green runs on `main`) + 3 minutes, never
-under 5; the three run ids, their times and the resulting limits are written
-in a comment above `jobs:`. The 3 minutes leave room for one watchdog firing, so
+Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
+`portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
+checks it). The rule is ceil(1.5 x the slowest of three recent green runs on
+`main`) + 3 minutes, never under 5, timed as whole-job wall time; the three run
+ids, their times and the resulting limits are written in a comment above
+`jobs:`. For `portability.yml` the tooling test recomputes the limit from that
+comment (#493); its one matrix job takes the slowest Windows or macOS leg. The 3 minutes leave room for one watchdog firing, so
 the dump prints before GitHub cancels the job. A job that hits its limit, or a
 watchdog dump, is a failure like any other: read the dump, find the blocking
 call, fix it. Never raise a limit or rerun to get green; a limit changes only
@@ -2398,6 +2415,59 @@ node --test tests/js/workspace-collections.test.js tests/js/workspace-images-sel
 npm run --prefix tools/vendor test:workflows -- workspace-collections.spec.mjs collections-concept.spec.mjs \
   images-concept.spec.mjs inspector-concept.spec.mjs shell-concept.spec.mjs --project chromium --project touch
 ```
+
+### Deleting images (#480)
+
+Images › Delete… removes the checked images (or "Select all N matching", at most 500, or
+the one file of the side panel or the viewer) from the library, and on request moves the
+files to the system trash. **No code path unlinks or overwrites a media file.**
+
+- **D159** (#480, maintainer request): the concept's "Remove links…" (`danger`, app.js
+  432) returns as **Delete…** in the same place (after Export metadata, before Clear), and
+  as the last action of the side panel and after Download in the Images viewer. Its
+  review is the concept's `maintenancePlan` (`dl.meta-grid`, Cancel and a primary) with a
+  radio group first, "What should happen to the files?", nothing checked (the ruling: ask
+  every time): "Remove from the library only" or "Also move the files to the trash". The
+  rows follow the chosen mode (Scope, Not changed, Prompt links, Image details, Backup,
+  Media on disk) and the primary is `danger`: "Remove N images from the library" / "Move
+  N images to the trash". `tests/browser/images-delete-concept.spec.mjs` compares the bar
+  button and the review's grid and actions with the concept.
+- **Routes.** `POST /prompt_manager/images/delete/preview {items | filter}` reviews both
+  modes at once under the maintenance preview lease and answers a reviewed plan
+  (`_plan_response`, operation `delete_images`): `library.count`, `trash.count`, `refused`
+  and `trash_refused` (`{count, counts, rows ≤ 50}` with coded reasons), `records`,
+  `orphaned_prompts` and the backup. Each target is matched to its entry in the current
+  listing (`not-listed` otherwise). `POST /prompt_manager/maintenance/apply {token, mode}`
+  (`mode` required for this plan, refused for any other) starts job kind `image_delete`
+  (admission `records`, not cancellable; groups `trashed`, `removed`, `not_changed`,
+  `errors`): sources unchanged, the promised safety backup, then per file a recheck
+  (containment and fingerprint) and
+  - library mode: one transaction deletes the file's records and writes its removal mark;
+  - trash mode: the file moves first (`utils/trash.py`); a refused move changes nothing;
+    then its records go. A records failure stops the job (`records-failed`); later files
+    are "Not attempted".
+- **What goes** (`database/image_removal.py`): image links under every spelling (pair
+  links by cascade, workflow documents released), image tags, auto-tag marks, pending
+  undecided Needs review items, the own category, collection memberships and the
+  favorite. A decided or revised review item keeps its decision and the annotation rows it
+  cites. Prompts, recorded runs and the vocabulary stay. Previews are removed.
+- **Removal marks** (`image_removals`, `image_removals_meta`): a library-only removal
+  hides exactly that file (locator, size, `mtime_ns`) from the workspace listing, the
+  output scan, the duplicate find, Tag output images and linking. A modified or replaced
+  file shows again. An explicit tag, category, favorite or collection write clears the
+  mark. Older builds ignore the tables (removed files show there); restoring an older
+  backup shows every file again; restoring a pre-delete backup after trash mode brings
+  back records of files that are in the trash (Missing-file links cleans them up). The
+  legacy gallery lists every file on disk, removed or not. Hard links have one mark per
+  path, and on FAT/exFAT/SMB a same-size replacement can stay hidden.
+- **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
+  freedesktop Trash specification (home trash on the same mount, else the mount's
+  `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with
+  `renameat2(RENAME_NOREPLACE)`; without it, across devices, on a read-only mount or with
+  a trash inside an output root the move is refused (`no-trash`, `trash-in-root`). Windows
+  and macOS report `no-trash` until their own backends land; library-only removal works
+  everywhere. Tests use `tests/fake_trash.py`; the browser test server installs it, so no
+  test touches a real trash.
 
 ### Prompt library cards and recorded deviations (#249 PR E)
 

@@ -25,7 +25,7 @@ function element(tag, className, text) {
  * reach `onCollectionsChanged({added, removed})` once the viewer closes, so the viewer keeps its place while open.
  */
 export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter,
-    collections = null,onCollectionsChanged = null}) {
+    collections = null,onCollectionsChanged = null,onDelete = null}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -82,6 +82,16 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         const download = element('a','media-download','Download');download.setAttribute('aria-label','Download original');download.setAttribute('download','');
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
+        // #480: Delete… (the Images viewer only) pauses the media, then opens the delete review for this file.
+        if (onDelete) {
+            const remove = createButton('Delete…','danger');
+            local.listen(remove,'click',() => {
+                session.stop();
+                for (const video of dialog.querySelectorAll('video')) video.pause();
+                if (entry) onDelete(entry,remove);
+            });
+            controls.append(remove);
+        }
         const next = button('Next media','Next →',() => session.navigate(1));
         // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle. D155
         // (#448): `details: 'shown'` (Inspect a file) keeps the toggle but opens with the details showing. D156 (#450):

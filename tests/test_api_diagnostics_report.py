@@ -45,7 +45,9 @@ SEEDED_PATHS = (
     "/srv/someone/renders",
     "C:\\Users\\someone\\Documents\\renders",
     "D:/Users/someone/prompts.db",
-    "\\\\nas\\share\\someone\\renders",
+    # A share on this machine: on Windows the report resolves every source,
+    # and an unknown server name made that wait about 2.9 s (#487).
+    "\\\\localhost\\pm-no-such-share\\someone\\renders",
 )
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 TOP_KEYS = {

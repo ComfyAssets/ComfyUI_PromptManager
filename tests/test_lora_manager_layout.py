@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -753,6 +754,17 @@ class LocalMediaTests(LayoutTestCase):
         self.assertEqual(layout_module.VIDEO_SUFFIXES, frozenset(VIDEO_EXTENSIONS))
 
 
+# Windows path rules without the filesystem. On Windows ntpath.realpath asks
+# the network for \\server\share and waits seconds for a host that does not
+# exist (#487); elsewhere ntpath.realpath already is ntpath.abspath.
+LEXICAL_NT = SimpleNamespace(
+    normcase=ntpath.normcase,
+    realpath=ntpath.abspath,
+    dirname=ntpath.dirname,
+    sep=ntpath.sep,
+)
+
+
 class FolderGuardTests(unittest.TestCase):
     """Portable path-flavor controls (TESTING.md Windows portability preflight)."""
 
@@ -762,7 +774,7 @@ class FolderGuardTests(unittest.TestCase):
 
     def guard_nt(self, path, home="C:\\Users\\Vito"):
         return layout_module._guard_folder(
-            path, home, pathmod=ntpath, isdir=lambda _p: True
+            path, home, pathmod=LEXICAL_NT, isdir=lambda _p: True
         )
 
     def test_filesystem_roots_and_home_are_rejected(self):
@@ -832,8 +844,12 @@ class FolderGuardTests(unittest.TestCase):
 
     def test_missing_folders_add_nothing(self):
         self.assertIsNone(layout_module._guard_folder(str(self.tmp / "x"), "/home"))
+        # A missing share on this machine: an unknown server name made
+        # Windows wait about 2.8 s for the network (#487).
         self.assertIsNone(
-            layout_module._guard_folder("\\\\server\\share\\loras", str(self.tmp))
+            layout_module._guard_folder(
+                "\\\\localhost\\pm-no-such-share\\loras", str(self.tmp)
+            )
         )
         self.assertEqual(
             layout_module._guard_folder(str(self.tmp), "/nonexistent-home"),
@@ -843,17 +859,17 @@ class FolderGuardTests(unittest.TestCase):
     def test_windows_model_path_matches_a_lower_case_root(self):
         self.assertTrue(
             layout_module._inside(
-                "C:/Models/Loras/A.safetensors", ("c:\\models\\loras",), ntpath
+                "C:/Models/Loras/A.safetensors", ("c:\\models\\loras",), LEXICAL_NT
             )
         )
         self.assertFalse(
             layout_module._inside(
-                "C:/Models/LorasX/A.safetensors", ("c:\\models\\loras",), ntpath
+                "C:/Models/LorasX/A.safetensors", ("c:\\models\\loras",), LEXICAL_NT
             )
         )
         self.assertFalse(
             layout_module._inside(
-                "\\\\other\\share\\A.safetensors", ("c:\\models\\loras",), ntpath
+                "\\\\other\\share\\A.safetensors", ("c:\\models\\loras",), LEXICAL_NT
             )
         )
 

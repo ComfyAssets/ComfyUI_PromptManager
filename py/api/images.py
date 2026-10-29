@@ -2450,6 +2450,10 @@ class ImageRoutesMixin:
             def key(entry):
                 return _workspace_key(entry, order)
 
+        # #480: files removed from the library stay on disk, hidden here.
+        hidden = self._hidden_entries(listings)
+        if hidden:
+            entries = [entry for entry in entries if entry.normalized not in hidden]
         return (
             entries,
             key,

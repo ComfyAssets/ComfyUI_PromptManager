@@ -1376,6 +1376,61 @@ async function expectStar(button, favorite) {
     await expect(button).toHaveAttribute('aria-pressed', String(favorite));
 }
 
+// #494: the Favorites count is re-read 300 ms after a star changes. A page that has begun to leave starts no count read
+// (WebKit fails it with "Fetch API cannot load … due to access control checks.", reported as a page error; queue run
+// 40934368716). A leave that is called off counts again on the next input.
+for (const leave of ['beforeunload', 'pagehide']) {
+    test(`a star changed just before ${leave} starts no Favorites count read while the page leaves`, async ({ page }) => {
+        await page.clock.install();
+        const countReads = [];
+        page.on('request', item => {
+            const url = new URL(item.url());
+            if (url.pathname === '/prompt_manager/images/output' && url.searchParams.get('favorites') === '1' && url.searchParams.get('limit') === '1') countReads.push(url.search);
+        });
+        await page.goto(workspace);
+        const card = page.locator('article[data-image-key="0:shared/same.png"]');
+        await expectStar(star(card, 'same.png'), false);
+        await expect.poll(() => countReads.length).toBe(1);
+        await star(card, 'same.png').click();
+        await expectStar(star(card, 'same.png'), true);
+        await expect(toast(page)).toHaveText('Added to favorites.');
+        await page.evaluate(type => window.dispatchEvent(new Event(type)), leave);
+        await page.clock.runFor(1000);
+        // A read made after the clock ran is listed, so the listener saw every count read.
+        await page.evaluate(() => fetch('/prompt_manager/images/output?mode=workspace&favorites=1&limit=1&probe=1'));
+        await expect.poll(() => countReads.length).toBe(2);
+        expect(countReads.at(-1)).toContain('probe=1');
+        if (leave === 'beforeunload') {
+            // The leave was called off (the page is still here): the next input counts again, once, and the badge shows it.
+            await page.keyboard.press('Shift');
+            await expect.poll(() => countReads.length).toBe(3);
+            expect(countReads.at(-1)).not.toContain('probe=1');
+            await expect(page.locator('nav [data-route="favorites"] .nav-count')).toHaveText('1');
+            await page.clock.runFor(1000);
+            expect(countReads).toHaveLength(3);
+        }
+    });
+}
+
+test('a count read in flight when the page starts to leave is dropped, then read again if the page stays (#494)', async ({ page }) => {
+    const held = [];
+    // The page's first Library count read is held at the server boundary while the page starts to leave.
+    await page.route('**/prompt_manager/library?limit=1', route => { held.push(route); });
+    await page.goto(workspace);
+    await expect.poll(() => held.length).toBe(1);
+    const failed = page.waitForEvent('requestfailed', item => item.url().includes('/prompt_manager/library?limit=1'));
+    await page.evaluate(() => window.dispatchEvent(new Event('beforeunload')));
+    await failed;
+    await page.unroute('**/prompt_manager/library?limit=1');
+    await held[0].continue().catch(() => {});
+    await expect(page.locator('nav [data-route="library"] .nav-count')).toHaveCount(0);
+    // The page stayed: the next input reads the dropped count again.
+    const reread = page.waitForRequest(item => item.url().includes('/prompt_manager/library?limit=1'));
+    await page.keyboard.press('Shift');
+    await reread;
+    await expect(page.locator('nav [data-route="library"] .nav-count')).toHaveText(/^\d+$/);
+});
+
 test('favorite persists across reload', async ({ page, request }) => {
     await expect(await request.post('/__test__/reset', { data: { include_video: true } })).toBeOK();
     const sent = [];
@@ -1794,7 +1849,7 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     await checkbox(first, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
     // D85: Add tags (the concept's) and Auto-tag selected lead the real actions.
-    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection', 'Export metadata', 'Clear']);
+    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection', 'Export metadata', 'Delete…', 'Clear']);
     // Toggling neither opens the viewer, nor inspects, nor moves focus.
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(checkbox(first, 'same.png')).toBeFocused();

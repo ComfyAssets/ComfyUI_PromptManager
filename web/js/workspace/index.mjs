@@ -137,7 +137,13 @@ function mountWorkspace() {
         onSave: name => savedViews.create(page, name, state) });
     // One read per count, so a write that refreshes Library and Tags never supersedes an Images read in flight.
     const countRequests = new Map();
+    // #494: a page that has begun to leave (beforeunload) starts no count read: WebKit fails one with "Fetch API cannot
+    // load … due to access control checks." (a page error). Counts asked for meanwhile wait; a leave that is called off
+    // (the page is still here) reads them on its next input, as the legacy admin page does (#290).
+    let leaving = false;
+    const deferredCounts = new Set();
     function refreshCounts(ids) {
+        if (leaving) { for (const id of ids) deferredCounts.add(id); return; }
         for (const id of ids) {
             countRequests.get(id)?.abort();
             const request = new AbortController();
@@ -167,9 +173,29 @@ function mountWorkspace() {
     let favoriteCountTimer = 0;
     scope.cleanup(onFavoriteChange(() => {
         clearTimeout(favoriteCountTimer);
-        favoriteCountTimer = setTimeout(() => refreshCounts(FAVORITE_WRITE_COUNTS), FAVORITE_COUNT_DELAY_MS);
+        favoriteCountTimer = setTimeout(() => { favoriteCountTimer = 0; refreshCounts(FAVORITE_WRITE_COUNTS); }, FAVORITE_COUNT_DELAY_MS);
     }));
     scope.cleanup(() => clearTimeout(favoriteCountTimer));
+    // Any beforeunload: a page that stays (Stop, a download, a "stay" prompt) revives on its next input or when shown.
+    scope.listen(window, 'beforeunload', () => {
+        leaving = true;
+        if (favoriteCountTimer) { clearTimeout(favoriteCountTimer); favoriteCountTimer = 0; for (const id of FAVORITE_WRITE_COUNTS) deferredCounts.add(id); }
+        for (const [id, request] of countRequests) { request.abort(); deferredCounts.add(id); }
+        countRequests.clear();
+    });
+    const revive = () => {
+        if (!leaving) return;
+        leaving = false;
+        const ids = [...deferredCounts]; deferredCounts.clear();
+        if (ids.length) refreshCounts(ids);
+        if (restorePending) { restorePending = false; restoreReload.request(); }
+    };
+    // Capture, as the admin page does, so no handler that stops an input keeps the page from reviving.
+    for (const type of ['pointerdown', 'keydown']) {
+        window.addEventListener(type, revive, true);
+        scope.cleanup(() => window.removeEventListener(type, revive, true));
+    }
+    scope.listen(document, 'visibilitychange', () => { if (document.visibilityState === 'visible') revive(); });
     // A metadata scan that ends may have added items to Needs review: re-read its count once per ended scan.
     const runningScans = new Set();
     scope.cleanup(activity.subscribe(() => {
@@ -186,7 +212,10 @@ function mountWorkspace() {
     // again, and the open page is shown again from the restored data; the Activity job view the restore opened stays.
     // #415: an open review closes (its plan no longer describes storage); while any other dialog is open, all of it
     // waits until the last one has closed, so the dialog keeps what was typed.
+    // #494: a restore that ends while the page leaves reloads nothing then; a page that stays reloads on revive.
+    let restorePending = false;
     const restoreReload = createRestoreReload(() => {
+        if (leaving) { restorePending = true; return; }
         forgetImagesVisit();
         forgetLibraryVisit();
         refreshCounts(NAV_COUNT_ROUTES);

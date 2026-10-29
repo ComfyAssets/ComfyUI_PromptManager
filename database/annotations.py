@@ -40,6 +40,7 @@ from .annotation_schema import (
     METADATA_TABLE,
 )
 from .autotag_schema import AUTOTAG_TABLE
+from .image_removal_schema import clear_marks
 from .library_commands import _UUID, LibraryCommandError, _validate_epoch
 from .models import utc_now_iso
 from .vocabulary import validate_vocabulary_tag_name
@@ -236,6 +237,9 @@ class AnnotationOperations:
 
     @staticmethod
     def _annotation_owner(conn: sqlite3.Connection, locator: str, now: str) -> str:
+        # A file with image tags or Needs review state is in the library: a
+        # removal mark never hides it (#480).
+        clear_marks(conn, [locator])
         row = conn.execute(_OWNER, (locator,)).fetchone()
         if row is not None:
             return row[0]

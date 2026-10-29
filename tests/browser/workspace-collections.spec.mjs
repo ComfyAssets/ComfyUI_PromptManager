@@ -527,7 +527,7 @@ test('Add to collection creates a collection and adds to it ignoring case (CUJ 1
     await expect(imageCards(page)).toHaveCount(21);
     for (const file of ['loose.png', 'landscape_01.png', 'experiment_01.png']) await check(page, file);
     await expect(bar(page).locator('button')).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection',
-        'Export metadata', 'Clear']);
+        'Export metadata', 'Delete…', 'Clear']);
     await barButton(page, 'Add to collection').click();
     // The concept's simpleInput with Add (D138) and the existing names as suggestions.
     await expect(addDialog(page).locator('label')).toHaveText('Collection name');
@@ -578,7 +578,7 @@ test('Remove from collection takes the checked images off the open collection (C
     await check(page, 'landscape_01.png');
     await check(page, 'landscape_02.png');
     await expect(bar(page).locator('button')).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection',
-        'Remove from collection', 'Export metadata', 'Clear']);
+        'Remove from collection', 'Export metadata', 'Delete…', 'Clear']);
     await barButton(page, 'Remove from collection').click();
     await expect(toast(page)).toHaveText('Removed 2 images from “Landscapes”.');
     await expect(imageCards(page)).toHaveCount(10);
@@ -715,7 +715,8 @@ test('Collections… in the side panel adds, removes and creates for one image (
     // The newest image, landscape_01, is the panel's.
     await expect(panel(page).getByRole('heading', { level: 2 })).toHaveText('landscape_01.png');
     const open = panel(page).getByRole('button', { name: 'Collections…', exact: true });
-    await expect(panel(page).locator('.detail-footer > button').last()).toHaveText('Collections…');
+    // #480 D159: Delete… follows Collections… at the end of the panel's actions.
+    await expect(panel(page).locator('.detail-footer > button').nth(-2)).toHaveText('Collections…');
     await open.click();
     await expect(collectionsDialog(page)).toBeVisible();
     await expect(choice(page, 'Landscapes')).toBeChecked();
