@@ -162,7 +162,6 @@ async function serverJson(request, url) {
 }
 
 const number = value => value.toLocaleString('en-US');
-const ratingText = value => value === null ? 'Not rated' : `${number(value)} / 5`;
 
 /** The concept's shell and Overview with the recorded deviations applied, given the server's real overview. */
 function mapOverviewConcept(reference, overview) {
@@ -178,8 +177,8 @@ function mapOverviewConcept(reference, overview) {
         'One display configuration': row => ({ ...row, description: 'Grid and density settings are shared across views.' }),
         // D93: the real sources, not samples.
         '2 sample output sources': row => ({ ...row, title: `${number(overview.sources.effective)} output sources` }),
-        // D96: the dialog shows runs and ratings by category and library totals, not prompt, tag or date usage.
-        Statistics: row => ({ ...row, description: 'Runs and ratings by category, with library totals.' }),
+        // D96: the dialog shows runs by category and library totals, not prompt, tag or date usage (D153: no ratings).
+        Statistics: row => ({ ...row, description: 'Runs by category, with library totals.' }),
     };
     const surfaces = reference.columns.surfaces.map(surface => ({ ...surface,
         rows: surface.rows.map(row => (rows[row.title] ?? (value => value))(row)) }));
@@ -288,7 +287,10 @@ test('system comparison detects mutations', async ({ page, request }) => {
     expect(diffInventory(expected, await measure())).toEqual([]);
 });
 
-/** D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. */
+/**
+ * D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. D153 (#447): the
+ * concept's "Avg. rating" column and a "Rated images" total are not drawn.
+ */
 function mapStatisticsConcept(reference, statistics) {
     const [runs] = reference.tables;
     return {
@@ -296,10 +298,11 @@ function mapStatisticsConcept(reference, statistics) {
         // No sample note (prototype copy); a second table follows the first.
         body: ['table', 'table'],
         tables: [
-            { ...runs, rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs), ratingText(row.average_rating)]) },
+            { ...runs, head: runs.head.filter(([, , text]) => text !== 'Avg. rating'),
+                rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]) },
             { caption: 'Library totals', head: [['th', 'col', 'Total'], ['th', 'col', 'Count']],
                 rows: [['Prompts', number(statistics.totals.total_prompts)], ['Tags', number(statistics.totals.total_tags)],
-                    ['Images', number(statistics.totals.total_images)], ['Rated images', number(statistics.rated_images)]] },
+                    ['Images', number(statistics.totals.total_images)]] },
         ],
     };
 }
