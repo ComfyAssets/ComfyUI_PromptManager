@@ -883,6 +883,8 @@ class AdminRoutesMixin:
         extensions = IMAGE_EXTENSIONS + VIDEO_EXTENSIONS
         media_files = []
         seen = set()
+        # #480: a file removed from the library is never a copy or a keeper.
+        marks = self.db.removal_marks()
         for slot, root in enumerate(roots):
             for path in _collect_media_files([root], extensions):
                 try:
@@ -890,6 +892,12 @@ class AdminRoutesMixin:
                     # (Python 3.10's Path.stat bypasses a patched os.stat).
                     stat = os.stat(path)
                 except OSError:
+                    continue
+                mark = marks.get(os.path.normcase(os.path.realpath(str(path))))
+                if mark is not None and tuple(mark) == (
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                ):
                     continue
                 key = _physical_file_key(path, stat)
                 if key not in seen:
@@ -1551,8 +1559,13 @@ class AdminRoutesMixin:
             if job.cancelled:
                 return
             batch = media_files[batch_start : batch_start + SCAN_BATCH_SIZE]
-            skipped = [f for f in batch if str(f) in known]
-            to_read = [f for f in batch if str(f) not in known]
+            # #480: a file removed from the library is not read or linked
+            # again while its bytes are unchanged.
+            removed = await self._run_in_executor(self._removed_paths, batch)
+            skipped = [f for f in batch if str(f) in known or str(f) in removed]
+            to_read = [
+                f for f in batch if str(f) not in known and str(f) not in removed
+            ]
             outcomes = [_scan_outcome(f, roots, "skipped") for f in skipped]
             counts["processed"] += len(skipped)
             counts["unchanged"] += len(skipped)
