@@ -8,6 +8,7 @@ import contextlib
 import csv
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -15,7 +16,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _REPO_ROOT)
+
+# Run in a child interpreter: import py.autotag with a stub ComfyUI ``server``
+# and print every ML backend that the import pulled in.
+_IMPORT_AUTOTAG_REPORT_BACKENDS = """
+import sys
+from unittest.mock import MagicMock
+sys.modules["server"] = MagicMock()
+import py.autotag
+print(*sorted({"onnxruntime", "llama_cpp"} & set(sys.modules)))
+"""
 
 from PIL import Image
 
@@ -142,17 +154,26 @@ class TestModelInjection(EngineTestCase):
         self.assertEqual(service._model_loader, service._load_model)
 
     def test_importing_autotag_does_not_import_ml_backends(self):
-        for heavy in ("onnxruntime", "llama_cpp"):
-            self.assertNotIn(heavy, sys.modules)
+        # A fresh interpreter: earlier tests in this process may have imported
+        # an installed backend, so only a clean import can prove this (#472).
+        result = subprocess.run(
+            [sys.executable, "-c", _IMPORT_AUTOTAG_REPORT_BACKENDS],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), [])
 
     def test_default_wd14_loader_reports_missing_onnxruntime(self):
         _touch_model_files(self.models_dir, "wd14-vit")
         service = AutoTagService(models_dir=self.models_dir)
-        if "onnxruntime" in sys.modules:
-            self.skipTest("onnxruntime is installed in this environment")
 
-        with self.assertRaises(RuntimeError) as ctx:
-            service.load_model("wd14-vit")
+        # A None entry makes onnxruntime unimportable even where it is installed.
+        with _patch_modules({"onnxruntime": None}):
+            with self.assertRaises(RuntimeError) as ctx:
+                service.load_model("wd14-vit")
 
         self.assertIn("onnxruntime", str(ctx.exception))
         self.assertFalse(service.is_model_loaded())

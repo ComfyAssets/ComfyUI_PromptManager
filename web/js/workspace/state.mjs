@@ -129,6 +129,11 @@ export const LIBRARY_WRITE_COUNTS = Object.freeze(['library', 'tags']);
 export const FAVORITE_WRITE_COUNTS = Object.freeze(['favorites']);
 /** The count a review decision or a finished metadata scan can change. */
 export const REVIEW_WRITE_COUNTS = Object.freeze(['review']);
+/** Job kind -> the counts re-read once when such a job ends (a scan feeds Needs review; #501: a delete hides images). */
+export const JOB_END_COUNTS = Object.freeze({
+    scan: REVIEW_WRITE_COUNTS,
+    image_delete: Object.freeze(['images', 'favorites', 'review']),
+});
 // Trailing delay that coalesces quick star toggles into one Favorites count read (#249 M1).
 export const FAVORITE_COUNT_DELAY_MS = 300;
 
