@@ -17,6 +17,7 @@ import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 import {mountLibrarySelection} from './library-selection.mjs';
 import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
+import {COPY as DELETE_COPY,RESTORE_URL,restoreOutcome} from './library-delete.mjs';
 
 let shelfVisit=null;
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
@@ -107,6 +108,8 @@ export function rememberLibraryResult(result) {
 function outcomeMessage(result,outcome) {
     const {kind,receipt}=result.commit;
     if(kind==='metadata') return 'Saved.';
+    // #443: a save that reused an archived prompt leaves it archived; say how to bring it back.
+    if((kind==='create' || kind==='add-negative') && result.detail?.positive?.archived===true) return DELETE_COPY.archivedText;
     if(kind==='archive-pair') return ARCHIVED_MESSAGE;
     if(kind!=='create' && kind!=='add-negative') return null;
     if(receipt.positive_created) return 'Saved.';
@@ -158,7 +161,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const visit=saved?null:shelfVisit, mountedGeneration=writeGeneration;
         // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
         const restorable=visit?.state?visit:null;
-        const filters={text:'',category:'',tags:[],sort:'newest',...visit?.filters,...saved};
+        // #443 D152: `shelf` ('active' or 'archived', Show archived prompts) lives in the visit's filters, never in a saved view.
+        const filters={text:'',category:'',tags:[],sort:'newest',shelf:'active',...visit?.filters,...saved};
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
@@ -177,14 +181,22 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         // #437 D148: select prompts and set their category (the legacy admin's Set Category); a write reloads the shelf.
         let categoryNames=[];
         const selection=mountLibrarySelection({scope,api,grid,getItems:()=>state?.items ?? [],getEpoch:()=>state?.epoch ?? null,
-            getCategories:()=>categoryNames,focusFallback:{focus:()=>focusHeading(main)},
+            getCategories:()=>categoryNames,focusFallback:{focus:()=>focusHeading(main)},getShelf:()=>filters.shelf,
+            nameOf:id=>{const item=state?.items.find(entry=>entry.id===id);return item?displayTitle(item):null;},
             onCommitted:(kind,receipt)=>invalidateLibraryAfterWrite({kind:`bulk-${kind}`,receipt}),onReload:()=>{loadCategories();reset();}});
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
         const actions=headingActions(main,section);
         const exportButton=createButton('Export');exportButton.setAttribute('aria-label','Export full Library JSON');
-        const newPrompt=createButton('+ New prompt','ca-primary');actions.append(exportButton,newPrompt);
+        // #443 D152: the shelf's counterpart of Negative variants' Show archived (#235); N follows the filters.
+        const showArchived=createButton('Show archived prompts');showArchived.setAttribute('aria-pressed',String(filters.shelf==='archived'));
+        const newPrompt=createButton('+ New prompt','ca-primary');actions.append(showArchived,exportButton,newPrompt);
+        scope.listen(showArchived,'click',()=>{
+            if(selection.writing()) return;
+            filters.shelf=filters.shelf==='archived'?'active':'archived';showArchived.setAttribute('aria-pressed',String(filters.shelf==='archived'));
+            reset();selection.shelfChanged();
+        });
         const exportStatus=el('p','','library-options-status');exportStatus.hidden=true;exportStatus.setAttribute('role','alert');
         const editor=createNewPromptEditor(api,scope,main);
         scope.listen(newPrompt,'click',()=>editor.open({mode:'new',trigger:newPrompt}));
@@ -239,6 +251,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const content=el('div',undefined,'card-content');
             const heading=el('div',undefined,'card-title');const open=createButton(name);open.dataset.history='';
             heading.append(open,el('span',item.category || 'Uncategorized','chip'));
+            if(item.archived===true) heading.append(el('span','Archived','chip'));
             const prompts=el('div');
             const blocks=mountPromptBlocks(prompts,{prompts:{positive:{status:'resolved',text:item.text,source:'library'}},sender,parentScope:scope,roles:['positive'],title:name});
             const meta=el('div',undefined,'card-meta');
@@ -388,11 +401,16 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             // A loaded batch: the selection bar's count and Select all N loaded follow it (D151).
             if(batch) selection.listingChanged();
             if(next.variantTotal!==null) {
-                const count=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
+                const count=filters.shelf==='archived'?`${countOf(next.total,'archived prompt')} · ${countOf(next.variantTotal,'negative variant')} hidden with them`
+                    :`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
                 if(captionCount.textContent!==count) captionCount.textContent=count;caption.hidden=false;
             }
+            const archivedLabel=next.archivedTotal===null?'Show archived prompts':`Show archived prompts (${next.archivedTotal.toLocaleString('en-US')})`;
+            if(showArchived.textContent!==archivedLabel) showArchived.textContent=archivedLabel;
+            const filtered=Boolean(filters.text || filters.category || filters.tags.length);
+            const empty=filters.shelf==='archived'?(filtered?'No archived prompts match.':'No archived prompts.'):'No matching prompts. Try changing the filters.';
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
-            message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
+            message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?empty:!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
             schedule();scheduleLoad();
         }
@@ -472,6 +490,26 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             pendingSelection=takeSavedSelection(positiveId);
             if(current) current.apply(result);else loader.load(positiveId);
             focusHeading(main);
+        }
+        /** The Archived notice: Restore takes the prompt off the archive, then the page reads it again. */
+        function archivedNotice(content,shown) {
+            const notice=el('div',undefined,'notice library-archived-notice'),copy=el('div'),row=el('div',undefined,'row-actions');
+            const status=el('p','','small');status.setAttribute('role','status');status.hidden=true;
+            const restore=createButton('Restore');restore.setAttribute('aria-label','Restore this prompt to the Prompt library');
+            copy.append(el('h2','Archived'),el('p',DELETE_COPY.archivedNotice),status);row.append(restore);notice.append(copy,row);
+            content.listen(restore,'click',async()=>{
+                if(restore.getAttribute('aria-disabled')==='true') return;
+                restore.setAttribute('aria-disabled','true');status.hidden=true;
+                let result=null,failure=null;
+                try {result=await api.post(RESTORE_URL,{prompt_ids:[shown.positive.id],expected_epoch:shown.library_epoch});} catch(error) {failure=error;}
+                const outcome=restoreOutcome(result,failure);
+                if(outcome.committed) invalidateLibraryAfterWrite({kind:'bulk-restore',receipt:result?.success?result:{phase:'unconfirmed'}});
+                if(content.signal.aborted) return;
+                restore.removeAttribute('aria-disabled');
+                if(outcome.reload) {showWorkspaceToast(outcome.toast);detail=null;loader.load(positiveId);focusHeading(main);return;}
+                status.textContent=outcome.toast;status.hidden=false;
+            });
+            return notice;
         }
         /** Explicit exit after restored storage: dispose the recorded view, then remount with a fresh visit. */
         function reloadView() {
@@ -650,6 +688,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const gallery=el('section',undefined,'history-gallery');gallery.setAttribute('aria-label','Shared gallery');gallery.append(galleryHeading);
             const images=el('div',undefined,'library-linked-images');gallery.append(images);
             const recorded=el('div',undefined,'library-recorded-container');
+            // #443 D152: an archived prompt's page says so first, with Restore (the concept's `.notice`).
+            if(detail.positive.archived===true) body.append(archivedNotice(content,detail));
             body.append(summary,variants,gallery,recorded);
             const recordFor=pairId=>detail.variants.find(variant=>variant.id===pairId) || archivedList().find(variant=>variant.id===pairId) || (separate()?.id===pairId?separate():null);
             const archivedSelection=pairId=>archivedList().some(variant=>variant.id===pairId) || (separate()?.id===pairId && separate().archived===true);

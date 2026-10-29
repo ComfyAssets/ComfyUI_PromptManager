@@ -62,7 +62,8 @@ test('Set category writes the selected prompts on the server, reloads the shelf 
     await box(page,first.id).check();await expect(bar(page).locator('strong')).toHaveText('1 selected');
     await box(page,second.id).check();await expect(bar(page).locator('strong')).toHaveText('2 selected');
     // Two of three loaded are checked, so Select all N loaded follows the count (D151, #444 ruling).
-    await expect(bar(page).getByRole('button')).toHaveText([`Select all ${items.length} loaded`,'Add tags','Set category','Clear']);
+    // D152 (#443) adds Delete… before Clear.
+    await expect(bar(page).getByRole('button')).toHaveText([`Select all ${items.length} loaded`,'Add tags','Set category','Delete…','Clear']);
     await setCategory(page,'  Studio set  ');
     await expect(toast(page)).toHaveText('Category “Studio set” set on 2 prompts.');
     await expect(dialog(page)).toHaveCount(0);
@@ -287,7 +288,7 @@ test('Ctrl/Cmd+A and Select all N loaded select every loaded prompt, windowed on
     let release;const held=new Promise(resolve=>{release=resolve;});
     await page.route('**/prompt_manager/bulk/tags',async route=>{await held;await route.continue();},{times:1});
     await addTags(page,'everyone');
-    for(const name of ['Add tags','Set category',`Select all ${all} loaded`]) await expect(bar(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
+    for(const name of ['Add tags','Set category','Delete…','Clear',`Select all ${all} loaded`]) await expect(bar(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
     release();
     await expect(toast(page)).toHaveText(`Added “everyone” to ${all-1} prompts.`);
     expect(writes).toHaveLength(1);expect(new Set(writes[0].prompt_ids).size).toBe(all-1);

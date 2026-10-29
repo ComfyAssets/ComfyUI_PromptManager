@@ -87,8 +87,8 @@ function measureBackups(mainSelector) {
 }
 
 const SCHEDULE_REASON = 'Daily and Weekly are not available yet: back up with Back up whenever you choose.';
-const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups and LoRA imports change ' +
-    'records. A restore always keeps one.';
+const SAFETY_DESCRIPTION = 'Keep a verified copy of the database on disk before maintenance, cleanups, LoRA imports and ' +
+    'prompt deletes change records. A restore always keeps one.';
 
 /**
  * D103: "Back up" (the concept's "Simulate backup"), the status line from /backup/status, "Export JSON" (its "Export

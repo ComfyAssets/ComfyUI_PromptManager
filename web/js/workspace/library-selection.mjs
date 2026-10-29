@@ -6,6 +6,8 @@ import { NO_TAGS, parseBulkTags } from './images-tagging-bulk.mjs';
 import { openInputDialog } from './workspace-dialogs.mjs';
 import { countOf } from './plural.mjs';
 import { showWorkspaceToast } from './toast.mjs';
+import { COPY as DELETE_COPY, DELETE_LABEL, DELETE_URL, PREVIEW_URL, REVIEWING, RESTORE_LABEL, RESTORE_URL, deleteBody, deleteOutcome,
+    openDeleteReview, previewOutcome, restoreOutcome, reviewOf } from './library-delete.mjs';
 
 /**
  * The Prompt library's selection and its bulk actions (D148, D151, beyond the concept): "Add tags" (#442, D151) and "Set
@@ -19,6 +21,10 @@ import { showWorkspaceToast } from './toast.mjs';
  * Apply posts `{prompt_ids, category|tags, expected_epoch}` to `POST /prompt_manager/bulk/category` or `/bulk/tags`:
  * the epoch the shelf was read under, so a restored storage answers 409 `storage-changed` and nothing is written.
  * Add tags writes prompt tags only, never image tags or auto-tags.
+ *
+ * Delete… (#443, D152) previews the selection, opens its review (`library-delete.mjs`) and posts the reviewed lists:
+ * unpaired prompts are deleted, paired ones archived, protected ones kept. On the archived shelf (`getShelf()` is
+ * 'archived') the bar offers Restore instead of the other actions.
  */
 export const CATEGORY_URL = '/prompt_manager/bulk/category';
 export const PROMPT_CATEGORY_DIALOG = Object.freeze({ ...CATEGORY_DIALOG, title: 'Categorize selected prompts' });
@@ -123,29 +129,34 @@ export function categoryProblem(value) {
  * to `focusFallback` when it was on the bar the reload hides.
  */
 export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, getCategories, focusFallback, onCommitted,
-    onReload }) {
+    onReload, getShelf = () => 'active', nameOf = () => null }) {
     let checked = Object.freeze(new Set()), anchor = null, shiftBox = null, writing = false;
     const element = el('div');
     element.id = 'library-bulkbar';
     const bulk = el('div', undefined, 'bulkbar'), count = el('strong');
     const addTags = createButton('Add tags');
     const setCategory = createButton('Set category');
+    const deleteButton = createButton(DELETE_LABEL, 'danger');
+    const restoreButton = createButton(RESTORE_LABEL);
     const clearButton = createButton('Clear');
     const selectLoaded = createButton('');
-    const actions = [addTags, setCategory, selectLoaded];
-    bulk.append(count, addTags, setCategory, clearButton);
+    // Every bar action is aria-disabled while a review or a write runs (D148, D151, D152), Clear too.
+    const actions = [addTags, setCategory, deleteButton, restoreButton, selectLoaded, clearButton];
+    let shownShelf = null;
     scope.listen(selectLoaded, 'click', () => {
         if (writing) return;
         selectAll();
         // The pressed offer left the bar: focus moves to its first action, as after D135's offer.
-        addTags.focus({ preventScroll: true });
+        (shownShelf === 'archived' ? restoreButton : addTags).focus({ preventScroll: true });
     });
     scope.listen(addTags, 'click', () => openTags());
     scope.listen(setCategory, 'click', () => openCategory());
-    scope.listen(clearButton, 'click', () => { clear(); focusFallback.focus({ preventScroll: true }); });
+    scope.listen(deleteButton, 'click', () => openDelete());
+    scope.listen(restoreButton, 'click', () => restoreSelected());
+    scope.listen(clearButton, 'click', () => { if (writing) return; clear(); focusFallback.focus({ preventScroll: true }); });
     // Escape in the bar clears the selection; the bar hides, so focus moves to the page heading as after Clear.
     scope.listen(element, 'keydown', event => {
-        if (event.key !== 'Escape' || !checked.size) return;
+        if (event.key !== 'Escape' || !checked.size || writing) return;
         event.preventDefault();
         clear();
         focusFallback.focus({ preventScroll: true });
@@ -154,6 +165,11 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
     const ids = () => getItems().map(item => item.id);
     function render() {
         if (!checked.size) { bulk.remove(); return; }
+        const shelf = getShelf() === 'archived' ? 'archived' : 'active';
+        if (shelf !== shownShelf) {
+            shownShelf = shelf;
+            bulk.replaceChildren(count, ...(shelf === 'archived' ? [restoreButton] : [addTags, setCategory, deleteButton]), clearButton);
+        }
         const label = selectionLabel(checked.size);
         if (count.textContent !== label) count.textContent = label;
         const keys = ids();
@@ -240,20 +256,62 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
         openInputDialog({ scope, trigger: addTags, ...PROMPT_TAGS_DIALOG, suggestions, validate: tagsProblem,
             onApply: text => write(TAGS_URL, { ...chosen, tags: parseBulkTags(text) }, 'tags') });
     }
-    /** The write carries no page signal: once sent it completes even if the page is left. A failure keeps the selection. */
-    async function write(url, body, kind) {
+    /** Hold every bar action while a review or write runs; `label` is what Delete… reads meanwhile. */
+    function lock(label = null) {
         writing = true;
         for (const button of actions) button.setAttribute('aria-disabled', 'true');
+        if (label !== null) deleteButton.textContent = label;
+    }
+    function unlock() {
+        writing = false;
+        for (const button of actions) button.removeAttribute('aria-disabled');
+        deleteButton.textContent = DELETE_LABEL;
+    }
+    /** Delete… (#443): preview the selection, then review it; Start posts what the review showed. */
+    async function openDelete() {
+        const chosen = target(DELETE_COPY.reviewFailed);
+        if (!chosen) return;
+        lock(REVIEWING);
+        let preview = null, failure = null;
+        try {
+            preview = await api.post(PREVIEW_URL, chosen, { signal: scope.signal });
+        } catch (error) {
+            failure = error;
+        }
+        if (scope.signal.aborted) return;
+        if (failure !== null || !preview?.success) {
+            unlock();
+            const outcome = previewOutcome(failure);
+            showWorkspaceToast(outcome.toast);
+            if (outcome.reload) onReload();
+            return;
+        }
+        const review = { ...reviewOf(preview), epoch: chosen.expected_epoch };
+        // The review is open: the bar stays held behind it, under its own name again.
+        deleteButton.textContent = DELETE_LABEL;
+        openDeleteReview({ scope, trigger: deleteButton, review, titleOf: nameOf,
+            onDismiss: unlock,
+            onStart: () => write(DELETE_URL, deleteBody(review), 'delete', (result, error) => deleteOutcome(result, error, review),
+                review.delete.length ? 'Deleting…' : 'Archiving…') });
+    }
+    /** Restore (#443): the selected archived prompts go back on the shelf. */
+    function restoreSelected() {
+        const chosen = target(DELETE_COPY.restoreFailed);
+        if (!chosen) return;
+        write(RESTORE_URL, chosen, 'restore', restoreOutcome);
+    }
+    /** The write carries no page signal: once sent it completes even if the page is left. A failure keeps the selection. */
+    async function write(url, body, kind, outcomeOf = (result, failure) => writeOutcome(result, failure, kind), label = null) {
+        lock(label);
         let result = null, failure = null;
         try {
             result = await api.post(url, body);
         } catch (error) {
             failure = error;
         } finally {
-            writing = false;
-            for (const button of actions) button.removeAttribute('aria-disabled');
+            unlock();
         }
-        const outcome = writeOutcome(result, failure, kind);
+        const outcome = outcomeOf(result, failure);
         // A left page still invalidates what it cached, so a return never shows the old categories.
         if (outcome.committed) onCommitted(kind, result?.success ? result : { phase: 'unconfirmed' });
         if (scope.signal.aborted) return;
@@ -274,7 +332,9 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
         selectAll,
         /** A loaded batch: the count and the offer follow it. */
         listingChanged: () => { if (checked.size) render(); },
-        /** Whether a Set category write is still in flight. */
+        /** Whether a review or a write is still in flight. */
         writing: () => writing,
+        /** The shelf changed (Show archived prompts): the bar's actions follow it. */
+        shelfChanged: () => { shownShelf = null; render(); },
     };
 }

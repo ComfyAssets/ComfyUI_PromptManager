@@ -44,7 +44,12 @@ export function mapLibraryConcept(reference) {
         // and "Used today". The two-line clamp is
         // applied below through `clampedCards`, measured on the concept with `CLAMP_CSS` (its samples wrap at 390px).
         footer:{...card.footer,facts:{...card.footer.facts,spoken:card.footer.facts.spoken.replace(/^(★+)/,stars=>`Rated ${stars.length} out of 5`)}}}));
-    return {...reference,library:{...library,toolbar,
+    // D152 (#443): Show archived prompts (N) comes first in the heading actions, a plain button like Export (the concept
+    // fixture has nothing archived, so N is 0).
+    const actions=reference.heading.actions;
+    const plain=actions.buttons.find(button=>!button.primary);
+    const heading={...reference.heading,actions:{...actions,buttons:[{...plain,text:'Show archived prompts (0)'},...actions.buttons]}};
+    return {...reference,heading,library:{...library,toolbar,
         // D35: the caption uses the singular for one.
         caption:{...library.caption,top:library.caption.top-rise,spans:library.caption.spans.map(span=>({...span,text:countCopy(span.text)}))},
         ...(({grid,cards:clamped})=>({grid:{...grid,top:grid.top-rise},cards:clamped}))(clampedCards({grid:library.grid,cards})),
