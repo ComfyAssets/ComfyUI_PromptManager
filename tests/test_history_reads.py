@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from database.execution_history import HistoryEpochChanged
 from database.execution_history_schema import history_schema_error
-from utils.execution_contexts import ContextBundle, RecipeContext, TextEvidence
+from utils.execution_contexts import (
+    ContextBundle,
+    RecipeContext,
+    TextEvidence,
+    content_digest,
+)
 from utils.execution_outputs import OutputBundle
 from tests.test_execution_context_database import bundle, snapshot
 from tests.test_execution_output_database import bundle as outputs
@@ -146,10 +151,11 @@ class HistoryReadTests(unittest.TestCase):
             )
         self.require_reads(db)
         with db.recorded_history_snapshot():
-            for i in range(1, len(values) + 1):
-                self.assertEqual(
-                    db.list_history_window(i)["recorded_run_count"], 2 if i == 1 else 1
-                )
+            # Outer whitespace joins the stored form's scope (#438); case and
+            # Unicode normalization stay distinct.
+            expected = (4, 1, 4, 4, 1, 1, 2, 2)
+            for i, count in enumerate(expected, 1):
+                self.assertEqual(db.list_history_window(i)["recorded_run_count"], count)
             self.assertIsNone(db.list_history_window(100))
             self.assertIsNone(db.list_history_window(101))
             page = db.list_history_window(99)
@@ -989,3 +995,55 @@ class HistoryReadTests(unittest.TestCase):
         db.delete_prompt(saved["positive_prompt_id"])
         with db.recorded_history_snapshot():
             self.assertIsNone(db.get_newest_pair_run(saved["positive_prompt_id"], pair))
+
+    def test_outer_whitespace_raw_text_joins_the_stored_prompt_scope(self):
+        # #438: the Library stores text.strip(); the run keeps its raw text.
+        db = self.database()
+        positive = db.save_prompt("a lighthouse")
+        raws = ("a lighthouse\n", "a lighthouse", "　 a lighthouse \t")
+        starts = [
+            self.capture(db, i, bundle(positive=raw), time=100 + i)
+            for i, raw in enumerate(raws)
+        ]
+        self.saved(db, "a lighthouse at dusk", 50)
+        self.capture(db, 9, bundle(positive="a lighthouse at dusk\n"), time=200)
+        with db.recorded_history_snapshot():
+            page = db.list_history_window(positive)
+            first = db.list_history_window(positive, limit=2)
+            rest = db.list_history_window(
+                positive, limit=2, after=first["next_position"]
+            )
+            details = [db.get_history_run(start.run_id) for start in starts]
+        self.assertEqual(page["recorded_run_count"], 3)
+        self.assertEqual(page["group"]["scope_status"], "matched")
+        self.assertEqual(
+            page["group"]["raw_text_id"], content_digest("text", ("a lighthouse",))
+        )
+        self.assertEqual(
+            [r["run_id"] for r in page["items"]], [s.run_id for s in starts]
+        )
+        self.assertTrue(all(r["matching_anchors"] for r in page["items"]))
+        self.assertEqual(len(page["context_summaries"]), 3)
+        self.assertEqual(
+            [r["run_id"] for r in first["items"] + rest["items"]],
+            [s.run_id for s in starts[1:]] + [starts[0].run_id],
+        )
+        for raw, detail in zip(raws, details):
+            context = detail["contexts"][0]
+            self.assertEqual(context["positive"]["raw"], raw)
+            self.assertEqual(
+                context["positive_raw_text_id"], page["group"]["raw_text_id"]
+            )
+            self.assertEqual(context["positive_prompt_id"], positive)
+            self.assertTrue(context["navigation"]["positive_available"])
+
+    def test_newest_pair_run_follows_outer_whitespace_raw_text(self):
+        db = self.database()
+        pair = db.save_prompt_pair("a lighthouse", "fog")
+        positive = db.get_prompt_pair(pair)["positive_prompt_id"]
+        newest = self.capture(
+            db, 0, bundle(" fog\n", positive="a lighthouse\n"), time=100
+        )
+        with db.recorded_history_snapshot():
+            found = db.get_newest_pair_run(positive, pair)
+        self.assertEqual(found["run"]["run_id"], newest.run_id)

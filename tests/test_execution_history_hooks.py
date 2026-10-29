@@ -916,3 +916,18 @@ class CachedRuntimeHistoryTests(HooksCase):
         from database.run_attribution import named_prompt
 
         self.assertIsNone(named_prompt(self.db, self.rows()[1]["run_id"]))
+
+
+class CachedRuntimeWhitespaceHistoryTests(CachedRuntimeHistoryTests):
+    """Raw text with outer whitespace joins the history of the prompt it saves (#438).
+
+    The Library stores ``"a lighthouse the LLM wrote"``; the run keeps the exact
+    frozen raw text, newline included, yet is a tracked run of that prompt.
+    """
+
+    TEXT = "\u3000 a lighthouse the LLM wrote\n"
+
+    def test_the_library_stores_the_stripped_text(self):
+        self.assertEqual(
+            self.db.get_prompt_by_id(self.prompt_id)["text"], self.TEXT.strip()
+        )

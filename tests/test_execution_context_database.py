@@ -474,6 +474,54 @@ class ContextDatabaseTests(unittest.TestCase):
         rotate_history_epoch(conn)
         self.assertEqual(assert_same(), set())
 
+    def test_hints_resolve_the_stored_form_of_outer_whitespace_raw_text(self):
+        # #438: the Library stores text.strip(); the raw run text keeps its spaces.
+        db = self.database()
+        conn = db.model.get_connection()
+        with conn:
+            conn.execute(
+                "INSERT INTO prompts(id,text) VALUES(1,'positive'),(2,'negative')"
+            )
+            conn.execute(
+                "INSERT INTO prompt_pairs(id,positive_prompt_id,negative_prompt_id) "
+                "VALUES(7,1,2)"
+            )
+        start = self.capture(db, 0, bundle(" negative\n", positive="positive\n\t"))
+        context = db.get_execution_contexts(start.run_id)["contexts"][0]
+        self.assertEqual(context["positive"]["raw"], "positive\n\t")
+        self.assertEqual(
+            (
+                context["positive_prompt_id"],
+                context["negative_prompt_id"],
+                context["pair_id"],
+            ),
+            (1, 2, 7),
+        )
+        live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+        self.assertEqual(live, {1, 2})
+        stored = conn.execute(
+            "SELECT positive_prompt_id FROM execution_run_contexts WHERE run_id=?",
+            (start.run_id,),
+        ).fetchone()[0]
+        self.assertEqual(stored, 1)
+        # A legacy row that kept outer whitespace keeps its exact-text hint and
+        # with it the recorded-run protection from pruning.
+        with conn:
+            conn.execute("INSERT INTO prompts(id,text) VALUES(3,' legacy ')")
+        legacy = self.capture(db, 1, bundle("negative", positive=" legacy "))
+        hinted = db.get_execution_contexts(legacy.run_id)["contexts"][0]
+        self.assertEqual(hinted["positive_prompt_id"], 3)
+        live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+        self.assertEqual(live, {1, 2, 3})
+        self.assertEqual(db.prune_orphaned_prompts(), 0)
+        # Both forms present make the hint ambiguous, in both rule forms.
+        with conn:
+            conn.execute("INSERT INTO prompts(id,text) VALUES(4,'legacy')")
+        hinted = db.get_execution_contexts(legacy.run_id)["contexts"][0]
+        self.assertIsNone(hinted["positive_prompt_id"])
+        live = {row[0] for row in conn.execute(LIVE_HINT_PROMPT_IDS_SQL)}
+        self.assertEqual(live, {1, 2})
+
     def test_hints_require_exact_unique_raw_text_and_never_refresh(self):
         db = self.database()
         conn = db.model.get_connection()
@@ -504,12 +552,13 @@ class ContextDatabaseTests(unittest.TestCase):
             db.get_execution_contexts(fresh.run_id)["contexts"][0]["positive_prompt_id"]
         )
 
-    def test_null_negative_pair_only_matches_known_exact_empty(self):
+    def test_null_negative_pair_only_matches_a_known_stored_empty(self):
         db = self.database()
         with db.model.get_connection() as conn:
             conn.execute("INSERT INTO prompts(id,text) VALUES(1,'positive')")
             conn.execute("INSERT INTO prompt_pairs(id,positive_prompt_id) VALUES(7,1)")
-        for item, raw, expected in ((0, "", 7), (1, " ", None), (2, None, None)):
+        # A whitespace-only negative is the stored empty one (#438)
+        for item, raw, expected in ((0, "", 7), (1, " \n", 7), (2, None, None)):
             candidate = bundle(negative=raw or "")
             if raw is None:
                 ctx = candidate.contexts[0]
