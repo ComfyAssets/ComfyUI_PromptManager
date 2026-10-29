@@ -1422,7 +1422,8 @@ class AdminRoutesMixin:
 
     async def _run_scan_job(self, job, output_dirs=None, returned=None):
         final = None
-        async for payload in self._scan_images_events(job, output_dirs, returned):
+        extra = {} if returned is None else {"returned": returned}
+        async for payload in self._scan_images_events(job, output_dirs, **extra):
             job.publish(payload)
             final = payload.get("type")
         state = SCAN_FINAL_STATES.get(final, "finished")
