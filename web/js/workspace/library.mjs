@@ -6,7 +6,7 @@ import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_M
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
-import {layoutLibraryRows,visibleLibraryRows,usedLabel,ratingLabel} from './library-layout.mjs';
+import {layoutLibraryRows,visibleLibraryRows,usedLabel} from './library-layout.mjs';
 import {createWorkspaceIcon} from './icons.mjs';
 import {mountRecordedHistory} from './history.mjs';
 import {countOf} from './plural.mjs';
@@ -29,8 +29,8 @@ const selectedPairs=new Map();
 // Parent metadata a reuse did not apply, kept for an explicit Edit metadata action.
 const metadataDrafts=new Map();
 const archivedVisible=new Map();
-// The concept's three sorts first, then the Library's appended Oldest first (D14).
-const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
+// The concept's sorts first, then the Library's appended Oldest first (D14); D153 (#447) drops "Highest rated".
+const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['oldest','Oldest first']]);
 // Refine › Tag match (#444 D149), in LIBRARY_TAG_MODES order.
 const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['untagged','Prompts without tags']]);
 // A card's focusable controls in order: the D148 selection checkbox, then its buttons (#437).
@@ -113,7 +113,7 @@ function outcomeMessage(result,outcome) {
     if(kind!=='create' && kind!=='add-negative') return null;
     if(receipt.positive_created) return 'Saved.';
     if(receipt.pair_created) return kind==='add-negative'?'Negative saved without adding another positive or gallery.'
-        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags, rating and notes you entered were not applied.'
+        :outcome?.metadataNotApplied?'Saved as a new negative variant of an existing prompt. The title, category, tags and notes you entered were not applied.'
             :'Saved as a new negative variant of an existing prompt.';
     if(receipt.pair.archived) return 'This combination is an archived negative variant. It stays archived; restore it from Show archived in Negative variants.';
     return 'This prompt pair already exists. Showing the saved version.';
@@ -124,7 +124,7 @@ function takeSavedSelection(positiveId) {
 }
 function rememberUnappliedMetadata(result,{outcome,draft}={}) {
     if(result.commit.kind!=='create' || !outcome?.metadataNotApplied || !draft) return;
-    const {title:name,category,tags,rating,notes}=draft;metadataDrafts.set(result.detail.positive.id,{title:name,category,tags,rating,notes});
+    const {title:name,category,tags,notes}=draft;metadataDrafts.set(result.detail.positive.id,{title:name,category,tags,notes});
 }
 /** New prompt, from Library or Images: a saved prompt always opens its own history, as in the concept. */
 function createNewPromptEditor(api,scope,main) {
@@ -161,6 +161,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
         const restorable=visit?.state?visit:null;
         const filters={text:'',category:'',tags:[],sort:'newest',tagMode:'all',...visit?.filters,...saved};
+        // D153: a sort the shelf no longer offers (an older "Highest rated" visit) reads as Recently added.
+        if(!LIBRARY_SORTS.some(([value])=>value===filters.sort)) filters.sort='newest';
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
@@ -181,7 +183,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         let categoryNames=[];
         const selection=mountLibrarySelection({scope,api,grid,getItems:()=>state?.items ?? [],getEpoch:()=>state?.epoch ?? null,
             getCategories:()=>categoryNames,focusFallback:{focus:()=>focusHeading(main)},
-            onCommitted:receipt=>invalidateLibraryAfterWrite({kind:'bulk-category',receipt}),onReload:()=>{loadCategories();reset();}});
+            onCommitted:(kind,receipt)=>invalidateLibraryAfterWrite({kind:`bulk-${kind}`,receipt}),onReload:()=>{loadCategories();reset();}});
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
@@ -223,7 +225,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         if(restorable?.layout?.inlineSize===inlineSize && restorable.layout.columns===columnCount) for(const [id,height] of restorable.layout.heights) heights.set(id,height);
         const hiddenSave=restorable?null:savedParentId;savedParentId=null;
         function removeCard(card) {measurementObserver?.unobserve(card.node);pendingMeasurements.delete(Number(card.node.dataset.promptId));card.blocks.dispose();card.node.remove();}
-        /** The concept's prompt card (app.js renderLibrary a586) with real counts, last use and rating (#249 D23). */
+        /** The concept's prompt card (app.js renderLibrary a586) with real counts and last use (#249 D23; no rating, D153). */
         function cardFor(item,index) {
             const article=el('article',undefined,'prompt-card');article.dataset.promptId=item.id;article.setAttribute('role','listitem');
             const art=el('div',undefined,'card-art');art.setAttribute('aria-hidden','true');
@@ -249,10 +251,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const vocabulary=el('div',undefined,'tags');for(const tag of item.tags || []) vocabulary.append(el('span',tag,'chip'));
             content.append(heading,prompts,meta,vocabulary);
             const footer=el('div',undefined,'card-footer');
-            const {stars,hidden}=ratingLabel(item.rating), used=usedLabel(item.last_used_at);
-            const facts=el('span');
-            if(stars) {const shown=el('span',stars);shown.setAttribute('aria-hidden','true');facts.append(shown,el('span',hidden,'ca-visually-hidden'),` \u00b7 ${used}`);}
-            else facts.textContent=used;
+            // D153 (#447): the footer reads only the last use; the concept's rating stars are not drawn.
+            const facts=el('span',usedLabel(item.last_used_at));
             const actions=el('div',undefined,'row-actions');
             const send=createButton('','send icon-btn');send.setAttribute('aria-label',`Send positive prompt to ComfyUI: ${name}`);send.append(createWorkspaceIcon('send'));send.dataset.sendPositive='';
             const explore=createButton('');explore.append(createWorkspaceIcon('branch'),' Explore history');explore.dataset.history='';
@@ -367,6 +367,9 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         scope.listen(grid,'keydown',event=>{
             const card=event.target.closest('article[data-prompt-id]');if(!card) return;
             const index=Number(card.dataset.index);
+            // D151 (#444 ruling): Ctrl/Cmd+A selects every loaded prompt and Escape clears, as on Images (focus stays).
+            if((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==='a') {event.preventDefault();selection.selectAll();return;}
+            if(event.key==='Escape' && selection.hasSelection()) {event.preventDefault();selection.clear();return;}
             if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1),false,true);}
             else if(event.key==='Tab') {
                 const controls=card.querySelectorAll(CARD_CONTROLS);const next=index+(event.shiftKey?-1:1);
@@ -375,7 +378,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             }
         });
         function render(next) {
-            if(items!==next.items) {
+            const batch=items!==next.items;
+            if(batch) {
                 pendingAnchor ||= captureAnchor();items=next.items;indexesById=new Map(items.map((item,index)=>[item.id,index]));dirty=true;
                 if(!items.length) {
                     anchor=null;pendingAnchor=null;heights.clear();layout={rows:[],height:0};
@@ -384,6 +388,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
                 } else if(retainedAnchor) {pendingAnchor=retainedAnchor;retainedAnchor=null;}
             }
             state=next;
+            // A loaded batch: the selection bar's count and Select all N loaded follow it (D151).
+            if(batch) selection.listingChanged();
             if(next.variantTotal!==null) {
                 const count=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
                 if(captionCount.textContent!==count) captionCount.textContent=count;caption.hidden=false;
@@ -391,7 +397,10 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const hidden=hiddenSave!==null && !next.loading && !next.error && !next.hasMore && !next.items.some(item=>item.id===hiddenSave)?' The saved prompt is hidden by the current filters.':'';
             message.textContent=(next.error?'Prompt library could not be loaded. Retry.':next.loading?'Loading prompt library…':!next.items.length?'No matching prompts. Try changing the filters.':!next.hasMore?'You’re all caught up.':'')+hidden;
             message.setAttribute('role',next.error?'alert':'status');retry.hidden=!next.error;more.hidden=!next.hasMore || !!next.error;more.setAttribute('aria-disabled',String(next.loading));
-            schedule();scheduleLoad();
+            // #464: a loaded page is laid out now, not on the next frame: a starved renderer (a background tab, headless
+            // WebKit under load) can hold frames for seconds, which left a loaded shelf empty. Measurements still flush per frame.
+            if(batch && grid.isConnected) {cancelAnimationFrame(frame);flush();} else schedule();
+            scheduleLoad();
         }
         const stream=createLibraryStream({api,onChange:render,restore:restorable?{filters,state:restorable.state}:undefined});
         function maybeLoad() {

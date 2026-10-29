@@ -3,6 +3,7 @@ import {createViewerSession} from './viewer-state.mjs';
 import {rootedFileAdapter} from './inspection-state.mjs';
 import {mountFileInspector} from './file-inspector.mjs';
 import {displayPreferences, readPreferences} from './preferences.mjs';
+import {createWorkspaceIcon} from './icons.mjs';
 
 let viewerId = 0;
 // Upper bound on waiting for a closed Viewer's in-flight image view before destroying it.
@@ -19,7 +20,12 @@ function element(tag, className, text) {
     return node;
 }
 
-export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter}) {
+/**
+ * #331 D139: with the client store `collections`, the viewer's inspector offers "Collections…"; the changes it confirms
+ * reach `onCollectionsChanged({added, removed})` once the viewer closes, so the viewer keeps its place while open.
+ */
+export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter,
+    collections = null,onCollectionsChanged = null}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
     const dispose = () => scope.dispose();
@@ -34,9 +40,9 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
     function open(options) {
         if (scope.signal.aborted) return;
         active?.close(false);
-        const {items,selectedKey,trigger = document.activeElement} = options;
+        const {items,selectedKey,trigger = document.activeElement,details:detailsMode} = options;
         let mounted = false, initial, entry, currentKey, viewer = null, withoutViewer = false, mediaScope = null, closed = false;
-        let originalDownload = null, inspectionState = inspectionController.state;
+        let originalDownload = null, inspectionState = inspectionController.state, collectionChanges = null;
         const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
             if (!mounted) { initial = [state,selected]; return; }
             update(state,selected);
@@ -51,7 +57,10 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         const heading = element('div'), title = element('h2');title.id = 'viewer-title';
         heading.append(title,element('p','muted small','One viewer · image, prompts, generation data, workflow'));
         const close = createButton('×');close.id = 'viewer-close';close.setAttribute('aria-label','Close image viewer');close.autofocus = true;
-        header.append(heading,close);
+        // #450 (D156): the view switch before ✕ names the view it switches to; the stored default picks the first view.
+        let fullscreen = displayPreferences()?.viewerOpenMode === 'fullscreen';
+        const mode = createButton('','icon-btn');mode.id = 'viewer-mode';
+        header.append(heading,mode,close);
         const body = element('div','viewer-layout'), left = element('div','viewer-left');
         const stage = element('div');stage.id = 'viewer-stage';stage.tabIndex = 0;
         stage.setAttribute('role','region');stage.setAttribute('aria-label','Media preview');
@@ -74,32 +83,46 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
         const next = button('Next media','Next →',() => session.navigate(1));
-        // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle.
-        const collapsed = displayPreferences()?.sidebarCollapsedByDefault === true;
-        let detailsToggle = null;
-        if (collapsed) {
-            detailsToggle = createButton('Show details');detailsToggle.setAttribute('aria-expanded','false');
-            detailsToggle.setAttribute('aria-controls','viewer-details');controls.append(detailsToggle);
-        }
+        // D97: "Collapse viewer details by default" opens the viewer with its details hidden behind one toggle. D155
+        // (#448): `details: 'shown'` (Inspect a file) keeps the toggle but opens with the details showing. D156 (#450):
+        // the toggle is also there while the view is full screen.
+        const collapsible = displayPreferences()?.sidebarCollapsedByDefault === true, collapsed = collapsible && detailsMode !== 'shown';
+        const detailsToggle = createButton('');detailsToggle.setAttribute('aria-controls','viewer-details');
         const position = element('p','media-position muted');position.id = `media-viewer-position-${++viewerId}`;
         position.setAttribute('role','status');
         const reason = element('p','media-reason muted');reason.id = `media-viewer-reason-${viewerId}`;
         const slideshowReason = element('p','media-slideshow-reason muted');slideshowReason.id = `media-viewer-slideshow-${viewerId}`;
         controls.append(position,reason,slideshowReason);left.append(stage,controls);
         const details = element('aside');details.id = 'viewer-details';details.setAttribute('aria-label','Image metadata');
-        if (detailsToggle) {
-            details.hidden = true;
-            local.listen(detailsToggle,'click',() => {
-                details.hidden = !details.hidden;
-                detailsToggle.textContent = details.hidden ? 'Show details' : 'Hide details';
-                detailsToggle.setAttribute('aria-expanded',String(!details.hidden));
-            });
+        details.hidden = collapsed;
+        function paintToggle() {
+            detailsToggle.textContent = details.hidden ? 'Show details' : 'Hide details';
+            detailsToggle.setAttribute('aria-expanded',String(!details.hidden));
         }
+        /** The toggle is in the toolbar only in full screen or with the collapse setting; without both the details show. */
+        function syncToggle() {
+            if (collapsible || fullscreen) { if (!detailsToggle.isConnected) controls.insertBefore(detailsToggle,position); }
+            else { detailsToggle.remove();details.hidden = false; }
+            paintToggle();
+        }
+        function paintMode() {
+            if (fullscreen) dialog.classList.add('viewer-fullscreen'); else dialog.classList.remove('viewer-fullscreen');
+            const label = fullscreen ? 'Centered view' : 'Full screen view';
+            mode.setAttribute('aria-label',label);mode.title = label;
+            mode.replaceChildren(createWorkspaceIcon(fullscreen ? 'minimize' : 'maximize'));
+        }
+        local.listen(detailsToggle,'click',() => {details.hidden = !details.hidden;paintToggle();});
+        local.listen(mode,'click',() => {fullscreen = !fullscreen;paintMode();syncToggle();});
+        paintMode();syncToggle();
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
         const inspector = mountFileInspector(details,{api,sender:localSender,parentScope:local,variant:'full',onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
             onLoad:() => inspectionController.load?.(),
-            onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined});
+            onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined,collections,
+            onCollectionsChanged:({added,removed}) => {
+                collectionChanges ??= {added:[],removed:[]};
+                collectionChanges.added.push(...added);collectionChanges.removed.push(...removed);
+            }});
         function closeViewer(restore = true) {
             if (closed) return;
             closed = true;active = null;local.dispose();
@@ -108,6 +131,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 else onRestoreFocus?.(entry);
             }
             if (!scope.signal.aborted) onClose?.();
+            if (collectionChanges && !scope.signal.aborted) onCollectionsChanged?.(collectionChanges);
         }
         active = {close:closeViewer,stop:() => session.stop()};
         local.cleanup(() => {

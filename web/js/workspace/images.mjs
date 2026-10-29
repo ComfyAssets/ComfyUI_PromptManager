@@ -1,5 +1,5 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
-import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, initialImagesView, listingFilter } from './images-state.mjs';
+import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLabel, activeRefinements, initialImagesView, visitDefaults, listingFilter } from './images-state.mjs';
 import { createImageCard } from './image-card.mjs';
 import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
@@ -61,8 +61,9 @@ function selectOf(id, options, value) {
     return select;
 }
 
-// The concept's three sorts first, then the production ones it lacks (D14); values are the listing's sorts (B3).
-const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'], ['rating', 'Highest rated'],
+// The concept's sorts first, then the production ones it lacks (D14); values are the listing's sorts (B3). D153 (#447)
+// drops the concept's "Highest rated".
+const IMAGE_SORT_OPTIONS = Object.freeze([['newest', 'Recently added'], ['name', 'Name A–Z'],
     ['oldest', 'Oldest first'], ['name-desc', 'Name Z–A']]);
 const MEDIA_OPTIONS = Object.freeze([['all', 'All media'], ['image', 'Images'], ['video', 'Videos']]);
 const RETRY_RESCAN = 'Rescan from Import to retry.';
@@ -116,10 +117,12 @@ export function selectedImage() {
  * Images last visit. `collection` (an id) is a collection page (#331 D137): only its members are listed, favorites is
  * off, and it neither restores nor replaces the last visit either. A listing that answers `collection-not-found` calls
  * `onCollectionMissing()` when given (the shell shows its deleted-collection page); otherwise (a saved view on a
- * deleted collection, D140) the page lists nothing and says so.
+ * deleted collection, D140) the page lists nothing and says so. `collections` (the shell's client store) adds the
+ * selection bar's Add to collection, and Remove from collection while a collection is open (D138).
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
-    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null} = {}) {
+    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null,
+    collections = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -154,6 +157,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The layout and size defaults are the Images page's: an embedded gallery (a prompt history's, its dialogs) has no
     // toolbar to change them, so it keeps its fixed Grid/Comfortable. The metadata and card defaults apply everywhere.
     const start = initialImagesView({prior, saved, preferences:embedded ? null : preferences});
+    // The defaults this visit started from: a return follows defaults saved since unless the toolbar changed a value (#451).
+    const startDefaults = visitDefaults(embedded ? null : preferences);
     let density = start.density;
     let metrics = {...INITIAL_METRICS};
     let layout = start.layout, selection = visit?.selection || null, frame = 0, loadFrame = 0, restoreFrame = 0, observer;
@@ -180,7 +185,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         // A Set category write still in flight may change what the saved collection shows: the return reloads instead.
         // A favorites-only collection or a saved view is not the plain Images collection, so it never becomes the
         // Images return state (#249 D51, and M2 for saved views).
-        if (!embedded && !filters.favorites && !filters.collection && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
+        if (!embedded && !filters.favorites && !filters.collection && !saved) lastVisit = state && !bar.writing() ? { filters: {...filters, tags: [...filters.tags]}, state, layout, density, defaults: startDefaults, selection, checked: bar.checked(), scrollY: window.scrollY } : null;
         cancelAnimationFrame(restoreFrame);
     });
     main.classList.add('images-main');
@@ -302,10 +307,20 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         getFilter:() => {
             const filter = listingFilter(filters), scope = state?.items[0]?.root_scope;
             return filter.root !== undefined && typeof scope === 'string' ? {...filter, root_scope:scope} : filter;
-        }});
+        },
+        // #331 D138: Add to collection, and Remove from collection on an open collection, which then lists it again.
+        collections, collection:filters.collection || null, onCollectionsChanged:collectionChanged,
+        onSourceChanged:refreshInspectionCollection});
     if (bar) main.append(bar.element);
     main.append(body);
+    // #331 D139: a change the inspector or the viewer confirmed that touches the open collection lists it again; the
+    // viewer reports only once it closes.
+    const inspectorCollections = embedded ? null : collections;
+    const collectionsChangedBy = ({added, removed}) => {
+        if (filters.collection && [...added, ...removed].includes(Number(filters.collection))) collectionChanged();
+    };
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
+        collections:inspectorCollections,onCollectionsChanged:collectionsChangedBy,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
         onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onMediaError:image => recovery.recover(image),onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
@@ -322,7 +337,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         selectedImage = image;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
-            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection});
+            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
+            collections:inspectorCollections, onCollectionsChanged:collectionsChangedBy});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
@@ -733,6 +749,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const {top, bottom} = optionsStatus.getBoundingClientRect();
         const band = parseFloat(getComputedStyle(optionsStatus).scrollMarginBlockEnd) || 0;
         if (bottom > innerHeight - band && top < innerHeight) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
+    }
+    /**
+     * A confirmed collection change that may change this listing (a remove from the open collection): the loaded range
+     * is read again in place, keeping the scroll and the checked files still listed. A failed re-read lists the page
+     * again from its start, whose failure shows the usual Retry (or the deleted-collection page).
+     */
+    async function collectionChanged() {
+        if (scope.signal.aborted || !filters.collection || recovering) return;
+        try {
+            await stream.refresh();
+        } catch {
+            if (!scope.signal.aborted) reset();
+        }
     }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;

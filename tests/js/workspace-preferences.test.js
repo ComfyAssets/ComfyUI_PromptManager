@@ -44,7 +44,7 @@ test('normalizes new workspace keys and keeps legacy keys', () => {
     // Invalid workspace values fall back to the defaults, as every legacy key does.
     store.text = JSON.stringify({ workspaceLayout: 'mosaic', workspaceDensity: 7, videoMute: 'no' });
     const fallback = module.readPreferences(() => store).values;
-    assert.equal(fallback.workspaceLayout, 'grid');
+    assert.equal(fallback.workspaceLayout, 'masonry'); // #451: the default layout
     assert.equal(fallback.workspaceDensity, 'comfortable');
     assert.equal(fallback.videoMute, true);
     // The legacy normalizer knows the new keys and still keeps unknown ones.
@@ -94,7 +94,7 @@ test('denied storage reports tab-only', () => {
     module.resetTabPreferences();
     const read = module.readPreferences(denied);
     assert.equal(read.persisted, false);
-    assert.equal(read.values.workspaceLayout, 'grid');
+    assert.equal(read.values.workspaceLayout, 'masonry');
     const result = module.writePreferences({ workspaceLayout: 'list', videoAutoplay: true }, denied);
     assert.deepEqual(result, { persisted: false, conflicts: [] });
     // The change is kept for this tab: every reader in it (a new Images visit, the viewer) sees it.

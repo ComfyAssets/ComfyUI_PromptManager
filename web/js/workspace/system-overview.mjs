@@ -11,7 +11,8 @@
  *   D99: its Review thumbnails opens the same "Thumbnail maintenance" dialog as Sources (thumbnail-review.mjs).
  *   #317: it reads "N missing · M outdated · K failed"; while previews are outdated (another format than the
  *   configured one) a second button, "Convert outdated", opens that dialog on its Convert outdated scope (D131).
- * - D96: the Statistics dialog lists the real runs and average rating per category, then "Library totals".
+ * - D96: the Statistics dialog lists the real runs per category, then "Library totals" (D153: no rating column or
+ *   rated-images total).
  * - D95: the "Health report" lists every check the server ran, Missing files per image source, with a chip per real
  *   result and when it was checked. The check runs from Maintenance's notice ("Run health checks", D123) as a
  *   read job of the registry, tracked in the Activity store (its event stream); the report opens when it ends.
@@ -168,21 +169,16 @@ export function healthSummary(report) {
     return `${time}Nothing was changed; review the checks with issues.`;
 }
 
-/** D96: the concept's "Runs by category" rows `[category, runs, average rating]`. */
+/** D96: the concept's "Runs by category" rows `[category, runs]`; D153 drops its average rating column. */
 export function categoryRows(statistics) {
-    return statistics.by_category.map(row => [
-        row.category ?? 'Uncategorized',
-        number(row.runs),
-        row.average_rating === null || row.average_rating === undefined ? 'Not rated'
-            : `${Number(row.average_rating).toLocaleString(undefined, { maximumFractionDigits: 2 })} / 5`,
-    ]);
+    return statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]);
 }
 
-/** D96: the added "Library totals" rows `[label, count]` (the legacy statistics and the rated images). */
+/** D96: the added "Library totals" rows `[label, count]` (the legacy statistics; D153 drops the rated images). */
 export function totalsRows(statistics) {
     const { totals } = statistics;
-    return [['Prompts', totals.total_prompts], ['Tags', totals.total_tags], ['Images', totals.total_images],
-        ['Rated images', statistics.rated_images]].map(([label, value]) => [label, number(value)]);
+    return [['Prompts', totals.total_prompts], ['Tags', totals.total_tags], ['Images', totals.total_images]]
+        .map(([label, value]) => [label, number(value)]);
 }
 
 function table(caption, head, rows, empty) {
@@ -215,7 +211,7 @@ function table(caption, head, rows, empty) {
 /** The Statistics dialog: "Runs by category" (the concept's table), then "Library totals" (D96). */
 export function statisticsNodes(statistics) {
     return [
-        table('Runs by category', ['Category', 'Runs', 'Avg. rating'], categoryRows(statistics), 'No prompts in the library yet.'),
+        table('Runs by category', ['Category', 'Runs'], categoryRows(statistics), 'No prompts in the library yet.'),
         table('Library totals', ['Total', 'Count'], totalsRows(statistics), ''),
     ];
 }
@@ -378,7 +374,7 @@ function overviewNodes(overview, { api, activity, notify, scope, navigate, openS
         operationRow({ scope, title: 'One display configuration', description: 'Grid and density settings are shared across views.',
             label: 'Appearance', onClick: go('appearance') }),
         operationRow({ scope, title: sourcesTitle, description: sourcesDescription, label: 'Manage sources', onClick: go('sources') }),
-        operationRow({ scope, title: 'Statistics', description: 'Runs and ratings by category, with library totals.', label: 'Explore',
+        operationRow({ scope, title: 'Statistics', description: 'Runs by category, with library totals.', label: 'Explore',
             onClick: openStatistics }),
     ]);
     const columns = el('div', undefined, 'two-col');

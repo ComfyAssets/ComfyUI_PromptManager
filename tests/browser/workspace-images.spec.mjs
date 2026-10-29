@@ -1,6 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
-import { seedConcept, openConcept, openProduction } from './concept-inventory.mjs';
+import { seedConcept, openConcept, openProduction, startInGrid } from './concept-inventory.mjs';
 
 const workspace = '/prompt_manager/workspace#/images';
 const cards = page => page.locator('article[data-image-key]');
@@ -814,6 +814,8 @@ test('leaving during Rescan cancels it without replacing the next workspace', as
 
 test('Images uses approved geometry while keeping real controls', async ({page,request}) => {
     await request.post('/__test__/reset',{data:{workspace_visual:true}});
+    // The approved Grid geometry (D157: the default layout is Masonry).
+    await startInGrid(page);
     await page.setViewportSize({width:1600,height:1100});
     await page.goto(workspace);
     await expect(cards(page)).toHaveCount(24);
@@ -895,7 +897,8 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     // app.js toolbar() a347–360: search, category, sort, Save view, Filters.
     await expect(main.locator('search.toolbar > *')).toHaveCount(5);
     await expect(main.locator('search.toolbar > button')).toHaveText(['Save view', 'Filters']);
-    await expect(sortBy(page).locator('option')).toHaveText(['Recently added', 'Name A–Z', 'Highest rated', 'Oldest first', 'Name Z–A']);
+    // D153 (#447): no "Highest rated", even with a rated prompt in the library.
+    await expect(sortBy(page).locator('option')).toHaveText(['Recently added', 'Name A–Z', 'Oldest first', 'Name Z–A']);
     const row = main.locator('.filter-row');
     await expect(row.locator(':scope > *')).toHaveCount(5);
     await expect(row.locator(':scope > .segmented[role="group"][aria-label="Image layout"] > button')).toHaveText(['Grid', 'List', 'Masonry']);
@@ -914,8 +917,8 @@ test('images toolbar and filter row match the concept controls', async ({ page, 
     await search(page).fill('');
     await expect(cards(page)).toHaveCount(2);
     await expect(cards(page).first()).toHaveAttribute('data-image-key', '0:shared/same.png');
-    await sortBy(page).selectOption('rating');
-    await expect(cards(page).first()).toHaveAttribute('data-image-key', '1:shared/same.png');
+    await sortBy(page).selectOption('name-desc');
+    await expect(sortBy(page)).toHaveValue('name-desc');
     await sortBy(page).selectOption('newest');
     await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('Landscapes');
     await expect(cards(page)).toHaveCount(1);
@@ -1791,7 +1794,7 @@ test('card checkboxes select images into the concept bar and Clear empties it', 
     await checkbox(first, 'same.png').check();
     await expect(bulkbar(page).locator('.bulkbar > strong')).toHaveText('1 selected');
     // D85: Add tags (the concept's) and Auto-tag selected lead the real actions.
-    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Export metadata', 'Clear']);
+    await expect(barButtons(page)).toHaveText(['Add tags', 'Auto-tag selected', 'Set category', 'Add to collection', 'Export metadata', 'Clear']);
     // Toggling neither opens the viewer, nor inspects, nor moves focus.
     await expect(page.locator('dialog[open]')).toHaveCount(0);
     await expect(checkbox(first, 'same.png')).toBeFocused();

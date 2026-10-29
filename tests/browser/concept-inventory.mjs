@@ -118,9 +118,27 @@ export async function openConcept(page,route,theme,motion='no-preference') {
     await expect(page.locator('#main #page-title')).toBeVisible();
 }
 
+/**
+ * D157 (#451): production opens Images in Masonry when the browser has no Default layout; the concept starts at Grid.
+ * A comparison (and a test of the Grid's own geometry) starts production from the concept's state, a stored Default
+ * layout of Grid, once per tab and only while this browser stored nothing (a test's own settings win).
+ */
+export async function startInGrid(page) {
+    if (page.conceptLayoutSeeded) return;
+    page.conceptLayoutSeeded = true;
+    await page.addInitScript(() => {
+        try {
+            if (!location.pathname.startsWith('/prompt_manager/') || sessionStorage.getItem('pm-d157-seeded')) return;
+            sessionStorage.setItem('pm-d157-seeded', '1');
+            if (localStorage.getItem('gallerySettings') === null) localStorage.setItem('gallerySettings', JSON.stringify({ workspaceLayout: 'grid' }));
+        } catch { /* A page without storage keeps the production default. */ }
+    });
+}
+
 /** Production at `#/<route>` with the D4 Theme select, once the sidebar's real counts (D27) have settled. */
 export async function openProduction(page,route,theme,motion='no-preference') {
     await page.emulateMedia({reducedMotion:motion});
+    await startInGrid(page);
     await page.goto('about:blank');await page.goto(`${PRODUCTION_URL}#/${route}`);
     await selectTheme(page,theme);
     await expect(page.locator('#workspace-main #page-title')).toBeVisible();
@@ -210,6 +228,41 @@ export async function withChipSource(page,root,origin,category=null) {
     },{root,origin,category});
     return async()=>{
         await page.evaluate(token=>{window.__chipSources.get(token)();window.__chipSources.delete(token);},token);
+        await restoreRule();
+    };
+}
+
+/**
+ * #449 D154: the inspector's tag sections in the concept's prompt-section frame (workspace.css `.tag-section`). The concept
+ * has one bare `.tags` row after its prompt blocks (app.js a402), so the recorded rule is added and that row wrapped at
+ * runtime, the browser laying out what follows: `sections` lists `[className, label, name]` per section, the first
+ * holding the concept's row and each further one a copy of it. Returns the undo.
+ */
+export const D154_TAG_SECTION=`.tag-section { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 15px; }
+.tag-section .role-label { color: var(--ca-muted); }
+.tag-section > .tags { margin-top: 0; }`;
+export const PROMPT_TAGS=[['linked-tags','Prompt tags','Prompt tags']];
+export async function withTagSections(page,root,sections=PROMPT_TAGS) {
+    const restoreRule=await mutate(page,{css:D154_TAG_SECTION});
+    const token=await page.evaluate(({root,sections})=>{
+        const container=document.querySelector(root);
+        const inner=container?.querySelector(':scope > .detail-inner')??container?.querySelector(':scope > div');
+        const row=inner&&[...inner.querySelectorAll(':scope > .tags')].find(node=>node.previousElementSibling?.matches('section.prompt-section'));
+        if(!row)throw new Error(`withTagSections: no tag row after the prompt blocks under ${root}`);
+        const anchor=row.nextSibling,parent=row.parentNode,added=[];
+        sections.forEach(([className,label,name],index)=>{
+            const section=document.createElement('section');section.className=`tag-section ${className}`;section.setAttribute('aria-label',name);
+            const heading=document.createElement('div');heading.className='prompt-heading';
+            const text=document.createElement('span');text.className='role-label';text.textContent=`${label} · ${row.children.length}`;
+            heading.append(text);section.append(heading,index?row.cloneNode(true):row);
+            parent.insertBefore(section,anchor);added.push(section);
+        });
+        const token=`tag-sections-${Math.random().toString(36).slice(2)}`;
+        (window.__tagSections??=new Map()).set(token,()=>{parent.insertBefore(row,added[0]);added.forEach(section=>section.remove());});
+        return token;
+    },{root,sections});
+    return async()=>{
+        await page.evaluate(token=>{window.__tagSections.get(token)();window.__tagSections.delete(token);},token);
         await restoreRule();
     };
 }
@@ -662,6 +715,13 @@ export function measureInspector(selector) {
             text:when(text,()=>({tag:text.tagName.toLowerCase(),className:classes(text),text:text.textContent,tabIndex:text.tabIndex,...font(text),...edges(text),
                 ...css(text,'whiteSpace','overflowWrap'),...box(text),lines:px(rect(text).height/parseFloat(getComputedStyle(text).lineHeight))}))};
     }
+    function tagSectionOf(section) {
+        const heading=section.querySelector(':scope > .prompt-heading'),label=heading?.querySelector('.role-label'),row=section.querySelector(':scope > .tags');
+        return {className:classes(section),name:section.getAttribute('aria-label'),...edges(section),...box(section),
+            heading:when(heading,()=>({...layout(heading),...edges(heading),...box(heading)})),
+            label:when(label,()=>({tag:label.tagName.toLowerCase(),text:label.textContent,...font(label),...box(label)})),
+            row:when(row,rowOf)};
+    }
     function factsOf(list) {
         const style=getComputedStyle(list);
         return {...css(list,'display','columnGap','rowGap','fontSize'),...edges(list),columns:style.gridTemplateColumns.split(/\s+/).length,...box(list),
@@ -695,6 +755,8 @@ export function measureInspector(selector) {
         badges:when(rows.find(row=>parts.indexOf(row)<firstSection),rowOf),
         sections:sections.map(sectionOf),
         tags:when(rows.find(row=>parts.indexOf(row)>firstSection),rowOf),
+        // #449 D154: the labelled tag sections after the prompt blocks, each with its frame, heading, label and chip row.
+        tagSections:parts.filter(item=>item.matches('section.tag-section')).map(tagSectionOf),
         facts:when(parts.find(item=>item.matches('dl.meta-grid')),factsOf),
         // Disclosures (viewer only) by their summary and frame; their content is the D20 production facts.
         details:parts.filter(item=>item.localName==='details').map(item=>{const summary=item.querySelector(':scope > summary');
