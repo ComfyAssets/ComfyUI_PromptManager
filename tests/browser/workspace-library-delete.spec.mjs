@@ -116,6 +116,29 @@ test('an archived prompt\'s page says so and restores it from its notice',async(
     expect(byText(await items(request),'Cat portrait')?.id).toBe(cat.id);
 });
 
+// #443: a starved renderer (headless WebKit under CPU load, a background tab) can hold animation frames for
+// seconds; a loaded page of prompts is shown without waiting for one, on first load and after a delete.
+async function holdAnimationFrames(page) {
+    await page.addInitScript(()=>{
+        const request=window.requestAnimationFrame.bind(window),cancel=window.cancelAnimationFrame.bind(window);
+        const held=new Map(),real=new Map();let holding=true,next=0;
+        window.requestAnimationFrame=callback=>{const id=--next;if(holding)held.set(id,callback);else real.set(id,request(callback));return id;};
+        window.cancelAnimationFrame=id=>{held.delete(id);if(real.has(id))cancel(real.get(id));real.delete(id);};
+        window.__releaseAnimationFrames=()=>{holding=false;for(const [id,callback] of held)real.set(id,request(callback));held.clear();};
+    });
+}
+test('a held animation frame does not hide the loaded prompts, on first load or after a delete',async({page,request})=>{
+    const before=await items(request);const dog=byText(before,'Dog landscape');
+    await holdAnimationFrames(page);
+    await page.goto(route);await expect(cards(page)).toHaveCount(before.length);
+    await box(page,dog.id).check();await openReview(page);
+    await review(page).getByRole('button',{name:'Delete 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText(/^Deleted 1 prompt\./);
+    await expect(cards(page)).toHaveCount(before.length-1);await expect(card(page,dog.id)).toHaveCount(0);
+    await page.evaluate(()=>window.__releaseAnimationFrames());
+    await expect(cards(page)).toHaveCount(before.length-1);
+});
+
 test('a double press sends one preview, and the bar holds while it is reviewed',async({page,request})=>{
     const dog=byText(await items(request),'Dog landscape');
     const previews=recordPosts(page,PREVIEW);
