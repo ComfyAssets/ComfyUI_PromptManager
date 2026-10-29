@@ -14,8 +14,9 @@ same mount, else the file's mount's ``.Trash/$uid`` (only under a real, sticky
 ``.Trash``) or ``.Trash-$uid``. Names are reserved by creating the
 ``.trashinfo`` with ``O_EXCL`` and the file is moved with
 ``renameat2(RENAME_NOREPLACE)``; without that call the move is refused.
-Windows and macOS have no backend yet (:class:`UnavailableBackend`): their
-own PRs add one with a native proof.
+Windows never uses the Recycle Bin (#500: files over its capacity are deleted
+permanently, undetectably), so it answers ``windows-recycle``; macOS has no
+backend yet (#499). Both use :class:`UnavailableBackend`.
 
 ``BACKEND`` is the one replaceable seam; tests install a fake.
 """
@@ -36,7 +37,11 @@ TRASH_IN_ROOT = "trash-in-root"
 PATH_TOO_LONG = "path-too-long"
 LOCKED = "locked"
 FAILED = "failed"
-CODES = frozenset({NO_TRASH, NETWORK, TRASH_IN_ROOT, PATH_TOO_LONG, LOCKED, FAILED})
+# Windows never uses the Recycle Bin (#500): it can delete permanently.
+WINDOWS_RECYCLE = "windows-recycle"
+CODES = frozenset(
+    {NO_TRASH, NETWORK, TRASH_IN_ROOT, PATH_TOO_LONG, LOCKED, FAILED, WINDOWS_RECYCLE}
+)
 
 HOME_TRASH_LABEL = "home trash"
 RENAME_NOREPLACE = 1
@@ -177,13 +182,16 @@ def _owned_folder(path: str, uid: int, *, create: bool) -> bool:
 
 
 class UnavailableBackend:
-    """No trash on this system: every move is refused, nothing is touched."""
+    """No trash on this system: every move is refused with *code*, untouched."""
+
+    def __init__(self, code: str = NO_TRASH):
+        self.code = code
 
     def available(self, path: str, roots) -> str | None:
-        return NO_TRASH
+        return self.code
 
     def move(self, path: str, roots) -> str:
-        raise TrashRefused(NO_TRASH)
+        raise TrashRefused(self.code)
 
 
 class FreedesktopBackend:
@@ -346,7 +354,12 @@ class FreedesktopBackend:
 
 def default_backend(platform: str = sys.platform):
     """The backend for *platform*; Windows and macOS have none yet (#480)."""
-    if platform in ("win32", "darwin") or platform.startswith("cygwin"):
+    if platform == "win32" or platform.startswith("cygwin"):
+        # #500, ruling (a): Windows deletes files larger than the Recycle Bin's
+        # capacity permanently, and IFileOperation's PreDeleteItem guard cannot
+        # tell (native probe runs 40951037575, 40953347904).
+        return UnavailableBackend(WINDOWS_RECYCLE)
+    if platform == "darwin":
         return UnavailableBackend()
     return FreedesktopBackend()
 

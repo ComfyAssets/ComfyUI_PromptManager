@@ -80,6 +80,10 @@ REASONS = {
     trash.TRASH_IN_ROOT: "This drive's trash is inside an output folder.",
     trash.LOCKED: "The file is open in another program. Close it and try again.",
     trash.FAILED: "The file could not be moved to the trash.",
+    trash.WINDOWS_RECYCLE: (
+        "Moving files to the Recycle Bin isn't available on Windows: files larger "
+        "than the bin's capacity would be deleted permanently."
+    ),
     "not-attempted": "Not attempted: the job stopped after an error.",
 }
 _PROBLEM_CODES = {
