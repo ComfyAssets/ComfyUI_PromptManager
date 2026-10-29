@@ -263,15 +263,18 @@ test.describe('public chronological history with the actual acknowledged host br
     });
 });
 
-test('a cached dynamic unknown positive stays readable by run UUID and outside the known raw Library scope', async ({ execution }) => {
-    const text = `unknown positive ${randomUUID()}`, graph = recipeGraph({ text, dynamic: true });
+// #403: the graph cannot show a dynamic positive's raw text; a cached job takes it from the execution it reuses.
+test('a cached dynamic positive takes its raw text from the execution it reuses and joins the Library scope', async ({ execution }) => {
+    const text = `dynamic positive ${randomUUID()}`, graph = recipeGraph({ text, dynamic: true });
     const first = await submit(execution.request, graph);await history(execution.request, first);const known = (await capture(execution, first)).contexts[0];
-    const second = await submit(execution.request, graph);await history(execution.request, second);const unknown = (await capture(execution, second)).contexts[0];
-    expect(unknown.positive.raw).toBeNull();expect(unknown.positive.effective).toBe(known.positive.effective);
+    const second = await submit(execution.request, graph);await history(execution.request, second);const reused = await capture(execution, second);const cached = reused.contexts[0];
+    expect(cached.evidence.positive.effective.source).toBe('host_cache_output');expect(cached.positive.effective).toBe(known.positive.effective);
+    expect(cached.positive.raw).toBe(known.positive.raw);expect(cached.evidence.positive.raw).toMatchObject({ provenance: 'inferred', source: 'graph_semantics' });
+    expect(cached.positive_prompt_id).toBe(known.positive_prompt_id);
     const result = await readExecutionRuns(execution.databasePath, second), runId = result.rows[0].run_id;
-    const detail = await execution.request.get(`/prompt_manager/history/runs/${runId}`);expect(detail.ok()).toBe(true);expect((await detail.json()).contexts[0].positive.raw).toBeNull();
+    const detail = await execution.request.get(`/prompt_manager/history/runs/${runId}`);expect(detail.ok()).toBe(true);expect((await detail.json()).contexts[0].positive.raw).toBe(known.positive.raw);
     const response = await execution.request.get(`/prompt_manager/library/${known.positive_prompt_id}/history`);expect(response.ok()).toBe(true);const window = await response.json();
-    expect(window.recorded_run_count).toBe(1);expect(window.items.map(item => item.run_id)).not.toContain(runId);
+    expect(window.recorded_run_count).toBe(2);expect(window.items.map(item => item.run_id)).toContain(runId);
 });
 
 test('actual PM A,A,B jobs persist two combinations and one identical positive snapshot', async ({ execution }) => {
@@ -369,7 +372,7 @@ test('successful source capture survives downstream failure and real interruptio
     }
 });
 
-test('cached dynamic raw stays unknown while literal affixes and effective cache text survive', async ({ execution }) => {
+test('cached dynamic raw comes from the reused execution while literal affixes and effective cache text survive (#403)', async ({ execution }) => {
     const graph = recipeGraph({ dynamic: true, text: 'runtime dynamic recipe', prepend: ' pre ', append: ' post ' });
     const first = await submit(execution.request, graph);
     await history(execution.request, first);
@@ -377,8 +380,9 @@ test('cached dynamic raw stays unknown while literal affixes and effective cache
     const second = await submit(execution.request, graph);
     await history(execution.request, second);
     const value = (await capture(execution, second)).contexts[0];
-    expect(value.positive).toEqual({ raw: null, prepend: ' pre ', append: ' post ', effective: 'pre runtime dynamic recipe post' });
-    expect(value.evidence.positive.raw.provenance).toBe('unknown');
+    expect(value.positive).toEqual({ raw: 'runtime dynamic recipe', prepend: ' pre ', append: ' post ', effective: 'pre runtime dynamic recipe post' });
+    expect(value.evidence.positive.raw).toMatchObject({ provenance: 'inferred', source: 'graph_semantics' });
+    expect(value.evidence.positive.prepend.source).toBe('graph_literal');
     expect(value.evidence.positive.effective.source).toBe('host_cache_output');
 });
 

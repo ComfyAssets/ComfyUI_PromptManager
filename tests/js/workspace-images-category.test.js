@@ -59,3 +59,9 @@ test('the toolbar list merges prompt and image categories once each', async () =
     assert.deepEqual(mergeCategories(['A', '', '  ', 7], null), ['A']);
     assert.deepEqual(mergeCategories(undefined, ['landscapes', 'Landscapes']), ['landscapes', 'Landscapes']);
 });
+
+test('the outcome names what was set: images by default, prompts for the Library bar (#437)', async () => {
+    const {setOutcome} = await source;
+    assert.equal(setOutcome({updated:1, unchanged:0, not_found:0}, 'A', 'prompt'), 'Category “A” set on 1 prompt.');
+    assert.equal(setOutcome({updated:2, unchanged:0, not_found:0}, 'A', 'prompt'), 'Category “A” set on 2 prompts.');
+});
