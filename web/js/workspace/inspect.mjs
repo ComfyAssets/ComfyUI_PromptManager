@@ -280,11 +280,12 @@ export function mountInspect(main, { parentScope, api, sender }) {
     /** Runs `run` after this task, or once `preview`'s video stops starting (metadata, an error, or the D62 limit). */
     function whenSettled(preview, run) {
         if (!preview || !isStarting(preview.node)) { queueMicrotask(run); return; }
+        // `run` checks that the page and the selection are still current, so the page's end may call `done` too.
         const settled = new AbortController();
-        const done = () => { settled.abort(); clearTimeout(timer); if (!scope.signal.aborted) run(); };
+        const done = () => { settled.abort(); clearTimeout(timer); run(); };
         const timer = setTimeout(done, STARTING_VIDEO_MS);
         for (const type of ['loadedmetadata', 'error']) preview.node.addEventListener(type, done, { once: true, signal: settled.signal });
-        scope.signal.addEventListener('abort', () => { settled.abort(); clearTimeout(timer); }, { once: true, signal: settled.signal });
+        scope.cleanup(done);
     }
     /** The viewer on the current selection, details showing (D155 amends D97); focus returns to `trigger` on close. */
     function openViewer(trigger) {

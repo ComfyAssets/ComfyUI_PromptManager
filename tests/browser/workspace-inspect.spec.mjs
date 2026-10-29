@@ -290,6 +290,29 @@ test('D155: an unreadable file stays on the page with its alert', async ({ page 
     await expect(viewer(page)).toHaveCount(0);
 });
 
+test('D155: an AVI keeps its note and toast and does not open the viewer', async ({ page }) => {
+    await openInspect(page);
+    // AVI and WMV metadata is never read and the browser cannot play them, so the page keeps the selection's note.
+    const avi = { name: 'clip.avi', mimeType: 'video/x-msvideo', buffer: Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('AVI LIST'), Buffer.alloc(64)]) };
+    await choose(page, avi);
+    await expect(page.locator('#workspace-toast')).toHaveText(TOAST);
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(viewer(page)).toHaveCount(0);
+    await reopenViewer(page);
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('clip.avi');
+});
+
+test('D155: a selection that lands while another dialog is open leaves the viewer closed', async ({ page }) => {
+    await openInspect(page);
+    await page.evaluate(() => { const other = document.createElement('dialog'); other.id = 'other-dialog'; other.textContent = 'Other'; document.body.append(other); other.showModal(); });
+    await choose(page, parityPng('f02.png'));
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(viewer(page)).toHaveCount(0);
+    await page.evaluate(() => document.querySelector('#other-dialog').close());
+    await reopenViewer(page);
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('f02.png');
+});
+
 test('D155: at 390px the opened details are reachable below the media', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openInspect(page);
