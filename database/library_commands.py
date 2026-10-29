@@ -21,6 +21,8 @@ _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _TOKEN = re.compile(r"[0-9a-f]{64}")
 # Parent metadata stored on the prompt row; title lives in prompt_library_state.
 _PROMPT_COLUMNS = ("category", "rating", "notes")
+# Ids per IN (...) read: well under SQLite's oldest bound-parameter limit (999).
+_BULK_CHUNK = 500
 
 
 class LibraryCommandError(Exception):
@@ -83,6 +85,13 @@ def normalize_library_tags(tags: list[str]) -> list[str]:
 def _validate_epoch(expected_epoch: str) -> None:
     if not isinstance(expected_epoch, str) or not _UUID.fullmatch(expected_epoch):
         raise ValueError("expected_epoch must be a canonical UUID")
+
+
+def _validate_bulk_ids(prompt_ids: list[int]) -> None:
+    if not isinstance(prompt_ids, list) or not prompt_ids:
+        raise ValueError("prompt_ids must be a non-empty list")
+    if any(type(pid) is not int or not 1 <= pid <= 2**63 - 1 for pid in prompt_ids):
+        raise ValueError("prompt_ids must be positive integers")
 
 
 def _validate_guards(positive_id: int, expected_epoch: str, if_match: str) -> None:
@@ -308,3 +317,49 @@ class LibraryCommandOperations:
                 positive_created=False,
                 pair_created=pair_created,
             )
+
+    def bulk_set_library_category(
+        self, prompt_ids: list[int], category: str, *, expected_epoch: str
+    ) -> dict:
+        """Set one category on many Library parents, all or nothing (#437).
+
+        Guarded by the storage epoch the page read. Only rows whose category
+        differs are written (their ``updated_at`` and edit token change) and
+        registered as Library parents, as the editor's PATCH does; ids
+        that are missing or are not Library parents count as not found.
+        """
+        _validate_epoch(expected_epoch)
+        _validate_bulk_ids(prompt_ids)
+        prompt_ids = list(dict.fromkeys(prompt_ids))
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("Category is required")
+        validate_category(category)
+        category = category.strip()
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            current = {}
+            for start in range(0, len(prompt_ids), _BULK_CHUNK):
+                chunk = prompt_ids[start : start + _BULK_CHUNK]
+                marks = ",".join("?" for _ in chunk)
+                current.update(
+                    conn.execute(
+                        f"SELECT p.id,p.category FROM prompts p "  # nosec B608
+                        f"WHERE p.id IN ({marks}) AND {_ELIGIBLE}",
+                        chunk,
+                    ).fetchall()
+                )
+            changed = [pid for pid, value in current.items() if value != category]
+            for pid in changed:
+                self._ensure_library_parent(conn, pid)
+            now = utc_now_iso()
+            conn.executemany(
+                "UPDATE prompts SET category=?,updated_at=? WHERE id=?",
+                [(category, now, pid) for pid in changed],
+            )
+            return {
+                "library_epoch": epoch,
+                "category": category,
+                "updated": len(changed),
+                "unchanged": len(current) - len(changed),
+                "not_found": len(prompt_ids) - len(current),
+            }

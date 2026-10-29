@@ -8,8 +8,10 @@ import sqlite3
 from aiohttp import web
 
 try:
+    from ...database.library_commands import LibraryCommandError
     from ...database.pairs import PairDependencyError
 except ImportError:
+    from database.library_commands import LibraryCommandError
     from database.pairs import PairDependencyError
 from urllib.parse import quote
 
@@ -1180,6 +1182,8 @@ class PromptRoutesMixin:
                 )
             if "images_filter" in data:
                 return await self._bulk_category_by_filter(data)
+            if "expected_epoch" in data:
+                return await self._bulk_library_category(data)
             if not data.get("prompt_ids"):
                 return web.json_response(
                     {"success": False, "error": "No prompt IDs provided"}, status=400
@@ -1215,6 +1219,40 @@ class PromptRoutesMixin:
                 },
                 status=500,
             )
+
+    async def _bulk_library_category(self, data: dict) -> web.Response:
+        """The workspace Library's fenced form (#437).
+
+        ``{prompt_ids, category, expected_epoch}``: a non-blank category on
+        the selected Library parents, refused with 409 ``storage-changed``
+        when prompt storage was restored since the page read its epoch.
+        """
+        fields = {"prompt_ids", "category", "expected_epoch"}
+        if set(data) != fields:
+            return bad_request(
+                "Request must contain exactly " + ", ".join(sorted(fields))
+            )
+        try:
+            prompt_ids = parse_bulk_prompt_ids(data["prompt_ids"])
+            result = await self._run_in_executor(
+                self.db.bulk_set_library_category,
+                prompt_ids,
+                data["category"],
+                expected_epoch=data["expected_epoch"],
+            )
+        except LibraryCommandError as exc:
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": exc.code,
+                    "library_epoch": exc.epoch,
+                    "error": "Prompt storage was restored; refresh the library",
+                },
+                status=409,
+            )
+        except ValueError as exc:
+            return bad_request(str(exc))
+        return web.json_response({"success": True, **result})
 
     async def _bulk_category_by_filter(self, data: dict) -> web.Response:
         """Set the category on every linked positive a listing filter admits.

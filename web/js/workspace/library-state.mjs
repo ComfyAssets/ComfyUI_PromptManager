@@ -27,7 +27,7 @@ function validatePage(page,cursor,query) {
     if(!page || !Array.isArray(page.items) || page.items.some(item=>!parent(item)) || !Number.isSafeInteger(page.total) || page.total<0 || !Number.isSafeInteger(page.variant_total) || page.variant_total<0 || typeof page.has_more!=='boolean' || !(page.next_cursor===null || (typeof page.next_cursor==='string' && page.next_cursor.length)) || page.has_more!==(page.next_cursor!==null) || (page.has_more && cursor===page.next_cursor)) throw new TypeError('Invalid library page');
 }
 export function createLibraryStream({api,onChange=()=>{},restore}) {
-    let state=Object.freeze({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null});
+    let state=Object.freeze({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null,epoch:null});
     let query=parameters({},40),request,disposed=false,seen=new Set();
     if(restore) {
         query=parameters(restore.filters,40);const saved=restore.state;
@@ -35,7 +35,7 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
         const firstPagePending=saved?.variantTotal===null && Array.isArray(saved.items) && !saved.items.length && saved.total===0 && saved.cursor===null && saved.hasMore===true;
         if(!firstPagePending) validatePage({items:saved.items,total:saved.total,variant_total:saved.variantTotal,next_cursor:saved.cursor,has_more:saved.cursor!==null},null);
         if(new Set(saved.items.map(item=>item.id)).size!==saved.items.length) throw new TypeError('Duplicate restored parent');
-        state=Object.freeze({...saved,items:Object.freeze(saved.items.map(item=>Object.freeze({...item}))),loading:false,error:null});seen=new Set(state.items.map(item=>item.id));
+        state=Object.freeze({...saved,epoch:saved.epoch ?? null,items:Object.freeze(saved.items.map(item=>Object.freeze({...item}))),loading:false,error:null});seen=new Set(state.items.map(item=>item.id));
     }
     const emit=patch=>{state=Object.freeze({...state,...patch});onChange(state);};
     async function loadMore() {
@@ -45,14 +45,19 @@ export function createLibraryStream({api,onChange=()=>{},restore}) {
         try {
             const page=await api.get(`/prompt_manager/library?${params}`,{signal:current.signal});
             if(disposed || current!==request) return 0;
-            validatePage(page,cursor,query);const incoming=[];const added=new Set();
+            validatePage(page,cursor,query);
+            // #437: the storage epoch the shelf's items were read under, which a bulk write sends as its fence; a later
+            // page from a restored storage is refused (its items would belong to another database).
+            const epoch=typeof page.library_epoch==='string'?page.library_epoch:null;
+            if(state.epoch!==null && epoch!==state.epoch) throw new TypeError('Prompt storage changed while the library was loading');
+            const incoming=[];const added=new Set();
             for(const item of page.items) if(!seen.has(item.id) && !added.has(item.id)) {added.add(item.id);incoming.push(Object.freeze({...item}));}
             for(const value of added) seen.add(value);
-            request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,total:page.total,variantTotal:page.variant_total,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;
+            request=null;emit({items:incoming.length?Object.freeze([...state.items,...incoming]):state.items,epoch:state.epoch ?? epoch,total:page.total,variantTotal:page.variant_total,cursor:page.next_cursor,hasMore:page.has_more,loading:false,error:null});return incoming.length;
         } catch(error) {if(!disposed && current===request) {request=null;emit({loading:false,error});}return 0;}
     }
     return {get state(){return state;},loadMore,async reset(filters={}) {
-        if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null});return loadMore();
+        if(disposed) return 0;const next=parameters(filters,40);request?.abort();request=null;query=next;seen=new Set();emit({items:Object.freeze([]),total:0,variantTotal:null,cursor:null,hasMore:true,loading:false,error:null,epoch:null});return loadMore();
     },dispose(){disposed=true;request?.abort();request=null;}};
 }
 /**
