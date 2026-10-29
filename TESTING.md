@@ -2662,14 +2662,15 @@ rulings of 2026-10-28):
   504: "The server did not confirm the change. The Library was reloaded: check the shelf and
   Show archived prompts."; other refusals: "The selected prompts could not be changed. Try
   again.", the selection kept.
-- **Show archived prompts (N)** (heading actions, before Export, `aria-pressed`; N the
+- **Show archived prompts (N)** (heading actions, before Export, a plain button; N the
   archived prompts matching the filters, `archived_total`; the shelf counterpart of #235's
   Show archived) lists only archived prompts (`GET /prompt_manager/library?shelf=archived`,
   a cursor never crosses shelves), each card with an "Archived" `.chip`, the caption "N
   archived prompts · M negative variants hidden with them", the bar "N selected", Restore,
-  Clear, and "No archived prompts." / "No archived prompts match." when empty. The pressed
-  state stays with the shelf visit, never in a saved view; Browse and a saved view open the
-  shelf. Restore posts `{prompt_ids, expected_epoch}` to `POST
+  Clear, and "No archived prompts." / "No archived prompts match." when empty. On the archived
+  shelf the button reads the concept's own way back, "← Prompt library" (app.js 594; #482), with
+  no `aria-pressed` (its label names where it goes). The shelf stays with the shelf visit, never
+  in a saved view; Browse and a saved view open the active shelf. Restore posts `{prompt_ids, expected_epoch}` to `POST
   /prompt_manager/library/restore` (every requested archived id, protected or not): "Restored
   N prompts to the Prompt library."
 - An archived prompt's page shows the concept's `.notice` ("Archived" / "This prompt is archived
@@ -2696,6 +2697,48 @@ failed backup, busy, unconfirmed, restore fence); `tests/browser/library-delete-
 "Remove links…"); units `tests/js/workspace-library-delete.test.js`; Python
 `tests/test_prompt_archive_schema.py`, `tests/test_bulk_library_delete.py`,
 `tests/test_library_delete_routes.py`. A Python change: ComfyUI needs a restart.
+
+### Deleting a prompt in a saved pair permanently (#482)
+
+**D154** (beyond legacy, maintainer ruling 2026-10-29; follow-up to D152): when the Delete… selection
+holds prompts in a saved pair that no other positive uses as its negative ("deletable"), the review
+asks, in a D90 radio row "Prompts in a saved pair" after the grid: **Archive (hidden, restorable)**
+(checked on every open, never remembered, so the review is D152's) or **Delete permanently, with
+their saved pairs**. Choosing it rewrites the review in place (`openReviewDialog` `setRows`,
+`setPrimary`):
+- Delete permanently "D prompts: X not in a saved pair, Y in a saved pair" (or "Y prompts in a saved
+  pair"), Saved pairs removed "S saved pairs (V with a negative prompt, A archived)", Negatives kept
+  "K negative prompts are kept", Archive "R prompts used as another prompt's negative: hidden,
+  restorable", then D152's protected, already archived, no longer exist, Image links removed (images
+  of every deleted prompt) and Backup rows.
+- Sentences: the pairs go with their titles, categories, ratings, notes, tags, run counts and image
+  links; their negative prompts stay; recorded runs stay in History and Activity by their text; D152's
+  irreversibility (per backup policy) and re-creation sentences, plus "A pair node run with the same
+  text saves a new pair."; and, when R > 0, why those are archived.
+- Primary (`danger`): "Delete D prompts" / "Delete D and archive R prompts"; a short disk keeps it
+  unavailable (`aria-disabled`) with the disk sentence, while Archive still starts.
+
+The preview adds `deletable` (a subset of `archive`, which keeps every archive id for D152 clients),
+`review_digests` (sha256 of each deletable prompt's row and its pairs: negative, archived flag,
+metadata, usage, tags, image-pair links), `paired_counts` and `paired_image_links`, and plans the
+disk whenever anything could be deleted. The write takes optional `delete_paired_ids` with their
+`paired_digests` (both or neither; ids must be reviewed archive ids). In one transaction, after the
+archives, each chosen prompt whose digest is unchanged loses its image-pair links, then its own saved
+pairs (pair tags cascade; review decisions keep their rows with `pair_id` cleared), then itself exactly
+as D152 deletes. Any drift (pair added or edited, new link, pairs gone, now another prompt's negative)
+archives it and counts it `changed`. A paired delete is backed up and disk-checked as a delete. The
+toast adds "Removed S saved pairs."; "N changed since the review and was not deleted." replaces "…was
+kept.". Negatives are never deleted: one no remaining pair uses is listed in the Library afterwards (as
+after the legacy pair delete). Legacy still refuses paired prompts (409).
+
+Tests: `tests/test_bulk_library_delete.py` `TestPairedDelete` (classes and counts, the 7896 empty
+negative, the row diff against the legacy pair deletes then prompt delete, archive-only, a positive
+with its own negative, a self-pair, each drift, validation); `tests/test_library_delete_routes.py`
+`TestPairedDeleteRoutes` (preview, paired-only backup, a D152 body, validation, short disk); units
+`tests/js/workspace-library-delete.test.js`, `tests/js/workspace-toolbar.test.js` (`setRows`,
+`setPrimary`); browser `tests/browser/workspace-library-delete.spec.mjs` (the choice, its grid and
+copy, the server after, archive-only, reset to Archive) and `library-delete-concept.spec.mjs`. A Python
+change: ComfyUI needs a restart.
 
 ### No 1–5 prompt rating in the workspace (#447)
 

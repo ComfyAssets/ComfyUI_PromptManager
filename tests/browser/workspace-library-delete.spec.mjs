@@ -13,6 +13,8 @@ const bar=page=>page.locator('#library-bulkbar > .bulkbar');
 const toast=page=>page.locator('.toast');
 const review=page=>page.getByRole('dialog');
 const showArchived=page=>page.locator('#workspace-main .heading-actions').getByRole('button',{name:/^Show archived prompts/});
+// #482: on the archived shelf the same button reads the concept's way back (app.js 594 "← Prompt library").
+const backToLibrary=page=>page.locator('#workspace-main .heading-actions').getByRole('button',{name:'← Prompt library',exact:true});
 
 async function items(request,shelf='active') {
     const query=shelf==='archived'?'&shelf=archived':'';
@@ -83,9 +85,11 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await review(page).getByRole('button',{name:'Archive 2 prompts',exact:true}).click();
     await expect(toast(page)).toHaveText('Archived 2 prompts.');
     await expect(cards(page)).toHaveCount(before.length-2);
-    await expect(showArchived(page)).toHaveAttribute('aria-pressed','false');
+    // #482: a plain button that names where it goes (no pressed state that its changing label would contradict).
+    await expect(showArchived(page)).not.toHaveAttribute('aria-pressed');
     await showArchived(page).click();
-    await expect(showArchived(page)).toHaveAttribute('aria-pressed','true');
+    await expect(backToLibrary(page)).toBeVisible();await expect(backToLibrary(page)).not.toHaveAttribute('aria-pressed');
+    await expect(showArchived(page)).toHaveCount(0);
     await expect(cards(page)).toHaveCount(2);
     await expect(page.locator('.section-caption > span').first()).toHaveText(/^2 archived prompts · \d+ negative variants? hidden with them$/);
     await expect(card(page,cat.id).locator('.card-title .chip',{hasText:'Archived'})).toHaveCount(1);
@@ -94,7 +98,8 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await bar(page).getByRole('button',{name:'Restore',exact:true}).click();
     await expect(toast(page)).toHaveText('Restored 1 prompt to the Prompt library.');
     await expect(cards(page)).toHaveCount(1);
-    await showArchived(page).click();
+    await backToLibrary(page).click();
+    await expect(showArchived(page)).toHaveText('Show archived prompts (1)');
     await expect(cards(page)).toHaveCount(before.length-1);
     await expect(card(page,cat.id)).toHaveCount(1);
     expect((await items(request,'archived')).map(item=>item.id)).toEqual([dual.id]);
@@ -102,6 +107,72 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await showArchived(page).click();await box(page,dual.id).check();
     await bar(page).getByRole('button',{name:'Restore',exact:true}).click();
     await expect(page.locator('.library-status')).toHaveText('No archived prompts.');
+});
+
+// #482 (D154): a prompt in a saved pair can be deleted permanently, with its own saved pairs; Archive stays the default.
+const choice=page=>review(page).getByRole('radiogroup',{name:'Prompts in a saved pair'});
+const row=(page,term)=>review(page).locator('dl.meta-grid > div').filter({has:page.locator('dt',{hasText:new RegExp(`^${term}$`)})}).locator('dd');
+test('Delete permanently removes a paired prompt with its own saved pair; its negative stays (#482)',async({page,request})=>{
+    const before=await items(request);const dual=byText(before,'Dual role portrait'),cat=byText(before,'Cat portrait');
+    const writes=recordPosts(page,DELETE);
+    await page.goto(route);await expect(cards(page)).toHaveCount(before.length);
+    await box(page,dual.id).check();await openReview(page);
+    // Archive is checked: the review is #443's.
+    await expect(choice(page).getByRole('radio',{name:'Archive (hidden, restorable)'})).toBeChecked();
+    // The D90 radio row (the auto-tag "How to apply"): each radio keeps its own size beside its label.
+    expect(await choice(page).evaluate(group=>{const label=group.querySelector('label'),radio=label.querySelector('input');
+        return {group:group.className,display:getComputedStyle(label).display,gap:getComputedStyle(label).columnGap,
+            margin:getComputedStyle(radio).marginLeft,full:radio.getBoundingClientRect().width>=label.getBoundingClientRect().width/2};}))
+        .toEqual({group:'field',display:'flex',gap:'8px',margin:'0px',full:false});
+    await expect(review(page).getByRole('button',{name:'Archive 1 prompt',exact:true})).toBeVisible();
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await expect(review(page)).toHaveAccessibleName('Delete selected prompts');
+    await expect(row(page,'Delete permanently')).toHaveText('1 prompt in a saved pair');
+    await expect(row(page,'Saved pairs removed')).toHaveText('1 saved pair (1 with a negative prompt)');
+    await expect(row(page,'Negatives kept')).toHaveText('1 negative prompt is kept');
+    await expect(row(page,'Backup')).toHaveText('Create and verify before deleting');
+    await expect(review(page).locator('p.small').first()).toHaveText(/^Deleting a prompt in a saved pair also removes its saved pairs/);
+    // Back to Archive: the review is #443's again.
+    await choice(page).getByRole('radio',{name:'Archive (hidden, restorable)'}).check();
+    await expect(row(page,'Saved pairs removed')).toHaveCount(0);
+    await expect(review(page).getByRole('button',{name:'Archive 1 prompt',exact:true})).toBeVisible();
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await review(page).getByRole('button',{name:'Delete 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText(/^Deleted 1 prompt\. Removed 1 saved pair\. Safety backup saved: /);
+    await expect(card(page,dual.id)).toHaveCount(0);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].delete_paired_ids).toEqual([dual.id]);
+    expect(Object.keys(writes[0].paired_digests)).toEqual([String(dual.id)]);
+    const after=await items(request);
+    expect(byText(after,'Dual role portrait')).toBeUndefined();
+    // Its negative (Cat portrait) is kept, with its own variants.
+    expect(byText(after,'Cat portrait')?.id).toBe(cat.id);
+    expect((await items(request,'archived')).map(item=>item.id)).toEqual([]);
+});
+
+test('a prompt used as another prompt\'s negative is archived even when Delete permanently is chosen (#482)',async({page,request})=>{
+    const before=await items(request);const dual=byText(before,'Dual role portrait'),cat=byText(before,'Cat portrait');
+    await page.goto(route);await expect(cards(page)).toHaveCount(before.length);
+    await box(page,cat.id).check();await box(page,dual.id).check();await openReview(page);
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await expect(row(page,'Archive')).toHaveText('1 prompt used as another prompt\'s negative: hidden, restorable');
+    await expect(review(page).locator('p.small',{hasText:'archived instead of deleted'})).toHaveCount(1);
+    await review(page).getByRole('button',{name:'Delete 1 and archive 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText(/^Deleted 1 prompt\. Removed 1 saved pair\. Archived 1 prompt\./);
+    expect((await items(request,'archived')).map(item=>item.id)).toEqual([cat.id]);
+});
+
+test('the choice resets to Archive on every Delete…, and a selection with no paired prompt has none (#482)',async({page,request})=>{
+    const before=await items(request);const dual=byText(before,'Dual role portrait'),dog=byText(before,'Dog landscape');
+    await page.goto(route);await box(page,dual.id).check();await openReview(page);
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await review(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await openReview(page);
+    await expect(choice(page).getByRole('radio',{name:'Archive (hidden, restorable)'})).toBeChecked();
+    await review(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await bar(page).getByRole('button',{name:'Clear',exact:true}).click();
+    await box(page,dog.id).check();await openReview(page);
+    await expect(choice(page)).toHaveCount(0);
 });
 
 test('an archived prompt\'s page says so and restores it from its notice',async({page,request})=>{

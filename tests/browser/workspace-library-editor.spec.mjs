@@ -493,9 +493,10 @@ test('a restore seen finishing keeps New prompt open and reloads the Library aft
 test('library heading offers Export then + New prompt, and New opens the saved prompt history',async({page,request})=>{
     await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();
     const actions=headingActions(page).locator('button');
-    // D152 (#443): Show archived prompts (N) comes first, a plain toggle.
+    // D152 (#443): Show archived prompts (N) comes first, a plain button (#482: no pressed state; on the archived shelf it
+    // reads "← Prompt library").
     expect(await visibleNames(actions)).toEqual(['Show archived prompts (0)','Export','+ New prompt']);
-    await expect(actions.nth(0)).toHaveAttribute('aria-pressed','false');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
+    await expect(actions.nth(0)).not.toHaveAttribute('aria-pressed');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
     // One image is counted in the singular.
     const f=page.fixture;await expect(page.locator(`article[data-prompt-id="${f.positive_id}"]`).getByText('1 image',{exact:true})).toHaveCount(1);
     await expect(actions.nth(1)).toHaveAccessibleName('Export full Library JSON');await expect(actions.nth(1)).not.toHaveClass(/ca-primary/);

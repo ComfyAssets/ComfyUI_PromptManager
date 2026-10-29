@@ -291,8 +291,9 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
         deleteButton.textContent = DELETE_LABEL;
         openDeleteReview({ scope, trigger: deleteButton, review, titleOf: nameOf,
             onDismiss: unlock,
-            onStart: () => write(DELETE_URL, deleteBody(review), 'delete', (result, error) => deleteOutcome(result, error, review),
-                review.delete.length ? 'Deleting…' : 'Archiving…') });
+            // #482: the review as chosen (Archive, or Delete permanently with the prompts' saved pairs).
+            onStart: chosen => write(DELETE_URL, deleteBody(chosen), 'delete', (result, error) => deleteOutcome(result, error, chosen),
+                chosen.delete.length || chosen.choice === 'delete' ? 'Deleting…' : 'Archiving…') });
     }
     /** Restore (#443): the selected archived prompts go back on the shelf. */
     function restoreSelected() {
