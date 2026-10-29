@@ -1446,9 +1446,9 @@ Recorded deviations on this page (spec §8):
   checked images' own categories: it opens the concept's `simpleInput` dialog
   ("Categorize selected images", `input#action-input` labelled Category) and writes
   `PUT`/`DELETE /prompt_manager/images/category`, never a prompt (see D140). Prompt
-  categories are changed in the Prompt library editor and on the legacy admin page's
-  "Set Category"; `POST /prompt_manager/bulk/category` is unchanged and serves that
-  legacy page only. The write carries no page signal: leaving Images while it runs lets
+  categories are changed in the Prompt library editor, the Prompt library's selection
+  bar (D148, #437) and on the legacy admin page's "Set Category"; both bulk ones write
+  `POST /prompt_manager/bulk/category`. The write carries no page signal: leaving Images while it runs lets
   it finish without a toast, and the return loads the collection afresh instead of the
   saved visit. Its success reloads the categories and the listing together (clearing
   the selection, focus to the heading, and, as any replaced collection does, the
@@ -2195,6 +2195,61 @@ categories.
 npm run --prefix tools/vendor test:workflows -- library-concept.spec.mjs \
   workspace-library.spec.mjs --project chromium --project touch --project firefox --project webkit
 ```
+
+### Selecting prompts and Set category (#437)
+
+**D148** (beyond the concept, whose Library cards have no checkbox): the Prompt library
+selects prompts and sets their category in one step, the legacy admin page's bulk "Set
+Category". It is built only from the concept's Images parts:
+
+- Each `article.prompt-card` leads with the Images `.image-overlays > label > input`
+  checkbox ("Select <title>"), placed by the concept's overlay CSS over the art; the card
+  carries `position: relative` (the concept puts it on `.media-art`). The checkbox comes
+  before the title in tab order (on Images it follows the image button). Tab and
+  Shift+Tab across windowed cards reach it (the card's controls are `button,
+  input[type=checkbox]`); Home, End and the arrow keys still move between titles.
+- `div#library-bulkbar` sits between the toolbar and the caption, empty until something
+  is checked, then the concept's `.bulkbar`: "N selected", Set category, Clear. The
+  selection is a set of prompt ids over the loaded shelf: windowed-out cards keep their
+  state, Load more keeps it, and any shelf reload (search, category, sort, tags, a
+  write) and leaving the page clear it. Clicking a checkbox toggles it and sets the
+  anchor; Shift+click applies the anchor's range with the box's new state (the D135
+  helpers). Escape in the bar and Clear clear it, focus to the heading. There is no
+  Ctrl/Cmd+A, Shift+arrow, long-press or "Select all N matching" on the Library.
+- Set category opens the shared `simpleInput` dialog ("Categorize selected prompts",
+  `input#action-input` labelled Category, at most 100 characters, the Library's
+  categories as suggestions). A blank value keeps it open; a control character is
+  refused on the field ("A category cannot contain control characters."). More than
+  1,000 selected toasts "Select at most 1,000 prompts." and opens nothing.
+- Apply posts `{prompt_ids, category, expected_epoch}` to `POST
+  /prompt_manager/bulk/category`, the epoch being the shelf's first page's
+  `library_epoch` (kept with a returning visit; a later page from another epoch is a
+  shelf error). The server checks the epoch, then sets the category on the Library
+  parents among the ids in one `BEGIN IMMEDIATE` transaction, writing (and registering as
+  Library parents, as the editor's PATCH does) only rows whose category differs, and
+  answers `{library_epoch, category, updated, unchanged, not_found}`. A restored storage
+  answers 409 `storage-changed` and writes nothing. The legacy `{prompt_ids, category}`
+  and `{images_filter, category}` bodies are unchanged.
+- Outcomes: "Category “X” set on N prompts." (plus "M could not be found."), then the
+  shelf and its categories reload and cached Library views and the sidebar counts are
+  invalidated, also when the page was left during the write. None found: "None of the
+  selected prompts could be found. The Library was reloaded." Storage restored: "Prompt
+  storage was restored since this page loaded. No category was changed." and a reload.
+  No answer, 502, 503 or 504: "The category change could not be confirmed. The Library
+  was reloaded." Any other refusal: "Category could not be set. Try again.", the
+  selection kept. Set category is `aria-disabled` while the write runs.
+- The bar's DOM and write loop live in `library-selection.mjs`; the toast text
+  (`setOutcome` with the noun "prompt"), the range helpers, the count and the dialog are
+  the Images bar's. One bar core shared with `images-selection.mjs` is a follow-up.
+
+Tests: `tests/browser/workspace-library-selection.spec.mjs` (set, blank and control
+characters, Clear/Escape/filter, Shift+click range and Tab across the window edge, the
+fence after a return visit, an unseen restore, refused and unconfirmed writes);
+`tests/browser/library-concept.spec.mjs` ("the Library selection checkbox and bar match
+the concept's Images ones", 1600x1100 and 390x844, both themes, with a moved-checkbox
+mutation); units `tests/js/workspace-library-selection.test.js`,
+`tests/js/workspace-library-state.test.js` (the epoch); Python
+`tests/test_bulk_library_category.py`. A Python change: ComfyUI needs a restart.
 
 ### Prompt history page and recorded deviations (#249 PR F-a)
 
@@ -4920,7 +4975,7 @@ category; without one it shows the category its link supplies.
   category can still be removed. An unexpected failure is a logged 500 ("The
   category could not be changed." / "Image categories could not be read.") without
   the exception text. The routes never read or write `prompts`, `prompt_pairs` or
-  `generated_images`; `POST /prompt_manager/bulk/category` is unchanged.
+  `generated_images`; `POST /prompt_manager/bulk/category` (prompts only) is not one of them.
 - Duplicate cleanup (System › Maintenance): the kept copy's own category wins. A
   kept copy without one receives the removed copy's (`COPY_SQL`, part of the
   cleanup's query-plan check). The removed copy's row is never deleted, so a
@@ -4938,7 +4993,8 @@ category; without one it shows the category its link supplies.
   the side panel, the viewer and History's media inspector (D145); Tags & categories
   counts images on each category row and lists image-only values (D143), and Manage
   category previews and renames image rows too (D144). Prompt categories are changed in
-  the Prompt library editor and on the legacy admin page's "Set Category". Concept
+  the Prompt library editor, the Prompt library's selection bar (D148, #437) and on the
+  legacy admin page's "Set Category". Concept
   comparisons, at 1600x1100 and 390x844 in both themes: `images-concept.spec.mjs` (the
   Set category dialog and the options), `inspector-concept.spec.mjs` (the chip),
   `history-concept.spec.mjs` (History's chip) and `vocabulary-visual.spec.mjs` (rows and
@@ -6041,9 +6097,10 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
 "Open existing tag manager" card for tag search and sort, the untagged entry and
-multi-tag AND/OR browsing; bulk prompt actions (delete, tag, category) stay on the
-legacy admin page. A prompt's category is changed in the Prompt library editor or with
-the legacy admin page's "Set Category" (`POST /prompt_manager/bulk/category`, unchanged);
+multi-tag AND/OR browsing; bulk prompt delete and tag stay on the legacy admin page. A
+prompt's category is changed in the Prompt library editor, on many prompts at once with
+the Prompt library's selection bar (D148, #437), or with the legacy admin page's "Set
+Category" (both `POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
 above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.

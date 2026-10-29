@@ -4,7 +4,8 @@ import { countOf } from './plural.mjs';
  * The Images selection bar's "Set category" (#332, D140; the concept's bulk-category → simpleInput). Apply sets each
  * selected image's own category (`PUT /prompt_manager/images/category`); "Use prompt category" removes it after a
  * confirmation (`DELETE`), so the image shows its prompt's category again. It never writes a prompt: prompt
- * categories are set in the Prompt library editor and on the legacy admin page's "Set Category".
+ * categories are set in the Prompt library editor, the Prompt library's selection bar (#437, library-selection.mjs)
+ * and on the legacy admin page's "Set Category".
  */
 export const CATEGORY_URL = '/prompt_manager/images/category';
 export const IMAGE_CATEGORIES_URL = '/prompt_manager/images/categories';
@@ -20,11 +21,14 @@ export const CATEGORY_MAX_LENGTH = 100;
 // One request names at most 500 images (DC2), as "Add tags" does.
 export const MAX_CATEGORY_IMAGES = 500;
 
-/** The success toast of a set: unchanged files count as set; files no source lists are named after. */
-export function setOutcome(result, category) {
+/**
+ * The success toast of a set: unchanged items count as set; items that could not be found are named after. `noun` is
+ * what was set (the Prompt library's selection bar passes "prompt", #437).
+ */
+export function setOutcome(result, category, noun = 'image') {
     const updated = Number(result?.updated) || 0, unchanged = Number(result?.unchanged) || 0;
     const missing = Number(result?.not_found) || 0;
-    const done = `Category “${category}” set on ${countOf(updated + unchanged, 'image')}.`;
+    const done = `Category “${category}” set on ${countOf(updated + unchanged, noun)}.`;
     return missing ? `${done} ${missing.toLocaleString()} could not be found.` : done;
 }
 
