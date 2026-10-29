@@ -44,6 +44,7 @@ try:
 except ImportError:
     from utils.hashing import register_prompt_functions
 from .image_categories import image_categories_schema_error, migrate_image_categories
+from .image_removal_schema import image_removals_schema_error, migrate_image_removals
 from .workflow_documents import (
     DOCUMENT_ID_COLUMNS,
     migrate_workflow_documents,
@@ -366,6 +367,8 @@ class PromptModel:
         migrate_autotag_state(conn)
         # Image categories (#332): independent of every table above.
         migrate_image_categories(conn)
+        # Removal marks (#480): independent of every table above.
+        migrate_image_removals(conn)
         # Last: the older generated_images rebuilds run only before file_path.
         migrate_workflow_documents(conn)
 
@@ -1242,6 +1245,11 @@ class PromptModel:
             )
             if categories_error:
                 return False, categories_error
+            removals_error = image_removals_schema_error(
+                conn, allow_missing=not require_library_state
+            )
+            if removals_error:
+                return False, removals_error
             views_error = saved_views_schema_error(
                 conn, allow_missing=not require_library_state
             )

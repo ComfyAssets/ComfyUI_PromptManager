@@ -221,6 +221,7 @@ class ImageCategoryOperations:
         sources. Returns ``{updated, unchanged}``; a file that already had
         exactly this value is ``unchanged`` and keeps its ``updated_at``.
         """
+        from .image_removal_schema import clear_marks_of_keys
         from .models import utc_now_iso  # models imports this module's schema
 
         keys = list(dict.fromkeys(tuple(key) for key in file_keys))
@@ -234,6 +235,7 @@ class ImageCategoryOperations:
                     continue
                 conn.execute(UPSERT_SQL, (*key, category, now))
                 counts["updated"] += 1
+            clear_marks_of_keys(conn, keys)  # #480: a categorized file is listed
         return counts
 
     def clear_image_categories(self, file_keys) -> int:
