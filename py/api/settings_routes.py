@@ -8,7 +8,8 @@ is shared with the LoRA integration's save.
 GET also reports the image sources and the monitor (``sources.py``). A save
 that changes the sources runs as a ``source_change`` registry hold, so it is
 refused while a record-changing job (a scan) runs. ``monitoring_enabled``
-takes effect at the next restart. ``POST /prompt_manager/settings/validate-source``
+takes effect at the next restart; ``save_foreign_runs`` (#247) at once, since
+the monitor reads it for every file. ``POST /prompt_manager/settings/validate-source``
 checks one path and writes nothing.
 """
 
@@ -43,6 +44,7 @@ _SETTINGS_FILE_KEYS = {
     "INFINITE_SCROLL": ("web_ui", "infinite_scroll"),
     "WORKER_THREADS": ("performance", "worker_threads"),
     "MONITORING_ENABLED": ("gallery", "monitoring", "enabled"),
+    "SAVE_FOREIGN_RUNS": ("gallery", "monitoring", "save_foreign_runs"),
     "SAFETY_BACKUP": ("maintenance", "safety_backup"),
     "THUMBNAIL_FORMAT": ("thumbnails", "format"),
     "THUMBNAIL_QUALITY": ("thumbnails", "quality"),
@@ -58,7 +60,7 @@ _SETTINGS_FILE_KEYS = {
 # The thumbnail settings a running Convert outdated job fixes (#317).
 _THUMBNAIL_SETTINGS = ("THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY", "THUMBNAIL_EDGE")
 # Attributes that live on GalleryConfig; the others on PromptManagerConfig.
-_GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED"})
+_GALLERY_SETTINGS = frozenset({"MONITORING_ENABLED", "SAVE_FOREIGN_RUNS"})
 # Attributes that live on AutotagConfig, named without the AUTOTAG_ prefix.
 _AUTOTAG_SETTINGS = frozenset(
     name for name in _SETTINGS_FILE_KEYS if name.startswith("AUTOTAG_")
@@ -264,6 +266,7 @@ class SettingsRoutesMixin:
                     "thumbnail_encoders": encoders,
                     "settings": {
                         "monitoring_enabled": GalleryConfig.MONITORING_ENABLED,
+                        "save_foreign_runs": GalleryConfig.SAVE_FOREIGN_RUNS,
                         "result_timeout": PromptManagerConfig.RESULT_TIMEOUT,
                         "webui_display_mode": PromptManagerConfig.WEBUI_DISPLAY_MODE,
                         "infinite_scroll": PromptManagerConfig.INFINITE_SCROLL,
@@ -626,6 +629,10 @@ class SettingsRoutesMixin:
             if not isinstance(data["monitoring_enabled"], bool):
                 raise ValueError("monitoring_enabled must be true or false")
             updates["MONITORING_ENABLED"] = data["monitoring_enabled"]
+        if "save_foreign_runs" in data:
+            if not isinstance(data["save_foreign_runs"], bool):
+                raise ValueError("save_foreign_runs must be true or false")
+            updates["SAVE_FOREIGN_RUNS"] = data["save_foreign_runs"]
         if "safety_backup" in data:
             if not isinstance(data["safety_backup"], bool):
                 raise ValueError("safety_backup must be true or false")

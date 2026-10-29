@@ -213,6 +213,8 @@ def public_config():
             "max_image_age_days": GalleryConfig.MAX_IMAGE_AGE_DAYS,
             "max_concurrent_processing": GalleryConfig.MAX_CONCURRENT_PROCESSING,
             "metadata_extraction_timeout": GalleryConfig.METADATA_EXTRACTION_TIMEOUT,
+            # config.json gallery.monitoring.save_foreign_runs (#247)
+            "save_foreign_runs": GalleryConfig.SAVE_FOREIGN_RUNS,
         },
         "integrations": {
             "lora_manager_enabled": bool(IntegrationConfig.LORA_MANAGER_ENABLED),

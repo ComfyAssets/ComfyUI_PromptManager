@@ -334,8 +334,15 @@ async def image_monitor(request: web.Request) -> web.Response:
 
 @PromptServer.instance.routes.get("/pm_execution_fixture/monitor")
 async def image_monitor_state(request: web.Request) -> web.Response:
-    """File names of keyless images waiting for their run's recorded outputs."""
+    """File names of images waiting for their run's recorded outputs: keyless
+    ones (``awaiting``) and foreign ones (``foreign``, #247)."""
     monitor = _plugin_module("utils.image_monitor")._monitor_instance
     handler = getattr(monitor, "handler", None)
     waiting = handler.awaiting_history() if handler is not None else []
-    return web.json_response({"awaiting": [os.path.basename(p) for p in waiting]})
+    foreign = handler.awaiting_foreign() if handler is not None else []
+    return web.json_response(
+        {
+            "awaiting": [os.path.basename(p) for p in waiting],
+            "foreign": [os.path.basename(p) for p in foreign],
+        }
+    )
