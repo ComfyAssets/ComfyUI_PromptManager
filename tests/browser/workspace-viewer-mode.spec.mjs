@@ -73,6 +73,7 @@ test('the button beside ✕ switches between Centered and Full screen and names 
 
 test('switching back to Centered keeps the collapse setting\'s toggle and hidden details (D97)', async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('gallerySettings', JSON.stringify({ sidebarCollapsedByDefault: true })));
+    await page.setViewportSize({ width: 1600, height: 1100 });
     await openProduction(page, 'images', 'dark');
     await page.locator(CARDS).first().locator('.image-open').click();
     await expect(viewer(page)).toBeVisible();
