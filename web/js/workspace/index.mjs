@@ -1,7 +1,8 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
 import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigateTo, COLLECTION_ROUTE,
-    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS } from './state.mjs';
+    LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS,
+    JOB_END_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
 import { forgetImagesVisit, mountImages, onFavoriteChange } from './images.mjs';
 import { forgetLibraryVisit, mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
@@ -170,16 +171,20 @@ function mountWorkspace() {
         favoriteCountTimer = setTimeout(() => refreshCounts(FAVORITE_WRITE_COUNTS), FAVORITE_COUNT_DELAY_MS);
     }));
     scope.cleanup(() => clearTimeout(favoriteCountTimer));
-    // A metadata scan that ends may have added items to Needs review: re-read its count once per ended scan.
-    const runningScans = new Set();
+    // A job that ends re-reads the counts it can change, once per ended job: a metadata scan may have added items to
+    // Needs review; deleting images (#480) hides or trashes them, with their favorites, review items and collection
+    // memberships (#501).
+    const runningJobs = new Map();
     scope.cleanup(activity.subscribe(() => {
-        let ended = false;
+        const ended = new Set();
         for (const job of activity.jobs()) {
-            if (job.kind !== 'scan') continue;
-            if (job.state === 'running') runningScans.add(job.id);
-            else if (runningScans.delete(job.id)) ended = true;
+            if (!JOB_END_COUNTS[job.kind]) continue;
+            if (job.state === 'running') runningJobs.set(job.id, job.kind);
+            else if (runningJobs.delete(job.id)) ended.add(job.kind);
         }
-        if (ended) refreshCounts(REVIEW_WRITE_COUNTS);
+        if (!ended.size) return;
+        refreshCounts([...new Set([...ended].flatMap(kind => JOB_END_COUNTS[kind]))]);
+        if (ended.has('image_delete')) collections.load();
     }));
     refreshCounts(NAV_COUNT_ROUTES);
     // S9: a finished restore replaced the library. The cached visits are dropped, the counts and saved views read
