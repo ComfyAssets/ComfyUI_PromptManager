@@ -23,10 +23,10 @@ from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import quote
 
 try:
-    from ..utils.hashing import generate_prompt_hash
+    from ..utils.hashing import register_prompt_functions
     from .models import normalize_image_path
 except ImportError:
-    from utils.hashing import generate_prompt_hash
+    from utils.hashing import register_prompt_functions
     from database.models import normalize_image_path
 
 logger = logging.getLogger("prompt_manager.database.health")
@@ -125,12 +125,8 @@ def _foreign_keys(conn, _roots):
     )
 
 
-def _prompt_hash(text):
-    return generate_prompt_hash(text) if isinstance(text, str) else None
-
-
 def _canonical_hashes(conn, _roots):
-    conn.create_function("pm_prompt_hash", 1, _prompt_hash, deterministic=True)
+    register_prompt_functions(conn)  # pm_prompt_hash, shared with history (#460)
     return _counted(
         f"Prompt {row[0]}: the stored hash does not match its text"
         for row in conn.execute(

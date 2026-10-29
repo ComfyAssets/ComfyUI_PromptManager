@@ -44,6 +44,11 @@ from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
 from .pairs import PairDependencyError
 from .workflow_documents import documents_of_rows, release_documents
 
+try:
+    from ..utils.hashing import register_prompt_functions
+except ImportError:
+    from utils.hashing import register_prompt_functions
+
 MAINTENANCE_OPERATIONS = (
     "duplicate_prompts",
     "optimize",
@@ -289,6 +294,7 @@ def _read_snapshot(db_path, read):
     conn = sqlite3.connect(readonly_uri(db_path), uri=True)
     try:
         conn.row_factory = sqlite3.Row
+        register_prompt_functions(conn)  # LIVE_HINT_CTES calls them (#460)
         conn.execute("BEGIN")  # one read snapshot for the whole plan
         return read(conn)
     finally:
