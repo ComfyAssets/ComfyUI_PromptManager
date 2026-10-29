@@ -488,13 +488,15 @@ test('a restore seen finishing keeps New prompt open and reloads the Library aft
 test('library heading offers Export then + New prompt, and New opens the saved prompt history',async({page,request})=>{
     await page.goto(`${workspace}#/library`);await expect(page.locator('article[data-prompt-id]').first()).toBeVisible();
     const actions=headingActions(page).locator('button');
-    expect(await visibleNames(actions)).toEqual(['Export','+ New prompt']);
+    // D152 (#443): Show archived prompts (N) comes first, a plain toggle.
+    expect(await visibleNames(actions)).toEqual(['Show archived prompts (0)','Export','+ New prompt']);
+    await expect(actions.nth(0)).toHaveAttribute('aria-pressed','false');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
     // One image is counted in the singular.
     const f=page.fixture;await expect(page.locator(`article[data-prompt-id="${f.positive_id}"]`).getByText('1 image',{exact:true})).toHaveCount(1);
-    await expect(actions.nth(0)).toHaveAccessibleName('Export full Library JSON');await expect(actions.nth(0)).not.toHaveClass(/ca-primary/);
-    await expect(actions.nth(1)).toHaveClass(/\bca-primary\b/);
-    for(const index of [0,1])expect((await actions.nth(index).boundingBox()).height).toBeGreaterThanOrEqual(32);
-    await actions.nth(1).click();const dialog=editorDialog(page);await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
+    await expect(actions.nth(1)).toHaveAccessibleName('Export full Library JSON');await expect(actions.nth(1)).not.toHaveClass(/ca-primary/);
+    await expect(actions.nth(2)).toHaveClass(/\bca-primary\b/);
+    for(const index of [0,1,2])expect((await actions.nth(index).boundingBox()).height).toBeGreaterThanOrEqual(32);
+    await actions.nth(2).click();const dialog=editorDialog(page);await expect(dialog.getByRole('heading',{name:'New prompt',exact:true})).toBeVisible();await ready(dialog);
     await field(dialog,'Title').fill('Harbor at dawn');await field(dialog,'Positive prompt').fill('A quiet harbor at dawn');await field(dialog,'Negative prompt (optional)').fill('fog, noise');
     await button(dialog,'Save').click();await expect(dialog).toHaveCount(0);
     const created=(await(await request.get('/prompt_manager/library?text=quiet%20harbor')).json()).items[0];

@@ -167,3 +167,22 @@ test('a restore since the page loaded, a failed backup, a busy job and an unconf
     await expect(toast(page)).toHaveText('The library was restored or moved since this page loaded. Nothing was deleted or archived.');
     expect(byText(await items(request),'Dog landscape')).toBeDefined();
 });
+
+test('a failed review keeps the selection, and a selection nothing can change opens the close-only review',async({page,request})=>{
+    const before=await items(request);const guarded=byText(before,'Library extra 0000');
+    await expect(await request.post('/prompt_manager/bulk/tags',{data:{prompt_ids:[guarded.id],tags:['__protected__']}})).toBeOK();
+    await page.goto(route);await expect(cards(page)).toHaveCount(before.length);
+    await box(page,guarded.id).check();
+    await page.route(`**${PREVIEW}`,item=>item.fulfill({status:500,contentType:'application/json',body:JSON.stringify({success:false,code:'review-failed',error:'x'})}),{times:1});
+    await bar(page).getByRole('button',{name:'Delete…',exact:true}).click();
+    await expect(toast(page)).toHaveText('The selected prompts could not be reviewed. Try again.');
+    await expect(box(page,guarded.id)).toBeChecked();
+    await expect(bar(page).getByRole('button',{name:'Delete…',exact:true})).not.toHaveAttribute('aria-disabled','true');
+    await openReview(page);
+    await expect(review(page)).toHaveAccessibleName('Delete selected prompts');
+    await expect(review(page).locator('p.small').last()).toHaveText('None of the selected prompts can be deleted or archived.');
+    await expect(review(page).locator('.dialog-actions > button')).toHaveText(['Close']);
+    await review(page).getByRole('button',{name:'Close',exact:true}).click();
+    await expect(bar(page).getByRole('button',{name:'Delete…',exact:true})).not.toHaveAttribute('aria-disabled','true');
+    expect(byText(await items(request),'Library extra 0000')).toBeDefined();
+});
