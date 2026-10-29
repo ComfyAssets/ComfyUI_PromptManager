@@ -57,14 +57,17 @@ jobs:
       # databases under TEMP, so it moves to a folder on D: (measured in #487,
       # run 40915866444). The runner's TEMP was an 8.3 short name
       # (C:\Users\RUNNER~1\...), so the new one is spelled by its short name too
-      # when the disk has them, and paths still have to be resolved.
+      # and paths still have to be resolved. D: makes no short names by default
+      # (run 40922502209), so they are switched on for it first.
       - name: Keep test files on the work disk (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          fsutil 8dot3name set D: 0
           $folder = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "PromptManagerTests")
           $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($folder.FullName).ShortPath
           Write-Output "test TEMP: $short (long name $($folder.FullName))"
+          if ($short -eq $folder.FullName) { Write-Output "::warning::D: gave the test TEMP no 8.3 short name" }
           "TEMP=$short" >> $env:GITHUB_ENV
           "TMP=$short" >> $env:GITHUB_ENV
 
