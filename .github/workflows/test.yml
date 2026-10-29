@@ -28,8 +28,8 @@ env:
 #   py matrix, slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
 #     (ubuntu 5m27s-6m27s, macos 6m14s-8m30s, windows 11m42s-15m54s)
 #     3.10 and 3.11 left the matrix and 3.14 joined it in #356; re-measure after three green main runs.
-#     Windows and macOS moved to portability.yml (#420), which keeps this 27-minute limit; this
-#     Linux-only matrix keeps it too until it is re-measured.
+#     Windows and macOS moved to portability.yml (#420), which has its own measured limit (#493);
+#     this Linux-only matrix keeps 27 minutes until it is re-measured.
 #   real ComfyUI compatibility: 13m32s / 8m55s / 11m46s -> 24 min
 #   coverage gate (85%): 7m26s / 7m22s / 7m54s -> 15 min
 #   perf budget 30s / 29s / 27s, black and flake8 39s / 37s / 39s,
