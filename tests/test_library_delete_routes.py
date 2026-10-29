@@ -402,6 +402,98 @@ class TestPairedDeleteRoutes(LibraryDeleteRouteCase):
         self.assertIn(cat, self.ids())
 
 
+class TestArchivedShelfDeleteRoutes(LibraryDeleteRouteCase):
+    """#492: Delete… on the archived shelf (``shelf: "archived"``)."""
+
+    def archive(self, *ids):
+        with self.api.db.model.get_connection() as conn:
+            conn.executemany(
+                f"INSERT INTO {ARCHIVE}(prompt_id, archived_at) VALUES (?, ?)",
+                [(pid, "2026-10-29T00:00:00Z") for pid in ids],
+            )
+            conn.commit()
+
+    async def shelf_review(self, ids):
+        status, body = await self.post(
+            PREVIEW,
+            {"prompt_ids": ids, "expected_epoch": self.epoch(), "shelf": "archived"},
+        )
+        self.assertEqual(status, 200, body)
+        return body
+
+    async def shelf_confirm(self, review):
+        paired = review["deletable"]
+        return await self.post(
+            DELETE,
+            {
+                "archive_ids": paired,
+                "delete_ids": review["delete"],
+                "expected_epoch": review["library_epoch"],
+                "backup": review["backup"],
+                "delete_paired_ids": paired,
+                "paired_digests": {
+                    str(pid): review["review_digests"][str(pid)] for pid in paired
+                },
+                "shelf": "archived",
+            },
+        )
+
+    async def test_an_archived_paired_prompt_is_deleted_after_a_backup(self):
+        self.policy(True)
+        cat = self.paired("Cat")
+        shown = self.save("Shown")
+        self.api.db.link_image_to_prompt(shown, "/tmp/shown-492.png")
+        self.archive(cat)
+        review = await self.shelf_review([cat, shown])
+        self.assertEqual(
+            (review["deletable"], review["delete"], review["not_archived"]),
+            ([cat], [], 1),
+        )
+        self.assertTrue(review["disk"]["sufficient"])
+        status, body = await self.shelf_confirm(review)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(
+            (body["deleted"], body["archived"], body["pairs_removed"]), (1, 0, 1)
+        )
+        # The held write classified the archived shelf too, so it backed up.
+        self.assertEqual(self.backups(), [body["backup"]])
+        self.assertNotIn(cat, self.ids())
+        self.assertEqual(self.archived(), [])
+
+    async def test_an_archived_unpaired_prompt_is_deleted_after_a_backup(self):
+        self.policy(True)
+        loose = self.save("Loose")
+        self.api.db.link_image_to_prompt(loose, "/tmp/loose-492.png")
+        self.archive(loose)
+        review = await self.shelf_review([loose])
+        self.assertEqual(review["delete"], [loose])
+        status, body = await self.shelf_confirm(review)
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["deleted"], body["changed"]), (1, 0))
+        self.assertEqual(self.backups(), [body["backup"]])
+
+    async def test_the_shelf_is_validated_and_optional(self):
+        cat = self.paired("Cat")
+        status, body = await self.post(
+            PREVIEW,
+            {"prompt_ids": [cat], "expected_epoch": self.epoch(), "shelf": "trash"},
+        )
+        self.assertEqual((status, body["code"]), (400, "invalid-request"))
+        review = await self.review([cat])
+        base = {
+            "archive_ids": review["archive"],
+            "delete_ids": review["delete"],
+            "expected_epoch": review["library_epoch"],
+            "backup": "off",
+        }
+        status, body = await self.post(DELETE, {**base, "shelf": 1})
+        self.assertEqual((status, body["code"]), (400, "invalid-request"))
+        # The active shelf named explicitly is #443's delete.
+        status, body = await self.post(DELETE, {**base, "shelf": "active"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.archived(), [cat])
+
+
 class TestIngestionAfterArchive(LibraryDeleteRouteCase):
     def scan(self, name, positive, negative="blur"):
         meta = {"prompt": json.dumps(graph(positive, negative))}

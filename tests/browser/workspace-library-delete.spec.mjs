@@ -94,7 +94,8 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await expect(page.locator('.section-caption > span').first()).toHaveText(/^2 archived prompts · \d+ negative variants? hidden with them$/);
     await expect(card(page,cat.id).locator('.card-title .chip',{hasText:'Archived'})).toHaveCount(1);
     await box(page,cat.id).check();
-    await expect(bar(page).getByRole('button')).toHaveText(['Select all 2 loaded','Restore','Clear']);
+    // #492: the archived shelf offers Delete… after Restore.
+    await expect(bar(page).getByRole('button')).toHaveText(['Select all 2 loaded','Restore','Delete…','Clear']);
     await bar(page).getByRole('button',{name:'Restore',exact:true}).click();
     await expect(toast(page)).toHaveText('Restored 1 prompt to the Prompt library.');
     await expect(cards(page)).toHaveCount(1);
@@ -173,6 +174,58 @@ test('the choice resets to Archive on every Delete…, and a selection with no p
     await bar(page).getByRole('button',{name:'Clear',exact:true}).click();
     await box(page,dog.id).check();await openReview(page);
     await expect(choice(page)).toHaveCount(0);
+});
+
+// #492: Delete… on the archived shelf deletes archived prompts permanently, with their own saved pairs; no choice.
+async function archiveByApi(request,ids) {
+    const epoch=(await(await request.get('/prompt_manager/library/options')).json()).library_epoch;
+    const preview=await(await request.post(PREVIEW,{data:{prompt_ids:ids,expected_epoch:epoch}})).json();
+    expect(preview.archive).toEqual(ids);
+    await expect(await request.post(DELETE,{data:{archive_ids:ids,delete_ids:[],expected_epoch:epoch,backup:'on'}})).toBeOK();
+    return epoch;
+}
+test('Delete… on the archived shelf deletes an archived prompt and its saved pair permanently (#492)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    const epoch=await archiveByApi(request,[dual.id]);
+    const previews=recordPosts(page,PREVIEW),writes=recordPosts(page,DELETE);
+    await page.goto(route);await showArchived(page).click();await expect(card(page,dual.id)).toHaveCount(1);
+    await box(page,dual.id).check();
+    await openReview(page);
+    await expect(review(page)).toHaveAccessibleName('Delete archived prompts');
+    await expect(choice(page)).toHaveCount(0);
+    await expect(row(page,'Delete permanently')).toHaveText('1 prompt in a saved pair');
+    await expect(row(page,'Saved pairs removed')).toHaveText(/^1 saved pair/);
+    await expect(row(page,'Backup')).toHaveText('Create and verify before deleting');
+    expect(previews).toEqual([{prompt_ids:[dual.id],expected_epoch:epoch,shelf:'archived'}]);
+    // Cancel writes nothing and returns focus to Delete….
+    await review(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await expect(review(page)).toHaveCount(0);expect(writes).toEqual([]);
+    await expect(bar(page).getByRole('button',{name:'Delete…',exact:true})).toBeFocused();
+    await openReview(page);
+    await review(page).getByRole('button',{name:'Delete 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText(/^Deleted 1 prompt\. Removed 1 saved pair\. Safety backup saved: /);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({archive_ids:[dual.id],delete_ids:[],delete_paired_ids:[dual.id],shelf:'archived'});
+    await expect(page.locator('.library-status')).toHaveText('No archived prompts.');
+    await backToLibrary(page).click();
+    await expect(showArchived(page)).toHaveText('Show archived prompts (0)');
+    expect(byText(await items(request),'Dual role portrait')).toBeUndefined();
+    expect(await items(request,'archived')).toEqual([]);
+});
+
+test('an archived prompt restored since the shelf was read is kept, in a close-only review (#492)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    await archiveByApi(request,[dual.id]);
+    const epoch=(await(await request.get('/prompt_manager/library/options')).json()).library_epoch;
+    await page.goto(route);await showArchived(page).click();await expect(card(page,dual.id)).toHaveCount(1);
+    await box(page,dual.id).check();
+    // Restored elsewhere after the shelf was read: the review counts it and deletes nothing.
+    await expect(await request.post('/prompt_manager/library/restore',{data:{prompt_ids:[dual.id],expected_epoch:epoch}})).toBeOK();
+    await openReview(page);
+    await expect(review(page).locator('p.small').last()).toHaveText('None of the selected prompts can be deleted.');
+    await expect(row(page,'No longer archived \\(kept\\)')).toHaveText('1');
+    await expect(review(page).getByRole('button',{name:/^Delete \d/})).toHaveCount(0);
+    expect(byText(await items(request),'Dual role portrait')?.id).toBe(dual.id);
 });
 
 // #481 (D161): a prompt's own page deletes it from Edit metadata (the concept's recipe editor, app.js 976), through the

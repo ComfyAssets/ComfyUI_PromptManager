@@ -136,6 +136,7 @@ class TestClassifyAndApply(LibraryDeleteCase):
                 "archive": [positive, both, archived_pair_positive],
                 "protected": [protected, protected_paired],
                 "already_archived": [already],
+                "not_archived": [],
                 "not_found": [negative_only, 99999],
                 "image_links": 1,
                 "fingerprints": result["fingerprints"],
@@ -172,6 +173,7 @@ class TestClassifyAndApply(LibraryDeleteCase):
                 "deleted": 1,
                 "archived": 1,
                 "already_archived": 0,
+                "not_archived": 0,
                 "not_found": 0,
                 "changed": 0,
                 "image_links": 1,
@@ -724,4 +726,138 @@ class TestPairedDelete(LibraryDeleteCase):
                 expected_epoch=self.epoch,
                 candidates={},
                 delete_paired={fox: "not a digest"},
+            )
+
+
+class TestArchivedShelfDelete(LibraryDeleteCase):
+    """#492: Delete… on the archived shelf deletes archived prompts permanently."""
+
+    def archive(self, *ids):
+        with self.db.model.get_connection() as conn:
+            conn.executemany(
+                f"INSERT INTO {ARCHIVE}(prompt_id, archived_at) VALUES (?, ?)",
+                [(pid, "2026-10-29T00:00:00Z") for pid in ids],
+            )
+            conn.commit()
+
+    def shelf_classify(self, ids):
+        return self.db.classify_library_delete(
+            ids, expected_epoch=self.epoch, shelf="archived"
+        )
+
+    def shelf_write(self, review, deletes=None, paired=None):
+        """What the archived shelf's client sends: only what it deletes."""
+        deletes = review["delete"] if deletes is None else deletes
+        paired = review["deletable"] if paired is None else paired
+        return self.db.archive_or_delete_library_prompts(
+            list(paired),
+            list(deletes),
+            expected_epoch=self.epoch,
+            candidates=review["fingerprints"],
+            delete_paired={pid: review["review_digests"][pid] for pid in paired},
+            shelf="archived",
+        )
+
+    def test_classify_on_the_archived_shelf(self):
+        owl, _neg, _pair = self.paired("Owl", "dark")
+        shared = save(self.db, "Shared")
+        self.image(shared, "shared.png")
+        self.db.save_prompt_pair("Dog", "Shared")  # another positive's negative
+        loose = save(self.db, "Loose")
+        self.image(loose, "loose.png")
+        guarded = save(self.db, "Guarded", tags=["__protected__"])
+        self.image(guarded, "guarded.png")
+        shown = save(self.db, "Shown")
+        self.image(shown, "shown.png")
+        self.archive(owl, shared, loose, guarded)
+        review = self.shelf_classify([owl, shared, loose, guarded, shown, 999999])
+        self.assertEqual(review["archive"], [owl, shared])
+        self.assertEqual(review["deletable"], [owl])
+        self.assertEqual(review["delete"], [loose])
+        self.assertEqual(review["protected"], [guarded])
+        self.assertEqual(review["not_archived"], [shown])
+        self.assertEqual(review["already_archived"], [])
+        self.assertEqual(review["not_found"], [999999])
+        self.assertEqual(review["image_links"], 1)
+        # The active shelf is unchanged: archived prompts are only counted there.
+        active = self.classify([owl, loose, shown])
+        self.assertEqual(active["already_archived"], [owl, loose])
+        self.assertEqual(active["not_archived"], [])
+        self.assertEqual(active["delete"], [shown])
+
+    def test_the_write_deletes_archived_prompts_and_their_pairs(self):
+        owl, owl_negative, pair = self.paired("Owl", "dark")
+        loose = save(self.db, "Loose")
+        self.image(loose, "loose.png")
+        self.archive(owl, loose)
+        result = self.shelf_write(self.shelf_classify([owl, loose]))
+        self.assertEqual(
+            (result["deleted"], result["archived"], result["changed"]), (2, 0, 0)
+        )
+        self.assertEqual((result["pairs_removed"], result["not_archived"]), (1, 0))
+        self.assertNotIn(owl, prompt_ids(self.db))
+        self.assertNotIn(loose, prompt_ids(self.db))
+        self.assertIn(owl_negative, prompt_ids(self.db))
+        self.assertIsNone(self.db.get_prompt_pair(pair))
+        self.assertEqual(archived_ids(self.db), [])
+        self.assertEqual(rows(self.db, "PRAGMA foreign_key_check"), [])
+
+    def test_drift_leaves_the_prompt_archived_and_untouched(self):
+        owl, _neg, pair = self.paired("Owl", "dark")
+        hen, _hen_negative, hen_pair = self.paired("Hen", "fog")
+        loose = save(self.db, "Loose")
+        self.image(loose, "loose.png")
+        self.archive(owl, hen, loose)
+        review = self.shelf_classify([owl, hen, loose])
+        before = rows(self.db, "SELECT id,hash,updated_at FROM prompts ORDER BY id")
+        self.db.update_prompt_pair_metadata(pair, notes="edited after the review")
+        # Reviewed as unpaired, it gains a pair before the write.
+        self.db.save_prompt_pair("Loose", "grain")
+        # A pair removed since: no longer what the review promised.
+        with self.db.model.get_connection() as conn:
+            conn.execute("DELETE FROM prompt_pairs WHERE id=?", (hen_pair,))
+            conn.commit()
+        result = self.shelf_write(review)
+        self.assertEqual(
+            (result["deleted"], result["archived"], result["changed"]), (0, 0, 3)
+        )
+        self.assertEqual(archived_ids(self.db), sorted([owl, hen, loose]))
+        self.assertEqual(
+            rows(self.db, "SELECT id,hash,updated_at FROM prompts ORDER BY id")[
+                : len(before)
+            ],
+            before,
+        )
+
+    def test_a_prompt_restored_since_the_review_is_kept(self):
+        owl, _neg, _pair = self.paired("Owl", "dark")
+        self.archive(owl)
+        review = self.shelf_classify([owl])
+        self.restore([owl])
+        result = self.shelf_write(review)
+        self.assertEqual((result["deleted"], result["not_archived"]), (0, 1))
+        self.assertIn(owl, prompt_ids(self.db))
+        self.assertEqual(archived_ids(self.db), [])
+
+    def test_the_negative_of_a_deleted_positive_stays_archived(self):
+        # #482's rule, kept on this shelf: X is only Dog's negative.
+        dog, shared, _pair = self.paired("Dog", "Shared")
+        self.image(shared, "shared.png")
+        self.archive(dog, shared)
+        review = self.shelf_classify([dog, shared])
+        self.assertEqual(review["deletable"], [dog])
+        self.assertEqual(review["archive"], [dog, shared])
+        result = self.shelf_write(review)
+        self.assertEqual((result["deleted"], result["pairs_removed"]), (1, 1))
+        self.assertEqual(archived_ids(self.db), [shared])
+
+    def test_shelf_must_be_active_or_archived(self):
+        owl, _neg, _pair = self.paired("Owl")
+        with self.assertRaises(ValueError):
+            self.db.classify_library_delete(
+                [owl], expected_epoch=self.epoch, shelf="trash"
+            )
+        with self.assertRaises(ValueError):
+            self.db.archive_or_delete_library_prompts(
+                [owl], [], expected_epoch=self.epoch, candidates={}, shelf="trash"
             )

@@ -24,7 +24,7 @@ import { COPY as DELETE_COPY, DELETE_LABEL, DELETE_URL, PREVIEW_URL, REVIEWING, 
  *
  * Delete… (#443, D152) previews the selection, opens its review (`library-delete.mjs`) and posts the reviewed lists:
  * unpaired prompts are deleted, paired ones archived, protected ones kept. On the archived shelf (`getShelf()` is
- * 'archived') the bar offers Restore instead of the other actions.
+ * 'archived') the bar offers Restore and Delete… (#492: a permanent delete only) instead of the other actions.
  */
 export const CATEGORY_URL = '/prompt_manager/bulk/category';
 export const PROMPT_CATEGORY_DIALOG = Object.freeze({ ...CATEGORY_DIALOG, title: 'Categorize selected prompts' });
@@ -168,7 +168,8 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
         const shelf = getShelf() === 'archived' ? 'archived' : 'active';
         if (shelf !== shownShelf) {
             shownShelf = shelf;
-            bulk.replaceChildren(count, ...(shelf === 'archived' ? [restoreButton] : [addTags, setCategory, deleteButton]), clearButton);
+            // #492: the archived shelf deletes too, after Restore.
+            bulk.replaceChildren(count, ...(shelf === 'archived' ? [restoreButton, deleteButton] : [addTags, setCategory, deleteButton]), clearButton);
         }
         const label = selectionLabel(checked.size);
         if (count.textContent !== label) count.textContent = label;
@@ -271,10 +272,12 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
     async function openDelete() {
         const chosen = target(DELETE_COPY.reviewFailed);
         if (!chosen) return;
+        // #492: the shelf the selection was made on; the archived one reviews a permanent delete only.
+        const shelf = getShelf() === 'archived' ? 'archived' : 'active';
         lock(REVIEWING);
         let preview = null, failure = null;
         try {
-            preview = await api.post(PREVIEW_URL, chosen, { signal: scope.signal });
+            preview = await api.post(PREVIEW_URL, shelf === 'archived' ? { ...chosen, shelf } : chosen, { signal: scope.signal });
         } catch (error) {
             failure = error;
         }
@@ -286,7 +289,7 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
             if (outcome.reload) onReload();
             return;
         }
-        const review = { ...reviewOf(preview), epoch: chosen.expected_epoch };
+        const review = { ...reviewOf(preview, shelf), epoch: chosen.expected_epoch };
         // The review is open: the bar stays held behind it, under its own name again.
         deleteButton.textContent = DELETE_LABEL;
         openDeleteReview({ scope, trigger: deleteButton, review, titleOf: nameOf,

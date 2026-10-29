@@ -25,6 +25,7 @@ export const COPY = Object.freeze({
     failed: 'The selected prompts could not be changed. Try again.',
     nothing: `${NOTHING} The Library was reloaded.`,
     none: 'None of the selected prompts can be deleted or archived.',
+    noneArchived: 'None of the selected prompts can be deleted.',
     restoreStorage: 'The library was restored or moved since this page loaded. No prompt was returned to the Library.',
     restoreUnconfirmed: 'Returning the prompts could not be confirmed. The Library was reloaded.',
     restoreFailed: 'The prompts could not be returned to the Library. Try again.',
@@ -36,17 +37,23 @@ const ids = value => (Array.isArray(value) ? value.filter(id => Number.isSafeInt
 const were = (value, singular, plural) => `${value.toLocaleString('en-US')} ${value === 1 ? singular : plural}`;
 const DIGEST = /^[0-9a-f]{64}$/;
 
-/** The preview's classes as counts and id lists, whatever else the answer holds. */
-export function reviewOf(preview) {
+/**
+ * The preview's classes as counts and id lists, whatever else the answer holds. On the archived `shelf` (#492) the
+ * review is the permanent delete only: the choice is fixed to `delete`.
+ */
+export function reviewOf(preview, shelf = 'active') {
+    const archivedShelf = shelf === 'archived';
     return {
+        shelf: archivedShelf ? 'archived' : 'active', notArchived: count(preview?.not_archived),
         epoch: typeof preview?.library_epoch === 'string' ? preview.library_epoch : null,
         delete: ids(preview?.delete), archive: ids(preview?.archive), protected: ids(preview?.protected),
         alreadyArchived: count(preview?.already_archived), notFound: count(preview?.not_found),
         imageLinks: count(preview?.image_links), backup: preview?.backup === 'off' ? 'off' : 'on',
         disk: preview?.disk && typeof preview.disk === 'object' ? preview.disk : null,
-        ...pairedOf(preview),
+        ...pairedOf(preview), ...(archivedShelf ? { choice: 'delete' } : {}),
     };
 }
+const onArchivedShelf = review => review.shelf === 'archived';
 
 /** #482: the archive ids that may be deleted permanently (each with its review digest), and the pair counts. */
 function pairedOf(preview) {
@@ -62,10 +69,11 @@ function pairedOf(preview) {
 }
 
 /** #482: whether the review asks what to do with prompts in a saved pair. */
-export const hasPairedChoice = review => review.deletable.length > 0;
+export const hasPairedChoice = review => !onArchivedShelf(review) && review.deletable.length > 0;
 
 /** #482: the review with its saved-pair choice (`archive`, the default, or `delete`); the original is unchanged. */
 export function withChoice(review, choice) {
+    if (onArchivedShelf(review)) return { ...review, choice: 'delete' };
     return { ...review, choice: choice === 'delete' && hasPairedChoice(review) ? 'delete' : 'archive' };
 }
 
@@ -79,6 +87,7 @@ function plan(review) {
 
 export function reviewTitle(review) {
     const { plain, paired, archive } = plan(review), deletes = plain.length + paired.length;
+    if (onArchivedShelf(review)) return 'Delete archived prompts';
     if (!archive.length) return 'Delete selected prompts';
     if (!deletes) return 'Archive selected prompts';
     return 'Delete or archive selected prompts';
@@ -119,6 +128,7 @@ function keptRows(rows, review, titleOf) {
         rows.push(['Protected (kept)', `${review.protected.length.toLocaleString('en-US')}${names ? `: ${names}` : ''}`]);
     }
     if (review.alreadyArchived) rows.push(['Already archived', review.alreadyArchived.toLocaleString('en-US')]);
+    if (review.notArchived) rows.push(['No longer archived (kept)', review.notArchived.toLocaleString('en-US')]);
     if (review.notFound) rows.push(['No longer exist', review.notFound.toLocaleString('en-US')]);
 }
 
@@ -137,10 +147,14 @@ function permanentGrid(review, titleOf) {
     const deleted = plain.length ? `${countOf(total, 'prompt')}: ${parts.join(', ')}` : `${countOf(total, 'prompt')} in a saved pair`;
     const details = [counts.variants && `${counts.variants.toLocaleString('en-US')} with a negative prompt`,
         counts.archivedPairs && `${counts.archivedPairs.toLocaleString('en-US')} archived`].filter(Boolean);
-    const rows = [['Delete permanently', deleted],
-        ['Saved pairs removed', `${countOf(counts.pairs, 'saved pair')}${details.length ? ` (${details.join(', ')})` : ''}`]];
-    if (counts.keptNegatives) rows.push(['Negatives kept', `${countOf(counts.keptNegatives, 'negative prompt')} ${counts.keptNegatives === 1 ? 'is' : 'are'} kept`]);
-    if (archive.length) rows.push(['Archive', `${countOf(archive.length, 'prompt')} used as another prompt's negative: hidden, restorable`]);
+    const rows = [['Delete permanently', paired.length ? deleted : `${countOf(total, 'prompt')} not in a saved pair`]];
+    // #492: on the archived shelf a selection may hold no prompt in a saved pair.
+    if (paired.length) {
+        rows.push(['Saved pairs removed', `${countOf(counts.pairs, 'saved pair')}${details.length ? ` (${details.join(', ')})` : ''}`]);
+        if (counts.keptNegatives) rows.push(['Negatives kept', `${countOf(counts.keptNegatives, 'negative prompt')} ${counts.keptNegatives === 1 ? 'is' : 'are'} kept`]);
+    }
+    if (archive.length && onArchivedShelf(review)) rows.push(['Stays archived', `${countOf(archive.length, 'prompt')} used as another prompt's negative`]);
+    else if (archive.length) rows.push(['Archive', `${countOf(archive.length, 'prompt')} used as another prompt's negative: hidden, restorable`]);
     keptRows(rows, review, titleOf);
     deleteRows(rows, review, review.imageLinks + review.pairedImageLinks);
     return rows;
@@ -152,8 +166,8 @@ export function reviewSentences(review) {
     const sentences = [];
     if (review.archive.length) {
         sentences.push('Prompts in a saved pair, as its positive or its negative, are archived instead of deleted, so the ' +
-            'pair and its runs stay intact. Archived prompts cannot be deleted. To bring them back, press Show archived prompts, ' +
-            'select them and press Restore.');
+            'pair and its runs stay intact. To delete them later or bring them back, press Show archived prompts, select them ' +
+            'and press Delete… or Restore.');
     }
     if (review.delete.length) sentences.push(removeSentence(review));
     if (review.protected.length) sentences.push(PROTECTED_SENTENCE);
@@ -174,10 +188,12 @@ function removeSentence(review, pairs = false) {
 
 /** #482: the sentences when Delete permanently is chosen. */
 function permanentSentences(review) {
-    const sentences = ['Deleting a prompt in a saved pair also removes its saved pairs, with their titles, categories, ' +
-        'ratings, notes, tags, run counts and image links. Their negative prompts are kept. Recorded runs stay in History ' +
-        'and Activity, listed by their text.', removeSentence(review, true)];
-    if (plan(review).archive.length) sentences.push("Prompts used as another prompt's negative are archived instead of deleted, " +
+    const { paired, archive } = plan(review);
+    const sentences = paired.length ? ['Deleting a prompt in a saved pair also removes its saved pairs, with their titles, ' +
+        'categories, ratings, notes, tags, run counts and image links. Their negative prompts are kept. Recorded runs stay ' +
+        'in History and Activity, listed by their text.', removeSentence(review, true)] : [removeSentence(review)];
+    if (archive.length && onArchivedShelf(review)) sentences.push("Prompts used as another prompt's negative stay archived, so that prompt's variant stays.");
+    else if (archive.length) sentences.push("Prompts used as another prompt's negative are archived instead of deleted, " +
         "so that prompt's variant stays.");
     if (review.protected.length) sentences.push(PROTECTED_SENTENCE);
     return sentences;
@@ -186,12 +202,15 @@ function permanentSentences(review) {
 export function primaryLabel(review) {
     const { plain, paired, archive } = plan(review);
     const deletes = plain.length + paired.length, archives = archive.length;
+    // #492: on the archived shelf what cannot be deleted stays archived; the primary names only the deletes.
+    if (onArchivedShelf(review)) return `Delete ${countOf(deletes, 'prompt')}`;
     if (deletes && archives) return `Delete ${deletes.toLocaleString('en-US')} and archive ${countOf(archives, 'prompt')}`;
     return deletes ? `Delete ${countOf(deletes, 'prompt')}` : `Archive ${countOf(archives, 'prompt')}`;
 }
 
 /** Why a review cannot start, or null: nothing to change, or no room for the promised backup. */
 export function blockedReason(review) {
+    if (onArchivedShelf(review) && !review.delete.length && !review.deletable.length) return COPY.noneArchived;
     if (!review.delete.length && !review.archive.length) return COPY.none;
     const deletes = review.delete.length + plan(review).paired.length;
     if (deletes && review.disk && review.disk.sufficient === false) {
@@ -267,6 +286,11 @@ function pairedChoice(onChange) {
 /** The write's body: the reviewed lists, the epoch and the reviewed backup promise. */
 export function deleteBody(review) {
     const body = { archive_ids: review.archive, delete_ids: review.delete, expected_epoch: review.epoch, backup: review.backup };
+    // #492: the archived shelf sends only what it deletes (its prompts are archived already).
+    if (onArchivedShelf(review)) {
+        return { ...body, archive_ids: review.deletable, delete_paired_ids: review.deletable, paired_digests: review.digests,
+            shelf: 'archived' };
+    }
     // #482: the archive ids to delete permanently, each with the digest of what the review showed.
     if (permanent(review)) Object.assign(body, { delete_paired_ids: review.deletable, paired_digests: review.digests });
     return body;
@@ -301,6 +325,8 @@ export function deleteOutcome(result, failure, review) {
     if (!parts.length) parts.push(NOTHING);
     const already = count(result.already_archived), missing = count(result.not_found), changed = count(result.changed);
     if (already) parts.push(`${were(already, 'was', 'were')} already archived.`);
+    const restored = count(result.not_archived);
+    if (restored) parts.push(`${were(restored, 'was', 'were')} restored since the review and kept.`);
     if (missing) parts.push(`${missing.toLocaleString('en-US')} no longer ${missing === 1 ? 'exists' : 'exist'}.`);
     if (changed) parts.push(`${changed.toLocaleString('en-US')} changed since the review and ${changed === 1 ? 'was' : 'were'} not deleted.`);
     const kept = review?.protected?.length || 0;

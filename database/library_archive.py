@@ -49,7 +49,26 @@ _NEGATIVE_OF_OTHER = (
     "WHERE op.negative_prompt_id=p.id AND op.positive_prompt_id!=p.id)"
 )
 # Classes in the order a prompt is tested; the first that holds wins.
-CLASSES = ("not_found", "protected", "already_archived", "archive", "delete")
+CLASSES = (
+    "not_found",
+    "protected",
+    "already_archived",
+    "not_archived",
+    "archive",
+    "delete",
+)
+# #492: the shelf a Delete… runs on. On the archived shelf an archived prompt is
+# classified by its pairs, and one restored since is ``not_archived``.
+SHELVES = ("active", "archived")
+
+
+def _check_shelf(shelf: str) -> bool:
+    """Whether ``shelf`` is the archived shelf (ValueError when unknown)."""
+    if shelf not in SHELVES:
+        raise ValueError("shelf must be active or archived")
+    return shelf == "archived"
+
+
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -86,8 +105,9 @@ class LibraryArchiveOperations:
     """PromptDatabase mixin: classify, archive or delete, and restore parents."""
 
     def _classify_library_delete(
-        self, conn: sqlite3.Connection, prompt_ids: list[int]
+        self, conn: sqlite3.Connection, prompt_ids: list[int], shelf: str = "active"
     ) -> dict:
+        on_archived_shelf = _check_shelf(shelf)
         found, deletable = {}, set()
         for chunk in _batches(prompt_ids):
             marks = ",".join("?" for _ in chunk)
@@ -100,7 +120,9 @@ class LibraryArchiveOperations:
                 protected, archived, paired, negative_of_other = row[1:5]
                 if protected:
                     found[row[0]] = "protected"
-                elif archived:
+                elif on_archived_shelf and not archived:
+                    found[row[0]] = "not_archived"
+                elif archived and not on_archived_shelf:
                     found[row[0]] = "already_archived"
                 elif paired:
                     found[row[0]] = "archive"
@@ -237,18 +259,20 @@ class LibraryArchiveOperations:
         return list(dict.fromkeys(prompt_ids))
 
     def classify_library_delete(
-        self, prompt_ids: list[int], *, expected_epoch: str
+        self, prompt_ids: list[int], *, expected_epoch: str, shelf: str = "active"
     ) -> dict:
         """What a delete of ``prompt_ids`` would do now (reads only).
 
         Returns the id lists per class, in request order, ``image_links``
         (the image link rows the ``delete`` class would remove) and
-        ``fingerprints`` of the ``delete`` class (``_fingerprints``).
+        ``fingerprints`` of the ``delete`` class (``_fingerprints``). On the
+        archived ``shelf`` (#492) archived prompts are classified by their pairs.
         """
+        _check_shelf(shelf)
         prompt_ids = self._checked_ids(prompt_ids, expected_epoch)
         with self.library_snapshot() as (conn, _epoch, _ceiling):
             epoch = self._library_epoch(conn, expected_epoch)
-            classes = self._classify_library_delete(conn, prompt_ids)
+            classes = self._classify_library_delete(conn, prompt_ids, shelf)
             deletable = classes["deletable"]
             return {
                 "library_epoch": epoch,
@@ -290,6 +314,7 @@ class LibraryArchiveOperations:
         expected_epoch: str,
         candidates: dict | None,
         delete_paired: dict | None = None,
+        shelf: str = "active",
     ) -> dict:
         """Archive and delete what the user reviewed, all or nothing.
 
@@ -305,7 +330,12 @@ class LibraryArchiveOperations:
         Delete permanently to their review digest. Each is deleted with its
         own saved pairs only while it is still deletable and its digest is
         unchanged; otherwise it is archived and counted ``changed``.
+
+        On the archived ``shelf`` (#492) the ids are archived already: nothing
+        is archived or rewritten, every reviewed id not deleted (protected or
+        changed) counts ``changed``, and one restored since ``not_archived``.
         """
+        on_archived_shelf = _check_shelf(shelf)
         _validate_epoch(expected_epoch)
         for ids in (archive_ids, delete_ids):
             if not isinstance(ids, list) or any(
@@ -330,7 +360,7 @@ class LibraryArchiveOperations:
         prompt_ids = list(dict.fromkeys([*archive_ids, *delete_ids]))
         with self._pair_transaction() as conn:
             epoch = self._library_epoch(conn, expected_epoch)
-            classes = self._classify_library_delete(conn, prompt_ids)
+            classes = self._classify_library_delete(conn, prompt_ids, shelf)
             now_prints = self._fingerprints(conn, classes["delete"])
             deletes, archives, changed = [], [], 0
             paired_now = set(classes["deletable"])
@@ -356,6 +386,11 @@ class LibraryArchiveOperations:
                 else:
                     changed += 1
             changed += len(classes["protected"])
+            if on_archived_shelf:
+                # Already archived: the rest stay as they are, each one counted.
+                archives = []
+                changed = len(prompt_ids) - len(deletes) - len(paired_deletes)
+                changed -= len(classes["not_found"]) + len(classes["not_archived"])
             image_links = self._image_links(conn, [*deletes, *paired_deletes])
             now = utc_now_iso()
             for pid in archives:
@@ -393,6 +428,7 @@ class LibraryArchiveOperations:
                 "deleted": deleted,
                 "archived": len(archives),
                 "already_archived": len(classes["already_archived"]),
+                "not_archived": len(classes["not_archived"]),
                 "not_found": len(classes["not_found"]),
                 "changed": changed,
                 "image_links": image_links,
