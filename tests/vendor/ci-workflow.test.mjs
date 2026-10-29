@@ -367,6 +367,26 @@ test('portability runs the native trash proof on arm64 and Intel macOS', () => {
     assert.ok(stepMinutes > 0 && jobMinutes - stepMinutes >= 2, 'the proof step stops before the job limit');
 });
 
+// #493: the portability limit follows the rule in its comment: ceil(1.5 x the slowest of three
+// green main runs) + 3 minutes, never under 5, with those runs and times written above jobs:.
+// The times are whole-job wall times. That the runs were green and on main is the author's word.
+test('the portability limit is computed from three measured green main runs', () => {
+    const text = readWorkflow('portability.yml');
+    const comment = text.slice(0, text.indexOf('\njobs:'));
+    const runs = [...comment.matchAll(/^# Measured \d{4}-\d{2}-\d{2} on main runs (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\):$/gm)];
+    assert.equal(runs.length, 1, 'the comment names the three runs it measured, once');
+    assert.equal(new Set(runs[0].slice(1)).size, 3, 'three different runs');
+    const time = '(\\d+)m([0-5]\\d)s \\(([^)]+)\\)';
+    const slowest = new RegExp(`^#\\s+slowest leg: ${time} / ${time} / ${time} -> (\\d+) min$`, 'm').exec(comment);
+    assert.ok(slowest, 'the comment gives the slowest leg of each run and the limit');
+    const seconds = [1, 4, 7].map(i => Number(slowest[i]) * 60 + Number(slowest[i + 1]));
+    const expected = Math.max(5, Math.ceil(1.5 * Math.max(...seconds) / 60) + 3);
+    assert.equal(Number(slowest[10]), expected, 'the written limit follows the rule');
+    assert.equal(comment.match(/-> \d+ min/g).length, 1, 'no older measurement stays beside it');
+    const limit = Number(/^ {4}timeout-minutes: (\d+)\s*$/m.exec(jobs(text).get('test'))[1]);
+    assert.equal(limit, expected, 'the job uses the written limit');
+});
+
 test('real ComfyUI runs only outside pull requests; the other test.yml checks run on every event', () => {
     const found = testJobs();
     assert.match(found.get('comfyui'), QUEUE_ONLY_IF);

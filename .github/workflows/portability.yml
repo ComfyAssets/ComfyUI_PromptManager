@@ -21,18 +21,19 @@ env:
   PYTHONFAULTHANDLER: "1"
 
 # Time limit rule as in test.yml: ceil(1.5 x the slowest of three recent green runs on main) + 3
-# minutes, never under 5. Measured 2026-10-26 in test.yml on runs 40257217681 (3be0ada),
-# 40240706568 (fb9134f), 40228167328 (f9835aa), before these legs moved here in #420:
-#   slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
-#     (macos 6m14s-8m30s, windows 11m42s-15m54s)
-#   native-trash (#499) has no green main runs yet: its probe, run 40949370943 (2026-10-29),
-#     took about 1 minute per macOS leg -> ceil(1.5 x 2) + 3 = 6 min (step 4). Recalibrate after
-#     three green runs.
+# minutes, never under 5, timed as whole-job wall time. One matrix job, so the slowest leg of each
+# run counts (tests/vendor/ci-workflow.test.mjs recomputes it, #493).
+# Measured 2026-10-29 on main runs 40935337099 (dd247e3), 40938407252 (dd247e3), 40941240624 (dd247e3):
+#   slowest leg: 7m24s (py3.12 windows) / 7m31s (py3.13 windows) / 7m32s (py3.14 windows) -> 15 min
+#     (windows 4m56s-7m32s, macos 4m39s-6m14s)
+#   native-trash (#499) has no green main runs yet: its probe, run 40949370943 (2026-10-29), took
+#     about 1 minute per macOS leg, so ceil(1.5 x 2) + 3 gives it 6 minutes (step 4). Recalibrate
+#     after three green runs.
 jobs:
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 27
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
