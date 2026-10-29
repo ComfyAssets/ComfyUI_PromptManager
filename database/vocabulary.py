@@ -20,7 +20,7 @@ counted, hashed into the token and renamed with the prompts and pairs.
 
 import sqlite3
 
-from .library import _ELIGIBLE, SHELVED_PAIR, _limit
+from .library import _ELIGIBLE, SHELVED_PAIR, UNTAGGED, _escape, _limit
 from .prompt_archive import SHELVED
 from .library_commands import _TOKEN, LibraryCommandError, _validate_epoch
 from .library_tokens import canonical_token
@@ -39,7 +39,7 @@ _IMAGE_FILES = (
 )
 
 
-def _tag_rows(page: str) -> str:
+def _tag_rows(page: str, order: str = "page.id") -> str:
     """Count rows for the registry rows selected by ``page`` (id, name)."""
     # Eligible parent components on the shelf carrying a tag in the page,
     # plus the positive parent of every active pair carrying it (always
@@ -62,11 +62,53 @@ def _tag_rows(page: str) -> str:
         "COALESCE(MAX(images.n),0) AS image_count "
         "FROM page LEFT JOIN owners ON owners.tag_id=page.id "
         "LEFT JOIN images ON images.tag_id=page.id "
-        "GROUP BY page.id ORDER BY page.id"
+        "GROUP BY page.id ORDER BY " + order
     )
 
 
 _TAG_PAGE = _tag_rows("SELECT id,name FROM tags WHERE id>? ORDER BY id LIMIT ?")
+# #444 tag sorts: sort -> (key expression on tags/counted, direction). Ties and
+# "created" follow the id, so every order is total and keyset pages are exact.
+TAG_SORTS = {
+    "created": (None, "ASC"),
+    "name": ("name COLLATE NOCASE", "ASC"),
+    "name-desc": ("name COLLATE NOCASE", "DESC"),
+    "prompts": ("prompt_count", "DESC"),
+    "prompts-asc": ("prompt_count", "ASC"),
+}
+_MAX_SEARCH = 200
+_TAG_SEARCH = "name LIKE ? ESCAPE '\\'"
+# Every matching tag ranked by the prompt count its row shows (the owners rule
+# of ``_tag_rows``), then one keyset page of it with its image counts.
+_RANKED_TAG_PAGE = (
+    "WITH owners(tag_id,pid) AS ("
+    "SELECT pt.tag_id,p.id FROM prompts p "
+    "JOIN prompt_tags pt ON pt.prompt_id=p.id WHERE " + _ELIGIBLE + " "
+    "AND " + SHELVED + " "
+    "UNION SELECT ppt.tag_id,pp.positive_prompt_id FROM prompt_pairs pp "
+    "JOIN prompt_pair_tags ppt ON ppt.pair_id=pp.id WHERE pp.archived=0 "
+    "AND " + SHELVED_PAIR + "),"
+    "counted AS (SELECT t.id,t.name,COUNT(DISTINCT o.pid) AS prompt_count "
+    "FROM tags t LEFT JOIN owners o ON o.tag_id=t.id WHERE {search} "
+    "GROUP BY t.id),"
+    "page AS (SELECT id,name,prompt_count FROM counted WHERE {after} "
+    "ORDER BY prompt_count {direction},id LIMIT ?),"
+    "images(tag_id,n) AS (" + _IMAGE_FILES + " "
+    "WHERE mit.tag_id IN (SELECT id FROM page) GROUP BY mit.tag_id) "
+    "SELECT page.id,page.name,page.prompt_count,"
+    "COALESCE(images.n,0) AS image_count FROM page "
+    "LEFT JOIN images ON images.tag_id=page.id "
+    "ORDER BY page.prompt_count {direction},page.id"
+)
+_UNTAGGED_COUNT = (
+    "SELECT COUNT(*) FROM prompts p WHERE ("
+    + _ELIGIBLE
+    + ") AND "
+    + UNTAGGED
+    # Untagged prompts opens the shelf, which hides archived parents (#443).
+    + " AND "
+    + SHELVED
+)
 _TAG_ONE = _tag_rows("SELECT id,name FROM tags WHERE id=?")
 # Every owner kind a tag can sit on, for the delete confirmation.
 _TAG_IMPACT = (
@@ -217,6 +259,28 @@ def _tag_after(after: object) -> int:
     if type(after) is not int or after <= 0:
         raise ValueError("Invalid vocabulary cursor")
     return after
+
+
+def _tag_search(search: object) -> str:
+    if not isinstance(search, str) or len(search) > _MAX_SEARCH:
+        raise ValueError(f"Tag search must be text of at most {_MAX_SEARCH} characters")
+    return search.strip()
+
+
+def _sorted_tag_after(after: object, sort: str) -> tuple | None:
+    """The ``[key, id]`` cursor of a name or prompt-count sort."""
+    if after is None:
+        return None
+    key_type = str if sort.startswith("name") else int
+    if (
+        not isinstance(after, list)
+        or len(after) != 2
+        or type(after[0]) is not key_type
+        or type(after[1]) is not int
+        or after[1] <= 0
+    ):
+        raise ValueError("Invalid vocabulary cursor")
+    return after[0], after[1]
 
 
 def _category_after(after: object) -> tuple[int, str] | None:
@@ -440,21 +504,79 @@ class VocabularyOperations:
         epoch: str,
         *,
         limit: int = 100,
-        after: int | None = None,
+        after: object = None,
+        search: str = "",
+        sort: str = "created",
     ) -> dict:
+        """One page of tags matching ``search`` (a literal, case-insensitive
+        substring) in ``sort`` order, with the untagged parents' count."""
         _limit(limit)
-        start = _tag_after(after)
-        total = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
-        rows = [dict(row) for row in conn.execute(_TAG_PAGE, (start, limit + 1))]
+        search = _tag_search(search)
+        if not isinstance(sort, str) or sort not in TAG_SORTS:
+            raise ValueError("sort must be one of " + ", ".join(TAG_SORTS))
+        where, params = "1=1", []
+        if search:
+            where, params = _TAG_SEARCH, [f"%{_escape(search)}%"]
+        total, untagged = conn.execute(
+            f"SELECT (SELECT COUNT(*) FROM tags WHERE {where}),({_UNTAGGED_COUNT})",
+            params,
+        ).fetchone()
+        rows = [
+            dict(row) for row in self._tag_page(conn, where, params, sort, after, limit)
+        ]
         has_more = len(rows) > limit
         rows = rows[:limit]
+        key, _direction = TAG_SORTS[sort]
+        next_key = None
+        if has_more:
+            last = rows[-1]
+            next_key = (
+                last["id"]
+                if key is None
+                else [
+                    last["prompt_count" if key == "prompt_count" else "name"],
+                    last["id"],
+                ]
+            )
         return {
             "library_epoch": epoch,
             "tags": rows,
             "total": total,
+            "untagged_count": untagged,
+            # Echoed so a client can tell this read applied its search and sort.
+            "search": search,
+            "sort": sort,
             "has_more": has_more,
-            "next_key": rows[-1]["id"] if has_more else None,
+            "next_key": next_key,
         }
+
+    @staticmethod
+    def _tag_page(conn, where, params, sort, after, limit):
+        key, direction = TAG_SORTS[sort]
+        if key is None:
+            page = (
+                f"SELECT id,name FROM tags WHERE {where} AND id>? ORDER BY id LIMIT ?"
+            )
+            return conn.execute(
+                _tag_rows(page), [*params, _tag_after(after), limit + 1]
+            )
+        cursor = _sorted_tag_after(after, sort)
+        operator = ">" if direction == "ASC" else "<"
+        keyset, keys = "1=1", []
+        if cursor is not None:
+            keyset = f"({key}{operator}? OR ({key}=? AND id>?))"
+            keys = [cursor[0], cursor[0], cursor[1]]
+        if key == "prompt_count":
+            sql = _RANKED_TAG_PAGE.format(
+                search=where, after=keyset, direction=direction
+            )
+            return conn.execute(sql, [*params, *keys, limit + 1])
+        page = (
+            f"SELECT id,name FROM tags WHERE {where} AND {keyset} "
+            f"ORDER BY {key} {direction},id LIMIT ?"
+        )
+        order = f"page.{key} {direction},page.id"
+        return conn.execute(_tag_rows(page, order), [*params, *keys, limit + 1])
 
     def _vocabulary_categories(
         self,
@@ -499,9 +621,18 @@ class VocabularyOperations:
             ),
         }
 
-    def list_vocabulary_tags(self, *, limit: int = 100, after: int | None = None):
+    def list_vocabulary_tags(
+        self,
+        *,
+        limit: int = 100,
+        after: object = None,
+        search: str = "",
+        sort: str = "created",
+    ):
         with self.library_snapshot() as (conn, epoch, _ceiling):
-            return self._vocabulary_tags(conn, epoch, limit=limit, after=after)
+            return self._vocabulary_tags(
+                conn, epoch, limit=limit, after=after, search=search, sort=sort
+            )
 
     def list_vocabulary_categories(
         self, *, limit: int = 100, after: list | None = None

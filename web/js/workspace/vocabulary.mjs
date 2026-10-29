@@ -4,12 +4,18 @@
  * Composition, labels and order follow the approved concept: Auto-tag images
  * opens the Tag image dialog for the image selected in Images (aria-disabled
  * without one, D115) and the Images cells count the files carrying each tag
- * (#249 C2). The recorded deviation left is bounded lists with Load more. Rows
- * are real vocabulary pages from vocabulary-state.mjs; Browse hands the exact
- * constraint to the existing Library filters.
+ * (#249 C2). The recorded deviations are bounded lists with Load more and (D149,
+ * #444) the Tag vocabulary's Untagged prompts row and its tag search and sort,
+ * drawn with the concept's `.operation` and toolbar tokens. Rows are real
+ * vocabulary pages from vocabulary-state.mjs; Browse hands the exact constraint
+ * to the existing Library filters.
  */
 import { createButton } from '../shared/toolkit/core.js';
-import { browseFilters, categoryBrowseTarget, categoryRowText, createVocabularyCommand, createVocabularyStream } from './vocabulary-state.mjs';
+import { TAG_SEARCH_MAX, TAG_SORTS, browseFilters, categoryBrowseTarget, categoryRowText, createVocabularyCommand, createVocabularyStream,
+    untaggedBrowseFilters } from './vocabulary-state.mjs';
+import { SEARCH_DELAY } from './toolbar.mjs';
+import { createWorkspaceIcon } from './icons.mjs';
+import { countOf } from './plural.mjs';
 import { browseLibrary, invalidateLibraryAfterWrite } from './library.mjs';
 import { createVocabularyDialog } from './vocabulary-dialog.mjs';
 import { pageHeading } from './heading.mjs';
@@ -20,6 +26,9 @@ import { showWorkspaceToast } from './toast.mjs';
 /** D115: why Auto-tag images (and System › Auto-tagging's Preview tagging review) only explains without a selection. */
 export const NO_SELECTION = 'Select an image in Images first.';
 
+const NO_MATCH = 'No tags match this search.';
+// The Untagged prompts row before the first tags page reports its count.
+const UNTAGGED_PENDING = 'Positive prompts without a tag';
 const COPY = {
     tags: {empty: 'No tags yet.', error: 'Tags could not be loaded. Nothing was changed.', more: 'Load more tags'},
     categories: {empty: 'No categories yet.', error: 'Categories could not be loaded. Nothing was changed.', more: 'Load more categories'},
@@ -75,7 +84,7 @@ function categoryRow(category) {
  * in view (stacked layout below 700px), pages do not chain on their own. Before any row arrives (loading, failed) the list shows no rows, so a
  * failed read never looks like zero counts.
  */
-function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
+function mountList(scope, api, kind, {content, rowsHost, renderRow, after, query}) {
     const copy = COPY[kind];
     const empty = el('p', copy.empty, 'empty');
     const continuation = el('div', undefined, 'vocabulary-continuation');
@@ -115,6 +124,7 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
         const failed = Boolean(state.error);
         content.hidden = !rendered;
         empty.hidden = Boolean(rendered || state.loading || failed || state.hasMore);
+        empty.textContent = state.query?.search ? NO_MATCH : copy.empty;
         status.textContent = state.loading ? 'Loading…' : '';
         status.hidden = !state.loading;
         alert.hidden = !failed;
@@ -129,7 +139,7 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
         continuation.hidden = !(state.loading || failed || state.hasMore);
         for (const listener of listeners) listener(state);
     }
-    const stream = createVocabularyStream({api, kind, onChange: render});
+    const stream = createVocabularyStream({api, kind, onChange: render, query});
     scope.listen(more, 'click', () => stream.loadMore());
     scope.listen(retry, 'click', () => (stream.state.resetRequired ? stream.reset() : stream.loadMore()));
     let observer = null;
@@ -154,6 +164,38 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after}) {
         return () => listeners.delete(listener);
     }
     return {stream, itemOf: row => items.get(row), rowFor, subscribe};
+}
+
+/**
+ * The tag search and sort (D149): the concept toolbar's `search.toolbar` > `label.search-field` (search icon and a
+ * search input) and a `select`, built here because the shared toolbar owns the page-level ids. A visually hidden
+ * status announces the result of a changed search or sort.
+ */
+function tagTools() {
+    const root = document.createElement('search');
+    root.className = 'toolbar vocabulary-tools';
+    const label = el('label', undefined, 'search-field');
+    label.htmlFor = 'tag-search';
+    const search = document.createElement('input');
+    search.id = 'tag-search';
+    search.type = 'search';
+    search.placeholder = 'Search tags…';
+    search.maxLength = TAG_SEARCH_MAX;
+    search.setAttribute('aria-label', 'Search tags');
+    label.append(createWorkspaceIcon('search'), search);
+    const sort = document.createElement('select');
+    sort.id = 'tag-sort';
+    sort.setAttribute('aria-label', 'Sort tags');
+    for (const [value, text] of TAG_SORTS) {
+        const option = el('option', text);
+        option.value = value;
+        sort.append(option);
+    }
+    const status = el('span', '', 'ca-visually-hidden');
+    status.setAttribute('role', 'status');
+    root.append(label, sort, status);
+    return {root, search, sort, read: () => ({search: search.value, sort: sort.value}),
+        announce: text => { if (status.textContent !== text) status.textContent = text; }};
 }
 
 /** Mount the screen into `main` below the shell's heading; `scope` owns every request, listener and observer. */
@@ -188,8 +230,11 @@ export function mountVocabulary(main, api, scope) {
     const body = el('tbody');
     table.append(el('caption', 'Reusable tags'), head, body);
     wrap.append(table);
+    // D149 (#444): the parents no tag's Browse returns, as a concept `.operation` row, then the tag search and sort.
+    const untagged = operation('Untagged prompts', UNTAGGED_PENDING, 'Browse');
+    const tools = tagTools();
     tagSurface.append(el('h2', 'Tag vocabulary'),
-        el('p', 'Category/tag autocomplete uses this same vocabulary across nodes and dialogs.'), wrap);
+        el('p', 'Category/tag autocomplete uses this same vocabulary across nodes and dialogs.'), untagged.row, tools.root, wrap);
 
     const categorySurface = el('section', undefined, 'surface');
     const categoryRows = el('div', undefined, 'vocabulary-categories');
@@ -200,7 +245,17 @@ export function mountVocabulary(main, api, scope) {
     grid.append(tagSurface, categorySurface);
     main.append(grid);
 
-    const tags = mountList(scope, api, 'tags', {content: wrap, rowsHost: body, renderRow: tagRow, after: wrap});
+    const tags = mountList(scope, api, 'tags', {content: wrap, rowsHost: body, renderRow: tagRow, after: wrap, query: tools.read()});
+    let announcing = false;
+    tags.subscribe(state => {
+        if (state.untaggedCount !== null) untagged.row.querySelector('p').textContent = countOf(state.untaggedCount, 'positive prompt');
+        // A search or sort the person changed is announced once its first page lands (or fails, which the alert says).
+        // A reset first emits its empty initial state (no epoch yet), then the read: wait for the page or the failure.
+        if (!announcing || state.loading || (state.epoch === null && !state.error)) return;
+        announcing = false;
+        if (!state.error) tools.announce(state.total ? countOf(state.total, 'tag') : state.query.search ? NO_MATCH : COPY.tags.empty);
+    });
+    scope.listen(untagged.button, 'click', () => browseLibrary(untaggedBrowseFilters()));
     const categories = mountList(scope, api, 'categories', {content: categoryRows, rowsHost: categoryRows, renderRow: categoryRow, after: categoryRows});
     scope.listen(body, 'click', event => {
         const button = event.target.closest('button[data-action="browse"]');
@@ -217,11 +272,20 @@ export function mountVocabulary(main, api, scope) {
     });
 
     let settled = Promise.resolve();
-    /** Re-read both lists from page one: after any command, rows can move between pages. */
+    /** Re-read both lists from page one: after any command, rows can move between pages. The tag search and sort stay. */
     function reload() {
         settled = Promise.all([tags.stream.reset(), categories.stream.reset()]).then(() => undefined);
         return settled;
     }
+    /** A changed tag search or sort reads the tags from page one; the categories are not affected. */
+    function searchTags() {
+        const next = tools.read(), current = tags.stream.state.query;
+        if (next.search.trim() === current.search && next.sort === current.sort) return;
+        announcing = true;
+        settled = tags.stream.reset(next).then(() => undefined);
+    }
+    scope.listen(tools.search, 'input', scope.debounce(searchTags, SEARCH_DELAY));
+    scope.listen(tools.sort, 'change', searchTags);
     /** A guarded command for one dialog; any outcome that may have changed storage re-reads the lists and the Library shelf. */
     function createCommand(onChange) {
         return createVocabularyCommand({api, onChange, onInvalidate: event => {

@@ -21,7 +21,7 @@
  */
 export const PREFERENCES_KEY = 'gallerySettings';
 export const WORKSPACE_PREFERENCE_KEYS = Object.freeze(['workspaceLayout', 'workspaceDensity', 'autoLoadMetadata', 'cacheMetadata',
-    'imageQuality', 'videoAutoplay', 'videoMute', 'videoLoop', 'showFilePaths', 'showImageInfo', 'sidebarCollapsedByDefault']);
+    'imageQuality', 'videoAutoplay', 'videoMute', 'videoLoop', 'showFilePaths', 'showImageInfo', 'sidebarCollapsedByDefault', 'viewerOpenMode']);
 
 // The changes this tab could not store, overlaid on every read until storage accepts them.
 const tabOnly = new Map();

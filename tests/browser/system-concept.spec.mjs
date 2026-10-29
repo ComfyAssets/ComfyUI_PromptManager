@@ -475,9 +475,9 @@ function measureAppearance(mainSelector) {
 }
 
 // D97: the rows Appearance adds for the legacy gallery settings, after the concept's own, as production renders them.
+// D156 (#450) moved "Collapse viewer details by default" to the Viewer surface (workspace-viewer-mode.spec.mjs).
 const ADDED_APPEARANCE_ROWS = [
     ['card-details', 'Show image details on cards', 'Show each card’s title and file details under the preview.', true],
-    ['viewer-details', 'Collapse viewer details by default', 'Open the image viewer with its details panel hidden.', false],
 ];
 
 /** The concept's Appearance with the recorded deviations applied, given the server's real settings. */
@@ -488,10 +488,11 @@ function mapAppearanceConcept(reference, settings) {
         control: { ...toggleRow.control, id, checked } }));
     return {
         ...reference,
-        // #317: the server's thumbnail settings follow in their own surface ("Thumbnails", README: retained in Appearance).
-        layout: [reference.layout[0], 'section.surface', ...reference.layout.slice(1)],
-        // D97: two added toggles and the "Reset display defaults" operation close the surface.
-        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.setting-row', 'div.operation'] },
+        // D156: the Viewer surface, then (#317) the server's thumbnail settings in their own surface ("Thumbnails",
+        // README: retained in Appearance).
+        layout: [reference.layout[0], 'section.surface', 'section.surface', ...reference.layout.slice(1)],
+        // D97: one added toggle (D156 moved the other) and the "Reset display defaults" operation close the surface.
+        surface: { ...reference.surface, tree: [...reference.surface.tree, 'div.setting-row', 'div.operation'] },
         rows: [...reference.rows.map(row => row.control?.id === 'timeout'
             // The node search timeout is the server's real `result_timeout`, not the concept's sample 30.
             ? { ...row, control: { ...row.control, value: String(settings.result_timeout) } } : row), ...added],
@@ -538,7 +539,7 @@ test('appearance comparison detects mutations', async ({ page, request }) => {
     // Unmapped, the concept differs only where D97 and the real timeout are recorded.
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 2).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort())
-        .toEqual(['layout.1', 'layout.2', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12', 'rows.13',
+        .toEqual(['layout.1', 'layout.2', 'layout.3', 'layout.length', 'operations.0', 'operations.length', 'rows.11', 'rows.12',
             'rows.length', 'surface.tree'].sort());
     const measure = () => page.evaluate(measureAppearance, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);

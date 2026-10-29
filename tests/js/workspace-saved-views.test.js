@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const source = import('../../web/js/workspace/saved-views.mjs');
 
 const IMAGE_DEFAULTS = { q: '', category: '', sort: 'newest', source: 'all', folder: '', media: 'all', tags: [], favorites: false, collection: '' };
-const LIBRARY_DEFAULTS = { q: '', category: '', sort: 'newest', tags: [] };
+const LIBRARY_DEFAULTS = { q: '', category: '', sort: 'newest', tags: [], tag_mode: 'all', folder: '' };
 
 test('a saved state always holds every page key and keeps only values its page accepts', async () => {
     const { normalizeViewState, SAVED_VIEW_PAGES } = await source;
@@ -31,8 +31,8 @@ test('a saved state always holds every page key and keeps only values its page a
     assert.deepEqual(normalizeViewState('images', { ...full, q: 'x'.repeat(501), folder: 7, tags: Array(21).fill('t') }),
         { ...full, q: '', folder: '', tags: [] });
     assert.deepEqual(normalizeViewState('images', { ...full, category: 'bad\u0007', tags: [' '] }), { ...full, category: '', tags: [] });
-    // Library has no source, folder or media, and no Name Z–A.
-    assert.deepEqual(normalizeViewState('library', { ...full, sort: 'name-desc' }), { q: 'castle', category: 'Portraits', sort: 'newest', tags: ['moody', 'fog'] });
+    // Library has no source or media, and no Name Z–A; its folder (#444) is the Library's own.
+    assert.deepEqual(normalizeViewState('library', { ...full, sort: 'name-desc' }), { q: 'castle', category: 'Portraits', sort: 'newest', tags: ['moody', 'fog'], tag_mode: 'all', folder: 'a/b' });
     assert.deepEqual(normalizeViewState('library', { sort: 'oldest' }), { ...LIBRARY_DEFAULTS, sort: 'oldest' });
     // The returned tags are a copy.
     const tags = ['one'];
@@ -62,7 +62,7 @@ test('the listing keeps usable views in order and normalizes their state', async
         { id: 1, page: 'images', name: 'Videos', state: { media: 'video', source: '9' } },
     ] });
     assert.deepEqual(views, [
-        { id: 3, page: 'library', name: 'Neon', state: { q: 'neon', category: '', sort: 'name', tags: [] } },
+        { id: 3, page: 'library', name: 'Neon', state: { q: 'neon', category: '', sort: 'name', tags: [], tag_mode: 'all', folder: '' } },
         { id: 1, page: 'images', name: 'Videos', state: { ...IMAGE_DEFAULTS, media: 'video', source: '9' } },
     ]);
     assert.equal(parseSavedView(null), null);
@@ -84,8 +84,8 @@ test('page filters and saved states convert both ways', async () => {
     assert.equal(imagesViewState({ ...filters, collection: undefined }).collection, '');
     assert.equal(imagesViewState({ ...filters, collection: 7 }).collection, '7');
     assert.equal(imagesViewState({ ...filters, favorites: undefined }).favorites, false);
-    const shelf = { text: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'] };
-    assert.deepEqual(libraryViewState(shelf), { q: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'] });
+    const shelf = { text: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'], tagMode: 'any', folder: '2026' };
+    assert.deepEqual(libraryViewState(shelf), { q: 'neon', category: 'Cities', sort: 'oldest', tags: ['night'], tag_mode: 'any', folder: '2026' });
     assert.deepEqual(libraryFilters(libraryViewState(shelf)), shelf);
 });
 
@@ -214,6 +214,27 @@ test('a state over the API 4 KB cap is refused before anything is sent (#249 M5)
     const store = createSavedViews(api);
     await assert.rejects(store.create('images', 'Big', big), error => error instanceof SavedViewTooLarge && error instanceof RangeError);
     assert.deepEqual(api.calls, []);
+});
+
+test('a Library view keeps its tag match and folder; an old view reads the defaults (#444)', async () => {
+    const { normalizeViewState, libraryFilters } = await source;
+    assert.deepEqual(normalizeViewState('library', { tag_mode: 'any', folder: '2026/Aug' }), { ...LIBRARY_DEFAULTS, tag_mode: 'any', folder: '2026/Aug' });
+    assert.deepEqual(normalizeViewState('library', { tag_mode: 'or', folder: 'x'.repeat(1025) }), LIBRARY_DEFAULTS);
+    assert.deepEqual(libraryFilters({ q: 'a' }), { text: 'a', category: '', sort: 'newest', tags: [], tagMode: 'all', folder: '' });
+});
+
+test('a Library view keeps untagged, and untagged never travels with tags (#444)', async () => {
+    const { normalizeViewState, libraryFilters, libraryViewState } = await source;
+    assert.equal(normalizeViewState('library', { tag_mode: 'untagged' }).tag_mode, 'untagged');
+    assert.deepEqual(normalizeViewState('library', { tags: ['a'], tag_mode: 'untagged' }), { ...LIBRARY_DEFAULTS, tags: ['a'] });
+    const shelf = { text: '', category: '', sort: 'newest', tags: [], tagMode: 'untagged', folder: '' };
+    assert.equal(libraryViewState(shelf).tag_mode, 'untagged');
+    assert.deepEqual(libraryFilters(libraryViewState(shelf)), shelf);
+});
+
+test('a shelf without the #444 filters saves their defaults', async () => {
+    const { libraryViewState } = await source;
+    assert.deepEqual(libraryViewState({ text: '', category: '', sort: 'newest', tags: [] }), LIBRARY_DEFAULTS);
 });
 
 test('a view saved under the retired Highest rated sort opens on Recently added (D153)', async () => {

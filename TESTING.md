@@ -2442,10 +2442,35 @@ Recorded deviations on this page:
   view" filters are active, and plain "Filters" otherwise; the text is its accessible
   name, so the count is spoken. The concept has no indicator, and without one a Tags
   filter set by Tags & categories Browse was invisible on the shelf. The Library counts
-  Tags; Images counts Source, Folder, Media and Tags (each once). The toolbar category is
+  Tags, Folder and Tag match (D150); Images counts Source, Folder, Media and Tags (each once). The toolbar category is
   not a Refine filter and is not counted. The caption's count is a `role="status"`
   region, written only when it changes and kept shown while the shelf reloads, so
   Load more and scrolling never re-announce it.
+- **D150** (#444, cutover #334): "Refine this view" on the Library holds the concept
+  Filters dialog's **Folder** ("All output folders", then each folder below an output
+  root indented by depth, read from `GET /prompt_manager/library/options?include=folders`
+  when the dialog opens; the chosen folder stays listed even when the list lacks it) and
+  **Tags**, plus **Tag match** ("All of these tags" / "Any of these tags" / "Prompts without tags", D149) drawn as the
+  concept's own select; the concept's "Prompt evidence" and prototype note are absent.
+  `GET /prompt_manager/library` takes `folder` (`/`-joined, `\` read as `/`; `.`, `..`,
+  empty segments and drives are 400) and `tag_mode` (`all` default, `any`, `untagged` from D149), and echoes
+  both; a client whose non-default value is not echoed (an un-restarted older server)
+  shows the read error, never the unfiltered shelf. A folder keeps a parent with one
+  linked image (`generated_images.prompt_id`) in it or below it under any spelling of
+  any output root (the root as configured or detected and after `realpath`, so a
+  symlinked output folder works): `file_path` (`normcase(normpath(abspath))`) is
+  compared with prefixes built by the same normalization, so case folding is the
+  platform's own, including non-ASCII on Windows. The folder is an outer AND around the
+  parent and pair arms; Any puts one `t.name IN (...)` in each arm, so a card matches
+  when the parent or one active pair carries any tag (text and category still AND
+  inside each arm); with one tag Any equals All. Filters counts Tags, Folder and a Tag
+  match other than All (D44). Saved Library views store `tag_mode` (`all|any|untagged`) and
+  `folder` (text 1024); older rows read the defaults. Tests:
+  `tests/test_library_folders.py` (pure prefixes and names with `posixpath`/`ntpath`,
+  drive, UNC, non-ASCII, symlinked root, the any-tag union), `test_api_library.py`,
+  `test_saved_views.py`, the library-state and saved-views JS units, and
+  `tests/browser/workspace-library-filters.spec.mjs` (behavior, the Refine dialog against
+  the concept Filters dialog, artifact captures). Windows: run `portability.yml` on the PR.
 
 `tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
 concept-shaped fixture, which creates the concept's prompts last to first so Recently
@@ -3682,10 +3707,40 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   details by default" (`sidebarCollapsedByDefault`; the viewer opens with
   `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
   `aria-expanded`, the stage taking the whole width; amended by D155: on Inspect a file
-  the viewer opens with the details showing and the toggle reading "Hide details"), and the operation "Reset display
+  the viewer opens with the details showing and the toggle reading "Hide details"; amended by D156: the row moved
+  to the "Viewer" surface), and the operation "Reset display
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D156** (#450, maintainer request 2026-10-28, beyond the concept): every viewer (the
+  shared `dialog#viewer-dialog` of Images, Library, History, collections and Inspect) has
+  `button#viewer-mode.icon-btn` in `.dialog-header`, right before ✕ (a direct child, so
+  the concept's `.dialog-header > button` and D34's coarse 40px rule cover it; 8px from
+  ✕). It names the view it switches to in its accessible name and `title` ("Full screen
+  view" / "Centered view") with a `maximize` / `minimize` outline icon, and keeps focus
+  after a switch. Full screen (`#viewer-dialog.viewer-fullscreen`) fills the browser
+  window edge to edge: `inset: 0`, no width or height cap, no margin, border or radius
+  (`.ca-tools #viewer-dialog.viewer-fullscreen[open]`, beating the concept's box, D34's
+  max-height and the ≤700px height); the layout inside is the concept's. Centered is the
+  concept's framed dialog, unchanged. In full screen the details stay toggleable: the
+  D97 "Show details"/"Hide details" toggle is in the toolbar whenever the view is full
+  screen or "Collapse viewer details by default" is on; going back to Centered without
+  that setting removes the toggle and shows the details. The view is not the browser's
+  Fullscreen API (Esc keeps one meaning, closing the viewer; WebKit has no element
+  fullscreen for a modal dialog; the workspace also runs in ComfyUI popups). The viewer
+  opens in the view System › Appearance › **Viewer** › "Open viewer in" (Centered,
+  Full screen) chooses: a browser display preference, `viewerOpenMode` (`centered` by
+  default, normalized in `gallery-settings.js`) in the shared `gallerySettings`; no
+  server setting. The button changes only the current view (navigation in the viewer
+  keeps it; the next open uses the setting). "Viewer" is its own surface after
+  "Browsing & display" ("How the image viewer opens; the button beside ✕ switches the
+  current view."), holding "Open viewer in" and the moved "Collapse viewer details by
+  default"; "Reset display defaults" still restores both. At ≤700px (the concept's
+  breakpoint, where the viewer is already 96vw × 94dvh) the button is hidden
+  (`display: none !important` against the concept's `.icon-btn` rule), popup windows
+  that narrow included; the stored view still applies there. Browser tests:
+  `tests/browser/workspace-viewer-mode.spec.mjs`; the concept comparisons add the
+  button to the concept's header at runtime and map the Viewer surface.
 - **D98** (Sources): each configured source's row has a plain Remove after its scan
   button; nothing changes until Save. A source added this session reads "<path> · not
   saved yet" with Remove only until Save; a configured source the server cannot use
@@ -6611,15 +6666,16 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for tag search and sort, the untagged entry and
-multi-tag AND/OR browsing; bulk prompt delete stays on the legacy admin page (bulk tags:
-the Prompt library's selection bar, D151). A
-prompt's category is changed in the Prompt library editor, on many prompts at once with
-the Prompt library's selection bar (D148, #437), or with the legacy admin page's "Set
-Category" (both `POST /prompt_manager/bulk/category`);
+"Open existing tag manager" card for its own page; tag search and sort, the untagged
+entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
+(#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
+library's selection bar, D151). A prompt's category is changed in the Prompt library
+editor, on many prompts at once with the Prompt library's selection bar (D148, #437), or
+with the legacy admin page's "Set Category" (both `POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
-above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
+above and adds no route, so PR B needed no ComfyUI restart; D149 (#444) adds read
+parameters to `GET tags` and `GET /prompt_manager/library`, which do.
 
 Screen: a `+ Create tag` heading action, a Tag vocabulary table (columns Tag, Prompts,
 Images counting the files that carry the tag (`image_count`, #249 C2), and Actions with Browse and
@@ -6671,6 +6727,36 @@ Apply; "Apply" instead of "Apply in prototype"; Delete tag… inside Rename or m
 Browse sets the exact filter; singular "1 positive prompt"; the production list appends
 fixture-only tags after the concept's sample tags.
 
+- **D149** (#444, cutover #334; the concept's renderTags has neither): the Tag vocabulary
+  surface shows, after its paragraph, an "Untagged prompts" `.operation` row ("N positive
+  prompts", Browse) and then the tag search and sort, drawn as the concept page toolbar's
+  `search.toolbar` > `label.search-field` (search icon, `input#tag-search` "Search tags…",
+  maxlength 200) and a `select#tag-sort` (Oldest first, the default and the old order;
+  Name A–Z; Name Z–A; Most prompts; Fewest prompts). Search is a literal, case-insensitive
+  substring on the server (`GET /prompt_manager/vocabulary/tags?search=&sort=`; ASCII-only
+  case folding, like SQLite `LIKE`/`NOCASE`), debounced 250 ms; it resets only the tag list
+  to page one, keeps through command re-reads, reads "No tags match this search." when
+  empty and is announced in a visually hidden status ("N tags"). Every sort breaks ties by
+  ascending id; a cursor belongs to one search and sort (scope-hashed; another is 400 with
+  "refresh"); a count sort's counts can move between pages only through a write, which
+  re-reads from page one. Each tags page reports `untagged_count` (eligible Library parents
+  with no tag and no active pair carrying one, the complement of every tag's Browse; legacy
+  counted every prompt without `prompt_tags` and hid the entry at 0; this row always
+  shows) and echoes `search` and `sort`. Browse opens the Library with `tag_mode=untagged`
+  (`GET /prompt_manager/library`, echoed as `tag_mode`; with a `tag` it is 400): "Filters ·
+  1", and Refine this view adds **Tag match** after Tags ("All of these tags" / "Any of these tags" (D150) / "Prompts
+  without tags", the latter disables Tags and drops them on Apply). A client whose request
+  the server did not echo (an un-restarted older server) shows the read error with Retry,
+  never an unfiltered list. Saved Library views store `tag_mode` (`all|any|untagged`, default
+  `all`); untagged with tags is refused on write and reads back as `all`; an older build
+  opens an untagged view as the whole Library. The concept comparison holds the row to the
+  concept's first category row, its top to the concept table's offset, the table to that
+  offset plus the additions' height (`d149`) and the toolbar to the concept Library
+  toolbar (`toolbarInventoryOf`), with a mutation check. Tests:
+  `tests/test_vocabulary.py` (`TestVocabularyTagSearchAndSort`, `TestLibraryTagMode`),
+  `test_api_vocabulary.py`, `test_api_library.py`, `test_saved_views.py`, the
+  vocabulary/library/saved-views JS units and `tests/browser/workspace-vocabulary-search.spec.mjs`
+  (behavior plus artifact captures).
 - **D143** (#332): category rows count the images whose own category is the value
   (`image_count`, the stored rows, missing files included): "N positive prompts · M
   images" beside prompts, "M images" for an image-only value, which follows every

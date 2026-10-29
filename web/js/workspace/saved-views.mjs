@@ -47,6 +47,9 @@ const FIELDS = Object.freeze({
     }),
     library: Object.freeze({
         q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name'], 'newest'), tags,
+        // #444: how the Tags match ('untagged' never goes with tags; the listing refuses both) and the output folder
+        // ('/'-joined, below a root).
+        tag_mode: choice(['all', 'any', 'untagged'], 'all'), folder: text(1024),
     }),
 });
 
@@ -63,6 +66,8 @@ export function normalizeViewState(page, state) {
     }));
     // Favorites and a collection are never both a view's filter: the collection wins, as the listing does (D140).
     if (normalized.favorites === true && normalized.collection) normalized.favorites = false;
+    // Untagged and tags are never both a view's filter either: the tags win, as the server's normalizer does.
+    if (normalized.tag_mode === 'untagged' && normalized.tags.length) normalized.tag_mode = 'all';
     return normalized;
 }
 
@@ -113,10 +118,12 @@ export function imagesViewState(filters) {
 /** Library shelf filters (library.mjs `filters`) from a saved state, and the state of the current filters. */
 export function libraryFilters(state) {
     const view = normalizeViewState('library', state);
-    return { text: view.q, category: view.category, sort: view.sort, tags: view.tags };
+    return { text: view.q, category: view.category, sort: view.sort, tags: view.tags, tagMode: view.tag_mode, folder: view.folder };
 }
 export function libraryViewState(filters) {
-    return normalizeViewState('library', { q: filters.text, category: filters.category, sort: filters.sort, tags: filters.tags });
+    return normalizeViewState('library', { q: filters.text, category: filters.category, sort: filters.sort, tags: filters.tags,
+        // A filter the shelf lacks (undefined) takes its key's default in normalizeViewState.
+        tag_mode: filters.tagMode, folder: filters.folder });
 }
 
 /**

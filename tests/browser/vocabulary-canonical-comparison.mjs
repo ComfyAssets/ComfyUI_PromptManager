@@ -29,6 +29,19 @@ export function pageInventoryOf(main) {
     const rows=[...table.querySelectorAll('tbody tr')];
     const firstCell=rows[0]?.querySelector('td');
     const operations=[...categorySurface.querySelectorAll('.operation')].filter(visible);
+    const operationOf=row=>{const h3=row.querySelector('h3'),p=row.querySelector('p'),rowActions=row.querySelector('.row-actions');return {
+            ...css(row,'display','flexDirection','justifyContent','alignItems','columnGap','paddingTop','paddingBottom','borderTopWidth','borderTopStyle','borderTopColor'),
+            height:px(row.getBoundingClientRect().height),h3:{text:h3.textContent,...font(h3)},p:{text:p.textContent,...font(p)},
+            actions:{...css(rowActions,'flexShrink','flexWrap','columnGap'),buttons:[...rowActions.querySelectorAll('button')].map(buttonOf)}};};
+    // D149 (#444): production adds the Untagged prompts row and the tag search and sort above the table; the concept has
+    // neither. The toolbar is compared on its own (toolbarInventoryOf) with the concept's page toolbar as donor.
+    const untaggedRow=tagSurface.querySelector(':scope > .operation');
+    const d149=untaggedRow?{untagged:operationOf(untaggedRow),
+        // It starts where the concept's table starts: right after the paragraph.
+        offset:px(untaggedRow.getBoundingClientRect().top-tagSurface.getBoundingClientRect().top),
+        // The vertical space the two additions take: the table starts this much lower than after the paragraph alone.
+        // (Both offsets rounded first, so offset + shift is exactly the table's rounded offset.)
+        shift:px(wrap.getBoundingClientRect().top-tagSurface.getBoundingClientRect().top)-px(untaggedRow.getBoundingClientRect().top-tagSurface.getBoundingClientRect().top)}:null;
     return {
         heading:{...css(heading,'display','flexDirection','justifyContent','alignItems','columnGap','rowGap','marginBottom'),
             h1:{text:h1.textContent,tabIndex:h1.tabIndex,...font(h1)},
@@ -54,13 +67,25 @@ export function pageInventoryOf(main) {
             rows:rows.map(row=>{const cells=[...row.querySelectorAll('td')];return {cells:cells.length,height:px(row.getBoundingClientRect().height),tagLines:lines(cells[0]),tag:cells[0].textContent,prompts:cells[1].textContent,
                 images:shownText(cells[2]),imagesHidden:cells[2].querySelector('.ca-visually-hidden')?.textContent??null,
                 actions:[...cells[3].querySelectorAll('.row-actions button')].map(node=>node.textContent.trim())};})},
-        operations:operations.map(row=>{const h3=row.querySelector('h3'),p=row.querySelector('p'),rowActions=row.querySelector('.row-actions');return {
-            ...css(row,'display','flexDirection','justifyContent','alignItems','columnGap','paddingTop','paddingBottom','borderTopWidth','borderTopStyle','borderTopColor'),
-            height:px(row.getBoundingClientRect().height),h3:{text:h3.textContent,...font(h3)},p:{text:p.textContent,...font(p)},
-            actions:{...css(rowActions,'flexShrink','flexWrap','columnGap'),buttons:[...rowActions.querySelectorAll('button')].map(buttonOf)}};}),
+        operations:operations.map(operationOf),
+        d149,
         noPageScroll:document.documentElement.scrollWidth<=innerWidth+1,
     };
 }
+
+/** A `search.toolbar`'s tokens (D149): runs in the page on the concept's page toolbar and on the tag search and sort. */
+export function toolbarInventoryOf(root) {
+    const css=(node,...keys)=>{const style=getComputedStyle(node);return Object.fromEntries(keys.map(key=>[key,style[key]]));};
+    const px=value=>Math.round(value);
+    const field=root.querySelector('.search-field'),input=field.querySelector('input'),select=root.querySelector('select');
+    return {...css(root,'display','columnGap','rowGap','flexWrap','alignItems','marginBottom'),
+        field:{...css(field,'display','alignItems','columnGap','flexGrow','minWidth','paddingLeft','paddingRight','borderTopWidth','borderTopStyle',
+            'borderTopColor','borderTopLeftRadius','backgroundColor'),icon:Boolean(field.querySelector(':scope > svg')),height:px(field.getBoundingClientRect().height)},
+        input:{type:input.type,...css(input,'fontSize','minHeight','backgroundColor','borderTopWidth','color')},
+        select:{...css(select,'fontSize','minHeight','backgroundColor','color','borderTopColor','borderTopLeftRadius','paddingLeft'),
+            height:px(select.getBoundingClientRect().height)}};
+}
+
 
 const countOf=(count,noun)=>`${count} ${noun}${count===1?'':'s'}`;
 
@@ -81,12 +106,17 @@ export function withImageCounts(operations,{images={},only=[]}={}) {
 
 // Recorded deviations only (plan "Mock inventory" + decisions D1-D15 + ledger rulings). Everything else must be equal.
 // `imageCategories` (#332 D143) is the fixture's own image categories, none by default.
-export function mapVocabularyConcept(reference,imageCategories={}) {
+export function mapVocabularyConcept(reference,imageCategories={},{untaggedText=null,shift=0}={}) {
     const operations=reference.operations.map(row=>({...row,p:{...row.p,
         // Ledger ruling: "1 positive prompts" -> singular, consistent with the shared plural helper (#238/#243).
         text:row.p.text.replace(/^1 positive prompts$/,'1 positive prompt')}}));
-    return {...reference,
-        table:{...reference.table,rows:reference.table.rows.map(row=>({...row,
+    // D149 (#444): the Untagged prompts row is drawn as the concept's first category row with its own text and a Browse
+    // action, and the table moves down by the space it and the tag search and sort take.
+    const first=reference.operations[0];
+    const d149=untaggedText===null?null:{untagged:{...first,h3:{...first.h3,text:'Untagged prompts'},p:{...first.p,text:untaggedText}},
+        offset:reference.table.wrap.offset,shift};
+    return {...reference,d149,
+        table:{...reference.table,wrap:{...reference.table.wrap,offset:reference.table.wrap.offset+shift},rows:reference.table.rows.map(row=>({...row,
             // Data, not a deviation: the concept tags each sample image with its prompt's tags; the vocabulary fixture
             // tags no image, so every Images count is 0 (#249 C2 retired #245 D3).
             images:'0'}))},
@@ -94,9 +124,14 @@ export function mapVocabularyConcept(reference,imageCategories={}) {
     };
 }
 
+/** The D149 mapping inputs: the fixture's Untagged prompts count text (none by default) and production's table shift. */
+export function d149Of(actual,untaggedText='0 positive prompts') {
+    return actual.d149?{untaggedText,shift:actual.d149.shift}:{};
+}
+
 /** The page comparison: concept rows are the concept's sample tags; production appends fixture-only tags (D4). */
 export function compareVocabularyPage(reference,actual,imageCategories={}) {
-    const expected=mapVocabularyConcept(reference,imageCategories);
+    const expected=mapVocabularyConcept(reference,imageCategories,d149Of(actual));
     const shared=expected.table.rows.length;
     return {diff:diffInventory(expected,{...actual,table:{...actual.table,rows:actual.table.rows.slice(0,shared)}}),
         extra:actual.table.rows.slice(shared).map(row=>row.tag)};

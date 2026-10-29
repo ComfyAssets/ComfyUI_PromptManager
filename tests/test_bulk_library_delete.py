@@ -11,6 +11,7 @@ from pathlib import Path
 
 from database.execution_history_schema import rotate_history_epoch
 from database.library_commands import LibraryCommandError
+from database.library_folders import folder_prefixes
 from database.operations import PromptDatabase
 from database.prompt_archive import TABLE as ARCHIVE
 from utils.hashing import generate_prompt_hash
@@ -392,6 +393,46 @@ class TestArchivedReaders(LibraryDeleteCase):
         self.assertEqual(self.db.list_library(category="gone")["archived_total"], 1)
         with self.assertRaises(ValueError):
             self.db.list_library(shelf="all")
+
+    def test_the_444_filters_and_tag_counts_hide_it(self):
+        # #444's folder filter, tag match and tag ranking keep #443's shelves.
+        bare, _bn, _bp = self.paired("Bare cat", "bare blur")
+        self.apply([bare])
+        folder = self.root / "out" / "cats"
+        folder.mkdir(parents=True)
+        for pid, name in ((self.kept, "kept.png"), (self.gone, "gone.png")):
+            self.image(pid, str(Path("out") / "cats" / name))
+        prefixes = folder_prefixes([str(self.root / "out")], "cats")
+        self.assertEqual(
+            self.ids_of(self.db.list_library(folder_prefixes=prefixes)), [self.kept]
+        )
+        self.assertEqual(
+            self.ids_of(
+                self.db.list_library(folder_prefixes=prefixes, shelf="archived")
+            ),
+            [self.gone],
+        )
+        self.assertEqual(
+            self.ids_of(self.db.list_library(tags=["k", "g"], tag_mode="any")),
+            [self.kept],
+        )
+        self.assertEqual(self.ids_of(self.db.list_library(tag_mode="untagged")), [])
+        self.assertEqual(
+            self.ids_of(self.db.list_library(tag_mode="untagged", shelf="archived")),
+            [bare],
+        )
+        tags = self.db.list_vocabulary_tags(sort="prompts")
+        self.assertEqual(
+            {row["name"]: row["prompt_count"] for row in tags["tags"]},
+            {"k": 1, "g": 0},
+        )
+        self.assertEqual(tags["untagged_count"], 0)
+        self.assertEqual(
+            self.db.list_vocabulary_tags(search="g", sort="prompts")["tags"][0][
+                "prompt_count"
+            ],
+            0,
+        )
 
     def test_detail_and_options(self):
         self.assertTrue(self.db.get_library_positive(self.gone)["positive"]["archived"])
