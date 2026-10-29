@@ -363,14 +363,26 @@ test('a list read superseded by another read still opens a collection made since
     const fresh = (await added.json()).collection.id;
     await expect(rows(page)).toHaveCount(2);
     const hold = await holdListReads(page);
-    // A rename schedules the 300 ms count re-read; opening "Fresh" first reads the list once more. The timer's read
-    // supersedes that one while both are held.
+    // A confirmed rename schedules the 300 ms count re-read; opening "Fresh" first reads the list once more. The
+    // timer's read supersedes that one while both are held. The rename's answer is held until "Fresh"'s read is, so
+    // the timer starts only then: with the answer let through at once, a slow host could fire the timer before the
+    // hash change, and the page would then wait on the timer's read alone (#459).
+    let releaseRename;
+    const renameHeld = new Promise(resolve => { releaseRename = resolve; });
+    await page.route(`**${API}/${manifest.collections.Landscapes.id}`, async route => {
+        if (route.request().method() !== 'PATCH') return route.fallback();
+        await renameHeld;
+        return route.fallback();
+    });
     await editButton(page).click();
     await nameField(page).fill('Landscape grids');
     await editDialog(page).getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(toast(page)).toHaveText('Collection renamed.');
     await page.evaluate(hash => { window.location.hash = hash; }, `#/collection/${fresh}`);
-    await expect.poll(() => hold.held.length).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => hold.held.length).toBe(1);
+    releaseRename();
+    // The rename landed (the sidebar row has the new name), so the count read is now due.
+    await expect(row(page, 'Landscape grids')).toHaveCount(1);
+    await expect.poll(() => hold.held.length).toBe(2);
     await expect(main(page)).not.toContainText('Collections could not be loaded.');
     await hold.release();
     await expect(heading(page)).toHaveText('Fresh');

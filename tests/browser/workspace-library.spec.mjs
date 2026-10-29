@@ -57,6 +57,26 @@ test('library groups reusable negatives under one positive without exposing nega
     for(const item of rows.items) await expect(page.locator(`article[data-prompt-id="${item.id}"] .card-meta > span`).nth(1)).toHaveText(`${item.run_count} run${item.run_count===1?'':'s'}`);
 });
 
+// #464: a starved renderer (headless WebKit under CPU load, a background tab) can hold animation frames for seconds;
+// a loaded page of prompts is shown without waiting for one.
+test('a held animation frame does not hide a loaded page of prompts, the first or a later one',async({page,request})=>{
+    await expect(await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:45}})).toBeOK();
+    const {total}=await(await request.get('/prompt_manager/library?limit=100')).json();
+    await page.addInitScript(()=>{
+        const request=window.requestAnimationFrame.bind(window),cancel=window.cancelAnimationFrame.bind(window);
+        const held=new Map(),real=new Map();let holding=true,next=0;
+        window.requestAnimationFrame=callback=>{const id=--next;if(holding)held.set(id,callback);else real.set(id,request(callback));return id;};
+        window.cancelAnimationFrame=id=>{held.delete(id);if(real.has(id))cancel(real.get(id));real.delete(id);};
+        window.__releaseAnimationFrames=()=>{holding=false;for(const [id,callback] of held)real.set(id,request(callback));held.clear();};
+    });
+    await page.goto(route);
+    const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+    await expect(more).toHaveAttribute('aria-disabled','false');await expect(cards(page)).toHaveCount(40);
+    await more.evaluate(node=>node.click());await expect(page.locator('.library-status')).toHaveText('You’re all caught up.');
+    await expect(cards(page)).toHaveCount(total);
+    await page.evaluate(()=>window.__releaseAnimationFrames());await nextFrame(page);
+    await expect(cards(page)).toHaveCount(total);await expect(page.locator('.library-row-spacer')).toHaveCount(0);
+});
 test('history displays the selected full negative beneath its positive and filters one shared physical gallery',async({page,request})=>{
     const rows=await(await request.get('/prompt_manager/library')).json();const cat=rows.items.find(item=>item.text==='Cat portrait');
     const data=await(await request.get(`/prompt_manager/library/${cat.id}`)).json();
