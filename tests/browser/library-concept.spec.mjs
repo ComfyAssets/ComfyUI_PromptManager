@@ -317,7 +317,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`library geomet
 /**
  * D148 (#437): the selection checkbox overlay of `card` and the `.bulkbar` row inside `main`, with one item checked,
  * measured alike in the concept's Images page and production's Library: the overlay's inset in its card, the checkbox,
- * and the bar's box, tokens and the two actions both bars have (Set category, Clear).
+ * and the bar's box, tokens and the actions both bars have (Add tags, Set category, Clear; #442).
  */
 const measureSelection=(page,{card,main})=>page.evaluate(({card,main})=>{
     const css=(node,...keys)=>{const style=getComputedStyle(node);return Object.fromEntries(keys.map(key=>[key,style[key]]));};
@@ -327,7 +327,7 @@ const measureSelection=(page,{card,main})=>page.evaluate(({card,main})=>{
         'borderTopColor','borderTopLeftRadius','backgroundColor');
     const host=document.querySelector(card),overlay=host.querySelector('.image-overlays'),label=overlay.querySelector(':scope > label');
     const input=label.querySelector('input'),root=document.querySelector(main),bar=root.querySelector('.bulkbar');
-    const shared=['Set category','Clear'];
+    const shared=['Add tags','Set category','Clear'];
     return {
         overlay:{left:px(rect(overlay).left-rect(host).left),top:px(rect(overlay).top-rect(host).top),right:px(rect(host).right-rect(overlay).right),
             ...css(overlay,'position','display','justifyContent','pointerEvents')},
@@ -357,7 +357,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`the Library se
     const actual=await productionSelection(page,theme);
     await captureCanonicalState(page,testInfo,`production-library-selection-${width}-${theme}`);
     await testInfo.attach('library-selection',{body:JSON.stringify({reference,actual},null,2),contentType:'application/json'});
-    expect(reference.bar.buttons.map(button=>button.text),'the concept bar has both actions').toEqual(['Set category','Clear']);
+    expect(reference.bar.buttons.map(button=>button.text),'the concept bar has every Library action').toEqual(['Add tags','Set category','Clear']);
     expect(actual).toEqual(reference);
     // The comparison notices a moved checkbox (spec §7 mutation check).
     await mutate(page,{css:'.prompt-card .image-overlays { inset: 20px 9px auto }'});
