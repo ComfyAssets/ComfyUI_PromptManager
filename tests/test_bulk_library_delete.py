@@ -62,6 +62,8 @@ def table_dump(db):
 
 
 class LibraryDeleteCase(unittest.TestCase):
+    maxDiff = None
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -137,9 +139,23 @@ class TestClassifyAndApply(LibraryDeleteCase):
                 "not_found": [negative_only, 99999],
                 "image_links": 1,
                 "fingerprints": result["fingerprints"],
+                # #482: the archive ids Delete permanently could remove (with pairs).
+                "deletable": [positive, archived_pair_positive],
+                "review_digests": result["review_digests"],
+                "paired_counts": {
+                    "pairs": 2,
+                    "archived_pairs": 1,
+                    "variants": 2,
+                    # "only negative" is itself selected; only "blur" is kept.
+                    "kept_negatives": 1,
+                },
+                "paired_image_links": 0,
             },
         )
         self.assertEqual(list(result["fingerprints"]), [plain])
+        self.assertEqual(
+            list(result["review_digests"]), [positive, archived_pair_positive]
+        )
 
     def test_apply_archives_paired_deletes_unpaired_and_skips_protected(self):
         plain = save(self.db, "Plain", tags=["red"])
@@ -159,6 +175,7 @@ class TestClassifyAndApply(LibraryDeleteCase):
                 "not_found": 0,
                 "changed": 0,
                 "image_links": 1,
+                "pairs_removed": 0,
             },
         )
         self.assertEqual(prompt_ids(self.db), sorted([protected, positive, negative]))
@@ -523,3 +540,188 @@ class TestArchivedReaders(LibraryDeleteCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPairedDelete(LibraryDeleteCase):
+    """#482 (D154): Delete permanently also removes a prompt's own saved pairs."""
+
+    def pair_rows(self, positive):
+        return rows(
+            self.db,
+            "SELECT id FROM prompt_pairs WHERE positive_prompt_id=? ORDER BY id",
+            (positive,),
+        )
+
+    def pair_link(self, pair, image):
+        return self.db.link_image_to_pair(pair, image, {"resolver_version": 1})
+
+    def delete_paired(self, ids, review, archive=None, epoch=None):
+        """Write ``ids`` as Delete permanently, with the digests ``review`` gave."""
+        archive = review["archive"] if archive is None else archive
+        return self.db.archive_or_delete_library_prompts(
+            archive,
+            review["delete"],
+            expected_epoch=epoch or self.epoch,
+            candidates=review["fingerprints"],
+            delete_paired={pid: review["review_digests"][pid] for pid in ids},
+        )
+
+    def test_classify_marks_deletable_and_archive_only_with_pair_counts(self):
+        cat, cat_negative, _pair = self.paired("Cat", "blur")
+        self.db.save_prompt_pair("Cat", "grain")
+        archived_pair = self.db.save_prompt_pair("Cat", "noise")
+        self.db.archive_prompt_pair(archived_pair, True)
+        shared = save(self.db, "Shared")
+        self.image(shared, "shared.png")
+        self.db.save_prompt_pair("Dog", "Shared")  # used as another positive's negative
+        review = self.classify([cat, shared])
+        self.assertEqual(review["archive"], [cat, shared])
+        self.assertEqual(review["deletable"], [cat])
+        self.assertEqual(list(review["review_digests"]), [cat])
+        self.assertRegex(review["review_digests"][cat], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            review["paired_counts"],
+            {"pairs": 3, "archived_pairs": 1, "variants": 3, "kept_negatives": 3},
+        )
+        self.assertEqual(review["paired_image_links"], 0)
+
+    def test_an_empty_negative_pair_is_deleted_with_its_prompt(self):
+        # Live prompt 7896: an auto-created pair with an explicitly empty negative.
+        pair = self.db.save_prompt_pair("été", "")
+        prompt = self.db.get_prompt_pair(pair)["positive_prompt_id"]
+        review = self.classify([prompt])
+        self.assertEqual(review["deletable"], [prompt])
+        self.assertEqual(
+            review["paired_counts"],
+            {"pairs": 1, "archived_pairs": 0, "variants": 0, "kept_negatives": 0},
+        )
+        result = self.delete_paired([prompt], review)
+        self.assertEqual((result["deleted"], result["archived"]), (1, 0))
+        self.assertEqual(result["pairs_removed"], 1)
+        self.assertNotIn(prompt, prompt_ids(self.db))
+        self.assertEqual(self.pair_rows(prompt), [])
+        self.assertEqual(rows(self.db, "PRAGMA foreign_key_check"), [])
+
+    def test_rows_removed_are_the_legacy_pair_deletes_then_the_prompt_delete(self):
+        twin = PromptDatabase(str(self.root / "twin.db"))
+        self.addCleanup(twin.close_all)
+        twin_epoch = twin.get_library_options()["library_epoch"]
+        made = {}
+        for db in (self.db, twin):
+            plain = db.save_prompt_pair("Owl", "", tags=["night"], title="Owl")
+            with_negative = db.save_prompt_pair("Owl", "dark", rating=4)
+            hidden = db.save_prompt_pair("Owl", "fog")
+            db.archive_prompt_pair(hidden, True)
+            owl = db.get_prompt_pair(plain)["positive_prompt_id"]
+            path = self.root / "owl.png"
+            path.write_bytes(b"png")
+            image = db.link_image_to_prompt(owl, str(path), {"workflow": {"nodes": []}})
+            db.link_image_to_pair(with_negative, image, {"resolver_version": 1})
+            save(db, "Bystander", tags=["night"])
+            made[id(db)] = (owl, [plain, with_negative, hidden])
+        owl, pairs = made[id(self.db)]
+        review = self.classify([owl])
+        self.delete_paired([owl], review)
+        twin_owl, twin_pairs = made[id(twin)]
+        with twin.model.get_connection() as conn:
+            conn.execute(
+                "DELETE FROM image_prompt_pairs WHERE pair_id IN (SELECT id FROM "
+                "prompt_pairs WHERE positive_prompt_id=?)",
+                (twin_owl,),
+            )
+            conn.commit()
+        for pair in twin_pairs:
+            self.assertTrue(twin.delete_prompt_pair(pair))
+        twin.archive_or_delete_library_prompts(
+            [], [twin_owl], expected_epoch=twin_epoch, candidates=None
+        )
+        self.assertEqual(table_dump(self.db), table_dump(twin))
+        # The negatives stay, and the image file stays on disk.
+        self.assertTrue((self.root / "owl.png").exists())
+        texts = [row[0] for row in rows(self.db, "SELECT text FROM prompts")]
+        self.assertTrue({"dark", "fog", "Bystander"} <= set(texts))
+
+    def test_a_negative_used_by_another_positive_is_archived_never_deleted(self):
+        shared = save(self.db, "Shared")
+        self.image(shared, "s.png")
+        self.db.save_prompt_pair("Dog", "Shared")
+        review = self.classify([shared])
+        self.assertEqual(review["deletable"], [])
+        result = self.db.archive_or_delete_library_prompts(
+            [shared],
+            [],
+            expected_epoch=self.epoch,
+            candidates={},
+            delete_paired={shared: "0" * 64},
+        )
+        self.assertEqual((result["deleted"], result["archived"]), (0, 1))
+        self.assertEqual(result["changed"], 1)
+        self.assertEqual(archived_ids(self.db), [shared])
+
+    def test_a_positive_and_its_own_negative_selected_together(self):
+        cat, blur, _pair = self.paired("Cat", "blur")
+        self.image(blur, "blur.png")  # the negative is a Library prompt too
+        review = self.classify([cat, blur])
+        self.assertEqual(review["deletable"], [cat])
+        result = self.delete_paired([cat], review)
+        self.assertEqual((result["deleted"], result["archived"]), (1, 1))
+        self.assertEqual(archived_ids(self.db), [blur])
+        self.assertNotIn(cat, prompt_ids(self.db))
+
+    def test_a_self_pair_is_deleted(self):
+        pair = self.db.save_prompt_pair("Same", "Same")
+        same = self.db.get_prompt_pair(pair)["positive_prompt_id"]
+        review = self.classify([same])
+        self.assertEqual(review["deletable"], [same])
+        self.assertEqual(review["paired_counts"]["kept_negatives"], 0)
+        self.assertEqual(self.delete_paired([same], review)["deleted"], 1)
+        self.assertNotIn(same, prompt_ids(self.db))
+
+    def test_drift_after_the_review_archives_and_counts_changed(self):
+        cases = {
+            "pair added": lambda p: self.db.save_prompt_pair("Fox", "new"),
+            "pair edited": lambda p: self.db.update_prompt_pair_metadata(
+                self.pair_rows(p)[0][0], title="Renamed"
+            ),
+            "pairs gone": lambda p: self.db.delete_prompt_pair(self.pair_rows(p)[0][0]),
+            "now another's negative": lambda p: self.db.save_prompt_pair("Hen", "Fox"),
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                fox, _neg, _pair = self.paired("Fox", "mist " + name)
+                review = self.classify([fox])
+                self.assertEqual(review["deletable"], [fox])
+                change(fox)
+                result = self.delete_paired([fox], review)
+                self.assertEqual(
+                    (result["deleted"], result["archived"], result["changed"]),
+                    (0, 1, 1),
+                )
+                self.assertIn(fox, archived_ids(self.db))
+                self.restore([fox])
+                with self.db.model.get_connection() as conn:
+                    conn.execute(
+                        "DELETE FROM prompt_pairs WHERE positive_prompt_id IN "
+                        "(SELECT id FROM prompts WHERE text IN ('Hen','Fox'))"
+                    )
+                    conn.commit()
+
+    def test_delete_paired_must_name_reviewed_archive_ids(self):
+        fox, _neg, _pair = self.paired("Fox")
+        review = self.classify([fox])
+        with self.assertRaises(ValueError):
+            self.db.archive_or_delete_library_prompts(
+                [],
+                [],
+                expected_epoch=self.epoch,
+                candidates={},
+                delete_paired={fox: review["review_digests"][fox]},
+            )
+        with self.assertRaises(ValueError):
+            self.db.archive_or_delete_library_prompts(
+                [fox],
+                [],
+                expected_epoch=self.epoch,
+                candidates={},
+                delete_paired={fox: "not a digest"},
+            )

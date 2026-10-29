@@ -130,8 +130,13 @@ class TestLibraryDeleteRoutes(LibraryDeleteRouteCase):
     async def test_archive_only_takes_no_backup(self):
         self.policy(True)
         positive = self.paired("Cat")
+        shared = self.save("Shared")
+        self.api.db.save_prompt_pair("Dog", "Shared")  # archive-only (#482)
+        self.api.db.link_image_to_prompt(shared, "/tmp/shared-443.png")
+        # Nothing could be deleted: no disk plan. (#482: a deletable prompt has one.)
+        self.assertIsNone((await self.review([shared]))["disk"])
         review = await self.review([positive])
-        self.assertIsNone(review["disk"])
+        self.assertIsNotNone(review["disk"])
         status, body = await self.confirm(review)
         self.assertEqual((status, body["archived"], body["backup"]), (200, 1, None))
         self.assertEqual(self.backups(), [])
@@ -307,6 +312,94 @@ class TestLibraryDeleteRoutes(LibraryDeleteRouteCase):
         self.assertTrue(all(item["archived"] for item in archived["items"]))
         response = await self.client.request("GET", "/prompt_manager/library?shelf=all")
         self.assertEqual(response.status, 400)
+
+
+class TestPairedDeleteRoutes(LibraryDeleteRouteCase):
+    """#482 (D154): Delete permanently with a prompt's own saved pairs."""
+
+    async def confirm_paired(self, review, ids, backup=None, digests=None):
+        return await self.post(
+            DELETE,
+            {
+                "archive_ids": review["archive"],
+                "delete_ids": review["delete"],
+                "expected_epoch": review["library_epoch"],
+                "backup": backup or review["backup"],
+                "delete_paired_ids": ids,
+                "paired_digests": digests
+                or {str(pid): review["review_digests"][str(pid)] for pid in ids},
+            },
+        )
+
+    async def test_preview_reports_deletable_and_a_paired_only_delete_backs_up(self):
+        self.policy(True)
+        cat = self.paired("Cat")
+        shared = self.save("Shared")
+        self.api.db.save_prompt_pair("Dog", "Shared")
+        self.api.db.link_image_to_prompt(shared, "/tmp/shared-482.png")
+        review = await self.review([cat, shared])
+        self.assertEqual(review["archive"], [cat, shared])
+        self.assertEqual(review["deletable"], [cat])
+        self.assertEqual(list(review["review_digests"]), [str(cat)])
+        self.assertEqual(
+            review["paired_counts"],
+            {"pairs": 1, "archived_pairs": 0, "variants": 1, "kept_negatives": 1},
+        )
+        self.assertEqual(review["paired_image_links"], 0)
+        # A selection with nothing in the delete class still checks the disk.
+        self.assertTrue(review["disk"]["sufficient"])
+        status, body = await self.confirm_paired(review, [cat])
+        self.assertEqual(status, 200, body)
+        self.assertEqual(
+            (body["deleted"], body["archived"], body["pairs_removed"]), (1, 1, 1)
+        )
+        self.assertEqual(self.backups(), [body["backup"]])
+        self.assertNotIn(cat, self.ids())
+        self.assertEqual(self.archived(), [shared])
+
+    async def test_a_body_without_the_new_keys_is_the_443_delete(self):
+        cat = self.paired("Cat")
+        review = await self.review([cat])
+        status, body = await self.confirm(review)
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["deleted"], body["archived"]), (0, 1))
+        self.assertIn(cat, self.ids())
+
+    async def test_paired_bodies_are_validated(self):
+        cat = self.paired("Cat")
+        plain = self.save("Plain")
+        review = await self.review([cat, plain])
+        digest = review["review_digests"][str(cat)]
+        base = {
+            "archive_ids": review["archive"],
+            "delete_ids": review["delete"],
+            "expected_epoch": review["library_epoch"],
+            "backup": "off",
+        }
+        cases = [
+            {"delete_paired_ids": [cat]},  # without its digests
+            {"delete_paired_ids": [plain], "paired_digests": {str(plain): digest}},
+            {"delete_paired_ids": [cat], "paired_digests": {}},
+            {"delete_paired_ids": [cat], "paired_digests": {str(cat): "x"}},
+            {"delete_paired_ids": "all", "paired_digests": {}},
+        ]
+        for extra in cases:
+            with self.subTest(extra=extra):
+                status, body = await self.post(DELETE, {**base, **extra})
+                self.assertEqual((status, body["code"]), (400, "invalid-request"))
+        self.assertIn(cat, self.ids())
+
+    async def test_a_short_disk_refuses_a_paired_only_delete(self):
+        self.policy(True)
+        cat = self.paired("Cat")
+        from py.api import maintenance
+
+        with patch.object(maintenance, "_free_bytes", return_value=0):
+            review = await self.review([cat])
+            self.assertFalse(review["disk"]["sufficient"])
+            status, body = await self.confirm_paired(review, [cat])
+        self.assertEqual((status, body["code"]), (507, "insufficient-space"))
+        self.assertIn(cat, self.ids())
 
 
 class TestIngestionAfterArchive(LibraryDeleteRouteCase):
