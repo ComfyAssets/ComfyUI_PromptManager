@@ -153,15 +153,57 @@ class TestForeignPathKeepsSaveToLibrary(attribution.RecordedRuns, unittest.TestC
         self.assertIn(wired, self.recheck(path))
         self.assert_nothing_stored(path)
 
-    def test_q3_not_saved_after_the_settle_lookup_ends_the_wait(self):
-        """No record yet and the answer is a switched-off node's text: the
-        file never waits for a seal that could only store nothing."""
-        self.metadata = {"prompt": off_text_unwired()}
-        path = self.image("vendor_00001_.png")
+    def test_q3_an_undecided_not_saved_waits_for_the_record_then_skips(self):
+        """No record yet: a not_saved of the undecided step is not final (a
+        recorded saver may resolve another branch), so the file waits for its
+        run; the decision with the record stores nothing and logs the skip."""
+        wired = off_text_unwired()
+        wired["40"]["inputs"]["save_to_library"] = ["20", 0]
+        wired["20"] = {"class_type": "SomeBoolNode", "inputs": {}}
+        cases = (
+            ("off", off_text_unwired(), SKIPPED),
+            ("wired", wired, "Save to library is wired from a node"),
+        )
+        for name, graph, line in cases:
+            with self.subTest(name=name):
+                self.metadata = {"prompt": graph}
+                path = self.image(f"vendor_{name}_00001_.png")
+                self.handler.process_new_image(path)
+                self.assertIsNone(self.linked_text(path))
+                self.assertEqual(self.handler.awaiting_foreign(), [self.key(path)])
+                with self.assertLogs(LOGGER, "INFO") as logs:
+                    self.seal(path)
+                    self.assertTrue(
+                        self.wait_for(lambda: not self.handler.awaiting_foreign())
+                    )
+                    self.assertTrue(self.settled())
+                self.assertIn(line, "\n".join(logs.output))
+                self.assert_nothing_stored(path)
+
+    def test_q3_an_early_not_saved_never_waits_even_with_a_saver_branch(self):
+        """Review: a switched-off node feeding one branch's positive is the
+        ladder's early, final not_saved (PR 1's #90 rule covers every
+        sampler's positive), so the file never waits and nothing is stored,
+        not even the plain branch the recorded saver names."""
+        graph = shapes.shared_prefix()
+        graph["20"]["inputs"]["text"] = ["50", 0]
+        graph["50"] = {
+            "class_type": "PromptManagerText",
+            "inputs": {"text": OFF_TEXT, "save_to_library": False},
+        }
+        self.metadata = {"prompt": graph}
+        path = self.image("IMG_GEN_00001_.png")
         with self.assertLogs(LOGGER, "INFO") as logs:
             self.handler.process_new_image(path)
         self.assertIn(SKIPPED, "\n".join(logs.output))
         self.assert_nothing_stored(path)
+        self.seal(path, nodes=("13",))
+        self.assertTrue(self.settled())
+        self.assertIn(SKIPPED, self.recheck(path))
+        self.assert_nothing_stored(path)
+        self.assertIsNone(
+            self.db.get_prompt_by_hash(generate_prompt_hash(shapes.BRANCH_TEXTS[0]))
+        )
 
     def test_q4_an_off_node_on_the_negative_only_still_links_the_positive(self):
         positive = "a lighthouse on a cliff at dusk"

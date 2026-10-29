@@ -804,8 +804,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         Registered first, so a run sealed before this lookup is not missed.
         Returns None to keep waiting: no record yet, and the answer is not
         the inspector's or the recorded saver's (the legacy floor waits for
-        the re-check). With a record, any decision ends the wait, and so
-        does a switched-off node's text (#90): a record could only store it.
+        the re-check). With a record, any decision ends the wait. A
+        ``not_saved`` here is the undecided step's (an early one never asks
+        history, so it never reaches this lookup): a recorded saver may still
+        resolve another branch, so without a record it waits too (#90).
         """
         self._await_foreign(image_path)
         found = []
@@ -817,8 +819,6 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
         decision = decide_foreign(image_path, metadata, in_output=True, lookup=recorded)
         if any(record is not None for record in found):
-            return decision
-        if decision.kind in NOT_SAVED_KINDS:
             return decision
         if decision.kind in CERTAIN and decision.source in ANCHORED_SOURCES:
             return decision
