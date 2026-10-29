@@ -54,7 +54,7 @@ def status(kind="execution_success", job=JOB):
     return Status("success", True, [(kind, {"prompt_id": job, "timestamp": 20})])
 
 
-class HistoryHooksTests(unittest.TestCase):
+class HooksCase(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -122,6 +122,8 @@ class HistoryHooksTests(unittest.TestCase):
     def drain(self, registration):
         drain_writer(registration.writer, clock=time.monotonic)
 
+
+class HistoryHooksTests(HooksCase):
     def test_package_history_initializes_when_monitor_and_usage_setup_fail(self):
         try:
             from tests.test_init_package import (
@@ -767,3 +769,150 @@ class HistoryHooksTests(unittest.TestCase):
         self.assertEqual(
             calls, ["execution_start", "execution_cached", "execution_cached"]
         )
+
+
+class CachedRuntimeHistoryTests(HooksCase):
+    """A cached runtime-linked prompt is a tracked run, like an executed one (#403).
+
+    The real history hook and writer, a real ``CachedRuns`` and the real host
+    adapter over fakes of ComfyUI's executor, cache and executing context.
+    """
+
+    TEXT = "a lighthouse the LLM wrote"
+    GRAPH = {
+        "str": {"class_type": "PrimitiveString", "inputs": {"value": "seed"}},
+        "llm": {"class_type": "PreviewAny", "inputs": {"source": ["str", 0]}},
+        "p": {"class_type": "PromptManager", "inputs": {"text": ["llm", 0]}},
+        "s": {"class_type": "KSampler", "inputs": {"positive": ["p", 0]}},
+    }
+
+    def setUp(self):
+        super().setUp()
+        from utils import cached_runs
+        from utils.cached_runs import CachedRuns
+
+        self.context = None
+        self.runs = CachedRuns(context=lambda: self.context or (None, None))
+        self.cache_entries = {}
+        entries = self.cache_entries
+        execution = types.ModuleType("execution")
+        caching = types.ModuleType("comfy_execution.caching")
+        package = types.ModuleType("comfy_execution")
+        utils_module = types.ModuleType("comfy_execution.utils")
+        entry_type = namedtuple("CacheEntry", "ui outputs")
+
+        class PromptExecutor:
+            def add_message(self, event, data, broadcast):
+                return None
+
+        class HierarchicalCache:
+            def get_local(self, node_id):
+                return entries.get(node_id)
+
+        execution.PromptExecutor, execution.CacheEntry = PromptExecutor, entry_type
+        caching.HierarchicalCache = HierarchicalCache
+        package.caching, package.utils = caching, utils_module
+        utils_module.get_executing_context = lambda: (
+            SimpleNamespace(prompt_id=self.context[0], node_id="p", list_index=0)
+            if self.context
+            else None
+        )
+        self.entry_type = entry_type
+        modules = patch.dict(
+            sys.modules,
+            {
+                "execution": execution,
+                "comfy_execution": package,
+                "comfy_execution.caching": caching,
+                "comfy_execution.utils": utils_module,
+            },
+        )
+        modules.start()
+        self.addCleanup(modules.stop)
+        swap = patch.object(cached_runs, "CACHED_RUNS", self.runs)
+        swap.start()
+        self.addCleanup(swap.stop)
+        self.executor = PromptExecutor()
+        self.executor.server = self.server
+        self.executor.caches = SimpleNamespace(outputs=HierarchicalCache())
+        self.prompt_id = self.db.save_prompt(text=self.TEXT)
+        self.item_id = 0
+
+    def job(self, cached):
+        """One job; the node executes unless ``cached`` (ComfyUI's cache serves it)."""
+        from uuid import uuid4
+
+        from utils.cached_runs import stored_facts
+        from utils.execution_context_capture import record_runtime_context
+
+        self.item_id += 1
+        job = str(uuid4())
+        result = ((0, job, self.GRAPH, {}, ["s"]), self.item_id)
+        self.queue.results.append(result)
+        self.queue.get()
+        self.runs.begin_attempt(result)
+        self.context = (job, 0)
+        self.executor.add_message("execution_start", {"prompt_id": job}, False)
+        if cached:
+            self.executor.add_message(
+                "execution_cached", {"prompt_id": job, "nodes": ["p"]}, False
+            )
+        else:
+            # What PromptManager.encode_prompt records for this text
+            record_runtime_context("PromptManager", self.TEXT, "", "", self.TEXT)
+            self.runs.record_item(
+                "p", (self.TEXT,), stored_facts(self.TEXT), ((self.TEXT, "", ""),)
+            )
+            self.cache_entries["p"] = self.entry_type(None, [object(), [self.TEXT]])
+        self.context = None
+        self.queue.task_done(self.item_id, {}, status(job=job))
+        self.runs.end_attempt(self.item_id)
+
+    def tracked_runs(self):
+        with self.db.recorded_history_snapshot():
+            return self.db.list_history_window(self.prompt_id)["recorded_run_count"]
+
+    def test_three_jobs_of_runtime_text_are_three_tracked_runs(self):
+        registration = self.register()
+        for cached in (False, True, True):
+            self.job(cached)
+        self.drain(registration)
+        self.assertEqual(self.tracked_runs(), 3)
+        rows = self.rows()
+        for row in rows:
+            contexts = self.db.get_execution_contexts(row["run_id"])["contexts"]
+            self.assertEqual(contexts[0]["positive"]["raw"], self.TEXT)
+            self.assertEqual(contexts[0]["positive_prompt_id"], self.prompt_id)
+        cached = self.db.get_execution_contexts(rows[1]["run_id"])["contexts"][0]
+        self.assertEqual(
+            cached["evidence"]["positive"]["raw"],
+            {"provenance": "inferred", "source": "graph_semantics", "reason": None},
+        )
+        self.assertEqual(
+            cached["evidence"]["positive"]["effective"]["source"], "host_cache_output"
+        )
+        # The stored history passes the whole-database check older builds run too
+        from database.execution_history_schema import history_schema_error
+
+        self.assertIsNone(history_schema_error(self.db.model.get_connection()))
+        # An image of a cached job can now be attributed through its run (#342)
+        from database.run_attribution import named_prompt
+
+        self.assertEqual(
+            [named_prompt(self.db, row["run_id"]) for row in rows],
+            [self.prompt_id] * 3,
+        )
+
+    def test_without_a_receipt_a_cached_job_stays_untracked(self):
+        registration = self.register()
+        self.job(False)
+        self.runs._receipts.clear()  # as after a restart with a provider entry
+        self.job(True)
+        self.drain(registration)
+        self.assertEqual(self.tracked_runs(), 1)
+        cached = self.db.get_execution_contexts(self.rows()[1]["run_id"])["contexts"]
+        self.assertIsNone(cached[0]["positive"]["raw"])
+        self.assertIsNone(cached[0]["positive_prompt_id"])
+        from database.run_attribution import named_prompt
+
+        self.assertIsNone(named_prompt(self.db, self.rows()[1]["run_id"]))

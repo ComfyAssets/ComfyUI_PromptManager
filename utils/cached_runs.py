@@ -15,9 +15,14 @@ role (positive, negative, which Pair outputs are used) and what the hook
 already saw are recomputed from that job's own graph, and both paths count
 through the same ``own_counts`` so they cannot drift.
 
+The receipt also keeps the raw, prepend and append text the node gave the
+execution history (#403), so the history capture of a cached job can record
+the raw text the graph cannot show (``recorded_fields``) and the job becomes a
+tracked run of its prompt, as it is a counted one.
+
 Fail closed: when the cached text cannot be matched to a receipt recorded in
-this process, nothing is counted (the behavior before #347). In memory only and
-bounded; starts no threads.
+this process, nothing is counted (the behavior before #347) and the history
+fields stay unknown. In memory only and bounded; starts no threads.
 """
 
 import hashlib
@@ -39,6 +44,7 @@ try:
     from .queue_observers import subscribe_dequeue, subscribe_task_done
     from .run_keys import prompt_node_key, upstream_nodes
     from .usage_tracking import find_pair_id_by_hashes, survive_switch
+    from .execution_contexts import MAX_ATTEMPT_BYTES, MAX_FIELD_BYTES, text_size
 except ImportError:
     from utils.hashing import generate_prompt_hash
     from utils.logging_config import get_logger
@@ -53,6 +59,7 @@ except ImportError:
     from utils.queue_observers import subscribe_dequeue, subscribe_task_done
     from utils.run_keys import prompt_node_key, upstream_nodes
     from utils.usage_tracking import find_pair_id_by_hashes, survive_switch
+    from utils.execution_contexts import MAX_ATTEMPT_BYTES, MAX_FIELD_BYTES, text_size
 
 logger = get_logger("prompt_manager.cached_runs")
 
@@ -61,9 +68,15 @@ MAX_KEYS = 256  # run keys remembered (the same bound as MAX_KEYED_RUNS)
 MAX_RECEIPTS = 4  # receipts per run key: a recurring upstream value (A, B, A)
 MAX_ITEMS = 64  # list items per receipt (the cache reader's bound)
 MAX_CACHED_NODES = 500  # the execution_cached guard the history capture uses
+MAX_FIELD_TEXT_BYTES = 8 * 1024 * 1024  # history fields all receipts keep
+MAX_RECEIPT_FIELD_BYTES = MAX_ATTEMPT_BYTES  # one receipt: what one run's history holds
 _EMPTY_HASH = generate_prompt_hash("")
 
 Count = Tuple[Any, ...]  # ("prompt", hash) or ("pair", positive, negative or None)
+# (raw, prepend, append) per STRING slot, as given to record_runtime_context
+Fields = Tuple[Tuple[str, str, str], ...]
+# Executions with equal outputs recorded different fields: none can be named
+_CONFLICT: Fields = ()
 
 
 class Facts(NamedTuple):
@@ -96,6 +109,8 @@ class Seen(NamedTuple):
 class _Item(NamedTuple):
     outputs: Tuple[str, ...]
     facts: Facts
+    fields: Optional[Fields] = None
+    field_bytes: int = 0
 
 
 class _Receipt:
@@ -108,6 +123,18 @@ class _Receipt:
     def outputs(self) -> Dict[int, Tuple[str, ...]]:
         return {index: item.outputs for index, item in self.items.items()}
 
+    def field_bytes(self) -> int:
+        return sum(item.field_bytes for item in self.items.values())
+
+    def strip_fields(self) -> int:
+        """Drop the history fields (counting is unchanged); the bytes freed."""
+        freed = 0
+        for index, item in list(self.items.items()):
+            if item.field_bytes:
+                freed += item.field_bytes
+                self.items[index] = item._replace(fields=None, field_bytes=0)
+        return freed
+
 
 class _Attempt(NamedTuple):
     item_id: int
@@ -115,6 +142,22 @@ class _Attempt(NamedTuple):
     graph: Dict[str, Any]
     nodes: Dict[str, Tuple[str, str]]  # node id -> (class, run key)
     replayed: set
+
+
+def _field_size(fields: Any, slots: int) -> Optional[int]:
+    """UTF-8 size of well-formed fields for ``slots`` outputs, else None."""
+    if type(fields) is not tuple or len(fields) != slots:
+        return None
+    size = 0
+    for slot in fields:
+        if type(slot) is not tuple or len(slot) != 3:
+            return None
+        for value in slot:
+            try:
+                size += text_size(value, MAX_FIELD_BYTES)  # the capture's own check
+            except ValueError:
+                return None
+    return size
 
 
 def text_digest(value: str) -> str:
@@ -245,11 +288,14 @@ class CachedRuns:
         max_keys: int = MAX_KEYS,
         max_receipts: int = MAX_RECEIPTS,
         max_items: int = MAX_ITEMS,
+        max_field_bytes: int = MAX_FIELD_TEXT_BYTES,
         context: Callable[[], Tuple[Optional[str], Optional[int]]] = _host_context,
     ) -> None:
         self._max_keys = max_keys
         self._max_receipts = max_receipts
         self._max_items = max_items
+        self._max_field_bytes = max_field_bytes
+        self._field_bytes = 0  # UTF-8 bytes of the fields all receipts keep
         self._context = context
         self._receipts: "OrderedDict[str, List[_Receipt]]" = OrderedDict()
         self._attempt: Optional[_Attempt] = None
@@ -284,7 +330,10 @@ class CachedRuns:
                 self._attempt = None
             for run_key, receipts in self._receipts.items():
                 if receipts and receipts[0].item_id == item_id:
-                    self._receipts[run_key] = _deduplicated(receipts)
+                    before = _bytes(receipts)
+                    deduplicated = _deduplicated(receipts)
+                    self._field_bytes += _bytes(deduplicated) - before
+                    self._receipts[run_key] = deduplicated
 
     def _current(self) -> Tuple[Optional[_Attempt], Optional[int]]:
         """The attempt the executing node belongs to, and its list index."""
@@ -305,8 +354,19 @@ class CachedRuns:
         with self._lock:
             return str(node_id) in attempt.replayed
 
-    def record_item(self, node_id: Any, outputs: Tuple[Any, ...], facts: Facts) -> None:
-        """Remember what this execution returned and was entitled to count."""
+    def record_item(
+        self,
+        node_id: Any,
+        outputs: Tuple[Any, ...],
+        facts: Facts,
+        fields: Optional[Fields] = None,
+    ) -> None:
+        """Remember what this execution returned and was entitled to count.
+
+        ``fields`` are the texts the node gave the execution history, one
+        ``(raw, prepend, append)`` per output; kept only when well formed,
+        each within the history's field limit and the store within its budget.
+        """
         try:
             attempt, index = self._current()
             node = attempt.nodes.get(str(node_id)) if attempt else None
@@ -317,14 +377,20 @@ class CachedRuns:
                 return
             if any(not isinstance(value, str) for value in outputs):
                 return
-            item = _Item(tuple(text_digest(value) for value in outputs), facts)
+            size = _field_size(fields, len(outputs)) if fields is not None else None
+            item = _Item(
+                tuple(text_digest(value) for value in outputs),
+                facts,
+                fields if size is not None else None,
+                size or 0,
+            )
             self._store(node[1], attempt.item_id, index, item)
         except Exception as error:
             logger.debug(f"Could not record a cached-run receipt: {error}")
 
     def _store(self, run_key: str, item_id: int, index: int, item: _Item) -> None:
         with self._lock:
-            receipts = self._receipts.pop(run_key, [])
+            receipts = self._take(run_key)
             if receipts and receipts[0].item_id == item_id:
                 receipt = receipts[0]
             else:
@@ -334,9 +400,44 @@ class CachedRuns:
                 receipt = _Receipt(item_id)
                 receipts.insert(0, receipt)
             receipt.items[index] = item
-            self._receipts[run_key] = receipts[: self._max_receipts]
+            receipts = receipts[: self._max_receipts]
+            if item.field_bytes and (
+                receipt.field_bytes() > MAX_RECEIPT_FIELD_BYTES
+                or not self._make_room(_bytes(receipts))
+            ):
+                # Counting is as before; this job's history fields stay unknown
+                receipt.items[index] = item._replace(fields=None, field_bytes=0)
+            self._put(run_key, receipts)
             while len(self._receipts) > self._max_keys:
-                self._receipts.popitem(last=False)
+                _, dropped = self._receipts.popitem(last=False)
+                self._field_bytes -= _bytes(dropped)
+
+    def _make_room(self, needed: int) -> bool:
+        """Free the fields of the least recently used receipts (under the lock).
+
+        Old receipts of workflows never run again must not hold the budget:
+        their counting stays, only their history fields go. False when
+        ``needed`` does not fit even then.
+        """
+        if needed > self._max_field_bytes:
+            return False
+        for receipts in self._receipts.values():  # least recently used first
+            if self._field_bytes + needed <= self._max_field_bytes:
+                break
+            for receipt in receipts:
+                self._field_bytes -= receipt.strip_fields()
+        return self._field_bytes + needed <= self._max_field_bytes
+
+    def _take(self, run_key: str) -> List[_Receipt]:
+        """Remove a key's receipts and their bytes from the store (under the lock)."""
+        receipts = self._receipts.pop(run_key, [])
+        self._field_bytes -= _bytes(receipts)
+        return list(receipts)
+
+    def _put(self, run_key: str, receipts: List[_Receipt]) -> None:
+        """Store a key's receipts as the most recently used (under the lock)."""
+        self._receipts[run_key] = receipts
+        self._field_bytes += _bytes(receipts)
 
     # -- cached nodes -------------------------------------------------------
 
@@ -393,25 +494,11 @@ class CachedRuns:
 
     def _match(self, run_key: str, values: Any) -> Optional[List[_Item]]:
         """The items of the one receipt whose outputs equal ``values``, in order."""
-        if not values:
-            return None
-        length = len(values[0])
-        if length == 0 or length > self._max_items:
-            return None
-        if any(len(slot) != length for slot in values):
-            return None
-        wanted = {
-            index: tuple(text_digest(slot[index]) for slot in values)
-            for index in range(length)
-        }
         with self._lock:
-            receipts = self._receipts.get(run_key)
-            if not receipts:
-                return None
-            matches = [receipt for receipt in receipts if receipt.outputs() == wanted]
+            matches = self._matching(run_key, values)
             if not matches:
                 return None
-            self._receipts.move_to_end(run_key)
+            length = len(values[0])
             facts = {
                 tuple(receipt.items[index].facts for index in range(length))
                 for receipt in matches
@@ -420,13 +507,99 @@ class CachedRuns:
                 return None
             return [matches[0].items[index] for index in range(length)]
 
+    def _matching(self, run_key: str, values: Any) -> List[_Receipt]:
+        """Receipts of ``run_key`` whose outputs equal ``values`` (under the lock)."""
+        if type(values) not in (list, tuple) or not values:
+            return []
+        if any(type(slot) not in (list, tuple) for slot in values):
+            return []
+        length = len(values[0])
+        if length == 0 or length > self._max_items:
+            return []
+        if any(len(slot) != length for slot in values):
+            return []
+        if any(type(value) is not str for slot in values for value in slot):
+            return []
+        wanted = {
+            index: tuple(text_digest(slot[index]) for slot in values)
+            for index in range(length)
+        }
+        receipts = self._receipts.get(run_key)
+        if not receipts:
+            return []
+        matches = [receipt for receipt in receipts if receipt.outputs() == wanted]
+        if matches:
+            self._receipts.move_to_end(run_key)
+        return matches
+
+    # -- the history capture (#403) -------------------------------------------
+
+    def recorded_fields(
+        self, prompt_id: Any, node_id: Any, values: Any
+    ) -> Optional[List[Fields]]:
+        """The history fields of the execution a cached node reuses, per list item.
+
+        ``values`` are the node's cached STRING outputs (``cached_string_outputs``).
+        Only for a node of the job currently executing, and only when every
+        receipt matching ``values`` kept the same fields; None otherwise. Never
+        counts and never marks the node replayed.
+        """
+        try:
+            with self._lock:
+                attempt = self._attempt
+                if (
+                    attempt is None
+                    or type(prompt_id) is not str
+                    or prompt_id != attempt.prompt_id
+                    or type(node_id) is not str
+                    or node_id not in attempt.nodes
+                ):
+                    return None
+                matches = self._matching(attempt.nodes[node_id][1], values)
+                if not matches:
+                    return None
+                found = []
+                for index in range(len(values[0])):
+                    fields = {receipt.items[index].fields for receipt in matches}
+                    if len(fields) != 1 or None in fields or _CONFLICT in fields:
+                        return None
+                    found.append(fields.pop())
+                return found
+        except Exception as error:
+            logger.debug(f"Could not read a cached run's history fields: {error}")
+            return None
+
 
 def _deduplicated(receipts: List[_Receipt]) -> List[_Receipt]:
-    """The newest receipt replaces older ones with the same outputs."""
+    """The newest receipt replaces older ones with the same outputs.
+
+    Counting needs only the outputs. When a replaced receipt recorded other
+    history fields for equal outputs (a raw text the outputs do not show),
+    the newest item's fields become a conflict, so no cached job of it is
+    given either text (#403). A conflict stays until the run key is dropped.
+    """
     if not receipts:
         return receipts
-    outputs = receipts[0].outputs()
-    return [receipts[0]] + [r for r in receipts[1:] if r.outputs() != outputs]
+    newest, outputs = receipts[0], receipts[0].outputs()
+    kept = [newest]
+    for receipt in receipts[1:]:
+        if receipt.outputs() != outputs:
+            kept.append(receipt)
+            continue
+        for index, item in list(newest.items.items()):
+            older = receipt.items[index].fields
+            if older == _CONFLICT or (
+                older is not None and item.fields is not None and older != item.fields
+            ):
+                newest.items[index] = item._replace(fields=_CONFLICT, field_bytes=0)
+    return kept
+
+
+def _bytes(receipts: List[_Receipt]) -> int:
+    """UTF-8 bytes of the history fields ``receipts`` keep."""
+    return sum(
+        item.field_bytes for receipt in receipts for item in receipt.items.values()
+    )
 
 
 def _job_nodes(graph: Dict[str, Any], outputs: Any) -> Dict[str, Tuple[str, str]]:
