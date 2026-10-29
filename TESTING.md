@@ -2617,7 +2617,8 @@ Category". It is built only from the concept's Images parts:
   input[type=checkbox]`); Home, End and the arrow keys still move between titles.
 - `div#library-bulkbar` sits between the toolbar and the caption, empty until something
   is checked, then the concept's `.bulkbar`: "N selected", Set category, Clear (D151
-  adds Add tags before Set category, in the Images bar's order). The
+  adds Add tags before Set category, in the Images bar's order; D152 adds Delete… before
+  Clear, and Restore alone on the archived shelf). The
   selection is a set of prompt ids over the loaded shelf: windowed-out cards keep their
   state, Load more keeps it, and any shelf reload (search, category, sort, tags, a
   write) and leaving the page clear it. Clicking a checkbox toggles it and sets the
@@ -2697,6 +2698,97 @@ field refusals and restore refusal; Ctrl/Cmd+A and Select all N loaded across ba
 during a write); `tests/browser/library-concept.spec.mjs` (the bar comparison now includes
 Add tags); units `tests/js/workspace-library-selection.test.js`; Python
 `tests/test_bulk_library_tags.py`. A Python change: ComfyUI needs a restart.
+
+### Deleting and archiving selected prompts (#443)
+
+**D152** (beyond the concept, on D148's bar; the concept archives a prompt from its recipe
+editor's "Archive…", `app.js` 976, reviewed in `maintenancePlan`, 953–958, and maps the legacy
+delete to a "reference-safe archive", 783): the Prompt library deletes or archives the
+selected prompts in one reviewed step, replacing the legacy admin page's bulk and single
+Delete, which refuses a whole batch when any prompt belongs to a saved pair (maintainer
+rulings of 2026-10-28):
+
+- The bar reads "N selected", [Select all N loaded], Add tags, Set category, **Delete…**
+  (the concept's `danger` class, as its Images bar's "Remove links…"), Clear.
+- Delete… posts `{prompt_ids, expected_epoch}` to `POST
+  /prompt_manager/library/delete/preview`, which classifies each id in this order: not
+  found (missing or not a Library parent), protected (tagged `__protected__`), already
+  archived, archive (the positive or negative of any saved pair, archived pair or not),
+  delete (everything else). From the press until the review opens, every bar action, Clear
+  too, is `aria-disabled` and Delete… reads "Reviewing…" (a double press sends one preview).
+- The review is the shared record-changing review (`openReviewDialog`), titled "Delete
+  selected prompts", "Archive selected prompts" or "Delete or archive selected prompts", its
+  `dl.meta-grid` rows Delete permanently ("N prompts not in a saved pair") and Archive ("N prompts in a saved
+  pair: hidden, restorable", never negative variants: a pair's prompt with none is archived too) (always), Protected (kept) with up to
+  three titles, Already archived, No longer exist, and, when something is deleted, Image
+  links removed and Backup ("Create and verify before deleting", or "Off: no safety backup
+  (System › Backup & export › Recovery policy)"); then `p.small` sentences: why paired
+  prompts are archived and how to restore them, what a delete removes and that it cannot be
+  undone except by restoring the safety backup (which returns the whole library to that
+  moment; kept among the last 10), that a later scan, new image or node run with the same
+  text adds a deleted prompt again, and how to unprotect. The primary is `danger`: "Delete D
+  prompts", "Archive A prompts" or "Delete D and archive A prompts". When nothing can change,
+  or the disk has no room for the promised backup, the review is close-only with the reason.
+  The concept's "Review maintenance plan" title, its demo note, Scope/Protected/Media on
+  disk rows and `ca-primary` start are replaced by these.
+- Start posts the reviewed lists `{archive_ids, delete_ids, expected_epoch, backup}` to `POST
+  /prompt_manager/library/delete` while Delete… reads "Deleting…" (or "Archiving…"). The
+  server takes a `records` hold ("Delete prompts (Library)", refused 409 `busy` beside a scan,
+  restore, maintenance, move or Optimize), checks the disk (507 `insufficient-space`) and,
+  when a delete remains and the reviewed `backup` was "on" or the policy is on now, takes a
+  verified safety backup (500 `backup-failed`, nothing changed). One `BEGIN IMMEDIATE`
+  transaction then deletes only reviewed deletes still unpaired whose prompt row, tags,
+  title and image links are unchanged since the backup (exactly the legacy rows: image
+  link rows, cascaded tags, Library state and pair links of images, released workflow
+  documents; files never), archives the paired ones and any reviewed delete now paired, and
+  counts the rest (`already_archived`, `not_found`, `changed`). Archiving writes a
+  `prompt_archive` row, the prompt's `updated_at` and, when its stored hash is stale or
+  missing and no other row holds the canonical one, the canonical hash, so scans, the
+  monitor and node saves find the archived row instead of adding a copy. A changed epoch
+  answers 409 `storage-changed`; nothing is written.
+- Outcomes: "Deleted D prompts." "Archived A prompts." with already archived, no longer
+  exist, changed and kept-protected sentences and "Safety backup saved: NAME (System ›
+  Backup & export)."; the shelf, categories, cached Library views and sidebar counts reload.
+  Storage restored: "The library was restored or moved since this page loaded. Nothing was
+  deleted or archived."; busy: "NAME is running. Nothing was changed; try again when it
+  finishes."; a failed backup or a short disk: the server's sentence; no answer, 502, 503 or
+  504: "The server did not confirm the change. The Library was reloaded: check the shelf and
+  Show archived prompts."; other refusals: "The selected prompts could not be changed. Try
+  again.", the selection kept.
+- **Show archived prompts (N)** (heading actions, before Export, `aria-pressed`; N the
+  archived prompts matching the filters, `archived_total`; the shelf counterpart of #235's
+  Show archived) lists only archived prompts (`GET /prompt_manager/library?shelf=archived`,
+  a cursor never crosses shelves), each card with an "Archived" `.chip`, the caption "N
+  archived prompts · M negative variants hidden with them", the bar "N selected", Restore,
+  Clear, and "No archived prompts." / "No archived prompts match." when empty. The pressed
+  state stays with the shelf visit, never in a saved view; Browse and a saved view open the
+  shelf. Restore posts `{prompt_ids, expected_epoch}` to `POST
+  /prompt_manager/library/restore` (every requested archived id, protected or not): "Restored
+  N prompts to the Prompt library."
+- An archived prompt's page shows the concept's `.notice` ("Archived" / "This prompt is archived
+  because it is in a saved pair. It and its N negative variants are hidden from the Prompt library; nothing was
+  removed.", or "It is hidden from…" when it has none) with Restore;
+  everything else on the page works. New prompt or Add negative on an archived prompt's
+  text keeps it archived and toasts "This text is an archived prompt. Restore it to show it
+  in the Prompt library again."
+- Archived prompts: hidden from the shelf, its search, `total`, the sidebar count, Tags &
+  categories' prompt counts (a value only archived prompts hold stays listed with 0) and
+  System › Overview and the restore review's positive counts; still counted by rename and
+  delete impacts and usage statistics; still shown as another prompt's negative variant, on
+  recorded runs and Images, by the legacy pages and the ComfyUI node's search; still reached
+  by run counting, scans and the monitor; never pruned by maintenance (a new protection,
+  "archived in the Library"); exported with `archived: true`. Older builds ignore the table
+  and show them again; the rows stay.
+- Deviation from legacy: a selected `__protected__` prompt is never deleted or archived (the
+  legacy delete removed it); it is listed in the review and the toast.
+
+Tests: `tests/browser/workspace-library-delete.spec.mjs` (mixed review and result on the
+server, Cancel, Show archived prompts and Restore from the bar and the notice, double press,
+failed backup, busy, unconfirmed, restore fence); `tests/browser/library-delete-concept.spec.mjs`
+(the review against the concept's `maintenancePlan`, the bar's Delete… against the concept's
+"Remove links…"); units `tests/js/workspace-library-delete.test.js`; Python
+`tests/test_prompt_archive_schema.py`, `tests/test_bulk_library_delete.py`,
+`tests/test_library_delete_routes.py`. A Python change: ComfyUI needs a restart.
 
 ### No 1–5 prompt rating in the workspace (#447)
 
@@ -3922,8 +4014,8 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
 - **D104** (Backup & export, S9, Q4): Recovery policy keeps the concept's "Proposed" chip.
   "Create a safety backup before maintenance" is the server's `safety_backup`
   (`maintenance.safety_backup`) policy. Its line says what it does ("Keep a verified copy
-  of the database on disk before maintenance, cleanups and LoRA imports change records. A
-  restore always keeps one."); the concept's "Preview a verified backup before applying
+  of the database on disk before maintenance, cleanups, LoRA imports and prompt deletes
+  change records. A restore always keeps one."); the concept's "Preview a verified backup before applying
   operations that change records." describes nothing the server does. It is drafted behind the Save row and saved with
   `expected_revision` (a configuration changed elsewhere is the conflict status); it is
   disabled with "Server settings could not be read." when the read failed. "Scheduled
