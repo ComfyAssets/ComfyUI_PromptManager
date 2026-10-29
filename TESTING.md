@@ -267,11 +267,13 @@ the process exits non-zero.
   use `\\localhost\<missing share>`) or a default TLS context (it reads the
   Windows certificate store) costs seconds there; the slowest list shows it.
 
-Every job in `test.yml`, `code-quality.yml` and `viewerjs-check.yml` has
-`timeout-minutes` (`tests/vendor/ci-workflow.test.mjs` checks it). The rule is
-ceil(1.5 x the slowest of three recent green runs on `main`) + 3 minutes, never
-under 5; the three run ids, their times and the resulting limits are written
-in a comment above `jobs:`. The 3 minutes leave room for one watchdog firing, so
+Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
+`portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
+checks it). The rule is ceil(1.5 x the slowest of three recent green runs on
+`main`) + 3 minutes, never under 5, timed as whole-job wall time; the three run
+ids, their times and the resulting limits are written in a comment above
+`jobs:`. For `portability.yml` the tooling test recomputes the limit from that
+comment (#493); its one matrix job takes the slowest Windows or macOS leg. The 3 minutes leave room for one watchdog firing, so
 the dump prints before GitHub cancels the job. A job that hits its limit, or a
 watchdog dump, is a failure like any other: read the dump, find the blocking
 call, fix it. Never raise a limit or rerun to get green; a limit changes only
