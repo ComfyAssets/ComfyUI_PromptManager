@@ -195,12 +195,12 @@ export function showDeleteReview(plan, {scope, count, trigger = null, onApply}) 
         openCloseOnlyReview({scope, title, grid: deleteRows(plan, 'library'), sentence: reason, trigger});
         return null;
     }
-    let mode = null;
+    let mode = null, started = false;
     const list = el('dl', undefined, 'meta-grid');
     list.hidden = true;
     const notes = el('div', undefined, 'image-delete-notes');
     const cancel = createButton('Cancel');
-    const start = createButton(primaryLabel('library', modeCount(plan, 'library')), 'danger');
+    const start = createButton('Choose what happens to the files', 'danger image-delete-start');
     start.setAttribute('aria-disabled', 'true');
     function render() {
         list.replaceChildren();
@@ -219,8 +219,12 @@ export function showDeleteReview(plan, {scope, count, trigger = null, onApply}) 
     }
     const group = modeGroup(value => { mode = value; render(); });
     cancel.addEventListener('click', () => closeWorkspaceDialog());
+    // Nothing starts without an explicit mode: an aria-disabled primary ignores every activation (click, Enter, Space),
+    // and a chosen one starts once however often it is pressed. The dialog has no form, so Enter elsewhere submits nothing.
     start.addEventListener('click', () => {
-        if (!mode || start.getAttribute('aria-disabled') === 'true') return;
+        if (started || !MODES.some(choice => choice.value === mode) || start.getAttribute('aria-disabled') === 'true') return;
+        started = true;
+        start.setAttribute('aria-disabled', 'true');
         const chosen = mode;
         closeWorkspaceDialog();
         onApply(chosen);
@@ -233,6 +237,7 @@ export function showDeleteReview(plan, {scope, count, trigger = null, onApply}) 
 
 /** Apply `plan` in `mode`; the started job, or null (a toast said why). */
 export async function applyDelete({api, store, plan, mode, notify = showWorkspaceToast}) {
+    if (!MODES.some(choice => choice.value === mode)) throw new TypeError('A delete needs an explicit mode');
     let result;
     try {
         result = await api.post(APPLY_URL, {token: plan.token, mode});

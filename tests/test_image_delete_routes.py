@@ -106,10 +106,38 @@ class TestReview(ImageDeleteTestCase):
 
     async def test_mode_is_required_and_only_for_this_plan(self):
         self.write("a.png", b"aaa")
+        self.link("a.png")
         plan = await self.review(["a.png"])
-        await self.post(APPLY, {"token": plan["token"]}, 400)
-        await self.post(APPLY, {"token": plan["token"], "mode": "delete"}, 400)
+        # No explicit, exact mode: refused, never a default (least of all trash).
+        for body in (
+            {"token": plan["token"]},
+            {"token": plan["token"], "mode": None},
+            {"token": plan["token"], "mode": ""},
+            {"token": plan["token"], "mode": "TRASH"},
+            {"token": plan["token"], "mode": "delete"},
+            {"token": plan["token"], "mode": ["trash"]},
+            {"token": plan["token"], "mode": True},
+        ):
+            with self.subTest(body=body):
+                await self.post(APPLY, body, 400)
         self.assertTrue((self.output_dir / "a.png").exists())
+        self.assertEqual(self.fake.moved, [])
+        self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 1)
+        # The refusals left the token usable: an explicit mode still applies.
+        body = await self.post(APPLY, {"token": plan["token"], "mode": "library"}, 202)
+        job = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)
+        self.assertEqual(job.scope["mode"], "library")
+        self.assertTrue((self.output_dir / "a.png").exists())
+        self.assertEqual(self.fake.moved, [])
+
+    async def test_mode_on_another_plan_is_refused(self):
+        plan = await self.post(
+            "/prompt_manager/maintenance/preview",
+            {"operation": "missing_links", "options": {}},
+            200,
+        )
+        await self.post(APPLY, {"token": plan["token"], "mode": "trash"}, 400)
 
 
 class TestLibraryMode(ImageDeleteTestCase):

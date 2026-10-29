@@ -122,3 +122,50 @@ test('Delete… in the viewer closes it after the delete', async ({ page }) => {
     await expect(viewer).toBeHidden();
     await expect(page.locator(CARDS)).toHaveCount(before - 1);
 });
+
+// The review never starts a delete without an explicit choice (live test 2026-10-29): every activation of the
+// aria-disabled primary is ignored, the dialog has no form to submit, and a chosen primary starts once.
+test('without a chosen mode nothing can start a delete', async ({ page }) => {
+    const before = await openImages(page);
+    await check(page, 0);
+    const applies = [];
+    page.on('request', request => { if (request.url().includes('/maintenance/apply')) applies.push(request.postDataJSON()); });
+    await bar(page).getByRole('button', { name: 'Delete…', exact: true }).click();
+    const dialog = review(page);
+    await expect(dialog).toBeVisible();
+    const primary = dialog.locator('.dialog-actions button.danger');
+    await expect(primary).toHaveAttribute('aria-disabled', 'true');
+    await expect(primary).toHaveText('Choose what happens to the files');
+    // Visibly dimmed while no mode is chosen.
+    await expect(primary).toHaveCSS('opacity', '0.55');
+    await expect(primary).toHaveCSS('cursor', 'not-allowed');
+    await primary.click({ force: true });
+    await primary.dblclick({ force: true });
+    await primary.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    await dialog.locator('#modal-title').click();
+    await page.keyboard.press('Enter');
+    expect(await dialog.locator('form').count()).toBe(0);
+    await page.evaluate(() => document.querySelector('dialog#modal[open]')?.dispatchEvent(new Event('submit', { bubbles: true })));
+    await expect(dialog).toBeVisible();
+    expect(applies).toEqual([]);
+    for (const radio of await dialog.getByRole('radio').all()) await expect(radio).not.toBeChecked();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.locator(CARDS)).toHaveCount(before);
+    expect(applies).toEqual([]);
+});
+
+test('a chosen mode starts exactly one delete, with that mode, however often it is pressed', async ({ page }) => {
+    const before = await openImages(page);
+    await check(page, 0);
+    const applies = [];
+    page.on('request', request => { if (request.url().includes('/maintenance/apply')) applies.push(request.postDataJSON()); });
+    const { primary } = await deleteChecked(page, 'library');
+    await primary.dblclick();
+    await expect(toast(page)).toContainText('Removed 1 image from the library.');
+    await expect(page.locator(CARDS)).toHaveCount(before - 1);
+    expect(applies.length).toBe(1);
+    expect(applies[0].mode).toBe('library');
+    expect(Object.keys(applies[0]).sort()).toEqual(['mode', 'token']);
+});

@@ -139,3 +139,11 @@ test('apply sends the token and the mode, and toasts that the job started', asyn
         store, plan: plan(), mode: 'library', notify: text => toasts.push(text) });
     assert.equal(refused, null);
 });
+
+test('apply refuses to send a delete without an explicit mode', async () => {
+    const { applyDelete } = module();
+    const api = { post: () => assert.fail('no request without a mode') };
+    for (const mode of [undefined, null, '', 'TRASH', 'delete']) {
+        await assert.rejects(applyDelete({ api, store: null, plan: plan(), mode, notify: () => {} }), TypeError);
+    }
+});
