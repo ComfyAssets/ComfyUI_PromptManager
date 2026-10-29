@@ -14,6 +14,9 @@
  *   it to the host draft of `gallery_root_paths`; Remove takes one out. Both wait for the one Save row.
  * - "Watch for new outputs" (`monitoring_enabled`) and "Worker threads" (`worker_threads`, a range up to the server's
  *   `cpu_count`, D113) are host drafts too. "Enrich existing metadata" reviews a scan of every source.
+ * - D158 (#247): "Save prompts from other workflows" (`save_foreign_runs`), a host draft below "Watch for new outputs",
+ *   applied by the server at once (the monitor reads it for every file); disabled, saying why, while monitoring is off,
+ *   unless the running monitor still watches until a restart (D128 `stopping`): then it can still be set.
  * - "Thumbnail generation → Review options" opens "Thumbnail maintenance" (thumbnail-review.mjs, S5 Task 14), which
  *   starts the thumbnail Activity job.
  *
@@ -63,6 +66,21 @@ export const LOAD_FAILED_TEXT = 'Sources could not be loaded. Your saved data ha
 export const DUPLICATE_TEXT = 'This folder is already a source.';
 export const VALIDATE_FAILED_TEXT = 'The folder could not be checked. Try again.';
 export const REFRESH_FAILED_TEXT = 'Files could not be refreshed. Try again.';
+/** D158 (#247): the row the concept does not draw, below "Watch for new outputs". */
+export const FOREIGN_RUNS = Object.freeze({ id: 'foreign-runs', key: 'save_foreign_runs', label: 'Save prompts from other workflows',
+    description: 'New outputs of workflows without a PromptManager node add their prompt to the library when it is certain.',
+    off: 'Applies while Watch for new outputs is on.' });
+
+/**
+ * D158: the row for the drafted `save_foreign_runs` (`value`) and `monitoring_enabled` (`monitoring`): disabled until
+ * read, and while monitoring is off, when `note` says why (the value is kept and saved as it is). `stopping`: a source
+ * is still watched until the restart (D128), so the value can still be set; the note stays.
+ */
+export function foreignRunsState({ value, monitoring, stopping = false }) {
+    if (value === undefined) return { disabled: true, checked: null, note: null };
+    const off = monitoring === false;
+    return { disabled: off && !stopping, checked: value === true, note: off ? FOREIGN_RUNS.off : null };
+}
 
 // Labels of the sources added in this page session (validate-source answers them), for the rows not saved yet.
 const addedLabels = new Map();
@@ -267,13 +285,16 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
     const monitoring = settingRow({ id: 'monitoring', label: 'Watch for new outputs',
         description: 'New files enter the same library. Existing scans do not count as new runs.', control: { type: 'toggle' },
         scope, onChange: value => drafts.set('host', 'monitoring_enabled', value) });
+    const foreign = settingRow({ id: FOREIGN_RUNS.id, label: FOREIGN_RUNS.label, description: FOREIGN_RUNS.description,
+        control: { type: 'toggle' }, scope, onChange: value => drafts.set('host', FOREIGN_RUNS.key, value) });
     const workers = settingRow({ id: 'workers', label: 'Worker threads',
         description: 'Balance background scans and thumbnail work against generation.', control: { type: 'range', value: 4 },
         scope, onChange: value => drafts.set('host', 'worker_threads', value) });
-    const hostRows = [[monitoring, 'monitoring', 'monitoring_enabled'], [workers, 'workers', 'worker_threads']]
+    const hostRows = [[monitoring, 'monitoring', 'monitoring_enabled'], [foreign, FOREIGN_RUNS.id, FOREIGN_RUNS.key],
+        [workers, 'workers', 'worker_threads']]
         .map(([row, id, key]) => ({ input: controlOf(row, id), key, text: row.children[0], note: null }));
     for (const row of hostRows) row.input.dataset.key = row.key;
-    surface.append(monitoring, workers,
+    surface.append(monitoring, foreign, workers,
         operationRow({ scope, title: 'Enrich existing metadata', description: 'Resolve both prompts, deduplicate recipes, preserve uncertain links.',
             label: 'Review scan', onClick: scanAll }),
         operationRow({ scope, title: 'Thumbnail generation', description: 'Generate missing previews; rebuilding all is a separate explicit option.',
@@ -348,6 +369,10 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         for (const row of hostRows) {
             const value = drafts.get('host', row.key);
             row.input.disabled = value === undefined;
+            if (row.key === FOREIGN_RUNS.key) {
+                paintForeign(row, value, unavailable);
+                continue;
+            }
             if (row.key === 'worker_threads') {
                 // D113: the range ends at the server's core count (the concept's fixed 16).
                 const cpus = drafts.get('host', 'cpu_count');
@@ -358,6 +383,24 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
                 if (!row.note) { row.note = el('p', HOST_UNAVAILABLE, 'small'); row.text.append(row.note); }
             } else if (row.note) { row.note.remove(); row.note = null; }
         }
+    }
+
+    // D158: disabled while monitoring is drafted off, with the reason under the description.
+    function paintForeign(row, value, unavailable) {
+        const stopping = sources?.effective?.some(source => source.watch === 'stopping') === true;
+        const state = foreignRunsState({ value, monitoring: drafts.get('host', 'monitoring_enabled'), stopping });
+        row.input.disabled = state.disabled;
+        if (state.checked !== null) row.input.checked = state.checked;
+        const note = unavailable && value === undefined ? HOST_UNAVAILABLE : state.note;
+        if (note && row.note?.textContent !== note) {
+            row.note?.remove();
+            row.note = el('p', note, 'small');
+            row.note.id = `${FOREIGN_RUNS.id}-note`;
+            row.text.append(row.note);
+        } else if (!note && row.note) { row.note.remove(); row.note = null; }
+        // The note is the switch's description, so a screen reader says why it is disabled.
+        if (row.note) row.input.setAttribute('aria-describedby', row.note.id);
+        else row.input.removeAttribute('aria-describedby');
     }
 
     // The sources changed since this page read them (a refused per-source scan): read them and the saved values again.
@@ -378,6 +421,7 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         if (answer === STALE || scope.signal.aborted) return;
         sources = answer?.sources ?? null;
         paintList();
+        paintControls();
     }
 
     // A save (or a reread after a conflict) changed the saved sources or monitoring: read their state again. The first

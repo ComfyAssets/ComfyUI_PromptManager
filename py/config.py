@@ -194,6 +194,8 @@ class GalleryConfig:
 
     Attributes:
         MONITORING_ENABLED (bool): Enable/disable automatic image monitoring
+        SAVE_FOREIGN_RUNS (bool): The monitor stores the certain prompt of an
+            output whose workflow has no PromptManager node (#247)
         MONITORING_DIRECTORIES (List[str]): Directories to monitor for new images
         SUPPORTED_EXTENSIONS (List[str]): Image file extensions to process
         PROCESSING_DELAY (float): Delay in seconds before processing new files
@@ -210,6 +212,8 @@ class GalleryConfig:
 
     # Image monitoring settings
     MONITORING_ENABLED = True
+    # Read by the monitor for every file, so a save applies without a restart
+    SAVE_FOREIGN_RUNS = True
     MONITORING_DIRECTORIES = []  # Auto-detect if empty
     SUPPORTED_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
     PROCESSING_DELAY = 2.0  # Seconds to wait before processing new files
@@ -251,6 +255,7 @@ class GalleryConfig:
         return {
             "monitoring": {
                 "enabled": cls.MONITORING_ENABLED,
+                "save_foreign_runs": cls.SAVE_FOREIGN_RUNS,
                 "directories": cls.MONITORING_DIRECTORIES,
                 "extensions": cls.SUPPORTED_EXTENSIONS,
                 "processing_delay": cls.PROCESSING_DELAY,
@@ -302,6 +307,14 @@ class GalleryConfig:
             else:  # a hand-edited "false" would otherwise switch it on
                 config_logger.warning(
                     "Ignoring gallery monitoring enabled: expected true or false"
+                )
+        if "save_foreign_runs" in monitoring:
+            if isinstance(monitoring["save_foreign_runs"], bool):
+                cls.SAVE_FOREIGN_RUNS = monitoring["save_foreign_runs"]
+            else:
+                config_logger.warning(
+                    "Ignoring gallery monitoring save_foreign_runs: expected true "
+                    "or false"
                 )
         if "directories" in monitoring:
             directories = cls._validated_directories(monitoring["directories"])

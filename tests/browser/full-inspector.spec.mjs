@@ -558,7 +558,8 @@ test.describe('full inspector coarse pointer',()=>{
         }
         await openSelected(page);const viewer=page.locator('dialog#viewer-dialog');
         await expect(viewer.locator('.viewer-canvas img')).toBeVisible();
-        for(const target of await viewer.locator('#viewer-toolbar > :is(button,a),.dialog-header > button').all()) {
+        // #450 D156: the view switch is hidden at 700px and below; a shown one is measured like ×.
+        for(const target of await viewer.locator('#viewer-toolbar > :is(button,a),.dialog-header > button:visible').all()) {
             const box=await target.evaluate(node=>{const {width,height}=node.getBoundingClientRect();return {width,height,name:node.getAttribute('aria-label')};});
             expect(box.width,box.name).toBeGreaterThanOrEqual(80);expect(box.height,box.name).toBeGreaterThanOrEqual(80);
         }
@@ -621,6 +622,11 @@ test('viewer matches the concept shell and toolbar order',async({page,request})=
         const production=await page.evaluate(VIEWER_SHELL);
         // C8 rebuilds the details content; until then the shared file inspector marks the aside it renders into.
         production.paths=production.paths.map(path=>path.replace('aside#viewer-details.file-inspector','aside#viewer-details'));
+        // #450 D156: production's view switch sits right before × (hidden at 700px and below); the concept has none.
+        const modePaths=production.paths.filter(path=>path.includes('button#viewer-mode'));
+        expect(modePaths.map(path=>path.split(' > ').slice(2).join(' > '))).toEqual(['button#viewer-mode.icon-btn','button#viewer-mode.icon-btn > svg.icon','button#viewer-mode.icon-btn > svg.icon > path']);
+        expect(production.paths[production.paths.indexOf(modePaths[2])+1]).toBe('dialog#viewer-dialog > div.dialog-header > button#viewer-close');
+        production.paths=production.paths.filter(path=>!modePaths.includes(path));
         // #249 D34: after Next → production appends its own status lines (position, then the transform and slideshow
         // reasons), and Download stays the original-file link; every other control keeps the concept's text and order.
         const appended=production.toolbar.slice(9);

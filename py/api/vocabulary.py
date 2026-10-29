@@ -61,18 +61,25 @@ class VocabularyRoutesMixin:
         )
 
     async def _vocabulary_page(
-        self, request: web.Request, kind: str, reader_name: str, name: bool
+        self,
+        request: web.Request,
+        kind: str,
+        reader_name: str,
+        name: bool,
+        options: dict | None = None,
     ) -> web.Response:
         limit = _vocabulary_limit(request)
         cursor = request.query.get("cursor")
+        options = options or {}
 
         def read() -> dict:
             # The snapshot stays open while the cursor is decoded and encoded,
-            # so its epoch scope is the epoch the page was read from.
+            # so its epoch scope is the epoch the page was read from. A tag
+            # search or sort joins the scope: its cursor fits no other order.
             with self.db.library_snapshot() as (conn, epoch, _ceiling):
-                scope = _scope({"kind": kind, "epoch": epoch})
+                scope = _scope({"kind": kind, "epoch": epoch, **options})
                 result = getattr(self.db, reader_name)(
-                    conn, epoch, limit=limit, after=_decode(cursor, scope)
+                    conn, epoch, limit=limit, after=_decode(cursor, scope), **options
                 )
                 result["next_cursor"] = _encode(
                     result.pop("next_key"), scope, name=name
@@ -84,8 +91,14 @@ class VocabularyRoutesMixin:
 
     @pair_response
     async def list_vocabulary_tags(self, request: web.Request) -> web.Response:
+        options = {
+            "search": request.query.get("search", "").strip(),
+            "sort": request.query.get("sort", "created"),
+        }
+        # Name keys are text: kept server side so the cursor stays small.
+        name = options["sort"].startswith("name")
         return await self._vocabulary_page(
-            request, "vocabulary-tags", "_vocabulary_tags", False
+            request, "vocabulary-tags", "_vocabulary_tags", name, options
         )
 
     @pair_response

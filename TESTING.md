@@ -3271,7 +3271,8 @@ until this browser dismissed the 3.2.0 update notice (`pm_update_notice_dismisse
 the legacy admin page's key); Later dismisses it without scanning, and Review scan
 dismisses it as the legacy Scan does. "+ Add source" asks validate-source, then adds
 the folder to the host draft of `gallery_root_paths`; Remove takes one out; "Watch for
-new outputs" (`monitoring_enabled`) and Worker threads (`worker_threads`) are host
+new outputs" (`monitoring_enabled`), "Save prompts from other workflows"
+(`save_foreign_runs`, D158) and Worker threads (`worker_threads`) are host
 drafts too, and Save writes them with the revision. A save the server refuses because a
 scan runs toasts "Another job is running: <title>." with a link to that job (D57) and
 keeps the drafts; a save refused for one source says the server's message as the status
@@ -3520,7 +3521,7 @@ the connection's `total_changes` is 0 at close and the data reads back unchanged
 `-shm` bytes are not compared: every WAL reader rewrites its read marks there, so no
 reader can keep it byte-identical (`test_health_check_never_writes`).
 
-Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 assigned). D94,
+Recorded deviations (plan D60–D75, D79–D82 renumbered D92–D107, D109–D110 and D111–D114; D121–D134 and D158 assigned). D94,
 the per-section hand-off panel, was retired by S12 (#329): every section is native.
 
 - **D92** (shell): no "Sample configuration" chip. The Save status is truthful: "No
@@ -3592,10 +3593,40 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   details by default" (`sidebarCollapsedByDefault`; the viewer opens with
   `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
   `aria-expanded`, the stage taking the whole width; amended by D155: on Inspect a file
-  the viewer opens with the details showing and the toggle reading "Hide details"), and the operation "Reset display
+  the viewer opens with the details showing and the toggle reading "Hide details"; amended by D156: the row moved
+  to the "Viewer" surface), and the operation "Reset display
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D156** (#450, maintainer request 2026-10-28, beyond the concept): every viewer (the
+  shared `dialog#viewer-dialog` of Images, Library, History, collections and Inspect) has
+  `button#viewer-mode.icon-btn` in `.dialog-header`, right before ✕ (a direct child, so
+  the concept's `.dialog-header > button` and D34's coarse 40px rule cover it; 8px from
+  ✕). It names the view it switches to in its accessible name and `title` ("Full screen
+  view" / "Centered view") with a `maximize` / `minimize` outline icon, and keeps focus
+  after a switch. Full screen (`#viewer-dialog.viewer-fullscreen`) fills the browser
+  window edge to edge: `inset: 0`, no width or height cap, no margin, border or radius
+  (`.ca-tools #viewer-dialog.viewer-fullscreen[open]`, beating the concept's box, D34's
+  max-height and the ≤700px height); the layout inside is the concept's. Centered is the
+  concept's framed dialog, unchanged. In full screen the details stay toggleable: the
+  D97 "Show details"/"Hide details" toggle is in the toolbar whenever the view is full
+  screen or "Collapse viewer details by default" is on; going back to Centered without
+  that setting removes the toggle and shows the details. The view is not the browser's
+  Fullscreen API (Esc keeps one meaning, closing the viewer; WebKit has no element
+  fullscreen for a modal dialog; the workspace also runs in ComfyUI popups). The viewer
+  opens in the view System › Appearance › **Viewer** › "Open viewer in" (Centered,
+  Full screen) chooses: a browser display preference, `viewerOpenMode` (`centered` by
+  default, normalized in `gallery-settings.js`) in the shared `gallerySettings`; no
+  server setting. The button changes only the current view (navigation in the viewer
+  keeps it; the next open uses the setting). "Viewer" is its own surface after
+  "Browsing & display" ("How the image viewer opens; the button beside ✕ switches the
+  current view."), holding "Open viewer in" and the moved "Collapse viewer details by
+  default"; "Reset display defaults" still restores both. At ≤700px (the concept's
+  breakpoint, where the viewer is already 96vw × 94dvh) the button is hidden
+  (`display: none !important` against the concept's `.icon-btn` rule), popup windows
+  that narrow included; the stored view still applies there. Browser tests:
+  `tests/browser/workspace-viewer-mode.spec.mjs`; the concept comparisons add the
+  button to the concept's header at runtime and map the Viewer surface.
 - **D98** (Sources): each configured source's row has a plain Remove after its scan
   button; nothing changes until Save. A source added this session reads "<path> · not
   saved yet" with Remove only until Save; a configured source the server cannot use
@@ -4010,6 +4041,26 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
   the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
   label in turn.
+- **D158** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
+  without a PromptManager node; the maintainer chose a visible switch over a config key.
+  A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
+  "Save prompts from other workflows" (`#foreign-runs`, host key `save_foreign_runs`,
+  config.json `gallery.monitoring.save_foreign_runs`, default on), "New outputs of
+  workflows without a PromptManager node add their prompt to the library when it is
+  certain.". It is saved with the revision like the other host rows and applied at once
+  (the monitor reads it for every file), so a save names no restart. While "Watch for
+  new outputs" is drafted off, a `p.small` under the description says "Applies while
+  Watch for new outputs is on." (the switch's `aria-describedby`; the value is kept) and
+  the switch is disabled, except while a source still reads "watching until restart"
+  (D128): the running observer still delivers files then, so the value can be set. The
+  server stores no foreign prompt while `monitoring_enabled` is saved off, whatever the
+  observer does.
+  Pinned by `sources matches the concept` (the mapping inserts the row after the
+  monitoring row), `sources comparison detects mutations` (a missing row and a changed
+  label are caught), `D158: Save prompts from other workflows saves save_foreign_runs
+  live; off while monitoring is off (#247)` (keyboard on desktop, a tap on touch) and
+  `D158: saved off while the monitor still watches until a restart, the foreign row can
+  still be set (D128)` (workspace-system-sources.spec) and the system-sources node test.
 - **D109** (Logs, S12, #329): the concept's Logs surface on the live server. The toolbar
   keeps "Level", Refresh and the download (renamed "Download log": the active log,
   `/logs/download/prompt_manager.log`, through the api client), with all six minimum
@@ -5937,6 +5988,70 @@ Tests: `tests/test_file_prompt.py` (one test per ladder step and junk class),
 saver, a legacy-linked file left as it is, `_BatchHistory.recorded`) and
 `tests/test_recorded_saver_anchor.py` `TestInspectionResolution`.
 
+**In the monitor.** An output whose workflow has no positive PromptManager node
+(`_find_prompt_from_metadata` says `foreign`) used to be logged and skipped. It now
+goes through the same ladder with the `MONITOR` policy (`utils/foreign_runs.py`, the
+handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
+
+- **At settle.** The ladder runs without history. Certain (`pair` or `positive`): the
+  prompt is stored and the file linked at once. `history` (an undecided graph inside
+  ComfyUI's output folder): the file is registered in its own waiting set, then the
+  ladder runs again at once with the file's recorded output, because the run may have
+  been sealed before the file settled. When that lookup finds a record, its answer is
+  final: certain is stored, anything else is logged "No certain prompt for <file>;
+  left unlinked" and the file stops waiting (no seal is coming). When it finds none,
+  only the inspector's or the recorded saver's answer is stored; anything else (the
+  legacy floor included) keeps waiting for the re-check. Anything else at the first
+  pass is logged "No certain prompt for <file>; left unlinked".
+- **After the run ends.** When the run's outputs are sealed, each waiting foreign file
+  gets one re-check (`ForeignRecheck(reference)`) with the sealed output reference,
+  so history is asked with the spelling it recorded (a Windows folder whose case
+  differs from the disk still links). Not certain: "No certain prompt for <file>
+  after its run ended; left unlinked". An ambiguous inspector answer is never given
+  the legacy floor in the monitor (D-Q3); an untraceable one still is.
+- **Waiting sets.** `_awaiting_foreign` and `_foreign_due` sit beside the keyless sets
+  with the same bounds (1000 files, one hour) but are separate, so a large foreign run
+  never evicts a waiting keyless file. An expired entry is logged "No recorded run
+  for <file>; left unlinked", an evicted one (waiting or due) "Too many files wait for
+  their run; <file> left unlinked", both after the lock is released. A due re-check
+  is dropped only when it was scheduled, never a newer reference for the same file. `awaiting_foreign()` lists them;
+  `shutdown()` and `close()` clear them, and a closed handler re-checks nothing.
+- **Store.** One write through `survive_switch` (rerun after a Move library): a pair
+  through `ingest_resolved_pair(..., marks=RUN_MARKS)`, a positive through
+  `store_scanned_prompt_or_raise(..., RUN_MARKS)`. A created prompt carries category
+  `scanned`, tag `auto-scanned` and the note `Saved from a workflow run: <file>`; a
+  file linked to another prompt is `conflict` and keeps its link. Logged at info
+  "Foreign run: <status> prompt <id> for <file> (<source>)"; a failure is logged and
+  the file stays unlinked.
+- **Never.** No tracker FIFO entry is read or consumed, nothing is counted (run count
+  stays 0, no `last_used_at`), and nothing is queued for Needs review.
+- **The setting.** `GalleryConfig.SAVE_FOREIGN_RUNS` (`gallery.monitoring.
+  save_foreign_runs`, default true, only a bool applies) is read for every file, at
+  settle, at the re-check and again just before the store, together with
+  `MONITORING_ENABLED`: either saved off stops foreign writes at once (the running
+  observer watches until a restart, D128); off logs "No PromptManager prompt in
+  workflow, skipping image" as before. System › Sources & scans "Save prompts from other workflows" (D158)
+  saves it through `POST /prompt_manager/settings` with no restart field; the
+  diagnostics report lists it.
+
+Tests: `tests/test_run_attribution.py` `TestMonitorForeignRuns` (dataset branches
+linked after the seal, a seal before settle, a name two runs reported, the setting
+off at settle and at the re-check, a plain workflow linked at settle with no run
+count and the tracker queue untouched, the sealed reference's spelling, the separate
+bound, expiry, a seal while the pending set is full, shutdown, a failed store, no
+record at settle keeps waiting, a record without an answer ends the wait, monitoring
+saved off, the setting read before the store, a seal between registering and the
+settle lookup, a newer due reference kept, evictions logged, one link per file),
+`tests/test_image_linking.py` `TestForeignWorkflows`, `tests/test_image_monitor_singleton.py`
+(close drops a foreign re-check), `tests/test_config.py`,
+`tests/test_settings_sources.py` `TestSaveForeignRunsSetting`, and the real-host
+`tests/comfyui/image-attribution.spec.mjs` case "an output of a workflow without a
+PromptManager node creates and links its prompt; a second run reuses it" (ComfyUI's
+own `CLIPTextEncode`, `KSampler` and `SaveImage`), and "each branch of a
+shared-prefix workflow without a PromptManager node links to its own prompt after the
+run" (two branches, one save prefix: the recorded saver names each file's branch).
+The fixture route's GET also lists `foreign`, the waiting foreign files.
+
 ## Linked prompt text (#343)
 
 A link drives `text` on every PromptManager node, and `negative_text` on the Pair,
@@ -6521,15 +6636,16 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for tag search and sort, the untagged entry and
-multi-tag AND/OR browsing; bulk prompt delete stays on the legacy admin page (bulk tags:
-the Prompt library's selection bar, D151). A
+"Open existing tag manager" card for multi-tag AND/OR browsing (tag search and sort
+and the untagged entry moved here with D149, #444); bulk prompt delete stays on the
+legacy admin page (bulk tags: the Prompt library's selection bar, D151). A
 prompt's category is changed in the Prompt library editor, on many prompts at once with
 the Prompt library's selection bar (D148, #437), or with the legacy admin page's "Set
 Category" (both `POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
-above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
+above and adds no route, so PR B needed no ComfyUI restart; D149 (#444) adds read
+parameters to `GET tags` and `GET /prompt_manager/library`, which do.
 
 Screen: a `+ Create tag` heading action, a Tag vocabulary table (columns Tag, Prompts,
 Images counting the files that carry the tag (`image_count`, #249 C2), and Actions with Browse and
@@ -6581,6 +6697,36 @@ Apply; "Apply" instead of "Apply in prototype"; Delete tag… inside Rename or m
 Browse sets the exact filter; singular "1 positive prompt"; the production list appends
 fixture-only tags after the concept's sample tags.
 
+- **D149** (#444, cutover #334; the concept's renderTags has neither): the Tag vocabulary
+  surface shows, after its paragraph, an "Untagged prompts" `.operation` row ("N positive
+  prompts", Browse) and then the tag search and sort, drawn as the concept page toolbar's
+  `search.toolbar` > `label.search-field` (search icon, `input#tag-search` "Search tags…",
+  maxlength 200) and a `select#tag-sort` (Oldest first, the default and the old order;
+  Name A–Z; Name Z–A; Most prompts; Fewest prompts). Search is a literal, case-insensitive
+  substring on the server (`GET /prompt_manager/vocabulary/tags?search=&sort=`; ASCII-only
+  case folding, like SQLite `LIKE`/`NOCASE`), debounced 250 ms; it resets only the tag list
+  to page one, keeps through command re-reads, reads "No tags match this search." when
+  empty and is announced in a visually hidden status ("N tags"). Every sort breaks ties by
+  ascending id; a cursor belongs to one search and sort (scope-hashed; another is 400 with
+  "refresh"); a count sort's counts can move between pages only through a write, which
+  re-reads from page one. Each tags page reports `untagged_count` (eligible Library parents
+  with no tag and no active pair carrying one, the complement of every tag's Browse; legacy
+  counted every prompt without `prompt_tags` and hid the entry at 0; this row always
+  shows) and echoes `search` and `sort`. Browse opens the Library with `tag_mode=untagged`
+  (`GET /prompt_manager/library`, echoed as `tag_mode`; with a `tag` it is 400): "Filters ·
+  1", and Refine this view adds **Tag match** after Tags ("All of these tags" / "Prompts
+  without tags", the latter disables Tags and drops them on Apply). A client whose request
+  the server did not echo (an un-restarted older server) shows the read error with Retry,
+  never an unfiltered list. Saved Library views store `tag_mode` (`all|untagged`, default
+  `all`); untagged with tags is refused on write and reads back as `all`; an older build
+  opens an untagged view as the whole Library. The concept comparison holds the row to the
+  concept's first category row, its top to the concept table's offset, the table to that
+  offset plus the additions' height (`d149`) and the toolbar to the concept Library
+  toolbar (`toolbarInventoryOf`), with a mutation check. Tests:
+  `tests/test_vocabulary.py` (`TestVocabularyTagSearchAndSort`, `TestLibraryTagMode`),
+  `test_api_vocabulary.py`, `test_api_library.py`, `test_saved_views.py`, the
+  vocabulary/library/saved-views JS units and `tests/browser/workspace-vocabulary-search.spec.mjs`
+  (behavior plus artifact captures).
 - **D143** (#332): category rows count the images whose own category is the value
   (`image_count`, the stored rows, missing files included): "N positive prompts · M
   images" beside prompts, "M images" for an image-only value, which follows every

@@ -1,6 +1,7 @@
 // #342 on the real pinned host: the image monitor links an output only to a prompt
 // that provably produced it. An unknown node (PMHistoryCached) stands in for the
-// maintainer's LLM; KSampler is the fixture's deterministic stand-in.
+// maintainer's LLM; KSampler is the fixture's deterministic stand-in. #247: an output
+// of a workflow without a PromptManager node gets its own prompt.
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -139,6 +140,68 @@ test('an output saved without metadata links once its recorded run names a store
     } finally {
         expect((await request.post('/pm_execution_fixture/metadata', { data: { disabled: false } })).ok()).toBe(true);
     }
+});
+
+// #247: no PromptManager node at all, only ComfyUI's own text encoders, sampler and
+// saver (the fixture's inputs and decoder stand in for the model files).
+function foreignGraph({ text, seed = 1, prefix }) {
+    return {
+        '10': { class_type: 'PMHistoryInputs', inputs: {} },
+        '20': { class_type: 'CLIPTextEncode', inputs: { text, clip: ['10', 0] } },
+        '30': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['10', 0] } },
+        '40': { class_type: 'KSampler', inputs: { model: ['10', 1], latent_image: ['10', 2], positive: ['20', 0],
+            negative: ['30', 0], seed, steps: 1, cfg: 1, sampler_name: 'euler', scheduler: 'normal', denoise: 1 } },
+        '60': { class_type: 'PMHistoryImages', inputs: { value: 64, batch: 1, latent: ['40', 0] } },
+        '70': { class_type: 'SaveImage', inputs: { images: ['60', 0], filename_prefix: prefix } },
+    };
+}
+
+test('an output of a workflow without a PromptManager node creates and links its prompt; a second run reuses it', async ({ execution }, testInfo) => {
+    const text = `foreign lighthouse at dusk ${testInfo.project.name} ${randomUUID()}`;
+    const first = await saved(execution.request, foreignGraph({ text, prefix: 'foreign/run' }));
+    await linkedTo(execution, first, text);
+    // Only the seed changes: a new file, the same text, so the same stored prompt.
+    const second = await saved(execution.request, foreignGraph({ text, seed: 2, prefix: 'foreign/run' }));
+    await linkedTo(execution, second, text);
+    const state = await readLinks(execution.databasePath, [first, second], [text]);
+    expect(state).toEqual({ links: { [first]: text, [second]: text }, stored: { [text]: true } });
+    // Decided from the graph at settle: nothing waits for the run's recorded outputs.
+    expect((await (await execution.request.get('/pm_execution_fixture/monitor')).json()).foreign).toEqual([]);
+});
+
+// CUJ 1: two branches saved under one prefix, so neither the graph nor the file name
+// names a file's branch; the run's recorded saver does, once its outputs are sealed.
+function sharedPrefixGraph(texts) {
+    const nodes = {
+        '10': { class_type: 'PMHistoryInputs', inputs: {} },
+        '30': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['10', 0] } },
+    };
+    texts.forEach((text, index) => {
+        const base = (index + 1) * 100;
+        nodes[String(base)] = { class_type: 'CLIPTextEncode', inputs: { text, clip: ['10', 0] } };
+        nodes[String(base + 1)] = { class_type: 'KSampler', inputs: { model: ['10', 1], latent_image: ['10', 2],
+            positive: [String(base), 0], negative: ['30', 0], seed: index + 1, steps: 1, cfg: 1, sampler_name: 'euler',
+            scheduler: 'normal', denoise: 1 } };
+        nodes[String(base + 2)] = { class_type: 'PMHistoryImages', inputs: { value: 64, batch: 1, latent: [String(base + 1), 0] } };
+        nodes[String(base + 3)] = { class_type: 'SaveImage', inputs: { images: [String(base + 2), 0], filename_prefix: 'foreign/dataset' } };
+    });
+    return nodes;
+}
+
+test('each branch of a shared-prefix workflow without a PromptManager node links to its own prompt after the run', async ({ execution }, testInfo) => {
+    const tag = `${testInfo.project.name} ${randomUUID()}`;
+    const texts = [`dataset branch one harbor ${tag}`, `dataset branch two meadow ${tag}`];
+    const id = randomUUID();
+    const response = await execution.request.post('/prompt', { data: { prompt: sharedPrefixGraph(texts), prompt_id: id } });
+    expect(response.ok()).toBe(true);
+    let item;
+    await expect.poll(async () => {
+        item = (await (await execution.request.get(`/history/${id}`)).json())[id];
+        return item?.status?.messages?.some(([kind]) => kind === 'execution_success') || false;
+    }, { timeout: 15000 }).toBe(true);
+    const files = ['103', '203'].map(node => item.outputs[node].images[0].filename);
+    for (const [index, file] of files.entries()) await linkedTo(execution, file, texts[index]);
+    expect((await (await execution.request.get('/pm_execution_fixture/monitor')).json()).foreign).toEqual([]);
 });
 
 // #332 on the real host: the migration ran at startup and the image category routes

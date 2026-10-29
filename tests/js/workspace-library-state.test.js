@@ -104,6 +104,17 @@ test('archived variant reads use their own scope and cursor without changing the
  const active=[];const plain=createLibraryDetail({api:{get:async url=>{active.push(url);return {positive:item(1),variants:[]};}},onChange:()=>{}});await plain.load(1);assert.equal(new URL(active[0],'https://x').searchParams.has('archive'),false);
  assert.throws(()=>createLibraryDetail({api:{},onChange:()=>{},archive:'parents'}));
 });
+test('tag mode untagged is sent, echoed and never combined with tags (#444)',async()=>{
+ const {createLibraryStream}=await source;const calls=[];const pending=[{...page([item(1)]),tag_mode:'untagged'},page([item(2)]),page([item(3)])];
+ const s=createLibraryStream({api:{get:async(url)=>{calls.push(url);return pending.shift();}}});
+ assert.equal(await s.reset({tagMode:'untagged'}),1);assert.equal(new URL(calls[0],'https://x').searchParams.get('tag_mode'),'untagged');
+ // An older server that ignored tag_mode answers without the echo: an error, never the whole Library.
+ assert.equal(await s.reset({tagMode:'untagged'}),0);assert.ok(s.state.error instanceof TypeError);assert.deepEqual(s.state.items,[]);
+ // The default sends no tag_mode, so it needs no echo.
+ assert.equal(await s.reset({tagMode:'all'}),1);assert.equal(new URL(calls[2],'https://x').searchParams.has('tag_mode'),false);
+ await assert.rejects(s.reset({tagMode:'untagged',tags:['a']}),TypeError);await assert.rejects(s.reset({tagMode:'none'}),TypeError);
+ assert.equal(calls.length,3);s.dispose();
+});
 test('the stream keeps the first page\'s storage epoch and refuses a later page from another one (#437)',async()=>{
  const {createLibraryStream}=await source;const A='11111111-1111-4111-8111-111111111111',B='22222222-2222-4222-8222-222222222222';
  const pending=[{...page([item(1)],'next'),library_epoch:A},{...page([item(2)],'more'),library_epoch:A},{...page([item(3)]),library_epoch:B}];
