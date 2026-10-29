@@ -78,6 +78,8 @@ def _detach(mount):
         return f"this test still held files open under {mount}: {ours}"
     deadline = time.monotonic() + DETACH_WAIT_SECONDS
     while True:
+        if not os.path.ismount(mount):
+            return None  # a "busy" detach can still finish after it returns
         done = _hdiutil("detach", mount)
         if done.returncode == 0:
             return None
