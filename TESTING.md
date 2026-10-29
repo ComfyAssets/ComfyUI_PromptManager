@@ -2497,7 +2497,11 @@ mapped differences"):
   only while that selection is current and no other dialog is open. A new selection
   that starts while the viewer shows the previous file closes it first, so no element
   holds the old `blob:` URL when the session revokes it (`URLs and media end with their
-  owning session`); the new file's viewer opens once it is ready. It opens for a selection with no status and for one
+  owning session`); the new file's viewer opens once it is ready. A video opens the
+  viewer only once its inline preview has settled (metadata, an error, or D62's 15 s):
+  replacing a video while both the inline and the viewer's video were still starting
+  deadlocked WebKit (`a video replaced while still starting is reset once it settles`
+  hung 2 of 2 runs before, passes 5 of 5 after). It opens for a selection with no status and for one
   without a preview URL ("The preview could not be displayed. Metadata and the original
   remain available in the viewer."); an unreadable file stays on the page with its
   alert, and AVI/WMV keeps its note and the toast (the viewer could not play it and
