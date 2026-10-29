@@ -2135,10 +2135,8 @@ npm run --prefix tools/vendor test:workflows -- library-concept.spec.mjs \
 ### Selecting prompts and Set category (#437)
 
 **D148** (beyond the concept, whose Library cards have no checkbox): the Prompt library
-selects prompts and adds tags to them (#442) or sets their category (#437) in one step,
-the legacy admin page's bulk "Add Tags" and "Set Category", and selects every loaded
-prompt as its select-all checkbox did (#444 ruling). It is built only from the concept's
-Images parts:
+selects prompts and sets their category in one step, the legacy admin page's bulk "Set
+Category". It is built only from the concept's Images parts:
 
 - Each `article.prompt-card` leads with the Images `.image-overlays > label > input`
   checkbox ("Select <title>"), placed by the concept's overlay CSS over the art; the card
@@ -2147,36 +2145,15 @@ Images parts:
   Shift+Tab across windowed cards reach it (the card's controls are `button,
   input[type=checkbox]`); Home, End and the arrow keys still move between titles.
 - `div#library-bulkbar` sits between the toolbar and the caption, empty until something
-  is checked, then the concept's `.bulkbar`: "N selected", Add tags, Set category, Clear
-  (the Images bar's order). The
+  is checked, then the concept's `.bulkbar`: "N selected", Set category, Clear (D151
+  adds Add tags before Set category, in the Images bar's order). The
   selection is a set of prompt ids over the loaded shelf: windowed-out cards keep their
   state, Load more keeps it, and any shelf reload (search, category, sort, tags, a
   write) and leaving the page clear it. Clicking a checkbox toggles it and sets the
   anchor; Shift+click applies the anchor's range with the box's new state (the D135
-  helpers). Escape in the bar and Clear clear it, focus to the heading.
-- Select all of the loaded shelf (no concept counterpart): Ctrl/Cmd+A in the grid (Images'
-  key check; the search box keeps its text meaning) selects every loaded prompt,
-  windowed-out cards included, and Escape in the grid clears it with focus kept on the
-  card. "Select all N loaded" follows the count while some loaded prompts are unchecked
-  and at most 1,000 are loaded; it selects them all and focus moves to Add tags; N follows
-  each loaded batch. It sits where D135's "Select all N matching" sits, but that offer
-  appears once every loaded image is checked; this one never reaches beyond the loaded
-  prompts. There is no Shift+arrow, long-press or "all matching" on the Library.
-- Add tags opens the shared `simpleInput` dialog ("Tag selected prompts", "Tags,
-  separated by commas", the tag vocabulary `GET /prompt_manager/tags` as suggestions, the
-  list the editor offers). The field refuses no tag, more than 20, a tag over 50
-  characters or with a control character, each with its sentence. Apply posts `{prompt_ids,
-  tags, expected_epoch}` to `POST /prompt_manager/bulk/tags`: prompt tags only, never
-  image tags, auto-tags or pair tags. Names are normalized as image tags are (trim, no
-  commas, casefold repeats folded), registry rows are found and inserted by their exact
-  name and only when some prompt gets them, and a prompt gets only names it lacks by
-  casefold. A prompt whose tags would pass 20 is skipped (`over_limit`), so the editor can
-  still save it. The answer is `{library_epoch, tags, updated, unchanged, not_found,
-  over_limit}`; toasts "Added “a, b” to N prompts." plus already-had, skipped and not-found
-  sentences. Storage restored: "… No tags were added."; unconfirmed: "Adding the tags could
-  not be confirmed. The Library was reloaded."; refused: "Tags could not be added. Try
-  again." The legacy `{prompt_ids, tags}` body is unchanged; both forms refuse a body
-  that is not a JSON object with 400.
+  helpers). Escape in the bar and Clear clear it, focus to the heading. There is no
+  Shift+arrow, long-press or "Select all N matching" on the Library (D151 adds
+  Ctrl/Cmd+A and "Select all N loaded").
 - Set category opens the shared `simpleInput` dialog ("Categorize selected prompts",
   `input#action-input` labelled Category, at most 100 characters, the Library's
   categories as suggestions). A blank value keeps it open; a control character is
@@ -2198,22 +2175,57 @@ Images parts:
   storage was restored since this page loaded. No category was changed." and a reload.
   No answer, 502, 503 or 504: "The category change could not be confirmed. The Library
   was reloaded." Any other refusal: "Category could not be set. Try again.", the
-  selection kept. Every bar action and the select-all offer are `aria-disabled` while a
-  write runs.
+  selection kept. Every bar action (and D151's select-all offer) is `aria-disabled` while
+  a write runs.
 - The bar's DOM and write loop live in `library-selection.mjs`; the toast text
   (`setOutcome` with the noun "prompt"), the range helpers, the count and the dialog are
   the Images bar's. One bar core shared with `images-selection.mjs` is a follow-up.
 
 Tests: `tests/browser/workspace-library-selection.spec.mjs` (set, blank and control
 characters, Clear/Escape/filter, Shift+click range and Tab across the window edge, the
-fence after a return visit, an unseen restore, refused and unconfirmed writes, Add tags
-and its field and restore refusal, Ctrl/Cmd+A and Select all N loaded);
+fence after a return visit, an unseen restore, refused and unconfirmed writes);
 `tests/browser/library-concept.spec.mjs` ("the Library selection checkbox and bar match
 the concept's Images ones", 1600x1100 and 390x844, both themes, with a moved-checkbox
 mutation); units `tests/js/workspace-library-selection.test.js`,
 `tests/js/workspace-library-state.test.js` (the epoch); Python
-`tests/test_bulk_library_category.py`, `tests/test_bulk_library_tags.py`. A Python
-change: ComfyUI needs a restart.
+`tests/test_bulk_library_category.py`. A Python change: ComfyUI needs a restart.
+
+### Adding tags to selected prompts and selecting all (#442)
+
+**D151** (beyond the concept, on D148's bar): the Prompt library adds tags to the selected
+prompts in one step, the legacy admin page's bulk "Add Tags", and selects every loaded
+prompt, as its select-all checkbox did (#444 ruling). The concept has neither.
+
+- The bar reads "N selected", Add tags, Set category, Clear: the Images bar's order.
+- Select all of the loaded shelf: Ctrl/Cmd+A in the grid (Images' key check; the search
+  box keeps its text meaning) selects every loaded prompt, windowed-out cards included,
+  and Escape in the grid clears it with focus kept on the card. "Select all N loaded"
+  follows the count while some loaded prompts are unchecked and at most 1,000 are loaded;
+  it selects them all and focus moves to Add tags; N follows each loaded batch. It sits
+  where D135's "Select all N matching" sits, but that offer appears once every loaded
+  image is checked; this one never reaches beyond the loaded prompts. No "all matching".
+- Add tags opens the shared `simpleInput` dialog ("Tag selected prompts", "Tags,
+  separated by commas", the tag vocabulary `GET /prompt_manager/tags` as suggestions, the
+  list the editor offers). The field refuses no tag, more than 20, a tag over 50
+  characters or with a control character, each with its sentence. Apply posts
+  `{prompt_ids, tags, expected_epoch}` to `POST /prompt_manager/bulk/tags`: prompt tags
+  only, never image tags, auto-tags or pair tags. Names are normalized as image tags are
+  (trim, no commas, casefold repeats folded); registry rows are found and inserted by
+  their exact name and only when some prompt gets them; a prompt gets only the names it
+  lacks by casefold. A prompt whose tags would pass 20 is skipped (`over_limit`), so the
+  editor can still save it. The answer is `{library_epoch, tags, updated, unchanged,
+  not_found, over_limit}`; the toast "Added “a, b” to N prompts." adds already-had,
+  skipped and not-found sentences. Storage restored: "Prompt storage was restored since
+  this page loaded. No tags were added."; unconfirmed: "Adding the tags could not be
+  confirmed. The Library was reloaded."; refused: "Tags could not be added. Try again."
+  The legacy `{prompt_ids, tags}` body is unchanged; both forms refuse a body that is not
+  a JSON object with 400.
+
+Tests: `tests/browser/workspace-library-selection.spec.mjs` (Add tags with its suggestions,
+field refusals and restore refusal; Ctrl/Cmd+A and Select all N loaded across batches and
+during a write); `tests/browser/library-concept.spec.mjs` (the bar comparison now includes
+Add tags); units `tests/js/workspace-library-selection.test.js`; Python
+`tests/test_bulk_library_tags.py`. A Python change: ComfyUI needs a restart.
 
 ### Prompt history page and recorded deviations (#249 PR F-a)
 
@@ -6058,7 +6070,7 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
 "Open existing tag manager" card for tag search and sort, the untagged entry and
 multi-tag AND/OR browsing; bulk prompt delete stays on the legacy admin page (bulk tags:
-the Prompt library's selection bar, D148). A
+the Prompt library's selection bar, D151). A
 prompt's category is changed in the Prompt library editor, on many prompts at once with
 the Prompt library's selection bar (D148, #437), or with the legacy admin page's "Set
 Category" (both `POST /prompt_manager/bulk/category`);

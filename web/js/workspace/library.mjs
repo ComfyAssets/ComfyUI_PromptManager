@@ -364,7 +364,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         scope.listen(grid,'keydown',event=>{
             const card=event.target.closest('article[data-prompt-id]');if(!card) return;
             const index=Number(card.dataset.index);
-            // D148 (#444 ruling): Ctrl/Cmd+A selects every loaded prompt and Escape clears, as on Images (focus stays).
+            // D151 (#444 ruling): Ctrl/Cmd+A selects every loaded prompt and Escape clears, as on Images (focus stays).
             if((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==='a') {event.preventDefault();selection.selectAll();return;}
             if(event.key==='Escape' && selection.hasSelection()) {event.preventDefault();selection.clear();return;}
             if(event.target.matches('[data-history]') && ['Home','End','ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();focusCard(event.key==='Home'?0:event.key==='End'?state.items.length-1:index+(event.key==='ArrowLeft'?-1:1),false,true);}
@@ -385,7 +385,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
                 } else if(retainedAnchor) {pendingAnchor=retainedAnchor;retainedAnchor=null;}
             }
             state=next;
-            // A loaded batch: the selection bar's count and Select all N loaded follow it (D148).
+            // A loaded batch: the selection bar's count and Select all N loaded follow it (D151).
             if(batch) selection.listingChanged();
             if(next.variantTotal!==null) {
                 const count=`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;

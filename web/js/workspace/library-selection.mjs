@@ -8,7 +8,7 @@ import { countOf } from './plural.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 
 /**
- * The Prompt library's selection and its bulk actions (D148, beyond the concept): "Add tags" (#442) and "Set
+ * The Prompt library's selection and its bulk actions (D148, D151, beyond the concept): "Add tags" (#442, D151) and "Set
  * category" (#437), the legacy admin page's bulk Add Tags and Set Category in the workspace. Built from the concept's
  * Images parts only: each card's `.image-overlays` checkbox and the `.bulkbar` row ("N selected", the actions in the
  * Images bar's order, Clear). The selection is a set of
@@ -91,7 +91,7 @@ const WRITES = Object.freeze({
 });
 
 /**
- * "Select all N loaded" (#444 ruling, D148; the legacy page's select-all checkbox): offered while some loaded prompts
+ * "Select all N loaded" (#444 ruling, D151; the legacy page's select-all checkbox): offered while some loaded prompts
  * are unchecked and no more are loaded than an action accepts. It sits where D135's "Select all N matching" sits on
  * Images, but that offer appears once every loaded image is checked; this one reaches only the loaded prompts.
  */

@@ -61,7 +61,7 @@ test('Set category writes the selected prompts on the server, reloads the shelf 
     await expect(box(page,first.id)).toHaveAccessibleName(new RegExp(`^Select `));
     await box(page,first.id).check();await expect(bar(page).locator('strong')).toHaveText('1 selected');
     await box(page,second.id).check();await expect(bar(page).locator('strong')).toHaveText('2 selected');
-    // Two of three loaded are checked, so Select all N loaded follows the count (D148, #444 ruling).
+    // Two of three loaded are checked, so Select all N loaded follows the count (D151, #444 ruling).
     await expect(bar(page).getByRole('button')).toHaveText([`Select all ${items.length} loaded`,'Add tags','Set category','Clear']);
     await setCategory(page,'  Studio set  ');
     await expect(toast(page)).toHaveText('Category “Studio set” set on 2 prompts.');
@@ -242,7 +242,7 @@ test('the Add tags field states what it refuses, and a restore the page did not 
     expect((await(await request.get('/prompt_manager/tags')).json()).tags).not.toContain('after-restore');
 });
 
-// #444 ruling (D148): select every loaded prompt, as the legacy page's select-all checkbox did for its page.
+// #444 ruling (D151): select every loaded prompt, as the legacy page's select-all checkbox did for its page.
 test('Ctrl/Cmd+A and Select all N loaded select every loaded prompt, windowed ones included',async({page,request,isMobile})=>{
     await expect(await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}})).toBeOK();
     if(!isMobile)await page.setViewportSize({width:1600,height:1100});
