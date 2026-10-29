@@ -11,6 +11,14 @@ const bar=page=>page.locator('#library-bulkbar > .bulkbar');
 const dialog=page=>page.getByRole('dialog',{name:'Categorize selected prompts',exact:true});
 const toast=page=>page.locator('.toast');
 const heading=page=>page.locator('#workspace-main h1');
+const tagsDialog=page=>page.getByRole('dialog',{name:'Tag selected prompts',exact:true});
+const chips=(page,id)=>card(page,id).locator('.tags > .chip');
+async function addTags(page,value) {
+    await bar(page).getByRole('button',{name:'Add tags',exact:true}).click();
+    await expect(tagsDialog(page)).toBeVisible();
+    await tagsDialog(page).locator('#action-input').fill(value);
+    await tagsDialog(page).getByRole('button',{name:'Apply',exact:true}).click();
+}
 
 async function shelf(request) {
     const body=await(await request.get('/prompt_manager/library?limit=100')).json();
@@ -53,7 +61,8 @@ test('Set category writes the selected prompts on the server, reloads the shelf 
     await expect(box(page,first.id)).toHaveAccessibleName(new RegExp(`^Select `));
     await box(page,first.id).check();await expect(bar(page).locator('strong')).toHaveText('1 selected');
     await box(page,second.id).check();await expect(bar(page).locator('strong')).toHaveText('2 selected');
-    await expect(bar(page).getByRole('button')).toHaveText(['Set category','Clear']);
+    // Two of three loaded are checked, so Select all N loaded follows the count (D148, #444 ruling).
+    await expect(bar(page).getByRole('button')).toHaveText([`Select all ${items.length} loaded`,'Add tags','Set category','Clear']);
     await setCategory(page,'  Studio set  ');
     await expect(toast(page)).toHaveText('Category “Studio set” set on 2 prompts.');
     await expect(dialog(page)).toHaveCount(0);
@@ -174,4 +183,112 @@ test('an answer that may follow a committed write says so and reloads; a refused
     expect(sent).toBe(true);
     await expect(page.locator('#library-bulkbar')).toBeEmpty();
     await expect(card(page,items[0].id).locator('.card-title .chip')).toHaveText('Unconfirmed');
+});
+
+// #442: Add tags writes prompt tags (never image tags) on the selected prompts.
+function recordTagWrites(page) {
+    const writes=[];
+    page.on('request',item=>{if(item.method()==='POST'&&new URL(item.url()).pathname==='/prompt_manager/bulk/tags')writes.push(item.postDataJSON());});
+    return writes;
+}
+async function promptTags(request,id) {
+    return (await shelf(request)).find(item=>item.id===id).tags;
+}
+
+test('Add tags adds prompt tags to the selected prompts, suggests the vocabulary and reloads the shelf',async({page,request})=>{
+    const items=await shelf(request);const [first,second,third]=items;const writes=recordTagWrites(page);
+    const vocabulary=(await(await request.get('/prompt_manager/tags')).json()).tags;
+    await page.goto(route);await expect(cards(page)).toHaveCount(items.length);
+    await box(page,first.id).check();await box(page,second.id).check();
+    await bar(page).getByRole('button',{name:'Add tags',exact:true}).click();
+    await expect(tagsDialog(page).locator('datalist option')).toHaveCount(vocabulary.length);
+    await tagsDialog(page).getByRole('button',{name:'Cancel',exact:true}).click();await expect(tagsDialog(page)).toHaveCount(0);
+    await addTags(page,' studio-lit , Night ,studio-lit');
+    await expect(toast(page)).toHaveText('Added “studio-lit, Night” to 2 prompts.');
+    await expect(page.locator('#library-bulkbar')).toBeEmpty();
+    for(const item of [first,second]) {
+        await expect(chips(page,item.id).filter({hasText:'studio-lit'})).toHaveCount(1);
+        expect(await promptTags(request,item.id)).toEqual(expect.arrayContaining(['studio-lit','Night']));
+    }
+    expect(await promptTags(request,third.id)).not.toContain('studio-lit');
+    const epoch=(await(await request.get('/prompt_manager/library/options')).json()).library_epoch;
+    expect(writes).toEqual([{prompt_ids:[first.id,second.id],tags:['studio-lit','Night'],expected_epoch:epoch}]);
+    // A second add of the same names changes nothing and says so.
+    await box(page,first.id).check();await addTags(page,'Studio-Lit');
+    await expect(toast(page)).toHaveText('1 prompt already had “Studio-Lit”.');
+});
+
+test('the Add tags field states what it refuses, and a restore the page did not see adds nothing',async({page,request})=>{
+    await armUnseenRestores(page);
+    const items=await shelf(request);const writes=recordTagWrites(page);
+    await page.goto(route);await expect(cards(page)).toHaveCount(items.length);
+    await box(page,items[0].id).check();
+    await bar(page).getByRole('button',{name:'Add tags',exact:true}).click();
+    const field=tagsDialog(page).locator('#action-input');
+    for(const [value,message] of [[' , ','Enter at least one tag.'],['x'.repeat(51),'A tag can have at most 50 characters.'],
+        [Array.from({length:21},(_,i)=>`t${i}`).join(','),'Enter at most 20 tags.']]) {
+        await field.fill(value);await tagsDialog(page).getByRole('button',{name:'Apply',exact:true}).click();
+        await expect(tagsDialog(page)).toBeVisible();
+        expect(await field.evaluate(node=>node.validationMessage)).toBe(message);
+    }
+    await tagsDialog(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    expect(writes).toHaveLength(0);
+    const backup=await request.get('/prompt_manager/backup');await expect(backup).toBeOK();const buffer=await backup.body();
+    const restore=await unseenRestore(page,()=>request.post('/prompt_manager/restore',{multipart:{database_file:{name:'library.db',mimeType:'application/octet-stream',buffer}}}));
+    await expect(restore).toBeOK();
+    await addTags(page,'after-restore');
+    await expect(toast(page)).toHaveText('Prompt storage was restored since this page loaded. No tags were added.');
+    await expect(page.locator('#library-bulkbar')).toBeEmpty();
+    expect((await(await request.get('/prompt_manager/tags')).json()).tags).not.toContain('after-restore');
+});
+
+// #444 ruling (D148): select every loaded prompt, as the legacy page's select-all checkbox did for its page.
+test('Ctrl/Cmd+A and Select all N loaded select every loaded prompt, windowed ones included',async({page,request,isMobile})=>{
+    await expect(await request.post('/__test__/reset',{data:{native_library:true,extra_prompts:200}})).toBeOK();
+    if(!isMobile)await page.setViewportSize({width:1600,height:1100});
+    const writes=recordTagWrites(page);
+    await page.goto(route);await expect(cards(page).first()).toBeVisible();
+    const more=page.getByRole('button',{name:'Load more prompts',exact:true});
+    for(let index=0;index<3;index++) {
+        await expect(more).toHaveAttribute('aria-disabled','false');
+        const response=page.waitForResponse(item=>{const url=new URL(item.url());return url.pathname==='/prompt_manager/library'&&url.searchParams.has('cursor');});
+        await more.evaluate(node=>node.click());await response;
+    }
+    await expect(more).toHaveAttribute('aria-disabled','false');
+    const loaded=160;expect(await cards(page).count()).toBeLessThan(loaded);
+    // In the search box Ctrl/Cmd+A keeps its text meaning: it selects the box's text, no prompt.
+    await page.locator('#search').focus();await page.keyboard.press('ControlOrMeta+a');
+    await expect(page.locator('#library-bulkbar')).toBeEmpty();
+    // One checked card offers the rest; the offer selects every loaded prompt and focus moves to the first action.
+    const firstId=Number(await cards(page).first().getAttribute('data-prompt-id'));
+    await box(page,firstId).check();
+    const offer=bar(page).getByRole('button',{name:`Select all ${loaded} loaded`,exact:true});
+    await expect(bar(page).locator(':scope > *').nth(1)).toHaveText(`Select all ${loaded} loaded`);
+    await offer.click();
+    await expect(bar(page).locator('strong')).toHaveText(`${loaded} selected`);
+    await expect(offer).toHaveCount(0);
+    await expect(bar(page).getByRole('button',{name:'Add tags',exact:true})).toBeFocused();
+    // Another batch arrives unchecked: the offer comes back with the new N.
+    {
+        const response=page.waitForResponse(item=>{const url=new URL(item.url());return url.pathname==='/prompt_manager/library'&&url.searchParams.has('cursor');});
+        await more.evaluate(node=>node.click());await response;
+    }
+    await expect(bar(page).getByRole('button',{name:`Select all ${loaded+40} loaded`,exact:true})).toBeVisible();
+    await expect(bar(page).locator('strong')).toHaveText(`${loaded} selected`);
+    // Escape in the grid clears; Ctrl/Cmd+A in the grid selects them all again.
+    const title=cards(page).first().locator('.card-title > button');
+    await title.focus();await page.keyboard.press('Escape');
+    await expect(page.locator('#library-bulkbar')).toBeEmpty();await expect(title).toBeFocused();
+    await page.keyboard.press('ControlOrMeta+a');
+    const all=loaded+40;
+    await expect(bar(page).locator('strong')).toHaveText(`${all} selected`);
+    // While the write runs, every bar action and the offer are aria-disabled.
+    await box(page,firstId).uncheck();
+    let release;const held=new Promise(resolve=>{release=resolve;});
+    await page.route('**/prompt_manager/bulk/tags',async route=>{await held;await route.continue();},{times:1});
+    await addTags(page,'everyone');
+    for(const name of ['Add tags','Set category',`Select all ${all} loaded`]) await expect(bar(page).getByRole('button',{name,exact:true})).toHaveAttribute('aria-disabled','true');
+    release();
+    await expect(toast(page)).toHaveText(`Added “everyone” to ${all-1} prompts.`);
+    expect(writes).toHaveLength(1);expect(new Set(writes[0].prompt_ids).size).toBe(all-1);
 });

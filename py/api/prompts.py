@@ -1130,7 +1130,14 @@ class PromptRoutesMixin:
     async def bulk_add_tags(self, request):
         """Bulk add tags to prompts."""
         try:
-            data = await request.json()
+            try:
+                data = await request.json()
+            except ValueError:
+                return bad_request("Invalid JSON body")
+            if not isinstance(data, dict):
+                return bad_request("Expected a JSON object")
+            if "expected_epoch" in data:
+                return await self._bulk_library_tags(data)
             prompt_ids = data.get("prompt_ids", [])
             new_tags = data.get("tags", [])
 
@@ -1220,14 +1227,20 @@ class PromptRoutesMixin:
                 status=500,
             )
 
-    async def _bulk_library_category(self, data: dict) -> web.Response:
-        """The workspace Library's fenced form (#437).
+    async def _bulk_library_tags(self, data: dict) -> web.Response:
+        """The workspace Library's fenced form (#442).
 
-        ``{prompt_ids, category, expected_epoch}``: a non-blank category on
-        the selected Library parents, refused with 409 ``storage-changed``
-        when prompt storage was restored since the page read its epoch.
+        ``{prompt_ids, tags, expected_epoch}``: prompt tags only, never image tags.
         """
-        fields = {"prompt_ids", "category", "expected_epoch"}
+        return await self._fenced_library_write(
+            data, "tags", self.db.bulk_add_library_tags
+        )
+
+    async def _fenced_library_write(
+        self, data: dict, field: str, write
+    ) -> web.Response:
+        """One fenced Library bulk write: exact keys, checked ids, 409 on a restore."""
+        fields = {"prompt_ids", field, "expected_epoch"}
         if set(data) != fields:
             return bad_request(
                 "Request must contain exactly " + ", ".join(sorted(fields))
@@ -1235,10 +1248,7 @@ class PromptRoutesMixin:
         try:
             prompt_ids = parse_bulk_prompt_ids(data["prompt_ids"])
             result = await self._run_in_executor(
-                self.db.bulk_set_library_category,
-                prompt_ids,
-                data["category"],
-                expected_epoch=data["expected_epoch"],
+                write, prompt_ids, data[field], expected_epoch=data["expected_epoch"]
             )
         except LibraryCommandError as exc:
             return web.json_response(
@@ -1253,6 +1263,17 @@ class PromptRoutesMixin:
         except ValueError as exc:
             return bad_request(str(exc))
         return web.json_response({"success": True, **result})
+
+    async def _bulk_library_category(self, data: dict) -> web.Response:
+        """The workspace Library's fenced form (#437).
+
+        ``{prompt_ids, category, expected_epoch}``: a non-blank category on
+        the selected Library parents, refused with 409 ``storage-changed``
+        when prompt storage was restored since the page read its epoch.
+        """
+        return await self._fenced_library_write(
+            data, "category", self.db.bulk_set_library_category
+        )
 
     async def _bulk_category_by_filter(self, data: dict) -> web.Response:
         """Set the category on every linked positive a listing filter admits.
