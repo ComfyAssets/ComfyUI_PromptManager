@@ -217,8 +217,10 @@ export function mountInspect(main, { parentScope, api, sender }) {
         if (state.phase === 'ready' && entry && announced !== entry.key) {
             announced = entry.key;
             // The session selects the record right after it publishes `ready`, so the viewer opens after that, and only
-            // while this selection is still the current one and no other dialog is open (the viewer is replaced).
-            if (AUTO_OPEN.has(state.message)) queueMicrotask(() => {
+            // while this selection is still the current one and no other dialog is open (the viewer is replaced). D62:
+            // a video opens it once the inline preview has settled, so a replacement while it starts never tears down a
+            // second starting video in the viewer (that deadlocked WebKit).
+            if (AUTO_OPEN.has(state.message)) whenSettled(media, () => {
                 if (scope.signal.aborted || session.entry !== entry || session.state.phase !== 'ready' || document.querySelector('dialog[open]:not(#viewer-dialog)')) return;
                 openViewer(input);
             });
@@ -275,6 +277,15 @@ export function mountInspect(main, { parentScope, api, sender }) {
     });
     // A drop that misses the area never navigates away from the page while it is mounted.
     for (const type of ['dragover', 'drop']) scope.listen(window, type, event => event.preventDefault());
+    /** Runs `run` after this task, or once `preview`'s video stops starting (metadata, an error, or the D62 limit). */
+    function whenSettled(preview, run) {
+        if (!preview || !isStarting(preview.node)) { queueMicrotask(run); return; }
+        const settled = new AbortController();
+        const done = () => { settled.abort(); clearTimeout(timer); if (!scope.signal.aborted) run(); };
+        const timer = setTimeout(done, STARTING_VIDEO_MS);
+        for (const type of ['loadedmetadata', 'error']) preview.node.addEventListener(type, done, { once: true, signal: settled.signal });
+        scope.signal.addEventListener('abort', () => { settled.abort(); clearTimeout(timer); }, { once: true, signal: settled.signal });
+    }
     /** The viewer on the current selection, details showing (D155 amends D97); focus returns to `trigger` on close. */
     function openViewer(trigger) {
         const entry = session.entry;
