@@ -704,6 +704,147 @@ test('a video replaced while still starting is reset once it settles', async ({ 
     }
 });
 
+test('a new selection while the viewer\'s own video is still starting leaves it until it settles (#483)', async ({ context, browserName }) => {
+    test.setTimeout(180000);
+    // D155 opens the viewer once the inline preview has settled; the viewer then starts a video of its own. A new
+    // selection from that video's own `loadstart` (readyState HAVE_NOTHING), or a few milliseconds after it, must not
+    // reset it or take it off the page while it starts (WebKit, GStreamer: TESTING.md D62; merge-queue run
+    // 40903238387). The viewer stays open until it reports metadata or an error, then closes; the URL goes last.
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const page = await context.newPage();
+        try {
+            if (attempt === 0) await startCoverage(page, browserName);
+            await page.addInitScript(() => {
+                const load = HTMLMediaElement.prototype.load;
+                HTMLMediaElement.prototype.load = function () { if (!this.hasAttribute('src')) { this.__resets = (this.__resets ?? 0) + 1; this.__resetReadyState ??= this.readyState; } return load.call(this); };
+                const revoke = URL.revokeObjectURL;
+                URL.revokeObjectURL = url => {
+                    const starting = window.__starting;
+                    if (url === starting?.url) starting.revoked = { src: starting.node.hasAttribute('src'), connected: starting.node.isConnected, resets: starting.node.__resets ?? 0 };
+                    return revoke(url);
+                };
+            });
+            await openInspect(page);
+            await page.evaluate(() => {
+                const input = document.querySelector('#local-file');
+                new MutationObserver((records, observer) => {
+                    const video = document.querySelector('#viewer-dialog video');
+                    if (!video) return;
+                    observer.disconnect();
+                    const replace = () => {
+                        window.__starting = { node: video, url: video.getAttribute('src'), readyState: video.readyState };
+                        input.files = window.__pngFiles; input.dispatchEvent(new Event('change', { bubbles: true }));
+                        window.__starting.replaced = { connected: video.isConnected, src: video.hasAttribute('src'), resets: video.__resets ?? 0 };
+                    };
+                    video.addEventListener('loadstart', () => { if (window.__delay) setTimeout(replace, window.__delay); else replace(); }, { once: true });
+                }).observe(document.body, { childList: true, subtree: true });
+            });
+            const png = parityPng('f02.png');
+            await page.evaluate(bytes => {
+                const transfer = new DataTransfer();
+                transfer.items.add(new File([new Uint8Array(bytes)], 'f02.png', { type: 'image/png' }));
+                window.__pngFiles = transfer.files;
+            }, [...png.buffer]);
+            await page.evaluate(delay => { window.__delay = delay; }, attempt % 5);
+            await choose(page, localFixture('core-tags.webm', 'video/webm'));
+            await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
+            await expect.poll(() => page.evaluate(() => window.__starting?.revoked ?? null)).toEqual({ src: false, connected: false, resets: 1 });
+            const { readyState, replaced } = await page.evaluate(() => ({ readyState: window.__starting.readyState, replaced: window.__starting.replaced }));
+            if (attempt % 5 === 0) expect(readyState).toBe(0);
+            // Starting when replaced: still on the page with its URL, never reset; settled: released at once.
+            expect(replaced).toEqual(readyState === 0 ? { connected: true, src: true, resets: 0 } : { connected: false, src: false, resets: 1 });
+            expect(await page.evaluate(() => window.__starting.node.__resets)).toBe(1);
+            // Its one reset came after it had metadata, never while it was starting.
+            expect(await page.evaluate(() => window.__starting.node.__resetReadyState)).toBeGreaterThanOrEqual(1);
+            // The new file's viewer opens after the old one closed, and the page still answers.
+            await expect(viewer(page).getByRole('img', { name: 'f02.png', exact: true })).toBeVisible({ timeout: 8000 });
+            await expect(viewer(page).locator('video')).toHaveCount(0);
+            if (attempt === 0) await saveCoverage(page, browserName);
+        } finally {
+            await page.close();
+        }
+    }
+});
+
+/** #483: holds the viewer's video in HAVE_NOTHING (its `loadedmetadata` never fires) so a hold can be driven by hand. */
+async function stallViewerVideo(page) {
+    await page.addInitScript(() => {
+        const describe = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'readyState');
+        Object.defineProperty(HTMLMediaElement.prototype, 'readyState', { configurable: true, get() {
+            return this.closest?.('#viewer-dialog') && window.__stallViewer ? 0 : describe.get.call(this);
+        } });
+        window.addEventListener('loadedmetadata', event => {
+            if (window.__stallViewer && event.target.closest?.('#viewer-dialog')) event.stopImmediatePropagation();
+        }, true);
+    });
+}
+
+test('a held viewer closed by hand, or replaced twice, opens only the latest file\'s viewer at once (#483)', async ({ page }) => {
+    await stallViewerVideo(page);
+    await openInspect(page);
+    await page.evaluate(() => { window.__stallViewer = true; });
+    await choose(page, localFixture('core-tags.webm', 'video/webm'));
+    await expect(viewer(page).locator('video')).toBeAttached();
+    // Two selections while the viewer's video is (made to look) still starting: the viewer stays, untouched.
+    await chooser(page).setInputFiles(parityPng('f02.png', 'first.png'));
+    await chooser(page).setInputFiles(parityPng('f02.png', 'second.png'));
+    await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
+    await expect(viewer(page).locator('video')).toBeAttached();
+    // Open file metadata pressed meanwhile (the page behind the viewer is inert, so by script): the latest request.
+    await action(page).evaluate(node => node.click());
+    // Closing it by hand ends the hold at once: the latest file's viewer opens, once, well before D62's 15 s.
+    await page.keyboard.press('Escape');
+    await expect(viewer(page).getByRole('img', { name: 'second.png', exact: true })).toBeVisible({ timeout: 5000 });
+    await expect(viewer(page).getByRole('img', { name: 'first.png', exact: true })).toHaveCount(0);
+    await expect(viewer(page).locator('video')).toHaveCount(0);
+    await expect(page.locator('dialog[open]')).toHaveCount(1);
+});
+
+test('a held viewer revokes its URL only once it is gone, drops a stale open, and ends on page leave (#483)', async ({ page }) => {
+    await stallViewerVideo(page);
+    await openInspect(page);
+    await trackReleases(page);
+    await page.evaluate(() => { window.__stallViewer = true; });
+    const videoUrl = () => page.evaluate(() => document.querySelector('#viewer-dialog video')?.getAttribute('src') ?? null);
+    const released = url => page.evaluate(url => window.__released.filter(item => item.url === url), url);
+    await choose(page, localFixture('core-tags.webm', 'video/webm'));
+    await expect(viewer(page).locator('video')).toBeAttached();
+    const first = await videoUrl();
+    await chooser(page).setInputFiles(parityPng('f02.png', 'held.png'));
+    await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
+    // The session asked to revoke the video's URL; it waits while the held viewer still plays it.
+    expect(await released(first)).toEqual([]);
+    // An Open asked for during the hold, then an AVI (which never opens the viewer by itself): the open for the earlier
+    // file is stale and is dropped when the hold ends.
+    await action(page).evaluate(node => node.click());
+    const avi = { name: 'clip.avi', mimeType: 'video/x-msvideo', buffer: Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('AVI LIST'), Buffer.alloc(64)]) };
+    await chooser(page).setInputFiles(avi);
+    await expect(page.locator('#workspace-toast')).toHaveText(TOAST);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect.poll(() => released(first)).toEqual([{ url: first, live: 0 }]);
+    // Page leave while held: the viewer goes and the deferred URL is revoked with nothing holding it.
+    await choose(page, localFixture('core-tags.webm', 'video/webm'));
+    await expect(viewer(page).locator('video')).toBeAttached();
+    const second = await videoUrl();
+    await chooser(page).setInputFiles(parityPng('f02.png', 'leave.png'));
+    await expect(viewer(page).locator('video')).toBeAttached();
+    expect(await released(second)).toEqual([]);
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    await expect(page.locator('dialog[open]')).toHaveCount(0);
+    await expect.poll(() => released(second)).toEqual([{ url: second, live: 0 }]);
+    // Another route while held: the page's dispose ends the hold and revokes the URL with nothing holding it.
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await choose(page, localFixture('core-tags.webm', 'video/webm'));
+    await expect(viewer(page).locator('video')).toBeAttached();
+    const third = await videoUrl();
+    await chooser(page).setInputFiles(parityPng('f02.png', 'route.png'));
+    await expect(viewer(page).locator('video')).toBeAttached();
+    await page.evaluate(() => { window.location.hash = '#/library'; });
+    await expect(main(page).getByRole('heading', { level: 1, name: 'Prompt library', exact: true })).toBeVisible();
+    await expect.poll(() => released(third)).toEqual([{ url: third, live: 0 }]);
+});
+
 test('leaving for another route while a video starts waits for it to settle', async ({ context, browserName }) => {
     test.setTimeout(180000);
     // A WebKit (GStreamer) video detached before its pipeline had started deadlocked the page (TESTING.md D62); a
