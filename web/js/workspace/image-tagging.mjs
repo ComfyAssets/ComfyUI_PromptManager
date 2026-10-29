@@ -24,6 +24,9 @@ import { showWorkspaceToast } from './toast.mjs';
 import { cardTitle } from './images-state.mjs';
 
 const MANUAL_HELP = 'Comma-separated. Generated suggestions are added only after you approve them.';
+// #430: while the page looks for a renumbered source's file, and the preview that a refused capture leaves.
+const FINDING_SOURCE = 'The source of this image changed. Finding it in the refreshed image collection…';
+const PREVIEW_UNAVAILABLE = 'Preview unavailable';
 const SCOPE_NOTE = 'Tags belong to this image. Resolve its prompt association separately in Needs review.';
 // The option inputs per controller key; the classifier keys only exist for WD14 models.
 const OPTION_IDS = Object.freeze({
@@ -194,6 +197,13 @@ function previewOf(image, state) {
     if (video) { node.muted = true; node.preload = 'metadata'; node.playsInline = true; }
     return node;
 }
+/** D147: the preview box a failed or refused capture leaves, saying so (the reason is beside the actions). */
+function unavailablePreview() {
+    const node = el('div', PREVIEW_UNAVAILABLE, 'tag-image-preview tag-preview-empty');
+    node.setAttribute('role', 'img');
+    node.setAttribute('aria-label', PREVIEW_UNAVAILABLE);
+    return node;
+}
 
 /**
  * Open "Tag image" for one listed `image` (its tagging target). `source` is the page (`images`, `library`, `review`,
@@ -207,7 +217,8 @@ function previewOf(image, state) {
  * Escape and × write nothing and call `onStop` once. Swapping the next image's dialog in is not a stop.
  */
 export function openImageTagging({api, scope, image, source = 'images', trigger = null, onSaved = null, preset = null,
-    autoGenerate = false, actions: mode = 'tag', position = null, onSkip = null, onStop = null}) {
+    autoGenerate = false, actions: mode = 'tag', position = null, onSkip = null, onStop = null, onSourceChanged = null,
+    onRefresh = null}) {
     const target = imageTarget(image);
     if (!target) throw new TypeError('The image has no tagging target');
     const review = mode === 'review';
@@ -216,7 +227,8 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
     // Set once this dialog hands over to the session (Approve, Skip): its close is then not a Stop.
     let advancing = false;
     const saved = ({filename: name, tags, toast}) => {
-        const event = {target, filename: name, tags, source};
+        // A retargeted dialog (#430) reports the file under its current identity.
+        const event = {target: {...controller.target}, filename: name, tags, source};
         announceSaved(event);
         if (toast) showWorkspaceToast(toast);
         onSaved?.(event);
@@ -280,6 +292,15 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         : (last ? 'Save and finish' : 'Save and next'));
     if (review) actions.append(cancel, skip, primary);
     else actions.append(cancel, primary);
+    // D147: the reason a state blocks Save (and Generate), on its own row above the buttons; for a changed source the
+    // page is asked to find the file again (`onSourceChanged`), else Refresh is offered.
+    const notice = el('div', undefined, 'tag-action-notice');
+    const noticeText = el('span');
+    noticeText.setAttribute('role', 'status');
+    const refresh = createButton(onRefresh ? 'Refresh image collection' : 'Reload page');
+    notice.append(noticeText);
+    const tried = new Set();
+    let finding = false, current = image;
 
     const nodes = [heading];
     if (controller.state.showScopeNote) nodes.push(el('p', SCOPE_NOTE, 'tag-scope-note small'));
@@ -334,8 +355,45 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         closeWorkspaceDialog();
         saved({filename: state.image.filename, tags: state.savedTags.slice(), toast: state.toast});
     }
+    /** #430: ask the page once per target where a renumbered source's file is now; a found file is retargeted. */
+    function findSource() {
+        const {root_index: index, root_scope: held} = controller.target;
+        const attempt = `${index}:${held}`;
+        if (!onSourceChanged || tried.has(attempt)) return;
+        tried.add(attempt);
+        finding = true;
+        Promise.resolve().then(() => onSourceChanged({...current, ...controller.target})).catch(() => null).then(fresh => {
+            finding = false;
+            if (!open || completed) return;
+            const next = imageTarget(fresh);
+            if (next && controller.state.phase === 'source-changed') {
+                current = fresh;
+                controller.retarget(next);
+            } else render(controller.state);
+        });
+    }
+    function renderNotice(state) {
+        const changed = state.phase === 'source-changed';
+        const text = !state.blocked ? '' : changed && finding ? FINDING_SOURCE : state.statusText;
+        setText(noticeText, text);
+        const offer = changed && !finding;
+        if (offer !== refresh.isConnected) {
+            if (offer) notice.append(refresh);
+            else refresh.remove();
+        }
+        // Its own first row; Retry still leads the buttons after it (D116).
+        if (text && actions.firstElementChild !== notice) actions.prepend(notice);
+        else if (!text && notice.isConnected) notice.remove();
+        // The empty preview of a refused or failed capture says why it is empty.
+        if (state.blocked && !state.image && preview.tagName !== 'DIV') {
+            const next = unavailablePreview();
+            preview.replaceWith(next);
+            preview = next;
+        }
+    }
     function render(state) {
         if (!open || completed) return;
+        if (state.phase === 'source-changed' && !finding) findSource();
         if (state.image && state.image !== shownImage) renderImage(state.image);
         // The observation's saved tags, a kept draft, or a conflict's current set ahead of the draft (I2).
         if (state.draftRevision !== shownDraft) {
@@ -344,7 +402,8 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
         }
         if (state.suggestions !== shownRows || state.suggestionsText !== shownText) renderSuggestions(state);
         setText(count, state.countText);
-        setText(status, state.statusText);
+        // A blocking reason is shown once, beside the actions (D147).
+        setText(status, state.blocked ? '' : state.statusText);
         setText(primary, review ? reviewLabel(state) : state.primaryLabel);
         setDisabled(primary, !state.canSave);
         // D90: while Approve's save is in flight the session cannot be left, so its count includes that save.
@@ -356,10 +415,16 @@ export function openImageTagging({api, scope, image, source = 'images', trigger 
                 retry.remove();
             }
         }
+        renderNotice(state);
         if (state.phase === 'saved') complete(state);
     }
 
     cancel.addEventListener('click', () => { if (!disabled(cancel)) closeWorkspaceDialog(); });
+    refresh.addEventListener('click', () => {
+        closeWorkspaceDialog();
+        if (onRefresh) onRefresh();
+        else window.location.reload();
+    });
     skip.addEventListener('click', () => {
         if (!open || advancing || disabled(skip)) return;
         advancing = true;

@@ -100,14 +100,19 @@ class HostTests(unittest.TestCase):
         self.executor.caches = types.SimpleNamespace(outputs=HierarchicalCache())
 
     def begin(
-        self, kind="PromptManager", raw=" raw ", prepend=" pre ", append=" post "
+        self,
+        kind="PromptManager",
+        raw=" raw ",
+        prepend=" pre ",
+        append=" post ",
+        negative="negative",
     ):
         g = {
             "p": {
                 "class_type": kind,
                 "inputs": {
                     "text": raw,
-                    "negative_text": "negative",
+                    "negative_text": negative,
                     "prepend_text": prepend,
                     "append_text": append,
                 },
@@ -125,7 +130,7 @@ class HostTests(unittest.TestCase):
                 },
             },
         }
-        if type(raw) is list or type(prepend) is list:
+        if any(type(value) is list for value in (raw, prepend, negative)):
             g["dynamic"] = {"class_type": "RuntimeGenerator", "inputs": {}}
             g["stateful"] = {
                 "class_type": "PromptManagerText",
@@ -445,3 +450,138 @@ class HostTests(unittest.TestCase):
         ref = install_and_remove()
         gc.collect()
         self.assertIsNone(ref())
+
+    # -- #403: a cached runtime text takes its fields from the reused execution
+
+    class Receipts:
+        """A fake ``CachedRuns.recorded_fields``: fixed fields, calls recorded."""
+
+        def __init__(self, fields):
+            self.fields, self.calls = fields, []
+
+        def recorded_fields(self, prompt_id, node_id, values):
+            self.calls.append((prompt_id, node_id, values))
+            return self.fields
+
+    def observe_with(self, receipts, outputs, **begin):
+        self.begin(**begin)
+        self.executor.caches.outputs.entries["p"] = Entry(None, outputs)
+        self.observe("execution_start")
+        host.observe_cached_context(
+            self.executor,
+            "execution_cached",
+            {"prompt_id": JOB, "nodes": ["p"]},
+            receipts=receipts,
+        )
+        return self.seal()
+
+    def test_cached_runtime_raw_comes_from_the_matching_receipt(self):
+        receipts = self.Receipts([(("LLM raw", " pre ", " post "),)])
+        result = self.observe_with(
+            receipts, [object(), ["cached"]], raw=["dynamic", 0]
+        ).positive
+        self.assertEqual(receipts.calls, [(JOB, "p", (("cached",),))])
+        self.assertEqual(result.raw.value, "LLM raw")
+        self.assertEqual(
+            (result.raw.provenance, result.raw.source), ("inferred", "graph_semantics")
+        )
+        self.assertEqual(result.effective.value, "cached")
+        self.assertEqual(result.effective.source, "host_cache_output")
+        # Fields the graph already knows are never replaced
+        self.assertEqual(result.prepend.value, " pre ")
+        self.assertEqual(result.prepend.source, "graph_literal")
+        self.assertEqual(result.append.value, " post ")
+
+    def test_cached_runtime_prepend_comes_from_the_matching_receipt(self):
+        receipts = self.Receipts([((" raw ", "LLM pre", " post "),)])
+        result = self.observe_with(
+            receipts, [object(), ["cached"]], prepend=["dynamic", 0]
+        ).positive
+        self.assertEqual(result.prepend.value, "LLM pre")
+        self.assertEqual(result.prepend.source, "graph_semantics")
+        self.assertEqual(result.raw.value, " raw ")
+        self.assertEqual(result.raw.source, "graph_literal")
+
+    def test_a_receipt_disagreeing_with_a_known_field_fills_nothing(self):
+        receipts = self.Receipts([(("LLM raw", "other pre", " post "),)])
+        result = self.observe_with(
+            receipts, [object(), ["cached"]], raw=["dynamic", 0]
+        ).positive
+        self.assertIsNone(result.raw.value)
+        self.assertEqual(result.prepend.value, " pre ")
+
+    def test_pair_runtime_negative_takes_the_negative_fields(self):
+        receipts = self.Receipts(
+            [((" raw ", " pre ", " post "), ("LLM negative", "", ""))]
+        )
+        result = self.observe_with(
+            receipts,
+            [object(), object(), ["cached positive"], ["LLM negative"]],
+            kind="PromptManagerPair",
+            negative=["dynamic", 0],
+        )
+        self.assertEqual(result.negative.raw.value, "LLM negative")
+        self.assertEqual(result.negative.raw.source, "graph_semantics")
+        self.assertEqual(result.positive.raw.value, " raw ")
+        self.assertEqual(result.positive.raw.source, "graph_literal")
+
+    def test_known_typed_fields_are_never_replaced_by_a_receipt(self):
+        receipts = self.Receipts([(("other", "other", "other"),)])
+        result = self.observe_with(receipts, [object(), ["cached"]]).positive
+        self.assertEqual(
+            (result.raw.value, result.prepend.value, result.append.value),
+            (" raw ", " pre ", " post "),
+        )
+        self.assertEqual(result.raw.source, "graph_literal")
+
+    def test_no_matching_receipt_keeps_the_cached_raw_unknown(self):
+        for fields in (None, [None], [], "bad", [(("a", "b"),)], [((1, "", ""),)]):
+            with self.subTest(fields=fields):
+                result = self.observe_with(
+                    self.Receipts(fields), [object(), ["cached"]], raw=["dynamic", 0]
+                ).positive
+                self.assertIsNone(result.raw.value)
+                self.assertEqual(result.effective.value, "cached")
+
+    def test_a_failing_receipt_lookup_keeps_the_capture(self):
+        class Broken:
+            def recorded_fields(self, *args):
+                raise RuntimeError("boom")
+
+        result = self.observe_with(
+            Broken(), [object(), ["cached"]], raw=["dynamic", 0]
+        ).positive
+        self.assertIsNone(result.raw.value)
+        self.assertEqual(result.effective.value, "cached")
+
+    def test_pair_slots_take_their_own_receipt_fields(self):
+        receipts = self.Receipts(
+            [(("LLM positive", " pre ", " post "), ("LLM negative", "", ""))]
+        )
+        result = self.observe_with(
+            receipts,
+            [object(), object(), ["cached positive"], ["cached negative"]],
+            kind="PromptManagerPair",
+            raw=["dynamic", 0],
+        )
+        self.assertEqual(
+            receipts.calls[0], (JOB, "p", (("cached positive",), ("cached negative",)))
+        )
+        self.assertEqual(result.positive.raw.value, "LLM positive")
+        self.assertEqual(result.positive.effective.value, "cached positive")
+        # The negative editor is typed: the graph's value stays
+        self.assertEqual(result.negative.raw.value, "negative")
+        self.assertEqual(result.negative.raw.source, "graph_literal")
+
+    def test_default_receipts_are_the_process_cached_runs(self):
+        from utils import cached_runs
+
+        receipts = self.Receipts([(("LLM raw", " pre ", " post "),)])
+        with patch.object(cached_runs, "CACHED_RUNS", receipts):
+            self.begin(raw=["dynamic", 0])
+            self.executor.caches.outputs.entries["p"] = Entry(
+                None, [object(), ["cached"]]
+            )
+            self.observe("execution_start")
+            self.observe("execution_cached", nodes=["p"])
+        self.assertEqual(self.seal().positive.raw.value, "LLM raw")

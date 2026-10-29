@@ -243,14 +243,24 @@ class PromptManagerBase:
             return False
 
     def _record_cached_item(
-        self, unique_id: Any, outputs: tuple, text: Any, negative_text: Any = None
+        self,
+        unique_id: Any,
+        outputs: tuple,
+        text: Any,
+        negative_text: Any = None,
+        fields: Optional[tuple] = None,
     ) -> None:
-        """Remember this execution's outputs and stored text for cached jobs (#347)."""
+        """Remember this execution's outputs and stored text for cached jobs (#347).
+
+        ``fields`` are the ``(raw, prepend, append)`` texts this execution gave
+        ``record_runtime_context`` for each output, so a cached job's history
+        can record them too (#403).
+        """
         if unique_id is None:
             return
         try:
             self._cached_runs().record_item(
-                unique_id, outputs, stored_facts(text, negative_text)
+                unique_id, outputs, stored_facts(text, negative_text), fields
             )
         except Exception as error:
             self.logger.debug(f"Could not record the cached-run receipt: {error}")

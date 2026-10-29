@@ -21,6 +21,7 @@ export class InspectionSourceChangedError extends Error {
         super(SOURCE_CHANGED);
         this.name = 'InspectionSourceChangedError';
         this.refreshRequired = true;
+        this.code = 'source-changed';
     }
 }
 

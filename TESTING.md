@@ -551,6 +551,49 @@ hold a walk open with a gated scan instead of sleeping.
   time to network idle and the 10 slowest requests, from a fresh browser
   context each run.
 
+## Open pages across restarts and source changes (#430)
+
+A page addresses a listed file as `{root_index, root_scope, path}`. The root
+scope is an HMAC over the root's index and canonical path, so the server refuses
+(409 `source-changed`) an action aimed at a root that was renumbered or replaced
+since the page listed it (a same-named `ComfyUI_00001_.png` sits in every output
+folder). Its key, and the listing cursors' key, derive from one random secret in
+`workspace-scope.key` beside the database (`utils/workspace_keys.py`; owner-only,
+64 hex characters; never in config.json or the database, so no backup or export
+carries it; Move library copies it, best effort). A ComfyUI restart therefore keeps
+every scope and cursor an open page holds: `tests/test_api_workspace_restart.py`
+proves it with a second API on its own server and with two fresh interpreters on
+the same database. The key file is created with a temp file and `os.link` (of two
+first starts one file wins; without hard links `O_EXCL`), re-read after any write,
+replaced with a WARNING when corrupt, and a folder that cannot hold it gives that
+process a per-process key (one WARNING; open pages then refresh after a restart).
+Tests never write it outside their own temp folders.
+
+The cursor is `{"v": 2, "key"}` with the listing scope (it hashes every absolute
+root) bound into its MAC only, never sent. Bump `v` whenever the key tuple's shape
+changes: a cursor now outlives a restart and an upgrade. A cursor the server
+cannot verify (another key, root list or filter set) answers 400
+`cursor-stale`; Images then shows "The image collection changed. Refresh image
+collection to continue." and its Retry becomes **Refresh image collection**.
+
+When a source really changed, `POST /prompt_manager/images/rescope` (`{"target":
+{...}}`, validated by `media_target`, index ≤ 4095) maps the held target to the
+first current root whose scope at the old index equals the held scope, and answers
+the file's current workspace descriptor; a removed or replaced root, another key
+or a foreign scope is 409 `source-changed`, a missing file 404 `file-missing`, a
+path leaving the root or a preview 403 (always `no-store`). Only the Images roots
+are mapped. Images (`images-source-recovery.mjs`) asks once per held
+`(key, scope)` pair, shared by the inspector (an inspection that turns
+`refreshRequired` with `code: "source-changed"`), the viewer (a media load error)
+and the Tag image dialog. Found under another index, nothing is kept by an old key
+(`root_index:path` could name another source's file): the viewer closes, the checks
+clear, a Source filter on the old index follows the file (another one falls back to
+All sources), only that file stays selected and the collection lists again; a
+manual Refresh forgets every pair. Not found, the existing visible Refresh stays.
+Browser tests: `workspace-stale-source.spec.mjs` (`/__test__/sources/reverse` and
+`/__test__/scope-key/rotate`, both undone by every reset); the manual-Refresh
+recovery specs in `workspace-images.spec.mjs` answer every rescope 409.
+
 ## Windows portability preflight
 
 Before changing paths, SQLite, streams, restore or cleanup:
@@ -688,8 +731,9 @@ The shared inline and collection inspector reads the current rooted file's suppo
 embedded records, exact generation facts and recorded or inferred prompt evidence.
 It renders in two concept surfaces (#249 D20–D22, D38). The Images side panel shows
 only the concept content: cover, title, filename, the evidence badge with a category
-chip naming its origin (D146), the + and − prompt blocks with copy and send, tag chips (the file's own image
-tags first, D88, then the linked tags; image tags and the linked positive's own tags
+chip naming its origin (D146), the + and − prompt blocks with copy and send, the tag chips in labelled
+sections after the negative prompt (D154: "Image tags · N" for the file's own image tags, D88, then "Prompt
+tags · N" or "Recipe tags · N" for the linked tags; image tags and the linked positive's own tags
 filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
 "Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
 scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
@@ -1044,7 +1088,8 @@ Recorded shell deviations:
   palette, then the OS.
 - **D5**: retired by Activity (#249 Activity-1). The concept's Activity button and
   Activity row are shown; their differences are D52 to D54.
-- **D28**: no COLLECTIONS, and no Design review. The bottom nav is
+- **D28**: no Design review. (Amended by #331: the COLLECTIONS group ships; its rows,
+  counts and phone layout are D136.) The bottom nav is
   the concept's Activity and System, plus the production Overview hub (its own
   outline home glyph, not the concept's `activity` pulse, and no count).
   The connection reads "Your library, on your server" with a neutral muted dot.
@@ -1386,8 +1431,10 @@ Recorded deviations on this page (spec §8):
   "Removed from favorites." and a rollback toast on failure.
 - **D8**: every Images card has the concept's select checkbox before the star; the
   `#bulkbar` shows "N selected" and only the real actions in the concept's order (Add
-  tags, then D85's Auto-tag selected, Set category, Export metadata, Clear). Add to
-  collection waits for collections; "Remove links…" is dropped. (Amended by #249 PR D:
+  tags, then D85's Auto-tag selected, Set category, Add to collection, Export metadata,
+  Clear); "Remove links…" is dropped. (Amended by #331: Add to collection ships, and
+  Remove from collection follows it while a collection filter is active, see D138.)
+  (Amended by #249 PR D:
   Add tags ships, see "Bulk tagging from the selection bar"; #392 adds range, keyboard,
   touch and "all N matching" selection, see "Selecting many images", D135.) The selection survives Load more and
   bounded re-mounting and is cleared whenever the collection is replaced (search,
@@ -1403,9 +1450,9 @@ Recorded deviations on this page (spec §8):
   checked images' own categories: it opens the concept's `simpleInput` dialog
   ("Categorize selected images", `input#action-input` labelled Category) and writes
   `PUT`/`DELETE /prompt_manager/images/category`, never a prompt (see D140). Prompt
-  categories are changed in the Prompt library editor and on the legacy admin page's
-  "Set Category"; `POST /prompt_manager/bulk/category` is unchanged and serves that
-  legacy page only. The write carries no page signal: leaving Images while it runs lets
+  categories are changed in the Prompt library editor, the Prompt library's selection
+  bar (D148, #437) and on the legacy admin page's "Set Category"; both bulk ones write
+  `POST /prompt_manager/bulk/category`. The write carries no page signal: leaving Images while it runs lets
   it finish without a toast, and the return loads the collection afresh instead of the
   saved visit. Its success reloads the categories and the listing together (clearing
   the selection, focus to the heading, and, as any replaced collection does, the
@@ -1477,6 +1524,9 @@ Recorded deviations on this page (spec §8):
   filters, while recipe, recorded-run and embedded tags stay plain `span.chip`.
   Amended by D88 (#249 PR C): the file's own current image tags lead the same row
   and are filters too; a linked tag already shown (case-insensitive) is left out.
+  Amended by D154 (#449): the image tags and the linked tags each sit in their own
+  labelled section, and a linked tag stays in its section even when an image tag
+  has the same name.
   Amended by D146 (#332): the category chip also names its origin in visible text
   after the category (" · this image", " · prompt", " · recipe"), and an image's own
   category shows for an unlinked or ambiguous file too.
@@ -1697,10 +1747,11 @@ wins), and toasts the mock's copy verbatim, "<n> tags saved for <filename>." eve
 for one tag, plus " Prompt association still awaits review." from Needs review.
 Tagging one file never changes another file (an equal-byte copy included), a
 prompt, a pair or a link. States the mock lacks (generating, busy, conflict,
-changed storage or file, expired capture, unconfirmed save, unavailable model,
-video) are text in `#tag-generation-status` only; **Retry** (D116) leads the
-actions while the controller allows it, where the other workspace dialogs place
-their Retry. The Tags
+unavailable model, video) are text in `#tag-generation-status` only; a state that
+blocks Save (a failed or refused capture, a changed source, file or storage, an
+expired capture, an unconfirmed save) shows its reason beside the actions instead
+(D147); **Retry** (D116) leads the action buttons while the controller allows it,
+where the other workspace dialogs place their Retry. The Tags
 page re-reads its lists after every confirmed save, so the Images counts follow.
 
 The image-tagging plan's deviation numbers were renumbered by +23 because the
@@ -1740,12 +1791,36 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   concept image's tags saved as its image tags production still equals the concept.
   After a Tag save the selected file's inspection is re-read, so the panel redraws
   the row without reselecting and the viewer, which shares that inspection, shows it.
+  Amended by D154 (#449): the one row is now two labelled sections.
+- **D154** (#449, beyond the concept): the inspector's tags no longer follow the
+  negative prompt as a bare `.tags` row, where they read as part of it. Every surface of
+  the shared inspector (the Images side panel, the viewer details, History's inline
+  current file, the Library-embedded gallery and Activity) draws them in
+  `section.tag-section` regions in the concept's prompt-section frame (the
+  `.prompt-section` top rule with 15px padding and margin, a `.prompt-heading` with a
+  `.role-label`, the row's own 12px top margin dropped; workspace.css). The label is
+  muted (`--ca-muted`, as `.meta-grid dt`), because tags are neither prompt role. First
+  `section.tag-section.image-tags` "Image tags · N" (the file's current image tags, D88),
+  then `section.tag-section.linked-tags` "Prompt tags · N" for the linked positive's
+  tags or "Recipe tags · N" for a recipe's own (`tags_scope`, named as D146's category
+  chip names its origin). Each region is named without its count and with the prompt
+  blocks' context ("Current file image tags" in History). An empty source draws no
+  section. Repeats are removed within a source only, so a linked tag that is also an
+  image tag shows in both sections and each count is true. D21's filter rules are
+  unchanged. History's current-file read carries no `image_tags` facet (D88), so there
+  only the linked section shows. `tests/browser/inspector-concept.spec.mjs` wraps the
+  concept's row in the same sections at runtime (`withTagSections`, the D154 rule
+  injected) and compares the measured sections (frame, heading, label, row); a
+  mutation of the label color, the row margin or the top rule fails it. Browser tests:
+  "D154: image tags sit in their own labelled section after the negative prompt, in
+  the panel and the viewer" and "the inline current file labels its image tags after
+  its negative prompt".
 - **D115** (beyond the plan's list): the concept always has a selected image, so
   its "Auto-tag images" always opens the dialog. Production opens it for the image
   selected in Images when it was last left; with none it is `aria-disabled` and
   pressing it toasts "Select an image in Images first." (no new chrome).
-- **D116** (ruling T5): **Retry** leads `.dialog-actions` (before Cancel and the
-  primary) while a failed observation, a failed Generate, an unconfirmed save or an
+- **D116** (ruling T5): **Retry** leads the buttons of `.dialog-actions` (before
+  Cancel and the primary; D147's notice row sits above them) while a failed observation, a failed Generate, an unconfirmed save or an
   answer that needs a fresh observation (changed storage or file, expired capture)
   can be retried; the concept has no failure states, so it has no Retry. After a
   failed Generate it takes Generate's own path (an invalid field reports its
@@ -1756,6 +1831,25 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   Browser tests: "D116: Retry leads the actions after an unconfirmed save…", "D116:
   Retry after an expired capture observes again and keeps the typed draft (M5)" and
   the paired `production-unknown-outcome` capture.
+- **D147** (#430, beyond the Global Constraints' "status text only"): a state
+  that blocks Save shows its reason in `div.tag-action-notice` (its sentence in a
+  `role="status"` span, written only when it changes), the first, full-width row of
+  the sticky `.dialog-actions`, above the buttons; `#tag-generation-status` is then
+  empty, so the sentence shows once. Generate and Save are `aria-disabled` and look
+  it (`.tagging-modal [aria-disabled="true"]`: opacity .55, `not-allowed`). A failed
+  or refused capture replaces the empty preview with a same-size
+  `div.tag-image-preview.tag-preview-empty` "Preview unavailable" (`role="img"`).
+  A changed source (409 `source-changed` from observe, Generate or Save, phase
+  `source-changed`, never retried as is) first asks the page where the file is
+  (`onSourceChanged`, see "Open pages across restarts and source changes"): found,
+  the dialog stays open and observes it there (`controller.retarget`, the typed
+  draft kept, the old capture released; refused while a save is in flight); not
+  found, the notice shows the server's sentence and **Refresh image collection**
+  (Images and Library-embedded galleries; **Reload page** elsewhere), which closes
+  the dialog first. Opened, generated and empty states are unchanged, so the concept
+  comparisons are not. Browser tests: `tests/browser/workspace-stale-source.spec.mjs`;
+  the file-changed and unconfirmed-save checks in `workspace-tagging.spec.mjs` and
+  `tagging-concept.spec.mjs` read the notice.
 - **D29** (no prototype copy) in the dialog: no "Prototype · suggestions are
   simulated…" note, the status reads "Suggestions from <model>. Approve tags to save."
   (not "Sample suggestions from …"), and the toast has no " in this tab".
@@ -1806,9 +1900,11 @@ production-versus-concept difference of PR C and its record:
 | Suggestions count field | D91 (ruling T3-bulk) |
 | No prototype note, "Suggestions from …", no " in this tab" | D29 |
 | Image tags first in the inspector and viewer chip row | D88 (ruling T7/C2) |
+| Image tags and linked tags in labelled sections after the negative prompt | D154 (#449) |
 | Auto-tag images `aria-disabled` without a selected image | D115 |
 | Retry leads the actions when the controller allows it | D116 (ruling T5) |
-| States the concept lacks (busy, conflict, changed storage or file, unconfirmed save, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
+| States the concept lacks (busy, conflict, unavailable model, video) | Global Constraints: `#tag-generation-status` text only |
+| A state that blocks Save (failed capture, changed source, file or storage, unconfirmed save): its reason and Refresh beside the actions, a "Preview unavailable" box | D147 (#430) |
 
 ### Bulk tagging from the selection bar (#249 PR D)
 
@@ -1850,8 +1946,9 @@ targets of the longest legal path (1024 code points, even escaped as `\uXXXX`) f
   Auto-tagging." (the server's own sentence), so no job starts only to fail.
   Start validates the fields as Generate does (native validity; nothing is sent).
   The concept comparison (`images-concept.spec.mjs`) uses the concept page itself as
-  the oracle, with Add to collection and Remove links… removed and a copy of its Add
-  tags button reading "Auto-tag selected" inserted after it.
+  the oracle, with Remove links… removed and a copy of its Add tags button reading
+  "Auto-tag selected" inserted after it (Add to collection compares in place since
+  #331, D138).
 - **D90** (plan D67, ruling T3-bulk): the dialog's **How to apply** radio group
   (`.field[role=radiogroup]`, radios beside their labels): **Apply automatically**
   (checked; primary "Start auto-tagging") starts the `image-tags` job
@@ -1942,7 +2039,7 @@ busy". Units:
 
 | Difference | Record |
 | --- | --- |
-| Add tags ships (Add to collection and Remove links… still omitted) | D8 (amended) |
+| Add tags ships (Remove links… still omitted; Add to collection ships with #331, D138) | D8 (amended) |
 | Auto-tag selected and its dialog | D85 (ruling L1) |
 | How to apply and the Review each image session | D90 (ruling T3-bulk) |
 | Suggestions count in the bulk dialog | D91 |
@@ -2049,6 +2146,235 @@ npm run --prefix tools/vendor test:workflows -- workspace-tagging-lifecycle.spec
   --project firefox --project webkit
 ```
 
+### Collections contract (#331)
+
+A collection is a named, hand-picked group of images (milestone 7 "Additional
+organization"). It never copies, moves or changes a file, a prompt, a tag, a category
+or a favorite. Legacy pages have no collections, so the legacy coverage table gains no
+row.
+
+**Database** (`database/image_collections.py`, mixed into `PromptDatabase`):
+- `image_collections(id, name, name_key UNIQUE, created_at)` and
+  `image_collection_items(collection_id → image_collections ON DELETE CASCADE,
+  root_key, relative_path, added_at, PRIMARY KEY (collection_id, root_key,
+  relative_path))`, plus `idx_image_collection_items_file(root_key, relative_path)`.
+  `migrate_image_collections` runs right after the saved-views migration inside its own
+  savepoint, creates the three objects empty with no backfill, changes no existing
+  table and reads only `sqlite_master` and its own tables, so its cost does not depend
+  on library size (checked with an SQLite authorizer on a 23,000-image library; a
+  second run is a no-op). Startup validates structure only; restore runs the full value
+  check.
+- A name is stored as typed after normalization: trimmed, each run of whitespace one
+  space, 1 to 100 characters, no control characters (Unicode `Cc`). `name_key` is
+  `NFC(casefold(NFC(name)))`, so names are unique ignoring case and Unicode form (a
+  macOS NFD name matches the Windows NFC one). Restore checks `name_key` only as
+  non-empty bounded text and does not recompute it: Python's Unicode case tables differ
+  between versions, so a backup made on another Python must still restore.
+- A member names a file by location, exactly as a favorite does: the source folder's
+  real path (`_favorite_root_key`) plus the path below it (`_favorite_relative_key`),
+  case-folded on Windows, each at most 4,096 characters. A case-only rename keeps a
+  Windows member; two Linux files that differ only by case are two members; on macOS a
+  case-only rename hides the member, as it hides a favorite. The Windows folding is
+  tested on every OS through `ntpath`.
+- Each write is one `BEGIN IMMEDIATE` transaction, so two tabs adding the same new
+  name create one collection. A collection is created only when at least one file is
+  inserted.
+
+**Missing members (MC2, MC3):** a member whose file is moved, renamed or deleted
+outside PromptManager, or whose source folder is offline, is hidden and its row kept;
+it shows again when a file appears at the same path (which may be a different image,
+as with favorites). Nothing follows a moved file, and there is no "forget missing"
+cleanup; deleting the collection removes those rows.
+
+**Duplicate cleanup (MC4):** System › Maintenance duplicate files moves the removed
+copy's memberships to the kept copy as a union, in the transaction that moves its
+favorite and image tags, and the job log reads "Moved N collection membership(s) to the
+kept copies". The legacy gallery page's duplicate delete does not move them (as for
+favorites).
+
+**Restore (MC8):** `collections` joins the restore stage's summary keys and
+`image_collections`'s `MAX(rowid)` its fingerprint; membership edits are not
+fingerprinted, as favorite and tag edits are not. A backup made before collections
+restores with no collections (the tables are created empty); the pre-restore safety
+backup keeps the old ones. The restore review shows no collections count.
+
+**Routes** (`py/api/collections.py`; every answer `{"success": bool, ...}`):
+
+| Route | Request | Success |
+| --- | --- | --- |
+| `GET /prompt_manager/collections` | none | `{collections: [{id, name, count, missing}]}` in name-key, then id, order |
+| `POST /prompt_manager/collections/items` | `{collection_id}` or `{name}`, and `items` | `{collection: {id, name}, created, added, already, not_found}` |
+| `DELETE /prompt_manager/collections/items` | `{collection_id, items}` | `{collection: {id, name}, removed}` |
+| `GET /prompt_manager/collections/membership` | query `root_index`, `root_scope`, `path`, each once | `{collection_ids: [...]}` |
+| `PATCH /prompt_manager/collections/{id}` | `{name}` | `{collection: {id, name}}` |
+| `DELETE /prompt_manager/collections/{id}` | none | `{deleted: true}` |
+
+- Ids are `[1-9][0-9]{0,8}` (path) or that int (body); anything else, or a body with
+  both or neither of `collection_id` and `name`, is 400.
+- `items` holds 1 to 500 targets `{root_index, root_scope, path}`, each checked by the
+  shared `py/api/media_target.py` (the image-annotation routes use the same check): 400
+  for a malformed shape, 403 for a traversal, drive, backslash or non-media path. A
+  `root_scope` that no longer names its root is 409 `source-changed` ("The sources
+  changed. Refresh the images and try again."). Any invalid item refuses the request
+  before a write; two targets that fold to one key count once.
+- Add keeps only files the source's listing holds and counts the rest in `not_found`;
+  a new name with nothing inserted is 404 `files-not-found` and creates nothing. A name
+  matching an existing collection ignoring case adds to it. Remove accepts any
+  well-formed target, listed or not.
+- An unknown id is 404 `collection-not-found`; a rename to another collection's name is
+  409 `name-taken` (a case variant of its own name is allowed). Any other failure is a
+  logged 500 with "Collections could not be read." or "The collection could not be
+  changed.", never the exception text.
+- Counts: `count` is the members the current listing of every configured source shows
+  (a folder configured twice counts once), `missing` the stored rows beyond it,
+  clamped at 0. Both come from one read snapshot of every member and stored count, so a
+  write between two reads cannot skew them. When any source's scan or read fails, both
+  are `null` for every collection and the names still return.
+- Every database read and every filesystem call (realpath, the scans) runs in the
+  executor; nothing touches the filesystem on the event loop.
+- The Images listing (`/prompt_manager/images/output?mode=workspace`) accepts
+  `collection` (`""` or an id) among `LISTING_FILTER_KEYS`; the cursor's scope hash
+  includes it, so a cursor from one collection is refused on another. An unknown
+  collection is 404 `collection-not-found`, checked before any per-source read; a
+  failed members read is the listing's 500, never an unfiltered page. A collection and
+  `favorites=1` are never both applied (the collection wins).
+
+**Limits (MC12):** names 1 to 100 characters; at most 500 files per add or remove; no
+limit on the number of collections or members.
+
+**Selection bar and "all N matching" (#331 PR 3 ruling):** the collection routes take
+explicit files only (no listing filter). With "All N matching selected" (D135), Add to
+collection and Remove from collection send the loaded images only when every match is
+loaded and checked and there are at most 500; otherwise they toast "Select at most
+500 images." and open nothing. Over 500 explicitly checked files toast the same.
+
+Recorded deviations:
+- **D136** (amends D28): the concept's COLLECTIONS group (`#collections-nav`,
+  index.html 28–31) without the "PROPOSED" badge. One `links()` row per collection
+  (folder icon, name, `.nav-count`) in name-key order, linking `#/collection/<id>`. The
+  count follows the nav-count rules of D51 (hidden until loaded, absent when it could
+  not be read, never a placeholder) and is re-read 300 ms after the last confirmed add,
+  remove, rename or delete; the list is re-read after a restore. The label is hidden
+  while no collection exists. At 950 px and below the concept hides
+  `#collections-nav`, which would leave a phone no way to open a collection: the rows
+  show in the wrapped nav (`workspace.css`, `/* D136 */`), the label stays hidden as
+  every sidebar label is, and the counts are hidden as on every concept nav row at that
+  width. (Open question for the maintainer: CUJ 15 asks for "with counts" at phone
+  width; production follows the concept's phone rule and hides them.) A failed list
+  read keeps the last rows.
+- **D137**: the collection page `#/collection/<id>` is Images filtered to the
+  collection: the collection's name is the h1, "Collection" the breadcrumb and title
+  (concept a1186–1189), with the concept's Images description and every Images control.
+  Its heading leads with **Edit** ("Edit collection", "Collection name", Delete…
+  (danger), Cancel, Save; the saved views' D51 dialog with collection nouns): "Collection
+  renamed.", a taken name stays in the dialog as "A collection named “X” already
+  exists.", "The collection could not be renamed. Try again." keeps it open. Delete…
+  asks "Delete “X”? Its N images stay where they are; only the collection is removed."
+  (N the stored count) and toasts "Collection deleted." (a 404 counts as deleted),
+  then opens `#/images`; a failure toasts "The collection could not be deleted. Try
+  again.". A `p.small` after the description reads "N image(s) in this collection
+  is/are not in your current sources." when members are missing. An unknown id reads
+  "This collection no longer exists." with an "Open Images" link; a failed list reads
+  "Collections could not be loaded. Your saved data has not changed." with Retry. The
+  page neither restores nor replaces the remembered Images state, and its favorites
+  filter is off (DC10).
+- **D138** (amends D8): **Add to collection** follows Set category and opens the
+  concept's `simpleInput` ("Add selected images to collection", "Collection name")
+  with the action "Add" (the concept's "Apply in prototype"), an empty field (the
+  concept pre-fills its sample "Experiments") of at most 100 characters, and a
+  `datalist` of the existing names (`#action-input-suggestions`; the field is then a
+  combobox, and Chromium draws its suggestion arrow inside the field, which the
+  geometry comparison does not see). An empty field keeps the dialog on it. The toasts: "Added N image(s) to
+  “X”." plus " N was/were already in it." and " N could not be found.", "All selected
+  images were already in “X”.", "None of the selected images could be found. Refresh
+  the images and try again." (404 `files-not-found`), "The sources changed. Refresh
+  the images and try again." (409; the sources and the listing are read again, which
+  clears the selection), "That collection no longer exists." and "The images could not
+  be added. Try again.". Otherwise the selection stays and the listing is not reloaded.
+  **Remove from collection** (beyond the concept) follows Add while a collection filter
+  is active (a collection page or a saved view on one), with no confirmation: "Removed
+  N image(s) from “X”.", then the loaded range is read again in place, keeping the
+  checked files still listed. "That collection no longer exists." (404, a collection
+  deleted meanwhile) reads the listing again, which then shows the deleted-collection
+  page; "The sources changed. Refresh the images and try again." (409) reads the
+  sources and listing again and clears the selection; "The images could not be removed.
+  Try again." keeps everything. A second press while it runs is ignored.
+- **D139** (beyond the concept): the shared inspector's footer ends with
+  **Collections…** (the folder icon) after Prompt history, for a listed file only
+  (`rooted-file` with its scope), in the Images side panel and the viewer's details;
+  Inspect a file and the Prompt library's galleries have no client store and no
+  button. Its dialog "Collections": "Loading collections…" while the file's membership
+  is read ("Collections could not be loaded." with Retry on failure; Save waits), one
+  concept checkbox row (`label.tag-suggestion`) per collection in sidebar order,
+  checked where the file is a member ("No collections yet. Name one below." without
+  any), a "New collection" field (at most 100 characters; a name matching an existing
+  collection adds to it), then Cancel and Save. Focus starts on the field and moves to
+  the first checkbox once they are listed. A typed name equal to a listed collection
+  ignoring case is that collection's checkbox, checked (never an add then a remove); a
+  name that cannot be a collection name is refused on the field with "The collections
+  could not be updated. Try again.", nothing is sent and the checkbox edits stay. Save
+  sends one request per change: the new name, each newly checked collection, each
+  unchecked one; nothing changed sends nothing and closes. All sent: the dialog closes
+  with "Collections updated.". A failure keeps it open with "The collections could not
+  be updated. Try again." and the membership read again, Save waiting until that read
+  lands; × and Escape wait while it saves. The page hears of the changes that went
+  through only when the dialog closes (a failure included), so a reload cannot remove
+  the dialog before its message is read. On a collection page a change to the open
+  collection then reloads the listing at once from the side panel, and from the viewer
+  only when the viewer closes, so the viewer keeps its place (no listing request while
+  it is open). Closing returns focus to the trigger, or, when a re-render replaced it,
+  to the inspector's current Collections… button or its heading. The
+  inspector comparison draws the button into the concept's panel footer and full
+  details after Prompt history (a copy of its Prompt history button with the concept's
+  folder icon), so the browser lays out what follows.
+- **D140**: saved views' Images state gains `collection` (`""` or an id, the `source`
+  encoding); older rows read `""`, and a write with both `favorites: true` and a
+  collection is 400. Save view on a collection page stores the id; the view reopens
+  the collection with its other filters under the view's own name (D51), with Remove
+  from collection and without the missing note. A view whose collection was deleted
+  (MC6) lists nothing and reads "The collection this view uses was deleted."; it never
+  falls back to every image, and the view is not changed.
+
+| Difference | Record |
+| --- | --- |
+| COLLECTIONS group, rows, counts, phone width | D136 (amends D28) |
+| Collection page, Edit, missing note, deleted page | D137 |
+| Add to collection dialog and toasts; Remove from collection | D138 (amends D8) |
+| Inspector and viewer Collections… and its dialog | D139 |
+| Saved views keep a collection; MC6 empty state | D140 |
+
+Comparisons: `tests/browser/shell-concept.spec.mjs` compares `#collections-nav` with
+two seeded collections ("Landscapes" with 12 listed members, "Experiments" with 8), so
+the concept's rows and counts compare as they are, mapping out only the badge and, at
+390 px, the concept's hidden nav. `tests/browser/images-concept.spec.mjs` compares Add
+to collection in place in the selection bar, and the collection page's heading,
+breadcrumb, toolbar and filter row against the concept's `#collection-landscapes`
+(the grid is not compared: the concept's members come from categories).
+`tests/browser/collections-concept.spec.mjs` compares the bulk dialog with the
+concept's `simpleInput` (D138 maps "Apply in prototype" to "Add", the sample value to
+empty and adds the datalist), at 1600x1100 and 390x844 in dark and light, with a
+mutation check. `tests/browser/inspector-concept.spec.mjs` maps D139.
+
+Tests: Python `tests/test_image_collections_schema.py` (migration, validation,
+restore), `tests/test_image_collections.py` (operations, keys, the duplicate move),
+`tests/test_api_collections.py` (routes, rules, counts), `tests/test_api_workspace_images.py`
+(the `collection` filter), `tests/test_api_duplicate_files.py`, `tests/test_restore_stage.py`,
+`tests/test_saved_views.py`; units `tests/js/workspace-collections.test.js` (the client
+store and strings), `tests/js/workspace-images-selection.test.js` (the bar's order, the
+500 cap, the all-matching rule and every §7.4 string), `tests/js/workspace-file-inspector.test.js`
+(D139's button and dialog), `tests/js/workspace-toolbar.test.js` (the datalist);
+browser `tests/browser/workspace-collections.spec.mjs` (CUJ 1–15 on the fixture
+`tests/browser/workspace_collections_fixture.py`: twelve Landscapes members and one
+missing file, eight Experiments members, one loose file and a saved view on
+Experiments), `tests/browser/full-inspector.spec.mjs` (the footer with Collections…).
+
+```sh
+python3 -m unittest tests.test_image_collections_schema tests.test_image_collections tests.test_api_collections -q
+node --test tests/js/workspace-collections.test.js tests/js/workspace-images-selection.test.js tests/js/workspace-file-inspector.test.js
+npm run --prefix tools/vendor test:workflows -- workspace-collections.spec.mjs collections-concept.spec.mjs \
+  images-concept.spec.mjs inspector-concept.spec.mjs shell-concept.spec.mjs --project chromium --project touch
+```
+
 ### Prompt library cards and recorded deviations (#249 PR E)
 
 The shelf uses the shared concept toolbar and caption (E1) and the concept's
@@ -2131,6 +2457,101 @@ categories.
 npm run --prefix tools/vendor test:workflows -- library-concept.spec.mjs \
   workspace-library.spec.mjs --project chromium --project touch --project firefox --project webkit
 ```
+
+### Selecting prompts and Set category (#437)
+
+**D148** (beyond the concept, whose Library cards have no checkbox): the Prompt library
+selects prompts and sets their category in one step, the legacy admin page's bulk "Set
+Category". It is built only from the concept's Images parts:
+
+- Each `article.prompt-card` leads with the Images `.image-overlays > label > input`
+  checkbox ("Select <title>"), placed by the concept's overlay CSS over the art; the card
+  carries `position: relative` (the concept puts it on `.media-art`). The checkbox comes
+  before the title in tab order (on Images it follows the image button). Tab and
+  Shift+Tab across windowed cards reach it (the card's controls are `button,
+  input[type=checkbox]`); Home, End and the arrow keys still move between titles.
+- `div#library-bulkbar` sits between the toolbar and the caption, empty until something
+  is checked, then the concept's `.bulkbar`: "N selected", Set category, Clear (D151
+  adds Add tags before Set category, in the Images bar's order). The
+  selection is a set of prompt ids over the loaded shelf: windowed-out cards keep their
+  state, Load more keeps it, and any shelf reload (search, category, sort, tags, a
+  write) and leaving the page clear it. Clicking a checkbox toggles it and sets the
+  anchor; Shift+click applies the anchor's range with the box's new state (the D135
+  helpers). Escape in the bar and Clear clear it, focus to the heading. There is no
+  Shift+arrow, long-press or "Select all N matching" on the Library (D151 adds
+  Ctrl/Cmd+A and "Select all N loaded").
+- Set category opens the shared `simpleInput` dialog ("Categorize selected prompts",
+  `input#action-input` labelled Category, at most 100 characters, the Library's
+  categories as suggestions). A blank value keeps it open; a control character is
+  refused on the field ("A category cannot contain control characters."). More than
+  1,000 selected toasts "Select at most 1,000 prompts." and opens nothing.
+- Apply posts `{prompt_ids, category, expected_epoch}` to `POST
+  /prompt_manager/bulk/category`, the epoch being the shelf's first page's
+  `library_epoch` (kept with a returning visit; a later page from another epoch is a
+  shelf error). The server checks the epoch, then sets the category on the Library
+  parents among the ids in one `BEGIN IMMEDIATE` transaction, writing (and registering as
+  Library parents, as the editor's PATCH does) only rows whose category differs, and
+  answers `{library_epoch, category, updated, unchanged, not_found}`. A restored storage
+  answers 409 `storage-changed` and writes nothing. The legacy `{prompt_ids, category}`
+  and `{images_filter, category}` bodies are unchanged.
+- Outcomes: "Category “X” set on N prompts." (plus "M could not be found."), then the
+  shelf and its categories reload and cached Library views and the sidebar counts are
+  invalidated, also when the page was left during the write. None found: "None of the
+  selected prompts could be found. The Library was reloaded." Storage restored: "Prompt
+  storage was restored since this page loaded. No category was changed." and a reload.
+  No answer, 502, 503 or 504: "The category change could not be confirmed. The Library
+  was reloaded." Any other refusal: "Category could not be set. Try again.", the
+  selection kept. Every bar action (and D151's select-all offer) is `aria-disabled` while
+  a write runs.
+- The bar's DOM and write loop live in `library-selection.mjs`; the toast text
+  (`setOutcome` with the noun "prompt"), the range helpers, the count and the dialog are
+  the Images bar's. One bar core shared with `images-selection.mjs` is a follow-up.
+
+Tests: `tests/browser/workspace-library-selection.spec.mjs` (set, blank and control
+characters, Clear/Escape/filter, Shift+click range and Tab across the window edge, the
+fence after a return visit, an unseen restore, refused and unconfirmed writes);
+`tests/browser/library-concept.spec.mjs` ("the Library selection checkbox and bar match
+the concept's Images ones", 1600x1100 and 390x844, both themes, with a moved-checkbox
+mutation); units `tests/js/workspace-library-selection.test.js`,
+`tests/js/workspace-library-state.test.js` (the epoch); Python
+`tests/test_bulk_library_category.py`. A Python change: ComfyUI needs a restart.
+
+### Adding tags to selected prompts and selecting all (#442)
+
+**D151** (beyond the concept, on D148's bar): the Prompt library adds tags to the selected
+prompts in one step, the legacy admin page's bulk "Add Tags", and selects every loaded
+prompt, as its select-all checkbox did (#444 ruling). The concept has neither.
+
+- The bar reads "N selected", Add tags, Set category, Clear: the Images bar's order.
+- Select all of the loaded shelf: Ctrl/Cmd+A in the grid (Images' key check; the search
+  box keeps its text meaning) selects every loaded prompt, windowed-out cards included,
+  and Escape in the grid clears it with focus kept on the card. "Select all N loaded"
+  follows the count while some loaded prompts are unchecked and at most 1,000 are loaded;
+  it selects them all and focus moves to Add tags; N follows each loaded batch. It sits
+  where D135's "Select all N matching" sits, but that offer appears once every loaded
+  image is checked; this one never reaches beyond the loaded prompts. No "all matching".
+- Add tags opens the shared `simpleInput` dialog ("Tag selected prompts", "Tags,
+  separated by commas", the tag vocabulary `GET /prompt_manager/tags` as suggestions, the
+  list the editor offers). The field refuses no tag, more than 20, a tag over 50
+  characters or with a control character, each with its sentence. Apply posts
+  `{prompt_ids, tags, expected_epoch}` to `POST /prompt_manager/bulk/tags`: prompt tags
+  only, never image tags, auto-tags or pair tags. Names are normalized as image tags are
+  (trim, no commas, casefold repeats folded); registry rows are found and inserted by
+  their exact name and only when some prompt gets them; a prompt gets only the names it
+  lacks by casefold. A prompt whose tags would pass 20 is skipped (`over_limit`), so the
+  editor can still save it. The answer is `{library_epoch, tags, updated, unchanged,
+  not_found, over_limit}`; the toast "Added “a, b” to N prompts." adds already-had,
+  skipped and not-found sentences. Storage restored: "Prompt storage was restored since
+  this page loaded. No tags were added."; unconfirmed: "Adding the tags could not be
+  confirmed. The Library was reloaded."; refused: "Tags could not be added. Try again."
+  The legacy `{prompt_ids, tags}` body is unchanged; both forms refuse a body that is not
+  a JSON object with 400.
+
+Tests: `tests/browser/workspace-library-selection.spec.mjs` (Add tags with its suggestions,
+field refusals and restore refusal; Ctrl/Cmd+A and Select all N loaded across batches and
+during a write); `tests/browser/library-concept.spec.mjs` (the bar comparison now includes
+Add tags); units `tests/js/workspace-library-selection.test.js`; Python
+`tests/test_bulk_library_tags.py`. A Python change: ComfyUI needs a restart.
 
 ### Prompt history page and recorded deviations (#249 PR F-a)
 
@@ -3282,7 +3703,11 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   mid-response is not discarded by the page: the server's 15-minute expiry removes it. When a restore the page saw running
   finishes, the cached Images and Library visits are dropped, the sidebar counts and
   saved views are read again and the open route is shown again (the Activity job view
-  stays). A refused file toasts "This file can't be restored: <validator reason>.". A
+  stays). #415: an open review (`openReviewDialog`) then closes as dismissed, since its plan no
+  longer describes storage; while any other dialog is open, all of that waits until the last
+  one has closed, so a dialog keeps what was typed and its next write meets the restored-storage
+  refusal, as when the page never saw the restore. `followRestore` (tests/browser/unseen-restore.mjs)
+  makes the page see a restore run and finish deterministically. A refused file toasts "This file can't be restored: <validator reason>.". A
   review value may wrap anywhere (`#modal-body > dl.meta-grid dd`, CSS under D105), so a
   long file name keeps the concept's two equal columns at phone width.
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
@@ -4852,7 +5277,7 @@ category; without one it shows the category its link supplies.
   category can still be removed. An unexpected failure is a logged 500 ("The
   category could not be changed." / "Image categories could not be read.") without
   the exception text. The routes never read or write `prompts`, `prompt_pairs` or
-  `generated_images`; `POST /prompt_manager/bulk/category` is unchanged.
+  `generated_images`; `POST /prompt_manager/bulk/category` (prompts only) is not one of them.
 - Duplicate cleanup (System › Maintenance): the kept copy's own category wins. A
   kept copy without one receives the removed copy's (`COPY_SQL`, part of the
   cleanup's query-plan check). The removed copy's row is never deleted, so a
@@ -4870,7 +5295,8 @@ category; without one it shows the category its link supplies.
   the side panel, the viewer and History's media inspector (D145); Tags & categories
   counts images on each category row and lists image-only values (D143), and Manage
   category previews and renames image rows too (D144). Prompt categories are changed in
-  the Prompt library editor and on the legacy admin page's "Set Category". Concept
+  the Prompt library editor, the Prompt library's selection bar (D148, #437) and on the
+  legacy admin page's "Set Category". Concept
   comparisons, at 1600x1100 and 390x844 in both themes: `images-concept.spec.mjs` (the
   Set category dialog and the options), `inspector-concept.spec.mjs` (the chip),
   `history-concept.spec.mjs` (History's chip) and `vocabulary-visual.spec.mjs` (rows and
@@ -5508,8 +5934,26 @@ decide through the same `own_counts`.
 - A cached node counts at job start like the hook: a job failing later still counts it.
   A node that executes after its replay in the same job (RAM-pressure freed the entry)
   skips its own count but still consumes the pending first-use catch-up.
-- No backfill: earlier cached jobs keep their counts. The history page's "tracked runs"
-  can stay below the Library count for these prompts (#403).
+- No backfill: earlier cached jobs keep their counts.
+- History (#403): the receipt also keeps the raw, prepend and append text the node gave
+  the history capture. For a cached node whose graph inference leaves a field unknown,
+  the capture takes it from the receipt matching the cache entry
+  (`CachedRuns.recorded_fields`), as `inferred` / `graph_semantics`: the node did not run
+  in this job, the value follows from the run key (the whole upstream closure) plus the
+  cache proof. The job then joins the prompt's history scope, gets the
+  `positive_prompt_id` (and Pair) hint, and an image of it can be attributed through its
+  run, so the history page's "tracked runs" equals the Library count from the restart on.
+  Fail closed (fields stay unknown, as before): no matching receipt, a receipt that
+  disagrees with a field the graph knows, executions with equal outputs that recorded
+  different fields (a conflict that stays for that run key), a field over 64 KiB or
+  invalid Unicode, more than one run's history (1 MiB) in one receipt, or a full 8 MiB
+  field budget (least recently used receipts give up their fields first; their counting
+  stays). No new evidence vocabulary, so older builds still open the database.
+- Still different: jobs before the restart (no backfill); list batches (per item in the
+  Library, once per job in history); text with leading or trailing whitespace (the
+  Library stores it stripped, history matches the exact raw text, #438); a job in which the
+  node executes after its replay (RAM-pressure freed the entry: two samples, an
+  ambiguous capture); jobs while the history writer is fenced (restore, library move).
 - Tests: `tests/test_cached_runs.py` (whole jobs with the real nodes, a real database,
   fake host caches); `tests/comfyui/execution-text-link.spec.mjs` "#347" cases on the
   managed host: PreviewAny into each node kind, 3 jobs changing only the sampler seed,
@@ -5517,7 +5961,10 @@ decide through the same `own_counts`.
   modes, A, B, A from the owned `PMCycledText` under LRU, typed text, a downstream
   failure, a "run selected output" job that does not need the node, and a rewire to the
   negative input. The RAM-pressure eviction path cannot be forced on a real host and is
-  covered by the Python tests.
+  covered by the Python tests. Since #403 these cases also check the history page's
+  tracked runs equal the Library count, and `tests/test_execution_history_hooks.py`
+  (`CachedRuntimeHistoryTests`) runs the real history hook and writer with a real
+  `CachedRuns`.
 
 ```sh
 python3 -m unittest discover -s tests -p "test_cached_runs.py"
@@ -5616,10 +6063,12 @@ Context cases verify A,A,B as three jobs/two combinations/one positive snapshot
 when every positive field matches; all five registered PM variants; exact raw
 whitespace and Unicode; known empty negatives; Text negative roles and crossed
 pairs; fully cached repeats after trigger configuration changes; successful source
-text before downstream failure/interruption; unknown cached dynamic raw; unsupported
+text before downstream failure/interruption; cached dynamic raw from the reused execution (#403); unsupported
 transforms and duplicate list invocation ambiguity. Fresh values use
 `runtime_return`, cached effective STRING outputs use `host_cache_output`, and
-submitted literals use graph inference. SQL NULL means unknown; empty text is
+submitted literals use graph inference. A cached dynamic raw is unknown unless the
+#347 receipt of the execution the cache entry comes from proves it; it is then
+`inferred` / `graph_semantics` (graph identity plus a same-process cache receipt, #403). SQL NULL means unknown; empty text is
 known. Text is never trimmed or normalized by capture. Cache availability and
 inferred sampler roles prove neither sampler execution nor consumption, and list
 indices do not identify generated images. External trigger configuration changes
@@ -5973,9 +6422,11 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
 "Open existing tag manager" card for tag search and sort, the untagged entry and
-multi-tag AND/OR browsing; bulk prompt actions (delete, tag, category) stay on the
-legacy admin page. A prompt's category is changed in the Prompt library editor or with
-the legacy admin page's "Set Category" (`POST /prompt_manager/bulk/category`, unchanged);
+multi-tag AND/OR browsing; bulk prompt delete stays on the legacy admin page (bulk tags:
+the Prompt library's selection bar, D151). A
+prompt's category is changed in the Prompt library editor, on many prompts at once with
+the Prompt library's selection bar (D148, #437), or with the legacy admin page's "Set
+Category" (both `POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
 above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.

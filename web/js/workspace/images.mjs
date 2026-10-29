@@ -22,6 +22,7 @@ import { displayPreferences } from './preferences.mjs';
 import { onImageTagsSaved } from './image-tagging.mjs';
 import { followImageTagSaves, openCardTagging } from './images-tagging.mjs';
 import { favoriteBusy, paintStar, receiveFavorites, setFavoriteVisitTarget, toggleFavorite } from './images-favorites.mjs';
+import { createSourceRecovery, recoveredSource } from './images-source-recovery.mjs';
 export { onFavoriteChange } from './images-favorites.mjs';
 
 /** The concept's panel without an image (app.js updateImages a456–458). */
@@ -68,6 +69,7 @@ const RETRY_RESCAN = 'Rescan from Import to retry.';
 // The concept's empty collection (app.js updateImages).
 const NO_MATCHES = 'No matching images. Try another search or category.';
 const RETRY_REFRESH = 'Refresh image collection to retry.';
+const CURSOR_STALE = 'The image collection changed. Refresh image collection to continue.';
 /** One alert for whichever of the source discovery and the categories failed, so two failures announce once. */
 function loadFailure(sourcesRetry, categoriesFailed) {
     if (sourcesRetry && categoriesFailed) return `Sources, folders and categories could not be loaded. ${sourcesRetry}`;
@@ -114,10 +116,12 @@ export function selectedImage() {
  * Images last visit. `collection` (an id) is a collection page (#331 D137): only its members are listed, favorites is
  * off, and it neither restores nor replaces the last visit either. A listing that answers `collection-not-found` calls
  * `onCollectionMissing()` when given (the shell shows its deleted-collection page); otherwise (a saved view on a
- * deleted collection, D140) the page lists nothing and says so.
+ * deleted collection, D140) the page lists nothing and says so. `collections` (the shell's client store) adds the
+ * selection bar's Add to collection, and Remove from collection while a collection is open (D138).
  */
 export function mountImages(main, api, parentScope, {embedded = false, fetchPage, emptyText, focusTarget = null, savedState = null,
-    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null} = {}) {
+    favorites = false, collection: collectionId = null, onCollectionMissing = null, onSaveView = () => {}, activity = null,
+    collections = null} = {}) {
     const scope = createScope();
     const dispose = () => scope.dispose();
     parentScope.signal.addEventListener('abort', dispose, {once:true});
@@ -128,7 +132,14 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // System › Appearance: the display defaults this visit starts from (preferences.mjs); null without gallery-settings.js.
     const preferences = displayPreferences();
     const inspection = createInspectionController({api, autoLoad:preferences?.autoLoadMetadata !== false, cache:preferences?.cacheMetadata !== false});
-    scope.cleanup(inspection.subscribe(next => detailInspector?.setState(next)));
+    // The panel's listed file: a changed source is looked up once, the panel's Refresh stays the fallback (#430).
+    let selectedImage = null;
+    scope.cleanup(inspection.subscribe(next => {
+        detailInspector?.setState(next);
+        if (next.refreshRequired && next.code === 'source-changed' && selectedImage && imageKey(selectedImage) === selection) {
+            recovery.recover(selectedImage);
+        }
+    }));
     scope.cleanup(() => inspection.dispose());
     scope.cleanup(() => detailInspector?.dispose());
     // A Tags & categories Browse (browseImages) is handed to this mount once: a fresh Images visit filtered by its
@@ -293,12 +304,22 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         getFilter:() => {
             const filter = listingFilter(filters), scope = state?.items[0]?.root_scope;
             return filter.root !== undefined && typeof scope === 'string' ? {...filter, root_scope:scope} : filter;
-        }});
+        },
+        // #331 D138: Add to collection, and Remove from collection on an open collection, which then lists it again.
+        collections, collection:filters.collection || null, onCollectionsChanged:collectionChanged,
+        onSourceChanged:refreshInspectionCollection});
     if (bar) main.append(bar.element);
     main.append(body);
+    // #331 D139: a change the inspector or the viewer confirmed that touches the open collection lists it again; the
+    // viewer reports only once it closes.
+    const inspectorCollections = embedded ? null : collections;
+    const collectionsChangedBy = ({added, removed}) => {
+        if (filters.collection && [...added, ...removed].includes(Number(filters.collection))) collectionChanged();
+    };
     const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
+        collections:inspectorCollections,onCollectionsChanged:collectionsChangedBy,
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
-        onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onRestoreFocus:image => {
+        onRefresh:refreshInspectionCollection,onClose:scheduleLoad,onMediaError:image => recovery.recover(image),onRestoreFocus:image => {
             const index = state?.items.findIndex(entry => imageKey(entry) === imageKey(image));
             if (index >= 0) focusImage(index);else focusFallback.focus({preventScroll:true});
         }});
@@ -310,9 +331,11 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function inspect(image) {
         detailInspector?.dispose();
         selection = imageKey(image);
+        selectedImage = image;
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
-            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection});
+            onTagFilter:embedded ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
+            collections:inspectorCollections, onCollectionsChanged:collectionsChangedBy});
         detailInspector.setState(inspection.state);
         inspection.select(image);
         for (const [key, card] of rendered) markSelected(card, key === selection);
@@ -350,7 +373,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const action = event.target.closest('.image-card-actions button');
         if (event.target.closest('.star-button')) toggleFavorite(api, image);
         else if (event.target.closest('.image-open')) previewImage(image);
-        else if (action && !openCardTagging({api, scope, image, action, embedded})) inspect(image);
+        else if (action && !openCardTagging({api, scope, image, action, embedded, onSourceChanged:recovery.recover,
+            onRefresh:refreshInspectionCollection})) inspect(image);
     });
 
     function renderVisible() {
@@ -498,6 +522,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     function continuationText(next) {
         if (recovering) return 'Images paused until sources and folders are available.';
         if (collectionGone(next)) return '';
+        if (next.error?.code === 'cursor-stale') return CURSOR_STALE;
         if (next.error) return 'Images could not be loaded. Retry or rescan the collection.';
         if (next.loading && !next.loaded) return 'Loading images…';
         if (next.hasMore) return `${next.loaded.toLocaleString('en-US')} of ${next.total.toLocaleString('en-US')} ${noun(next.total, 'image')} · more load as you scroll`;
@@ -535,6 +560,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         setText(message, continuationText(next));
         setAttr(message, 'role', next.error && !gone ? 'alert' : 'status');
         retry.hidden = !next.error || gone;
+        // A cursor the server can no longer verify is never resent: Retry becomes the collection refresh (#430).
+        setText(retry, next.error?.code === 'cursor-stale' ? 'Refresh image collection' : 'Retry');
         more.hidden = !next.hasMore || !!next.error;
         more.setAttribute('aria-disabled', String(next.loading || recovering));
         if (onCollectionMissing && filters.collection && isCollectionGone(next.error) && reportedMissing !== next.error) {
@@ -579,7 +606,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         }
     }
     scope.listen(more, 'click', pressLoad);
-    scope.listen(retry, 'click', pressLoad);
+    scope.listen(retry, 'click', () => (state?.error?.code === 'cursor-stale' ? refreshInspectionCollection() : pressLoad()));
     function maybeLoad() {
         if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('#viewer-dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
@@ -607,8 +634,18 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             details.replaceChildren(noSelection());
         }
         selection = null;
+        selectedImage = null;
     }
+    // Bumped by every reset: a source recovery that began before it leaves the page alone (#430).
+    let generation = 0;
+    const recovery = createSourceRecovery({api, signal:scope.signal, generation:() => generation, apply:recoveredSource({
+        selected:image => selection === imageKey(image), inspect, dropSelection, stream, filters, updateScope,
+        closeViewer:() => { mediaViewer.stopSlideshow(); main.querySelector('#viewer-dialog[open]')?.close(); },
+        clearChecks:() => bar?.clear(), listsNow:() => !recovering,
+        current:started => !scope.signal.aborted && started === generation,
+        rediscover:() => loadOptions().then(found => { if (found) renderLoadStatus(); })})});
     function reset() {
+        generation += 1;
         mediaViewer.stopSlideshow();
         main.querySelector('#viewer-dialog[open]')?.close();
         dropSelection({keepPanel:recovering});
@@ -710,8 +747,22 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         const band = parseFloat(getComputedStyle(optionsStatus).scrollMarginBlockEnd) || 0;
         if (bottom > innerHeight - band && top < innerHeight) optionsStatus.scrollIntoView({block:'nearest', inline:'nearest'});
     }
+    /**
+     * A confirmed collection change that may change this listing (a remove from the open collection): the loaded range
+     * is read again in place, keeping the scroll and the checked files still listed. A failed re-read lists the page
+     * again from its start, whose failure shows the usual Retry (or the deleted-collection page).
+     */
+    async function collectionChanged() {
+        if (scope.signal.aborted || !filters.collection || recovering) return;
+        try {
+            await stream.refresh();
+        } catch {
+            if (!scope.signal.aborted) reset();
+        }
+    }
     async function refreshInspectionCollection() {
         if (scope.signal.aborted) return;
+        recovery.reset();
         // Numeric roots may now name another source; retire the old stream first.
         recovering = true;
         filters.root = 'all';filters.subfolder = '';

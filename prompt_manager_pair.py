@@ -198,7 +198,11 @@ class PromptManagerPair(PromptManagerFocused):
             type(self).__name__, negative_text, "", "", negative_text, role="negative"
         )
         self._record_cached_item(
-            unique_id, (positive, negative_text), text, negative_text
+            unique_id,
+            (positive, negative_text),
+            text,
+            negative_text,
+            fields=((text, prepend_text, append_text), (negative_text, "", "")),
         )
         return result
 

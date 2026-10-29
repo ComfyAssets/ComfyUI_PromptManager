@@ -21,6 +21,10 @@ _UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _TOKEN = re.compile(r"[0-9a-f]{64}")
 # Parent metadata stored on the prompt row; title lives in prompt_library_state.
 _PROMPT_COLUMNS = ("category", "rating", "notes")
+# Ids per IN (...) read: well under SQLite's oldest bound-parameter limit (999).
+_BULK_CHUNK = 500
+# The tags one prompt may carry: what the editor's save accepts (``validate_tags``).
+MAX_LIBRARY_TAGS = 20
 
 
 class LibraryCommandError(Exception):
@@ -83,6 +87,13 @@ def normalize_library_tags(tags: list[str]) -> list[str]:
 def _validate_epoch(expected_epoch: str) -> None:
     if not isinstance(expected_epoch, str) or not _UUID.fullmatch(expected_epoch):
         raise ValueError("expected_epoch must be a canonical UUID")
+
+
+def _validate_bulk_ids(prompt_ids: list[int]) -> None:
+    if not isinstance(prompt_ids, list) or not prompt_ids:
+        raise ValueError("prompt_ids must be a non-empty list")
+    if any(type(pid) is not int or not 1 <= pid <= 2**63 - 1 for pid in prompt_ids):
+        raise ValueError("prompt_ids must be positive integers")
 
 
 def _validate_guards(positive_id: int, expected_epoch: str, if_match: str) -> None:
@@ -308,3 +319,134 @@ class LibraryCommandOperations:
                 positive_created=False,
                 pair_created=pair_created,
             )
+
+    def bulk_set_library_category(
+        self, prompt_ids: list[int], category: str, *, expected_epoch: str
+    ) -> dict:
+        """Set one category on many Library parents, all or nothing (#437).
+
+        Guarded by the storage epoch the page read. Only rows whose category
+        differs are written (their ``updated_at`` and edit token change) and
+        registered as Library parents, as the editor's PATCH does; ids
+        that are missing or are not Library parents count as not found.
+        """
+        _validate_epoch(expected_epoch)
+        _validate_bulk_ids(prompt_ids)
+        prompt_ids = list(dict.fromkeys(prompt_ids))
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("Category is required")
+        validate_category(category)
+        category = category.strip()
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            current = {}
+            for start in range(0, len(prompt_ids), _BULK_CHUNK):
+                chunk = prompt_ids[start : start + _BULK_CHUNK]
+                marks = ",".join("?" for _ in chunk)
+                current.update(
+                    conn.execute(
+                        f"SELECT p.id,p.category FROM prompts p "  # nosec B608
+                        f"WHERE p.id IN ({marks}) AND {_ELIGIBLE}",
+                        chunk,
+                    ).fetchall()
+                )
+            changed = [pid for pid, value in current.items() if value != category]
+            for pid in changed:
+                self._ensure_library_parent(conn, pid)
+            now = utc_now_iso()
+            conn.executemany(
+                "UPDATE prompts SET category=?,updated_at=? WHERE id=?",
+                [(category, now, pid) for pid in changed],
+            )
+            return {
+                "library_epoch": epoch,
+                "category": category,
+                "updated": len(changed),
+                "unchanged": len(current) - len(changed),
+                "not_found": len(prompt_ids) - len(current),
+            }
+
+    def bulk_add_library_tags(
+        self, prompt_ids: list[int], tags: list[str], *, expected_epoch: str
+    ) -> dict:
+        """Add tags to many Library parents, all or nothing (#442).
+
+        Names are normalized once (trim, the vocabulary name rules, casefold
+        repeats folded, at most 20). A parent is given only the names it lacks,
+        compared with ``casefold`` against its own tags; registry rows are
+        found and inserted by their exact name, and only for names some parent
+        gets. A parent whose tags would pass 20 is skipped (``over_limit``) so
+        the editor can still save it. Pair and image tags are not touched.
+        """
+        from .annotations import ImageTagLimitError, normalize_image_tags
+
+        _validate_epoch(expected_epoch)
+        _validate_bulk_ids(prompt_ids)
+        prompt_ids = list(dict.fromkeys(prompt_ids))
+        too_many = f"At most {MAX_LIBRARY_TAGS} tags can be added at once"
+        try:
+            tags = normalize_image_tags(tags)
+        except ImageTagLimitError:
+            # Its message names images; this is a prompt route.
+            raise ValueError(too_many) from None
+        if not tags:
+            raise ValueError("tags must name at least one tag")
+        if len(tags) > MAX_LIBRARY_TAGS:
+            raise ValueError(too_many)
+        with self._pair_transaction() as conn:
+            epoch = self._library_epoch(conn, expected_epoch)
+            held = self._library_parent_tags(conn, prompt_ids)
+            additions, over_limit = {}, 0
+            for pid, names in held.items():
+                present = {name.casefold() for name in names}
+                missing = [name for name in tags if name.casefold() not in present]
+                if not missing:
+                    continue
+                if len(names) + len(missing) > MAX_LIBRARY_TAGS:
+                    over_limit += 1
+                    continue
+                additions[pid] = missing
+            wanted = list(
+                dict.fromkeys(n for names in additions.values() for n in names)
+            )
+            tag_ids = self._ensure_tags(conn, wanted)
+            now = utc_now_iso()
+            for pid, names in additions.items():
+                conn.executemany(
+                    "INSERT OR IGNORE INTO prompt_tags (prompt_id, tag_id) "
+                    "VALUES (?, ?)",
+                    [(pid, tag_ids[name]) for name in names],
+                )
+                self._ensure_library_parent(conn, pid)
+                conn.execute("UPDATE prompts SET updated_at=? WHERE id=?", (now, pid))
+            return {
+                "library_epoch": epoch,
+                "tags": tags,
+                "updated": len(additions),
+                "unchanged": len(held) - len(additions) - over_limit,
+                "not_found": len(prompt_ids) - len(held),
+                "over_limit": over_limit,
+            }
+
+    def _library_parent_tags(
+        self, conn: sqlite3.Connection, prompt_ids: list[int]
+    ) -> dict[int, list[str]]:
+        """The Library parents among ``prompt_ids`` and their own tag names."""
+        held: dict[int, list[str]] = {}
+        for start in range(0, len(prompt_ids), _BULK_CHUNK):
+            chunk = prompt_ids[start : start + _BULK_CHUNK]
+            marks = ",".join("?" for _ in chunk)
+            for (pid,) in conn.execute(
+                f"SELECT p.id FROM prompts p WHERE p.id IN ({marks}) "  # nosec B608
+                f"AND {_ELIGIBLE}",
+                chunk,
+            ):
+                held[pid] = []
+            for pid, name in conn.execute(
+                "SELECT pt.prompt_id,t.name FROM prompt_tags pt "  # nosec B608
+                f"JOIN tags t ON t.id=pt.tag_id WHERE pt.prompt_id IN ({marks})",
+                chunk,
+            ):
+                if pid in held:
+                    held[pid].append(name)
+        return held

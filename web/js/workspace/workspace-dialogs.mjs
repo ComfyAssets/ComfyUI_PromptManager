@@ -112,13 +112,13 @@ function bindScope(scope) {
     });
 }
 
-function show(heading, nodes, { scope, trigger, focusTarget, onClose = null, canClose = null }) {
+function show(heading, nodes, { scope, trigger, focusTarget, onClose = null, canClose = null, review = false }) {
     shell ??= createShell();
     if (!shell.dialog.isConnected) document.body.append(shell.dialog);
     bindScope(scope);
     // A swapped-out body is gone from the shell, so its owner releases it.
     const replaced = session?.onClose;
-    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose, canClose };
+    session = { scope, trigger: trigger ?? session?.trigger ?? null, onClose, canClose, review };
     replaced?.();
     shell.title.textContent = heading;
     shell.body.replaceChildren(...nodes);
@@ -131,6 +131,14 @@ export function closeWorkspaceDialog() {
     finish();
     shell?.dialog.remove();
     shell = null;
+}
+
+/**
+ * #415: a finished restore ends an open record-changing review (`openReviewDialog`) as a dismissal, since the plan it
+ * reviewed no longer describes storage and it holds nothing typed. Any other dialog stays open.
+ */
+export function closeReviewDialog() {
+    if (session?.review) closeWorkspaceDialog();
 }
 
 function fillSelect(select, key, options) {
@@ -324,8 +332,9 @@ export const INPUT_SUGGESTIONS_ID = 'workspace-input-suggestions';
  * reports `fallback` when one is given (Save view's "Saved view", a1339). A positive `maxLength` limits the field.
  * `validate(value)` may refuse a value with a message: the dialog then stays open with the typed text and the field
  * reports the message (its native validity) until it is edited. `suggestions` (text list) offers values in a
- * `<datalist>` under the field; `secondary` (`{label, onClick}`) adds a button between Cancel and the action that
- * closes the dialog and runs `onClick` (#332).
+ * `<datalist>` under the field (Set category's categories, #332; Add to collection's names, #331 D138); the field
+ * still takes any text. `secondary` (`{label, onClick}`) adds a button between Cancel and the action that closes the
+ * dialog and runs `onClick` (#332).
  */
 export function openInputDialog({ scope, title, label, action, value = '', maxLength, fallback, onApply, trigger = null,
     validate = null, suggestions = null, secondary = null }) {
@@ -392,13 +401,13 @@ export function openInputDialog({ scope, title, label, action, value = '', maxLe
  * another dialog replaces its body, so the page can dispose what it mounted there. While `canClose()` answers false,
  * × and Escape leave the dialog open (the page, a route change or a replacing dialog still close it).
  */
-export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null, canClose = null }) {
+export function openContentDialog({ scope, title, nodes, onClose = null, trigger = null, canClose = null, focusTarget = null }) {
     requireScope(scope);
     if (typeof title !== 'string' || !title) throw new TypeError('The dialog needs a title');
     if (!Array.isArray(nodes) || nodes.some(node => !node || typeof node !== 'object')) throw new TypeError('The dialog needs its nodes');
     if (onClose !== null && typeof onClose !== 'function') throw new TypeError('The dialog onClose must be a function');
     if (canClose !== null && typeof canClose !== 'function') throw new TypeError('The dialog canClose must be a function');
-    show(title, nodes, { scope, trigger, onClose, canClose });
+    show(title, nodes, { scope, trigger, onClose, canClose, focusTarget });
 }
 
 export const SCAN_REVIEW_SENTENCE = 'Enrich positive / negative associations, reuse canonical text and report unchanged files. ' +
@@ -497,7 +506,7 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
     actions.append(cancel, start);
     nodes.push(actions);
     // Cancel, ×, Escape, a replacing dialog or the page leaving: everything but the primary is a dismissal.
-    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null });
+    show(title, nodes, { scope, trigger, onClose: onDismiss ? () => { if (!started) onDismiss(); } : null, review: true });
     return {
         setValue(term, text) {
             const dd = values.get(term);
