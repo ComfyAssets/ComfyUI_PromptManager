@@ -65,7 +65,7 @@ function fakeDOM() {
 
 const BROWSER = { workspaceLayout: 'grid', workspaceDensity: 'comfortable', autoLoadMetadata: true, cacheMetadata: true,
     imageQuality: 'medium', videoAutoplay: false, videoMute: true, videoLoop: true, showFilePaths: true, showImageInfo: true,
-    sidebarCollapsedByDefault: false };
+    sidebarCollapsedByDefault: false, viewerOpenMode: 'centered' };
 
 async function mounted({ host = { webui_display_mode: 'newtab', result_timeout: 5 }, browser = BROWSER, hostFails = false } = {}) {
     const { mountAppearance } = await appearanceModule;
@@ -80,9 +80,9 @@ async function mounted({ host = { webui_display_mode: 'newtab', result_timeout: 
     });
     await drafts.load('browser');
     const scope = createScope();
-    const [surface] = mountAppearance(null, { scope, drafts });
-    const byId = id => dom.find(surface, node => node.dataset?.setting === id);
-    return { dom, drafts, scope, surface, byId, loadHost: async () => { hostValues = host; await drafts.load('host'); },
+    const [surface, viewer] = mountAppearance(null, { scope, drafts });
+    const byId = id => dom.find(surface, node => node.dataset?.setting === id) ?? dom.find(viewer, node => node.dataset?.setting === id);
+    return { dom, drafts, scope, surface, viewer, byId, loadHost: async () => { hostValues = host; await drafts.load('host'); },
         fixHost: () => { hostFails = false; } };
 }
 
@@ -98,13 +98,26 @@ test('the surface is the concept section with the concept rows in order, then th
         assert.deepEqual(titles, ['Default layout', 'Thumbnail size', 'Continuous browsing', 'Load metadata on selection',
             'Cache metadata in this browser', 'Image loading quality', 'Autoplay videos', 'Mute videos by default', 'Loop videos',
             'Show file paths', 'Open from ComfyUI', 'Node search auto-hide (seconds)', 'Show image details on cards',
-            'Collapse viewer details by default', 'Reset display defaults']);
+            'Reset display defaults']);
         const continuous = rows[2];
         assert.deepEqual(dom.tags(continuous.children[0]), ['h3', 'p']);
         assert.equal(continuous.children[1].className, 'chip blue');
         assert.equal(continuous.children[1].textContent, 'Infinite scroll');
         assert.equal(rows.at(-1).className, 'operation');
-        assert.equal(APPEARANCE_ROWS.filter(Array.isArray).length, 13);
+        assert.equal(APPEARANCE_ROWS.filter(Array.isArray).length, 12);
+    } finally { scope.dispose(); assert.equal(dom.listenerCount(), 0); dom.restore(); }
+});
+
+// #450 (D156, amends D97): a "Viewer" surface after "Browsing & display" holds the viewer's two defaults.
+test('the Viewer surface holds Open viewer in and the moved collapse row', async () => {
+    const { VIEWER_ROWS } = await appearanceModule;
+    const { dom, viewer, scope } = await mounted();
+    try {
+        assert.equal(viewer.className, 'surface');
+        assert.equal(viewer.children[0].textContent, 'Viewer');
+        assert.equal(viewer.children[1].textContent, 'How the image viewer opens; the button beside ✕ switches the current view.');
+        assert.deepEqual(viewer.children.slice(2).map(row => row.children[0].children[0].textContent), ['Open viewer in', 'Collapse viewer details by default']);
+        assert.deepEqual(VIEWER_ROWS.map(row => row[0]), ['viewer-mode', 'viewer-details']);
     } finally { scope.dispose(); assert.equal(dom.listenerCount(), 0); dom.restore(); }
 });
 
@@ -127,9 +140,11 @@ test('added rows reach their consumers: each control edits its stored key with t
             byId(id).checked = false; byId(id).dispatch('change');
         }
         for (const id of ['video-auto', 'viewer-details']) { byId(id).checked = true; byId(id).dispatch('change'); }
+        assert.deepEqual(byId('viewer-mode').children.map(option => [option.value, option.textContent]), [['centered', 'Centered'], ['fullscreen', 'Full screen']]);
+        byId('viewer-mode').value = 'fullscreen'; byId('viewer-mode').dispatch('change');
         assert.deepEqual(drafts.changes('browser'), { workspaceLayout: 'masonry', workspaceDensity: 'large', imageQuality: 'low',
             autoLoadMetadata: false, cacheMetadata: false, videoMute: false, videoLoop: false, showFilePaths: false, showImageInfo: false,
-            videoAutoplay: true, sidebarCollapsedByDefault: true });
+            videoAutoplay: true, sidebarCollapsedByDefault: true, viewerOpenMode: 'fullscreen' });
         assert.deepEqual(drafts.changes('host'), { webui_display_mode: 'popup' });
     } finally { scope.dispose(); dom.restore(); }
 });
@@ -154,7 +169,7 @@ test('the auto-hide timeout takes whole seconds from 0 to 300 only', async () =>
 
 test('reset restores defaults without touching other keys', async () => {
     const { DISPLAY_KEYS } = await appearanceModule;
-    const changed = { ...BROWSER, workspaceLayout: 'list', videoMute: false, showImageInfo: false, sidebarCollapsedByDefault: true };
+    const changed = { ...BROWSER, workspaceLayout: 'list', videoMute: false, showImageInfo: false, sidebarCollapsedByDefault: true, viewerOpenMode: 'fullscreen' };
     const { dom, drafts, scope, surface, loadHost } = await mounted({ browser: changed });
     try {
         await loadHost();
@@ -162,7 +177,7 @@ test('reset restores defaults without touching other keys', async () => {
         const reset = dom.find(surface.children.at(-1), node => node.tagName === 'BUTTON');
         assert.equal(reset.textContent, 'Reset');
         reset.click();
-        assert.deepEqual(drafts.changes('browser'), { workspaceLayout: 'grid', videoMute: true, showImageInfo: true, sidebarCollapsedByDefault: false });
+        assert.deepEqual(drafts.changes('browser'), { workspaceLayout: 'grid', videoMute: true, showImageInfo: true, sidebarCollapsedByDefault: false, viewerOpenMode: 'centered' });
         // The host fields and every key outside the display defaults are left as they are.
         assert.deepEqual(drafts.changes('host'), { result_timeout: 9 });
         assert.deepEqual([...DISPLAY_KEYS].sort(), Object.keys(BROWSER).sort());

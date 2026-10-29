@@ -180,6 +180,13 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #249 D34: under 200% page zoom the concept's 94dvh outgrows the viewport; the dialog keeps within it. */
 .ca-tools #viewer-dialog { max-height: min(94dvh, 94%); /* D34 */ }
 #viewer-dialog .dialog-header > div { min-width: 0; }
+/* #450 D156: the view switch sits before ✕ (8px apart; the header's gap is the concept's 18px), and Full screen fills the
+   browser window edge to edge (no outer margin), beating the concept's box, D34's max-height and the ≤700px height.
+   At ≤700px the viewer is already full-bleed, so the switch hides there. */
+#viewer-dialog .dialog-header > #viewer-mode { margin-inline-start: auto; margin-inline-end: -10px; }
+.ca-tools #viewer-dialog.viewer-fullscreen[open] { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
+/* `!important` only to beat the concept's `.icon-btn { display: inline-grid !important }`. */
+@media (max-width: 700px) { #viewer-dialog .dialog-header > #viewer-mode { display: none !important; } }
 #viewer-title { overflow-wrap: anywhere; /* D34 */ }
 #viewer-dialog, #viewer-dialog::backdrop { overscroll-behavior: contain; }
 #viewer-details { overscroll-behavior: contain; /* D34 */ }

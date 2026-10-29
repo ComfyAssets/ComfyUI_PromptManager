@@ -3194,10 +3194,40 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   details by default" (`sidebarCollapsedByDefault`; the viewer opens with
   `#viewer-details` hidden and a "Show details"/"Hide details" toggle with
   `aria-expanded`, the stage taking the whole width; amended by D155: on Inspect a file
-  the viewer opens with the details showing and the toggle reading "Hide details"), and the operation "Reset display
+  the viewer opens with the details showing and the toggle reading "Hide details"; amended by D156: the row moved
+  to the "Viewer" surface), and the operation "Reset display
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D156** (#450, maintainer request 2026-10-28, beyond the concept): every viewer (the
+  shared `dialog#viewer-dialog` of Images, Library, History, collections and Inspect) has
+  `button#viewer-mode.icon-btn` in `.dialog-header`, right before ✕ (a direct child, so
+  the concept's `.dialog-header > button` and D34's coarse 40px rule cover it; 8px from
+  ✕). It names the view it switches to in its accessible name and `title` ("Full screen
+  view" / "Centered view") with a `maximize` / `minimize` outline icon, and keeps focus
+  after a switch. Full screen (`#viewer-dialog.viewer-fullscreen`) fills the browser
+  window edge to edge: `inset: 0`, no width or height cap, no margin, border or radius
+  (`.ca-tools #viewer-dialog.viewer-fullscreen[open]`, beating the concept's box, D34's
+  max-height and the ≤700px height); the layout inside is the concept's. Centered is the
+  concept's framed dialog, unchanged. In full screen the details stay toggleable: the
+  D97 "Show details"/"Hide details" toggle is in the toolbar whenever the view is full
+  screen or "Collapse viewer details by default" is on; going back to Centered without
+  that setting removes the toggle and shows the details. The view is not the browser's
+  Fullscreen API (Esc keeps one meaning, closing the viewer; WebKit has no element
+  fullscreen for a modal dialog; the workspace also runs in ComfyUI popups). The viewer
+  opens in the view System › Appearance › **Viewer** › "Open viewer in" (Centered,
+  Full screen) chooses: a browser display preference, `viewerOpenMode` (`centered` by
+  default, normalized in `gallery-settings.js`) in the shared `gallerySettings`; no
+  server setting. The button changes only the current view (navigation in the viewer
+  keeps it; the next open uses the setting). "Viewer" is its own surface after
+  "Browsing & display" ("How the image viewer opens; the button beside ✕ switches the
+  current view."), holding "Open viewer in" and the moved "Collapse viewer details by
+  default"; "Reset display defaults" still restores both. At ≤700px (the concept's
+  breakpoint, where the viewer is already 96vw × 94dvh) the button is hidden
+  (`display: none !important` against the concept's `.icon-btn` rule), popup windows
+  that narrow included; the stored view still applies there. Browser tests:
+  `tests/browser/workspace-viewer-mode.spec.mjs`; the concept comparisons add the
+  button to the concept's header at runtime and map the Viewer surface.
 - **D98** (Sources): each configured source's row has a plain Remove after its scan
   button; nothing changes until Save. A source added this session reads "<path> · not
   saved yet" with Remove only until Save; a configured source the server cannot use

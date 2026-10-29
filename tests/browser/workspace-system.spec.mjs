@@ -287,7 +287,8 @@ test('Appearance › Thumbnails saves the server thumbnail settings and never co
     await expect(await request.post('/__test__/system/jxl-encoder', { data: { available: false } })).toBeOK();
     await expect(await request.post('/__test__/system/legacy-previews', { data: { count: 1 } })).toBeOK();
     await page.goto(`${workspace}#/system/appearance`);
-    const surface = page.locator('#workspace-main .settings-layout > section.surface').nth(1);
+    // #450 D156: the Viewer surface sits between Browsing & display and Thumbnails.
+    const surface = page.locator('#workspace-main .settings-layout > section.surface').nth(2);
     await expect(surface.locator(':scope > h2')).toHaveText('Thumbnails');
     await expect(surface.locator('.setting-row label')).toHaveText(['Thumbnail format', 'Thumbnail quality', 'Thumbnail size limit']);
     const format = surface.locator('#thumbnail-format');
