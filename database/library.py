@@ -122,13 +122,23 @@ def _archive(value: str) -> str:
     return ARCHIVE_SCOPES[value]
 
 
-# How the Tags filter matches (#444): every tag (AND) or any of them (OR).
-TAG_MODES = ("all", "any")
+# How the Tags filter matches (#444): every tag (AND), any of them (OR), or
+# parents without any tag.
+TAG_MODES = ("all", "any", "untagged")
+# A parent that no tag's Browse returns (#444 "Untagged prompts"): no tag of its
+# own and no active pair carrying one. The vocabulary's untagged count uses it too.
+UNTAGGED = (
+    "NOT EXISTS(SELECT 1 FROM prompt_tags ut WHERE ut.prompt_id=p.id) "
+    "AND NOT EXISTS(SELECT 1 FROM prompt_pairs up JOIN prompt_pair_tags upt "
+    "ON upt.pair_id=up.id WHERE up.positive_prompt_id=p.id AND up.archived=0)"
+)
 
 
-def _tag_mode(tag_mode: object) -> str:
+def _tag_mode(tag_mode: object, tags: list[str]) -> str:
     if not isinstance(tag_mode, str) or tag_mode not in TAG_MODES:
         raise ValueError("tag_mode must be one of " + ", ".join(TAG_MODES))
+    if tag_mode == "untagged" and tags:
+        raise ValueError("Untagged prompts cannot also filter by tags")
     return tag_mode
 
 
@@ -170,6 +180,8 @@ def _filter(
         or any(not isinstance(tag, str) or not tag or len(tag) > 200 for tag in tags)
     ):
         raise ValueError("Invalid library tags")
+    mode = _tag_mode(tag_mode, tags)
+    untagged = mode == "untagged"
     parent, pair, parent_params, pair_params = [], ["pp.archived=0"], [], []
     if text:
         parent.append("(p.text LIKE ? ESCAPE '\\' OR ls.title LIKE ? ESCAPE '\\')")
@@ -184,9 +196,7 @@ def _filter(
         pair.append("pp.category=?")
         parent_params.append(category)
         pair_params.append(category)
-    parent_tags, pair_tags, tag_params = _tag_conditions(
-        tags, _tag_mode(tag_mode) == "any"
-    )
+    parent_tags, pair_tags, tag_params = _tag_conditions(tags, mode == "any")
     parent.extend(parent_tags)
     pair.extend(pair_tags)
     parent_params.extend(tag_params)
@@ -202,6 +212,10 @@ def _filter(
         + " AND ".join(pair)
         + ")"
     )
+    if untagged:
+        # A whole-card condition: inside the parent-or-pair OR an untagged pair
+        # would let a tagged parent through.
+        condition = f"({condition}) AND {UNTAGGED}"
     params = [*parent_params, *pair_params]
     if folder_prefixes:
         # A whole-card condition around both arms: images link to the parent.

@@ -60,6 +60,32 @@ class TestLibraryAPI(ImageAPITestCase):
             self.assertEqual(response.status, 400)
             self.assertNotIn(str(self.comfy_dir), json.dumps(result))
 
+    async def test_untagged_tag_mode_lists_parents_without_tags(self):
+        self._save_prompt("plain one")
+        self._save_prompt("plain two")
+        self._save_prompt("tagged", tags=["t"])
+        self.api.db.save_prompt_pair("pair tagged", "noise", tags=["p"])
+        _, first = await self.get(limit=1, tag_mode="untagged")
+        self.assertEqual(first["total"], 2)
+        self.assertEqual(first["tag_mode"], "untagged")
+        _, second = await self.get(
+            limit=1, tag_mode="untagged", cursor=first["next_cursor"]
+        )
+        self.assertEqual(
+            sorted([first["items"][0]["text"], second["items"][0]["text"]]),
+            ["plain one", "plain two"],
+        )
+        _, default = await self.get(tag_mode="all")
+        self.assertEqual(default["total"], 4)
+        for params in (
+            {"tag_mode": "untagged", "tag": "t"},
+            {"tag_mode": "sql"},
+            {"cursor": first["next_cursor"]},
+        ):
+            response, result = await self.get(limit=1, **params)
+            self.assertEqual(response.status, 400, params)
+            self.assertEqual(result["success"], False)
+
     async def test_outside_missing_and_unsupported_media_do_not_leak_or_scan(self):
         positive = self._save_prompt("Cat")
         outside = make_png(self.comfy_dir / "outside.png")

@@ -2165,10 +2165,10 @@ Recorded deviations on this page:
   Filters dialog's **Folder** ("All output folders", then each folder below an output
   root indented by depth, read from `GET /prompt_manager/library/options?include=folders`
   when the dialog opens; the chosen folder stays listed even when the list lacks it) and
-  **Tags**, plus **Tag match** ("All of these tags" / "Any of these tags") drawn as the
+  **Tags**, plus **Tag match** ("All of these tags" / "Any of these tags" / "Prompts without tags", D149) drawn as the
   concept's own select; the concept's "Prompt evidence" and prototype note are absent.
   `GET /prompt_manager/library` takes `folder` (`/`-joined, `\` read as `/`; `.`, `..`,
-  empty segments and drives are 400) and `tag_mode` (`all` default, `any`), and echoes
+  empty segments and drives are 400) and `tag_mode` (`all` default, `any`, `untagged` from D149), and echoes
   both; a client whose non-default value is not echoed (an un-restarted older server)
   shows the read error, never the unfiltered shelf. A folder keeps a parent with one
   linked image (`generated_images.prompt_id`) in it or below it under any spelling of
@@ -2179,7 +2179,7 @@ Recorded deviations on this page:
   parent and pair arms; Any puts one `t.name IN (...)` in each arm, so a card matches
   when the parent or one active pair carries any tag (text and category still AND
   inside each arm); with one tag Any equals All. Filters counts Tags, Folder and a Tag
-  match other than All (D44). Saved Library views store `tag_mode` (`all|any`) and
+  match other than All (D44). Saved Library views store `tag_mode` (`all|any|untagged`) and
   `folder` (text 1024); older rows read the defaults. Tests:
   `tests/test_library_folders.py` (pure prefixes and names with `posixpath`/`ntpath`,
   drive, UNC, non-ASCII, symlinked root, the any-tag union), `test_api_library.py`,
@@ -6061,13 +6061,15 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for tag search and sort and the untagged entry
-(multi-tag OR moved to the Library's Tag match with D150, #444); bulk prompt actions (delete, tag, category) stay on the
+"Open existing tag manager" card for its own page; tag search and sort, the untagged
+entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
+(#444); bulk prompt actions (delete, tag, category) stay on the
 legacy admin page. A prompt's category is changed in the Prompt library editor or with
 the legacy admin page's "Set Category" (`POST /prompt_manager/bulk/category`, unchanged);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
-above and adds no route, so PR B needs no ComfyUI restart: a browser refresh is enough.
+above and adds no route, so PR B needed no ComfyUI restart; D149 (#444) adds read
+parameters to `GET tags` and `GET /prompt_manager/library`, which do.
 
 Screen: a `+ Create tag` heading action, a Tag vocabulary table (columns Tag, Prompts,
 Images counting the files that carry the tag (`image_count`, #249 C2), and Actions with Browse and
@@ -6119,6 +6121,36 @@ Apply; "Apply" instead of "Apply in prototype"; Delete tag… inside Rename or m
 Browse sets the exact filter; singular "1 positive prompt"; the production list appends
 fixture-only tags after the concept's sample tags.
 
+- **D149** (#444, cutover #334; the concept's renderTags has neither): the Tag vocabulary
+  surface shows, after its paragraph, an "Untagged prompts" `.operation` row ("N positive
+  prompts", Browse) and then the tag search and sort, drawn as the concept page toolbar's
+  `search.toolbar` > `label.search-field` (search icon, `input#tag-search` "Search tags…",
+  maxlength 200) and a `select#tag-sort` (Oldest first, the default and the old order;
+  Name A–Z; Name Z–A; Most prompts; Fewest prompts). Search is a literal, case-insensitive
+  substring on the server (`GET /prompt_manager/vocabulary/tags?search=&sort=`; ASCII-only
+  case folding, like SQLite `LIKE`/`NOCASE`), debounced 250 ms; it resets only the tag list
+  to page one, keeps through command re-reads, reads "No tags match this search." when
+  empty and is announced in a visually hidden status ("N tags"). Every sort breaks ties by
+  ascending id; a cursor belongs to one search and sort (scope-hashed; another is 400 with
+  "refresh"); a count sort's counts can move between pages only through a write, which
+  re-reads from page one. Each tags page reports `untagged_count` (eligible Library parents
+  with no tag and no active pair carrying one, the complement of every tag's Browse; legacy
+  counted every prompt without `prompt_tags` and hid the entry at 0; this row always
+  shows) and echoes `search` and `sort`. Browse opens the Library with `tag_mode=untagged`
+  (`GET /prompt_manager/library`, echoed as `tag_mode`; with a `tag` it is 400): "Filters ·
+  1", and Refine this view adds **Tag match** after Tags ("All of these tags" / "Any of these tags" (D150) / "Prompts
+  without tags", the latter disables Tags and drops them on Apply). A client whose request
+  the server did not echo (an un-restarted older server) shows the read error with Retry,
+  never an unfiltered list. Saved Library views store `tag_mode` (`all|any|untagged`, default
+  `all`); untagged with tags is refused on write and reads back as `all`; an older build
+  opens an untagged view as the whole Library. The concept comparison holds the row to the
+  concept's first category row, its top to the concept table's offset, the table to that
+  offset plus the additions' height (`d149`) and the toolbar to the concept Library
+  toolbar (`toolbarInventoryOf`), with a mutation check. Tests:
+  `tests/test_vocabulary.py` (`TestVocabularyTagSearchAndSort`, `TestLibraryTagMode`),
+  `test_api_vocabulary.py`, `test_api_library.py`, `test_saved_views.py`, the
+  vocabulary/library/saved-views JS units and `tests/browser/workspace-vocabulary-search.spec.mjs`
+  (behavior plus artifact captures).
 - **D143** (#332): category rows count the images whose own category is the value
   (`image_count`, the stored rows, missing files included): "N positive prompts · M
   images" beside prompts, "M images" for an image-only value, which follows every

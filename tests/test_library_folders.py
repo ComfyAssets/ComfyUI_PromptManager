@@ -161,6 +161,15 @@ class TestLibraryFolderAndAnyTag(unittest.TestCase):
         self.assertEqual(options["folders"], ["2026", "2026/08-Aug"])
         self.assertNotIn("folders", self.db.get_library_options())
 
+    def test_folder_combines_with_untagged(self):
+        self.link(self.save("plain in a"), "a", "1.png")
+        self.link(self.save("tagged in a", tags=["t"]), "a", "2.png")
+        self.link(self.save("plain in b"), "b", "3.png")
+        prefixes = folder_prefixes([str(self.root)], "a")
+        self.assertEqual(
+            self.texts(folder_prefixes=prefixes, tag_mode="untagged"), ["plain in a"]
+        )
+
     def test_any_tag_mode_is_the_union_across_parent_and_pair(self):
         self.save("parent a", tags=["a"])
         self.save("parent b", tags=["b"])

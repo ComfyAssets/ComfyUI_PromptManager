@@ -105,7 +105,7 @@ test('archived variant reads use their own scope and cursor without changing the
  assert.throws(()=>createLibraryDetail({api:{},onChange:()=>{},archive:'parents'}));
 });
 test('tag mode any and a folder are sent, echoed and validated (#444)',async()=>{
- const {createLibraryStream,LIBRARY_TAG_MODES}=await source;assert.deepEqual(LIBRARY_TAG_MODES,['all','any']);
+ const {createLibraryStream,LIBRARY_TAG_MODES}=await source;assert.deepEqual(LIBRARY_TAG_MODES,['all','any','untagged']);
  const calls=[];const pending=[{...page([item(1)]),tag_mode:'any',folder:'2026/Aug'},{...page([item(2)]),tag_mode:'all',folder:''},page([item(3)]),{...page([item(4)]),tag_mode:'all'}];
  const s=createLibraryStream({api:{get:async(url)=>{calls.push(new URL(url,'https://x').searchParams);return pending.shift();}}});
  assert.equal(await s.reset({tags:['a','b'],tagMode:'any',folder:'2026/Aug'}),1);
@@ -117,4 +117,15 @@ test('tag mode any and a folder are sent, echoed and validated (#444)',async()=>
  assert.equal(await s.reset({folder:'x'}),0);assert.ok(s.state.error instanceof TypeError,'a folder without its echo is refused');
  await assert.rejects(s.reset({tagMode:'or'}),TypeError);await assert.rejects(s.reset({folder:3}),TypeError);
  assert.equal(calls.length,4);s.dispose();
+});
+test('tag mode untagged is sent, echoed and never combined with tags (#444)',async()=>{
+ const {createLibraryStream}=await source;const calls=[];const pending=[{...page([item(1)]),tag_mode:'untagged'},page([item(2)]),page([item(3)])];
+ const s=createLibraryStream({api:{get:async(url)=>{calls.push(url);return pending.shift();}}});
+ assert.equal(await s.reset({tagMode:'untagged'}),1);assert.equal(new URL(calls[0],'https://x').searchParams.get('tag_mode'),'untagged');
+ // An older server that ignored tag_mode answers without the echo: an error, never the whole Library.
+ assert.equal(await s.reset({tagMode:'untagged'}),0);assert.ok(s.state.error instanceof TypeError);assert.deepEqual(s.state.items,[]);
+ // The default sends no tag_mode, so it needs no echo.
+ assert.equal(await s.reset({tagMode:'all'}),1);assert.equal(new URL(calls[2],'https://x').searchParams.has('tag_mode'),false);
+ await assert.rejects(s.reset({tagMode:'untagged',tags:['a']}),TypeError);await assert.rejects(s.reset({tagMode:'or'}),TypeError);
+ assert.equal(calls.length,3);s.dispose();
 });

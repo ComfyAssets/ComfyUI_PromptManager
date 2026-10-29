@@ -47,7 +47,7 @@ LIBRARY_STATE = {
     "category": "",
     "sort": "rating",
     "tags": [],
-    "tag_mode": "any",
+    "tag_mode": "untagged",
     "folder": "2026/Aug",
 }
 IMAGES_DEFAULTS = {
@@ -246,8 +246,13 @@ class TestSavedViewsApi(ImageAPITestCase):
                 page="library",
                 state={"sort": sort, "tags": ["a b"], "tag_mode": "all", "folder": ""},
             )
+        for mode in ("untagged", "any"):
+            view = await self.create(
+                page="library", state={"tags": [], "tag_mode": mode}
+            )
+            self.assertEqual(view["state"]["tag_mode"], mode)
         _, listed = await self.send("GET")
-        self.assertEqual(len(listed["views"]), 20)
+        self.assertEqual(len(listed["views"]), 22)
 
     async def test_write_requires_the_collection_key(self):
         # #331 D140: a view saved on a collection page keeps the collection id.
@@ -697,13 +702,26 @@ class TestSavedViewsSchema(unittest.TestCase):
         old = {"q": "", "category": "", "sort": "rating", "tags": ["a"]}
         self.assertEqual(normalize_state("library", old), {**LIBRARY_DEFAULTS, **old})
         self.assertEqual(
-            normalize_state("library", {"tag_mode": "untagged", "folder": 3}),
+            normalize_state("library", {"tag_mode": "or", "folder": 3}),
             LIBRARY_DEFAULTS,
         )
+        for mode in ("all", "any", "untagged"):
+            self.assertEqual(
+                normalize_state("library", {"tag_mode": mode})["tag_mode"], mode
+            )
         with self.assertRaises(SavedViewInvalid):
             encode_state("library", {**LIBRARY_STATE, "tag_mode": "or"})
         with self.assertRaises(SavedViewInvalid):
             encode_state("library", {**LIBRARY_STATE, "folder": "x" * 1025})
+
+    def test_library_untagged_is_never_paired_with_tags(self):
+        # Never written by this build: the tags win, as the listing refuses both.
+        self.assertEqual(
+            normalize_state("library", {"tags": ["a"], "tag_mode": "untagged"}),
+            {**LIBRARY_DEFAULTS, "tags": ["a"]},
+        )
+        with self.assertRaises(SavedViewInvalid):
+            encode_state("library", {**LIBRARY_STATE, "tags": ["a"]})
 
     def test_validation_errors_are_saved_view_invalid(self):
         for call in (

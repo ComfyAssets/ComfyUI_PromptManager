@@ -219,6 +219,15 @@ test('a state over the API 4 KB cap is refused before anything is sent (#249 M5)
 test('a Library view keeps its tag match and folder; an old view reads the defaults (#444)', async () => {
     const { normalizeViewState, libraryFilters } = await source;
     assert.deepEqual(normalizeViewState('library', { tag_mode: 'any', folder: '2026/Aug' }), { ...LIBRARY_DEFAULTS, tag_mode: 'any', folder: '2026/Aug' });
-    assert.deepEqual(normalizeViewState('library', { tag_mode: 'untagged', folder: 'x'.repeat(1025) }), LIBRARY_DEFAULTS);
+    assert.deepEqual(normalizeViewState('library', { tag_mode: 'or', folder: 'x'.repeat(1025) }), LIBRARY_DEFAULTS);
     assert.deepEqual(libraryFilters({ q: 'a' }), { text: 'a', category: '', sort: 'newest', tags: [], tagMode: 'all', folder: '' });
+});
+
+test('a Library view keeps untagged, and untagged never travels with tags (#444)', async () => {
+    const { normalizeViewState, libraryFilters, libraryViewState } = await source;
+    assert.equal(normalizeViewState('library', { tag_mode: 'untagged' }).tag_mode, 'untagged');
+    assert.deepEqual(normalizeViewState('library', { tags: ['a'], tag_mode: 'untagged' }), { ...LIBRARY_DEFAULTS, tags: ['a'] });
+    const shelf = { text: '', category: '', sort: 'newest', tags: [], tagMode: 'untagged', folder: '' };
+    assert.equal(libraryViewState(shelf).tag_mode, 'untagged');
+    assert.deepEqual(libraryFilters(libraryViewState(shelf)), shelf);
 });

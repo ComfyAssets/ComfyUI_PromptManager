@@ -33,8 +33,9 @@ MAX_TAG_LENGTH = 50
 _IMAGE_SORTS = ("newest", "oldest", "name", "name-desc", "rating")
 _LIBRARY_SORTS = ("newest", "oldest", "name", "rating")
 _MEDIA = ("all", "image", "video")
-# How a Library view's Tags match (#444): every tag or any of them.
-_TAG_MODES = ("all", "any")
+# How a Library view's Tags match (#444): every tag, any of them, or parents
+# without tags ("untagged" never goes with tags; the listing refuses both).
+_TAG_MODES = ("all", "any", "untagged")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _SOURCE = re.compile(r"all|0|[1-9][0-9]{0,8}")
 # A collection id as the listing's ``collection`` query takes it (#331): none
@@ -157,6 +158,8 @@ def encode_state(page: object, state: object) -> str:
         _validate_value(key, kind, limit, state[key])
     if state.get("favorites") is True and state.get("collection"):
         raise SavedViewInvalid("A view cannot filter by favorites and a collection")
+    if state.get("tag_mode") == "untagged" and state.get("tags"):
+        raise SavedViewInvalid("A view cannot list untagged prompts and filter tags")
     encoded = json.dumps(
         {key: state[key] for key in fields}, ensure_ascii=False, separators=(",", ":")
     )
@@ -200,6 +203,9 @@ def normalize_state(page: str, raw: object) -> dict:
     # as the listing does for a URL with both (#331 D140).
     if state.get("favorites") is True and state.get("collection"):
         state["favorites"] = False
+    # Never written by this build either: the tags win.
+    if state.get("tag_mode") == "untagged" and state.get("tags"):
+        state["tag_mode"] = "all"
     return state
 
 

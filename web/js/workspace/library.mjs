@@ -30,8 +30,8 @@ const metadataDrafts=new Map();
 const archivedVisible=new Map();
 // The concept's three sorts first, then the Library's appended Oldest first (D14).
 const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['rating','Highest rated'],['oldest','Oldest first']]);
-// Refine › Tag match (#444 D150), in LIBRARY_TAG_MODES order.
-const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['any','Any of these tags']]);
+// Refine › Tag match (#444 D149, D150), in LIBRARY_TAG_MODES order.
+const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['any','Any of these tags'],['untagged','Prompts without tags']]);
 /**
  * Refine › Folder options (#444 D150): the concept's "All output folders" first, then each folder indented by its depth
  * with its last segment as the label (the legacy admin select), and the current folder kept even when it is not listed.
@@ -170,8 +170,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         // The shared concept toolbar (app.js toolbar(), a347–360): Tags live in "Refine this view" (D14), no Refresh (D15).
         // Its own scope, disposed after the visit is saved: removing it first would shorten the page and clamp scrollY.
         const toolbarScope=createScope();
-        // D44: Filters reads "Filters · N" while Refine filters narrow the shelf: Tags, a Folder and a Tag match other
-        // than All (#444 D150) each count once.
+        // D44: Filters reads "Filters · N" while Refine filters (from Refine or a Browse) narrow the shelf: Tags, a Folder
+        // and a Tag match other than All (#444 D149, D150) each count once.
         const refinements=()=>(filters.tags.length?1:0)+(filters.folder?1:0)+(filters.tagMode!=='all'?1:0);
         const toolbar=mountToolbar(section,{scope:toolbarScope,categories:filters.category?[filters.category]:[],sorts:LIBRARY_SORTS,
             value:{q:filters.text,category:filters.category,sort:filters.sort},activeFilters:refinements(),onChange:applyToolbar,onFilters:openFilters,
@@ -415,7 +415,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         }
         /**
          * "Refine this view" with the Library's filters: the concept's Folder (#444 D150, its options read when the dialog
-         * opens), Tags (D14) and Tag match (D150); Clear also clears the toolbar category.
+         * opens), Tags (D14) and Tag match (D149, D150); Clear also clears the toolbar category.
          */
         function openFilters(trigger) {
             const refine=openRefineDialog({scope,trigger,fields:[{key:'folder',options:libraryFolderOptions([],filters.folder)},{key:'tags'},
@@ -429,7 +429,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             },()=>{});
         }
         function applyRefinement({tags,tagMode='all',folder='',category=filters.category}) {
-            const next=[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
+            // "Prompts without tags" takes no Tags (the dialog disables them).
+            const next=tagMode==='untagged'?[]:[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
             if(category===filters.category && tagMode===filters.tagMode && folder===filters.folder && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
             filters.category=category;filters.tags=next;filters.tagMode=tagMode;filters.folder=folder;reset();
         }

@@ -12,16 +12,17 @@ function parameters(filters,limit) {
     for(const tag of filters.tags || []) if(tag.trim()) query.append('tag',tag.trim());
     const sort=filters.sort || 'newest';
     if(!['newest','oldest','name','rating'].includes(sort)) throw new TypeError('Invalid library sort');
-    // #444: how Tags match (every tag or any of them) and the output folder below a root.
+    // #444: how Tags match (every tag, any of them, or parents no tag's Browse returns, which never goes with tags) and
+    // the output folder below a root.
     const tagMode=filters.tagMode ?? 'all',folder=filters.folder ?? '';
-    if(!LIBRARY_TAG_MODES.includes(tagMode)) throw new TypeError('Invalid library tag mode');
+    if(!LIBRARY_TAG_MODES.includes(tagMode) || (tagMode==='untagged' && query.has('tag'))) throw new TypeError('Invalid library tag mode');
     if(typeof folder!=='string' || folder.length>1024) throw new TypeError('Invalid library folder');
     if(tagMode!=='all') query.set('tag_mode',tagMode);
     if(folder) query.set('folder',folder);
     query.set('sort',sort);return query;
 }
 /** The Library's tag match values (#444); the first is the default, sent as no parameter. */
-export const LIBRARY_TAG_MODES=Object.freeze(['all','any']);
+export const LIBRARY_TAG_MODES=Object.freeze(['all','any','untagged']);
 // `variant_total` is the filtered parents' active negative variants (the concept caption's "M negative variants").
 function validatePage(page,cursor,query) {
     // A tag match or folder the server did not echo was not applied (an older server): never show the whole shelf as filtered.

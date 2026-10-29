@@ -39,7 +39,7 @@ test('Refine offers Folder, Tags and Tag match; a folder narrows the shelf to pr
     await expect(refine(page).locator('.field label')).toHaveText(['Folder','Tags','Tag match']);
     // Both roots hold a "shared" folder; the root's own images name no folder.
     await expect(folder(page).locator('option')).toHaveText(['All output folders','shared']);
-    await expect(match(page).locator('option')).toHaveText(['All of these tags','Any of these tags']);
+    await expect(match(page).locator('option')).toHaveText(['All of these tags','Any of these tags','Prompts without tags']);
     await folder(page).selectOption('shared');await apply(page).click();
     await expect(caption(page)).toHaveText(/^1 positive prompt · /);
     await expect(cards(page)).toHaveCount(1);await expect(card(page,'Cat portrait')).toHaveCount(1);
@@ -116,7 +116,7 @@ for(const [width,height] of [[1600,1100],[390,844]])for(const theme of ['dark','
     await expect(folder(page).locator('option')).toHaveCount(2);
     const actual=await refine(page).evaluate(inventoryOf);
     await captureCanonicalState(page,testInfo,`production-refine-${width}-${theme}`,'dialog[open]');
-    const expected=mapFiltersDialog(reference,{folders:[['','All output folders'],['shared','shared']],matchOptions:[['all','All of these tags'],['any','Any of these tags']]});
+    const expected=mapFiltersDialog(reference,{folders:[['','All output folders'],['shared','shared']],matchOptions:[['all','All of these tags'],['any','Any of these tags'],['untagged','Prompts without tags']]});
     const path=testInfo.outputPath('refine-inventory.json');await writeFile(path,JSON.stringify({reference,actual},null,2));
     await testInfo.attach('refine-inventory',{path,contentType:'application/json'});
     expect(reference.fields.map(item=>item.label)).toEqual(['Folder','Prompt evidence','Tags']);
