@@ -8,10 +8,11 @@ import { parityPng, localFixture, tinyWebm, sendablePng, corruptPng, disguised, 
 
 const workspace = '/prompt_manager/workspace';
 const TOAST = 'Local preview only. No file uploaded; metadata is available above.';
+const NO_TOAST = '';
 const ACTION = 'Open file metadata';
 const COPY = {
     intro: 'Read embedded metadata in this browser. The file is not uploaded or added to your library.',
-    note: 'Your file stays in this browser. Its metadata opens with “Open file metadata”.',
+    note: 'Your file stays in this browser. Choosing it opens its metadata.',
     chooser: 'Choose an image or video for a local preview',
     multiple: 'Drop one file at a time.',
     directory: 'Folders cannot be inspected. Choose one image or video file.',
@@ -53,11 +54,24 @@ async function choose(page, file) {
     await chooser(page).setInputFiles(file);
 }
 
+/** D155: choosing a file opens the viewer on it with its details; waits for that. */
 async function openViewer(page) {
-    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
-    await action(page).click();
     await expect(viewer(page)).toBeVisible();
     await expect(rail(page).locator('.panel-heading')).toBeVisible();
+}
+
+/** After the viewer was closed, the heading action (D60) opens it again on the current selection. */
+async function reopenViewer(page) {
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await action(page).click();
+    await openViewer(page);
+}
+
+/** Waits for the viewer a selection opened (D155) and closes it, back on the page. */
+async function closeOpened(page) {
+    await openViewer(page);
+    await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
 }
 
 /** Dispatches dragover + drop on `selector` with Files built in the page (and optional string items). */
@@ -152,7 +166,8 @@ test('chooser opens the shared full inspector without a second read', async ({ p
     const box = await image.evaluate(node => ({ height: node.getBoundingClientRect().height, fit: getComputedStyle(node).objectFit, margin: getComputedStyle(node).marginTop }));
     expect(box.height).toBeLessThanOrEqual(400);
     expect(box).toMatchObject({ fit: 'contain', margin: '20px' });
-    await expect(page.locator('#workspace-toast')).toHaveText(TOAST);
+    // D155: the open viewer is the confirmation, so no toast.
+    await expect(page.locator('#workspace-toast')).toHaveText(NO_TOAST);
     await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
     await expect(action(page)).not.toHaveAttribute('aria-describedby', /.*/);
 
@@ -195,16 +210,118 @@ test('chooser opens the shared full inspector without a second read', async ({ p
 
     await page.keyboard.press('Escape');
     await expect(viewer(page)).toHaveCount(0);
-    await expect(action(page)).toBeFocused();
+    // D155: focus returns to the chooser that opened it.
+    await expect(chooser(page)).toBeFocused();
     // Opening the viewer again shows the same record without reading the File a second time.
     await page.evaluate(() => {
         window.__slices = 0;
         const slice = Blob.prototype.slice;
         Blob.prototype.slice = function (...args) { if (this.name === 'f02.png') window.__slices++; return slice.apply(this, args); };
     });
-    await openViewer(page);
+    await reopenViewer(page);
     expect(await railContent(rail(page))).toEqual(served);
     expect(await page.evaluate(() => window.__slices)).toBe(0);
+});
+
+// #448 (D155): choosing or dropping a file opens the shared viewer with its details showing, in one step. Closing it
+// returns to the page with the file still chosen and focus on the chooser, ready for the next file.
+test('D155: choosing a file opens the viewer with its details in one click', async ({ page }) => {
+    await openInspect(page);
+    await choose(page, parityPng('f02.png'));
+    await expect(viewer(page)).toBeVisible();
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('f02.png');
+    await expect(rail(page)).toBeVisible();
+    await expect(rail(page).locator('.prompt-section.positive p.prompt-text')).toHaveText('a red fox in snow, detailed fur');
+    await expect(viewer(page).getByRole('button', { name: /^(Show|Hide) details$/ })).toHaveCount(0);
+    // The open viewer is the confirmation: no toast says the metadata is "available above".
+    await expect(page.locator('#workspace-toast')).toHaveText('');
+    await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(chooser(page)).toBeFocused();
+    await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    // A dropped second file replaces the first and opens at once.
+    await drop(page, '.file-drop', { files: [sendablePng()] });
+    await expect(viewer(page)).toBeVisible();
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('send-me.png');
+    await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(chooser(page)).toBeFocused();
+    // The same file again is a new selection and opens again; the heading action reopens the current one.
+    expect(await chooser(page).evaluate(node => { node.dispatchEvent(new MouseEvent('click')); return node.value; })).toBe('');
+    await choose(page, parityPng('f02.png'));
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('f02.png');
+    await page.keyboard.press('Escape');
+    await action(page).click();
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('f02.png');
+    await expect(rail(page)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(action(page)).toBeFocused();
+});
+
+test('D155: Inspect shows the details even when the viewer collapses them by default (amends D97)', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('gallerySettings', JSON.stringify({ sidebarCollapsedByDefault: true })));
+    await openInspect(page);
+    await choose(page, parityPng('f02.png'));
+    await expect(viewer(page)).toBeVisible();
+    await expect(rail(page)).toBeVisible();
+    const toggle = viewer(page).getByRole('button', { name: 'Hide details', exact: true });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await toggle.click();
+    await expect(rail(page)).toBeHidden();
+    await page.keyboard.press('Escape');
+    await action(page).click();
+    await expect(rail(page)).toBeVisible();
+    await expect(viewer(page).getByRole('button', { name: 'Hide details', exact: true })).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('D155: an unreadable file stays on the page with its alert', async ({ page }) => {
+    await page.addInitScript(() => {
+        const slice = Blob.prototype.slice;
+        Blob.prototype.slice = function (...args) {
+            if (this.name === 'gone.png') return { arrayBuffer: () => Promise.reject(new DOMException('The file is gone', 'NotReadableError')) };
+            return slice.apply(this, args);
+        };
+    });
+    await openInspect(page);
+    await choose(page, parityPng('f02.png', 'gone.png'));
+    await expect(status(page)).toHaveText('Embedded metadata could not be read.');
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(viewer(page)).toHaveCount(0);
+});
+
+test('D155: an AVI keeps its note and toast and does not open the viewer', async ({ page }) => {
+    await openInspect(page);
+    // AVI and WMV metadata is never read and the browser cannot play them, so the page keeps the selection's note.
+    const avi = { name: 'clip.avi', mimeType: 'video/x-msvideo', buffer: Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('AVI LIST'), Buffer.alloc(64)]) };
+    await choose(page, avi);
+    await expect(page.locator('#workspace-toast')).toHaveText(TOAST);
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(viewer(page)).toHaveCount(0);
+    await reopenViewer(page);
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('clip.avi');
+});
+
+test('D155: a selection that lands while another dialog is open leaves the viewer closed', async ({ page }) => {
+    await openInspect(page);
+    await page.evaluate(() => { const other = document.createElement('dialog'); other.id = 'other-dialog'; other.textContent = 'Other'; document.body.append(other); other.showModal(); });
+    await choose(page, parityPng('f02.png'));
+    await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
+    await expect(viewer(page)).toHaveCount(0);
+    await page.evaluate(() => document.querySelector('#other-dialog').close());
+    await reopenViewer(page);
+    await expect(viewer(page).locator('#viewer-title')).toHaveText('f02.png');
+});
+
+test('D155: at 390px the opened details are reachable below the media', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openInspect(page);
+    await choose(page, parityPng('f02.png'));
+    await expect(viewer(page)).toBeVisible();
+    const facts = rail(page).locator('.meta-grid').first();
+    await facts.scrollIntoViewIfNeeded();
+    await expect(facts).toBeInViewport();
+    expect(await viewer(page).evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
 });
 
 // PR L3 Task 10: local roles are the server inspector's (local-resolver.mjs), so for every parity PNG the rail shows the
@@ -260,7 +377,9 @@ test('drop accepts exactly one File and never navigates', async ({ page }) => {
     await expect(preview(page)).toBeEmpty();
     expect(await drop(page, '.file-drop', { files: [parityPng('f02.png')] })).toEqual({ over: true, drop: true });
     await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
-    await expect(page.locator('#workspace-toast')).toHaveText(TOAST);
+    // D155: the drop opened the viewer; drops are ignored while it is open (D64), so close it first.
+    await closeOpened(page);
+    await expect(page.locator('#workspace-toast')).toHaveText(NO_TOAST);
     // The chooser names the dropped file, never the one it replaced and never "No file chosen".
     expect(await chooser(page).evaluate(node => [...node.files].map(file => file.name))).toEqual(['f02.png']);
     const first = await preview(page).locator('img').getAttribute('src');
@@ -275,7 +394,7 @@ test('drop accepts exactly one File and never navigates', async ({ page }) => {
         await expect(preview(page).locator('img')).toHaveAttribute('src', first);
     }
     await expect(action(page)).toHaveAttribute('aria-disabled', 'false');
-    await openViewer(page);
+    await reopenViewer(page);
     await expect(viewer(page).locator('#viewer-title')).toHaveText('f02.png');
     await expect(page).toHaveURL(/#\/inspect$/);
 });
@@ -285,6 +404,7 @@ test('cancel and same-file reselect', async ({ page }) => {
     await openInspect(page);
     await choose(page, parityPng('f02.png'));
     await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
+    await closeOpened(page);
     const first = await preview(page).locator('img').getAttribute('src');
     // The chooser still names the chosen file, as in the concept; a cancel (no files) keeps the page as it is.
     expect(await chooser(page).evaluate(node => node.files[0]?.name)).toBe('f02.png');
@@ -308,6 +428,7 @@ test('cancel and same-file reselect', async ({ page }) => {
     const state = await urls(page);
     expect(state.created).toHaveLength(2);
     expect(state.revoked).toEqual([first]);
+    // The new selection opened the viewer again (D155).
     await openViewer(page);
     await expect(viewer(page).locator('.media-position')).toHaveText('1 of 1 loaded: f02.png');
 });
@@ -337,6 +458,7 @@ test('preview does not imply metadata support', async ({ page }) => {
     // Text, markup, SVG and a playlist under media names are unsupported and never get a URL.
     const before = (await urls(page)).created.length;
     for (const file of disguised()) {
+        // Unsupported: nothing opens (D155).
         await choose(page, file);
         await expect(status(page)).toHaveText(COPY.unsupported);
         await expect(status(page)).toHaveAttribute('role', 'alert');
@@ -360,6 +482,7 @@ test('local video plays inline and in the viewer with real tags', async ({ page,
     await expect(rail(page).locator('.meta-grid').first().locator('dd').first()).toHaveText('7');
     await expect(viewer(page).locator('#viewer-stage video')).toHaveCount(1);
     await page.keyboard.press('Escape');
+    await expect(viewer(page)).toHaveCount(0);
     await choose(page, tinyWebm());
     await expect(preview(page).locator('video.local-file-preview')).toBeVisible();
     await openViewer(page);
@@ -386,6 +509,9 @@ test('the toast and a rejected drop never contradict the status line', async ({ 
     // concept's toast interval.
     await choose(page, undecodableMp4());
     const failed = status(page).filter({ hasText: COPY.previewFailed });
+    // D155: the selection opened the viewer; its media failed there too, and the page's alert waits under it.
+    await expect(failed).toHaveCount(1);
+    await closeOpened(page);
     await expect(failed).toHaveCount(1);
     await drop(page, '.file-drop', { files: [parityPng('f02.png'), parityPng('f03.png')] });
     const rejected = status(page).filter({ hasText: COPY.multiple });
@@ -442,7 +568,8 @@ test('URLs and media end with their owning session', async ({ page }) => {
     let state = await urls(page);
     expect(state.revoked).toEqual([state.created[0]]);
     expect(await page.evaluate(() => window.__loads)).toBeGreaterThanOrEqual(1);
-    // Route change.
+    // Route change, from the page (D155: the selection opened the viewer, which makes the sidebar inert).
+    await closeOpened(page);
     await page.locator('aside.sidebar nav').getByRole('link', { name: 'Overview', exact: true }).click();
     await expect(main(page).getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
     state = await urls(page);
