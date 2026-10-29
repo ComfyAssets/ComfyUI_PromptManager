@@ -125,3 +125,28 @@ export function libraryWindow(count,columns,top,height,focused=-1) {
     if(focused>=0 && focused<count) keep.add(Math.floor(focused/columns));
     return [...keep].sort((a,b)=>a-b).flatMap(row=>Array.from({length:columns},(_,column)=>row*columns+column).filter(index=>index<count));
 }
+
+const byFolderName=(a,b)=>{const x=a.toLowerCase(),y=b.toLowerCase();return x<y?-1:x>y?1:a<b?-1:a>b?1:0;};
+/**
+ * Refine › Folder options (#444 D150): the concept's "All output folders" first, then the folders as a tree built by
+ * path segment, so each folder sits directly under its own parent (never under a longer sibling such as `kiko-v6`) and
+ * folders differing only in case stay distinct siblings. Siblings sort case-insensitively, then by exact spelling. A
+ * label is the last segment indented by depth (the legacy admin select). The chosen folder is kept even when the list
+ * lacks it, with its parents.
+ */
+export function libraryFolderOptions(folders,current='') {
+    const root=new Map();
+    for(const folder of current?[...folders,current]:folders) {
+        let level=root;
+        for(const segment of folder.split('/')) {if(!level.has(segment)) level.set(segment,new Map());level=level.get(segment);}
+    }
+    const options=[['','All output folders']];
+    (function walk(level,prefix,depth) {
+        for(const segment of [...level.keys()].sort(byFolderName)) {
+            const path=prefix?`${prefix}/${segment}`:segment;
+            options.push([path,`${'\u00a0\u00a0'.repeat(depth)}${segment}`]);
+            walk(level.get(segment),path,depth+1);
+        }
+    })(root,'',0);
+    return options;
+}

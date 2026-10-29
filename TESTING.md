@@ -2448,12 +2448,15 @@ Recorded deviations on this page:
   Load more and scrolling never re-announce it.
 - **D150** (#444, cutover #334): "Refine this view" on the Library holds the concept
   Filters dialog's **Folder** ("All output folders", then each folder below an output
-  root indented by depth, read from `GET /prompt_manager/library/options?include=folders`
+  root as a tree built by path segment (each folder directly under its own parent,
+  case variants as distinct siblings, siblings case-insensitive then exact), indented
+  by depth, read from `GET /prompt_manager/library/options?include=folders`
   when the dialog opens; the chosen folder stays listed even when the list lacks it) and
   **Tags**, plus **Tag match** ("All of these tags" / "Any of these tags" / "Prompts without tags", D149) drawn as the
   concept's own select; the concept's "Prompt evidence" and prototype note are absent.
-  `GET /prompt_manager/library` takes `folder` (`/`-joined, `\` read as `/`; `.`, `..`,
-  empty segments and drives are 400) and `tag_mode` (`all` default, `any`, `untagged` from D149), and echoes
+  `GET /prompt_manager/library` takes `folder` (`/`-joined; `\` is a separator only on
+  Windows, on POSIX it is part of a folder's name as the listing shows it; `.`, `..`,
+  empty segments and, on Windows, drives are 400) and `tag_mode` (`all` default, `any`, `untagged` from D149), and echoes
   both; a client whose non-default value is not echoed (an un-restarted older server)
   shows the read error, never the unfiltered shelf. A folder keeps a parent with one
   linked image (`generated_images.prompt_id`) in it or below it under any spelling of

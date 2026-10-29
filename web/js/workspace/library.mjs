@@ -2,7 +2,7 @@ import {createScope,createButton} from '../shared/toolkit/core.js';
 import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
-import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_MODES} from './library-state.mjs';
+import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_MODES,libraryFolderOptions} from './library-state.mjs';
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
@@ -33,14 +33,6 @@ const archivedVisible=new Map();
 const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['oldest','Oldest first']]);
 // Refine › Tag match (#444 D149, D150), in LIBRARY_TAG_MODES order.
 const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['any','Any of these tags'],['untagged','Prompts without tags']]);
-/**
- * Refine › Folder options (#444 D150): the concept's "All output folders" first, then each folder indented by its depth
- * with its last segment as the label (the legacy admin select), and the current folder kept even when it is not listed.
- */
-export function libraryFolderOptions(folders,current='') {
-    const listed=[...folders];if(current && !listed.includes(current)) listed.push(current);
-    return [['','All output folders'],...listed.map(folder=>{const parts=folder.split('/');return [folder,`${'\u00a0\u00a0'.repeat(parts.length-1)}${parts.at(-1)}`];})];
-}
 // A card's focusable controls in order: the D148 selection checkbox, then its buttons (#437).
 const CARD_CONTROLS='button, input[type="checkbox"]';
 const CATEGORIES_FAILED='Categories could not be loaded. Open the Prompt library again to retry.';

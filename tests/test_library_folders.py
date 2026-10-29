@@ -17,17 +17,45 @@ from utils.hashing import generate_prompt_hash
 
 
 class TestFolderNames(unittest.TestCase):
-    def test_normalize_reads_backslashes_and_strips_outer_slashes(self):
-        self.assertEqual(normalize_folder(""), "")
-        self.assertEqual(normalize_folder("/"), "")
-        self.assertEqual(normalize_folder("2026\\08-Aug\\"), "2026/08-Aug")
-        self.assertEqual(normalize_folder("/a/b/"), "a/b")
-        self.assertEqual(normalize_folder("..foo/b"), "..foo/b")
+    def test_normalize_strips_outer_slashes_on_both_flavors(self):
+        for flavor in (posixpath, ntpath):
+            with self.subTest(flavor=flavor.__name__):
+                self.assertEqual(normalize_folder("", flavor), "")
+                self.assertEqual(normalize_folder("/", flavor), "")
+                self.assertEqual(normalize_folder("/a/b/", flavor), "a/b")
+                self.assertEqual(normalize_folder("..foo/b", flavor), "..foo/b")
+
+    def test_a_backslash_separates_only_on_windows(self):
+        # Live B1: on POSIX a backslash is part of a folder name, as listed.
+        name = "Metadata\\Klein_4b Wildcard Run"
+        self.assertEqual(normalize_folder(name, posixpath), name)
+        self.assertEqual(
+            normalize_folder("2026\\08-Aug\\", posixpath), "2026\\08-Aug\\"
+        )
+        self.assertEqual(
+            normalize_folder(name, ntpath), "Metadata/Klein_4b Wildcard Run"
+        )
+        self.assertEqual(normalize_folder("2026\\08-Aug\\", ntpath), "2026/08-Aug")
+        # A colon names a drive only on Windows.
+        self.assertEqual(normalize_folder("a:b/c", posixpath), "a:b/c")
 
     def test_normalize_refuses_anything_but_a_folder_below_a_root(self):
-        for value in ("a/../b", "./a", "a//b", "C:/x", "c:", "a\x00b", 3, "x" * 1025):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                normalize_folder(value)
+        for flavor, value in (
+            *(
+                (flavor, value)
+                for flavor in (posixpath, ntpath)
+                for value in ("a/../b", "./a", "a//b", "a\x00b", 3, "x" * 1025)
+            ),
+            (ntpath, "C:/x"),
+            (ntpath, "c:"),
+            (ntpath, "a\\..\\b"),
+        ):
+            with self.subTest(flavor=flavor.__name__, value=value):
+                with self.assertRaises(ValueError):
+                    normalize_folder(value, flavor)
+
+    def test_the_default_flavor_is_the_platform_path_module(self):
+        self.assertEqual(normalize_folder("a\\b"), normalize_folder("a\\b", os.path))
 
     def test_posix_prefixes_are_exact_and_end_in_a_separator(self):
         self.assertEqual(
@@ -149,6 +177,16 @@ class TestLibraryFolderAndAnyTag(unittest.TestCase):
         self.assertEqual(self.in_folder("a", spellings), ["via link"])
         self.assertEqual(self.in_folder("a", [str(self.root)]), [])
         self.assertEqual(self.db.get_library_options(spellings)["folders"], ["a"])
+
+    @unittest.skipIf(os.name == "nt", "a backslash is a separator on Windows")
+    def test_a_posix_folder_with_a_backslash_lists_and_filters_alike(self):
+        name = "Metadata\\Klein_4b Wildcard Run"
+        self.link(self.save("klein"), name, "x.png")
+        self.link(self.save("other"), "Metadata", "y.png")
+        listed = self.db.get_library_options([str(self.root)])["folders"]
+        self.assertEqual(listed, ["Metadata", name])
+        self.assertEqual(self.in_folder(normalize_folder(name)), ["klein"])
+        self.assertEqual(self.in_folder(normalize_folder("Metadata")), ["other"])
 
     def test_folder_listing_offers_ancestors_and_skips_outside_images(self):
         self.link(self.save("deep"), "2026", "08-Aug", "x.png")
