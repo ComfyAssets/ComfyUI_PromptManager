@@ -478,6 +478,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* D147 (#430): a state that blocks Save shows its reason on its own row above the sticky actions, with Refresh for a
    changed source; the disabled actions look disabled; a refused capture's empty preview says so. */
 .tagging-modal .dialog-actions [aria-disabled="true"], .tagging-modal .tag-model-panel [aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D147 */ }
+#modal .dialog-actions .image-delete-start[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* #480 D159: no mode chosen yet */ }
 .tagging-modal .tag-action-notice { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--ca-text); font-size: 12px; /* D147 */ }
 .tagging-modal .tag-action-notice > span { flex: 1 1 16em; }
 .tag-image-preview.tag-preview-empty { display: grid; place-items: center; padding: 8px; text-align: center; font-size: 12px; color: var(--ca-muted); background: var(--ca-field); box-sizing: border-box; /* D147 */ }

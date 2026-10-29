@@ -402,6 +402,7 @@ class ImageCollectionOperations:
         is created only when at least one item is inserted. Returns
         ``{collection, created, added, already}``.
         """
+        from .image_removal_schema import clear_marks_of_keys
         from .models import utc_now_iso  # models imports this module's schema
 
         if (collection_id is None) == (name is None):
@@ -438,6 +439,7 @@ class ImageCollectionOperations:
                 ).rowcount
                 for root, path in pairs
             )
+            clear_marks_of_keys(conn, pairs)  # #480: a collected file is listed
         return {
             "collection": collection,
             "created": created,

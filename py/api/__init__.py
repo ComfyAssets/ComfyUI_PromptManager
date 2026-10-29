@@ -75,6 +75,7 @@ from .autotag_routes import AutotagRoutesMixin
 from .lora_integration import LoraIntegrationMixin
 from .lora_import_routes import LoraImportRoutesMixin
 from .image_categories import ImageCategoryRoutesMixin
+from .image_delete import ImageDeleteMixin
 from .source_rescope import SourceRescopeMixin
 
 try:
@@ -344,6 +345,7 @@ class PromptManagerAPI(
     LoraIntegrationMixin,
     LoraImportRoutesMixin,
     ImageCategoryRoutesMixin,
+    ImageDeleteMixin,
     SourceRescopeMixin,
 ):
     """REST API handler for PromptManager operations and web interface.
@@ -424,6 +426,12 @@ class PromptManagerAPI(
         # Reviewed maintenance plans under single-use tokens; a restart
         # forgets them (py/api/maintenance.py).
         self._maintenance_plans = PlanStore()
+        # #480: the removal marks the workspace listing hides, read once now so
+        # a listing page reads no table until a mark or the database changes.
+        try:
+            self._removal_marks()
+        except Exception:
+            self.logger.warning("Removal marks could not be read", exc_info=True)
 
         # A safety backup interrupted by a crash leaves its temp copy behind.
         try:
@@ -715,6 +723,7 @@ class PromptManagerAPI(
         self._register_lora_routes(routes)
         self._register_lora_import_routes(routes)
         self._register_image_category_routes(routes)
+        self._register_image_delete_routes(routes)
         self._register_rescope_routes(routes)
 
         # Register gzip compression middleware (once)
