@@ -548,8 +548,12 @@ def encode_history_inspection_response(
     resolution: dict,
     inspection: "InspectionRead | None",
     library: dict,
+    image_tags: dict | None = None,
 ) -> bytes:
-    """Use occurrence identity with the same current-file evidence projection."""
+    """Use occurrence identity with the same current-file evidence projection.
+
+    *image_tags*, when given, adds the validated ``image_tags`` facet (#457).
+    """
     return _encode_inspection(
         identity={
             "history_version": 1,
@@ -561,4 +565,5 @@ def encode_history_inspection_response(
         resolution=resolution,
         inspection=inspection,
         library=library,
+        image_tags=image_tags,
     )

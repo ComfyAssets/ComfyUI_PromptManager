@@ -1,6 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {test,expect} from './fixtures.mjs';
 import {armUnseenRestores,unseenRestore} from './unseen-restore.mjs';
+import {saveImageTags} from './concept-inventory.mjs';
 import {readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 
@@ -495,23 +496,38 @@ test('the inline current file names its prompts apart from the frozen run fields
     expect(await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'))).toBe(before);
 });
 
-// #449 (D154): History's inline current file draws tags in the shared labelled sections, named with its context so they
-// stay apart from the frozen run's fields. The server sends History no image_tags facet today (D88), so the read is
-// given one here to prove the shared render in History.
-test('the inline current file labels its image tags after its negative prompt',async({page})=>{
+// #449 (D154), #457: History's inline current file draws the file's own image tags in the shared labelled section, named
+// with its context so they stay apart from the frozen run's fields. The tags are saved on the real file through the Tag
+// routes and come from History's own current-file read (its `image_tags` facet), as Images reads them.
+test('the inline current file labels its image tags after its negative prompt',async({page,request})=>{
+    const reads=[];
     await page.route(url=>url.pathname.endsWith('/inspection'),async route=>{const response=await route.fetch();const body=await response.json();
+        reads.push(body.image_tags);
         body.prompts={positive:{status:'resolved',text:'current file positive',source:'graph-inferred'},negative:{status:'resolved',text:'current file negative',source:'graph-inferred'}};
-        body.image_tags={state:'current',tags:['history_tag']};
         await route.fulfill({response,json:body});});
-    await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
-    await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
-    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
-    await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
     const current=dialog(page).getByRole('region',{name:'Current reported file',exact:true});
     const tags=current.getByRole('region',{name:'Current file image tags',exact:true});
-    await expect(tags.locator('.role-label')).toHaveText('Image tags · 1');await expect(tags.locator('.tags > .chip')).toHaveText(['history_tag']);
+    const showCurrent=async()=>{
+        await open(page,page.fixture.detail_id);await marker(page,page.fixture.runs.shared).click();await expect(dialog(page).locator('[data-receipt]')).toHaveCount(5);
+        await dialog(page).getByRole('button',{name:'Raw',exact:true}).click();
+        await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+        await expect(page.locator('dialog#viewer-dialog')).toBeVisible();await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
+        await expect(current.getByRole('region',{name:'Current file negative prompt',exact:true})).toBeVisible();
+    };
+    // An untagged file draws no image tags section.
+    await showCurrent();await expect(tags).toHaveCount(0);expect(reads.at(-1)).toEqual({state:'none',tags:[]});
+    await dialog(page).getByRole('button',{name:'Close recorded run',exact:true}).click();
+    expect(await saveImageTags(request,'history/current.png',['history_tag','dusk'])).toEqual(['history_tag','dusk']);
+    await showCurrent();expect(reads.at(-1)).toEqual({state:'current',tags:['history_tag','dusk']});
+    await expect(tags.locator('.role-label')).toHaveText('Image tags · 2');await expect(tags.locator('.tags > .chip')).toHaveText(['history_tag','dusk']);
     const negative=current.getByRole('region',{name:'Current file negative prompt',exact:true});
     expect(await negative.evaluate((node,section)=>({after:Boolean(node.compareDocumentPosition(section)&Node.DOCUMENT_POSITION_FOLLOWING),inside:node.contains(section)}),await tags.elementHandle())).toEqual({after:true,inside:false});
+    // The viewer opened from History shares the inspection: the same section, plain chips (no Tags filter there, D88).
+    await dialog(page).locator('[data-receipt]').first().getByRole('button',{name:'View current file',exact:true}).click();
+    const viewerTags=page.locator('dialog#viewer-dialog #viewer-details section.tag-section.image-tags');
+    await expect(viewerTags.locator('.role-label')).toHaveText('Image tags · 2');
+    await expect(viewerTags.locator('span.chip')).toHaveText(['history_tag','dusk']);await expect(viewerTags.locator('button')).toHaveCount(0);
+    await page.keyboard.press('Escape');await expect(dialog(page)).toBeVisible();
 });
 
 // #332 CUJ 5 (MC8, §5.3): History's current-file inspector reads the file's own category with the Images key rule, so

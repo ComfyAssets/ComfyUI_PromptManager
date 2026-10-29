@@ -27,7 +27,11 @@ from .history_current import (
     resolve_current_candidate,
     snapshot_current_output_scope,
 )
-from .inspection_service import CurrentFileChanged, inspect_current_file
+from .inspection_service import (
+    CurrentFileChanged,
+    image_tags_reader,
+    inspect_current_file,
+)
 from .images import image_category_key
 
 try:
@@ -777,6 +781,14 @@ class HistoryRoutesMixin:
                                 },
                             ),
                             own,
+                        ),
+                        # The file's own image tags, keyed as the Tag dialog
+                        # keys them: the normcased realpath (#457).
+                        image_tags=image_tags_reader(
+                            db,
+                            str(resolved.canonical_target),
+                            self.logger,
+                            close=True,
                         ),
                         recorded=recorded_output_lookup(
                             db, close=True, reference=receipt["reference"]

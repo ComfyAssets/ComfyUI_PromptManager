@@ -55,6 +55,7 @@ from .inspection_service import (
     IMAGE_EXTENSIONS as _IMAGE_EXTENSIONS,
     SERVABLE_EXTENSIONS,
     VIDEO_EXTENSIONS,
+    image_tags_reader,
     inspect_current_file,
 )
 
@@ -3962,28 +3963,9 @@ class ImageRoutesMixin:
             )
 
     def _inspection_image_tags(self, root: Path, parts: tuple) -> Callable:
-        """The inspector's ``image_tags`` reader for one rooted file (S1).
-
-        The returned function takes the inspection's own stable stat and
-        answers ``current`` only for a byte record verified at exactly that
-        ``(size, mtime_ns)``; a failed read is ``unavailable``, never an error.
-        """
+        """The inspector's ``image_tags`` reader for one rooted file (S1)."""
         locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
-
-        def read(size: int, mtime_ns: int) -> dict:
-            try:
-                found = self.db.current_image_tags({locator: (size, mtime_ns)})
-            except Exception:
-                self.logger.warning(
-                    "Inspection image tags could not be read", exc_info=True
-                )
-                return {"state": "unavailable", "tags": []}
-            tags = found.get(locator)
-            if tags is None:
-                return {"state": "none", "tags": []}
-            return {"state": "current", "tags": list(tags)}
-
-        return read
+        return image_tags_reader(self.db, locator, self.logger)
 
     def _read_own_category(self, sources, path):
         """One file's own category, None, or OWN_CATEGORY_UNREAD (blocking).
