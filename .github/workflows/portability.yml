@@ -21,15 +21,16 @@ env:
   PYTHONFAULTHANDLER: "1"
 
 # Time limit rule as in test.yml: ceil(1.5 x the slowest of three recent green runs on main) + 3
-# minutes, never under 5. Measured 2026-10-26 in test.yml on runs 40257217681 (3be0ada),
-# 40240706568 (fb9134f), 40228167328 (f9835aa), before these legs moved here in #420:
-#   slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
-#     (macos 6m14s-8m30s, windows 11m42s-15m54s)
+# minutes, never under 5, timed as whole-job wall time. One matrix job, so the slowest leg of each
+# run counts (tests/vendor/ci-workflow.test.mjs recomputes it, #493).
+# Measured 2026-10-29 on main runs 40935337099 (dd247e3), 40938407252 (dd247e3), 40941240624 (dd247e3):
+#   slowest leg: 7m24s (py3.12 windows) / 7m31s (py3.13 windows) / 7m32s (py3.14 windows) -> 15 min
+#     (windows 4m56s-7m32s, macos 4m39s-6m14s)
 jobs:
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 27
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -51,5 +52,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      # The runner's TEMP is on C:, the OS disk, where a flush took about 6 ms
+      # and a test database's create-to-delete about 111 ms; on the D: work
+      # disk the same took 0.5 ms and 23 ms (macOS: 19 ms). Tests write their
+      # databases under TEMP, so it moves to a folder on D: (measured in #487,
+      # run 40915866444). The runner's TEMP was an 8.3 short name
+      # (C:\Users\RUNNER~1\...), so the new one is spelled by its short name too
+      # and paths still have to be resolved. D: makes no short names by default
+      # (run 40922502209), so they are switched on for it first.
+      - name: Keep test files on the work disk (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          fsutil 8dot3name set D: 0
+          $folder = New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "PromptManagerTests")
+          $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($folder.FullName).ShortPath
+          Write-Output "test TEMP: $short (long name $($folder.FullName))"
+          if ($short -eq $folder.FullName) { Write-Output "::warning::D: gave the test TEMP no 8.3 short name" }
+          "TEMP=$short" >> $env:GITHUB_ENV
+          "TMP=$short" >> $env:GITHUB_ENV
+
       - name: Run tests
+        env:
+          PM_TEST_SLOWEST: "40"
         run: python -m tests.run_suite -v

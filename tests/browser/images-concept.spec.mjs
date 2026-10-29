@@ -31,13 +31,15 @@ function captionDay(seconds,now=new Date()) {
 }
 
 /**
- * D8 (amended by #249 PR D and #331): the selection bar's real actions only; Remove links… is left out. Add to
- * collection compares in place (D138).
+ * D8 (amended by #249 PR D and #331): the selection bar's real actions only. Add to collection compares in place
+ * (D138). #480 D159: Remove links… returns as Delete…; OMITTED_BULK names the concept button it replaces.
  */
 const OMITTED_BULK=Object.freeze(['Remove links…']);
 const OMITTED_BULK_SELECTORS=Object.freeze(['bulk-remove'].map(action=>`#bulkbar [data-action="${action}"]`));
 /** D85: Auto-tag selected follows the concept's Add tags, a concept button of its own text. */
 const AUTO_TAG_CLONE=Object.freeze([{selector:'#bulkbar [data-action="bulk-tags"]',text:'Auto-tag selected'}]);
+/** #480 D159: Delete… takes the place of Remove links… (the concept's `danger` button, under another text). */
+const DELETE_CLONE=Object.freeze([{selector:'#bulkbar [data-action="bulk-remove"]',text:'Delete…'}]);
 
 /**
  * `withoutItems` for a row with padding and a border (the `.bulkbar`): its items flow again inside the content box,
@@ -452,10 +454,12 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images selecti
     const restore=await mutate(page,{remove:[...OMITTED_BULK_SELECTORS]});
     const removed=(await inventoryOf(page,'#main')).bulkbar;
     await restore();
-    // The oracle for production's bar: the concept page itself without the omitted actions and with D85's button.
-    const restoreProduction=await mutate(page,{remove:[...OMITTED_BULK_SELECTORS],clone:AUTO_TAG_CLONE});
+    // The oracle for production's bar: the concept page itself with D85's button and D159's Delete… in place of
+    // Remove links….
+    const restoreClones=await mutate(page,{clone:[...AUTO_TAG_CLONE,...DELETE_CLONE]});
+    const restoreRemoved=await mutate(page,{remove:[...OMITTED_BULK_SELECTORS]});
     const oracle=await inventoryOf(page,'#main');
-    await restoreProduction();
+    await restoreRemoved();await restoreClones();
     await captureCanonicalState(page,testInfo,`concept-images-selected-${width}-${theme}`);
     await openProductionLoaded(page,theme,'no-preference');
     const emptyActual=await inventoryOf(page,'#workspace-main');
@@ -468,7 +472,7 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`images selecti
         'Add to collection','Export metadata','Remove links…','Clear']);
     expect.soft(diffInventory(stripExact(mapBulkbar(reference.bulkbar,0).bulkbar.bar),stripExact(removed.bar)),'bar without the omitted actions').toEqual([]);
     expect.soft(actual.bulkbar.bar.items.map(item=>item.text),'production bar').toEqual(['1 selected','Add tags','Auto-tag selected',
-        'Set category','Add to collection','Export metadata','Clear']);
+        'Set category','Add to collection','Export metadata','Delete…','Clear']);
     expect.soft(compare(empty,emptyActual,manifest,['bulkbar','cards','panel']),'nothing checked').toEqual([]);
     expect.soft(compare(oracle,actual,manifest,['bulkbar','cards','panel']),'one card checked').toEqual([]);
     // The bar comparison notices a change to the production bar.

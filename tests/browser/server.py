@@ -220,6 +220,12 @@ def create_app(root: Path) -> web.Application:
     PromptManagerConfig.DEFAULT_DB_PATH = str(root / "browser.db")
     GalleryConfig.MONITORING_DIRECTORIES = [str(root / "output"), str(root / "input")]
 
+    # #480: Delete… never reaches a real system trash from a page test; the fake
+    # renames into this server's root, which goes when the server exits.
+    from tests import fake_trash
+
+    fake_trash.install(root / "fake-trash")
+
     from py.api import PromptManagerAPI
     from py import autotag
     from utils.hashing import generate_prompt_hash

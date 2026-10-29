@@ -488,7 +488,11 @@ class ImageTagJobsMixin:
                     _still_targets, self, index, root, files, seen
                 )
             )
-        return found
+        # #480: a file removed from the library is never tagged by a batch.
+        hidden = await self._run_in_executor(
+            self._removed_paths, [target.path for target in found]
+        )
+        return [target for target in found if target.path not in hidden]
 
     async def _start_autotag(
         self, *, model_type, existing, options, keep_in_memory, title, owner_kind

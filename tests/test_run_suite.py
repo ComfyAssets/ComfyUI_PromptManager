@@ -18,11 +18,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUBPROCESS_TIMEOUT = 60
 WATCHDOG_ENV = ("PM_TEST_HANG_LIMIT", "PM_TEST_SHUTDOWN_LIMIT")
+# Integer settings the runner reads; a bad value is a usage error.
+RUNNER_ENV = (*WATCHDOG_ENV, "PM_TEST_SLOWEST")
 
 
 def run_suite(folder, extra_env=None, *args, verbosity=("-v",)):
     """Run the runner on ``folder`` and return the completed process."""
-    env = {k: v for k, v in os.environ.items() if k not in WATCHDOG_ENV}
+    env = {k: v for k, v in os.environ.items() if k not in RUNNER_ENV}
     # Windows writes a piped stderr in the ANSI codepage; ask for the UTF-8
     # this helper decodes, so non-ASCII values and paths survive.
     env["PYTHONIOENCODING"] = "utf-8"
@@ -269,8 +271,57 @@ class RunSuiteTests(unittest.TestCase):
         self.assertIn("ok", result.stderr, detail)
         self.assertIn("Timeout (", result.stderr, detail)
 
+    def test_slowest_tests_are_listed_when_asked(self):
+        self.write(
+            "test_probe_slowest.py",
+            """
+            import time
+            import unittest
+
+            class Probe(unittest.TestCase):
+                def test_fast(self):
+                    pass
+
+                def test_slow(self):
+                    time.sleep(0.3)
+
+                def test_slower(self):
+                    time.sleep(0.6)
+            """,
+        )
+        result = run_suite(self.folder, {"PM_TEST_SLOWEST": "2"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = result.stderr.split("slowest 2 of 3 tests:\n", 1)
+        self.assertEqual(len(report), 2, result.stderr)
+        lines = [line.split() for line in report[1].strip().splitlines()[:2]]
+        self.assertEqual(
+            [line[1] for line in lines],
+            [
+                "test_probe_slowest.Probe.test_slower",
+                "test_probe_slowest.Probe.test_slow",
+            ],
+            result.stderr,
+        )
+        self.assertGreaterEqual(float(lines[0][0].rstrip("s")), 0.6)
+        self.assertNotIn("test_fast", report[1])
+
+    def test_slowest_tests_are_not_listed_by_default(self):
+        self.write(
+            "test_probe_quiet.py",
+            """
+            import unittest
+
+            class Probe(unittest.TestCase):
+                def test_ok(self):
+                    pass
+            """,
+        )
+        result = run_suite(self.folder)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("slowest", result.stderr)
+
     def test_invalid_limit_is_a_usage_error(self):
-        for name in WATCHDOG_ENV:
+        for name in RUNNER_ENV:
             for value in ("abc", "0", "-3", "1.5", "\u00b2"):
                 with self.subTest(name=name, value=value):
                     result = run_suite(self.folder, {name: value})

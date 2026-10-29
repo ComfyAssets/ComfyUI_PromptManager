@@ -18,6 +18,7 @@ from .models import PromptModel, normalize_image_path, utc_now_iso
 from .pairs import PairDependencyError, PairOperations  # noqa: F401 (re-exported)
 from .library import LibraryOperations, titled
 from .image_favorites import ImageFavoriteOperations
+from .image_removal import ImageRemovalOperations, removed_from_library
 from .image_collections import ImageCollectionOperations
 from .annotations import AnnotationOperations
 from .review import ReviewOperations
@@ -467,6 +468,7 @@ class PromptDatabase(
     WorkflowStorageOperations,
     CategoryImportOperations,
     ImageCategoryOperations,
+    ImageRemovalOperations,
 ):
     """Database operations class for managing prompts."""
 
@@ -1808,6 +1810,11 @@ class PromptDatabase(
         """
         if not isinstance(metadata, dict):
             metadata = {}
+        if removed_from_library(conn, image_path):
+            # #480: the user removed this exact file from the library; its
+            # bytes are unchanged, so nothing links it again.
+            self.logger.debug("Not linking a file removed from the library")
+            return 0
         filename = os.path.basename(image_path)
         file_path = normalize_image_path(image_path)
         file_size, width, height, image_format = _coerce_file_info(metadata)
