@@ -78,6 +78,7 @@ from .lora_integration import LoraIntegrationMixin
 from .lora_import_routes import LoraImportRoutesMixin
 from .image_categories import ImageCategoryRoutesMixin
 from .image_delete import ImageDeleteMixin
+from .image_return import ImageReturnMixin
 from .source_rescope import SourceRescopeMixin
 
 try:
@@ -349,6 +350,7 @@ class PromptManagerAPI(
     LoraImportRoutesMixin,
     ImageCategoryRoutesMixin,
     ImageDeleteMixin,
+    ImageReturnMixin,
     SourceRescopeMixin,
 ):
     """REST API handler for PromptManager operations and web interface.
@@ -728,6 +730,7 @@ class PromptManagerAPI(
         self._register_lora_import_routes(routes)
         self._register_image_category_routes(routes)
         self._register_image_delete_routes(routes)
+        self._register_image_return_routes(routes)
         self._register_rescope_routes(routes)
 
         # Register gzip compression middleware (once)

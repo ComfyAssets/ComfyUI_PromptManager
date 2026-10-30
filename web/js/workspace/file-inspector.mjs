@@ -234,7 +234,7 @@ export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
  * collections checklist; `onCollectionsChanged({added, removed})` hears the confirmed changes.
  */
 export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback,
-    collections = null, onCollectionsChanged = null, onDelete = null}) {
+    collections = null, onCollectionsChanged = null, onDelete = null, onReturn = null}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
     let contentScope;
@@ -342,6 +342,13 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         // #480: Delete… for a listed Images file only, last in the actions.
         const removable = onDelete ? revealTarget(record.identity) : null;
         if (removable) footer.append(deleteButton(removable));
+        // #498 (D162): a removed file (Show removed images) offers Return to library in Delete…'s place.
+        const returnable = onReturn ? revealTarget(record.identity) : null;
+        if (returnable) {
+            const button = createButton('Return to library');
+            contentScope.listen(button, 'click', () => onReturn(returnable, button));
+            footer.append(button);
+        }
         if (!full && footer.childNodes.length) container.append(footer);
     }
     /**

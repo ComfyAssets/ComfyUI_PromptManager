@@ -239,6 +239,16 @@ class TestWalkersSkipTrashFolders(_GapCase):
                     monitor.is_image_file(os.path.join(base, folder, "files", "a.png"))
                 )
 
+    def test_the_image_monitor_watches_a_root_named_like_a_trash_folder(self):
+        monitor = ImageGenerationHandler.__new__(ImageGenerationHandler)
+        monitor.supported_extensions = (".png",)
+        root = os.path.join(str(self.output_dir), ".Trash-1000")
+        monitor.watched_roots = (root,)
+        self.assertTrue(monitor.is_image_file(os.path.join(root, "sub", "a.png")))
+        self.assertFalse(
+            monitor.is_image_file(os.path.join(root, "sub", ".Trashes", "a.png"))
+        )
+
     async def test_the_workspace_listing(self):
         self.seed()
         self.assertEqual(await self.listed(), ["kept.png"])

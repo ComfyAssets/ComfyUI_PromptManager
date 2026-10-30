@@ -1160,7 +1160,10 @@ def _workspace_filters(query: Mapping) -> dict:
     the linked positive, and ``favorites=1`` keeps only favorites (the
     Favorites page, #249 D51). ``collection=<id>`` (1 to 9 digits) keeps only
     that collection's members (#331); it wins over ``favorites`` (a page never
-    sets both). Raises ValueError for any unknown or oversized value.
+    sets both). ``removed=1`` lists only the files a removal mark hides (#498,
+    Show removed images); such a file has no records, so it never combines
+    with ``favorites``, ``collection``, ``category``, ``tags`` or the rating
+    sort. Raises ValueError for any unknown or oversized value.
     """
     text = query.get("q", "").strip()
     folded = text.casefold()
@@ -1175,6 +1178,12 @@ def _workspace_filters(query: Mapping) -> dict:
     )
     favorites = query.get("favorites", "0")
     collection = query.get("collection", "")
+    removed = query.get("removed", "0")
+    if removed not in ("0", "1") or (
+        removed == "1"
+        and (favorites == "1" or collection or category or tags or order == "rating")
+    ):
+        raise ValueError("Invalid gallery filters")
     if (
         favorites not in ("0", "1")
         or (collection != "" and _COLLECTION_ID.fullmatch(collection) is None)
@@ -1202,6 +1211,7 @@ def _workspace_filters(query: Mapping) -> dict:
         "tags": tags,
         "favorites": favorites == "1" and not collection,
         "collection": int(collection) if collection else None,
+        "removed": removed == "1",
     }
 
 
@@ -2073,6 +2083,7 @@ class ImageRoutesMixin:
                         filters["tags"],
                         filters["favorites"],
                         filters["collection"],
+                        filters["removed"],
                     ]
                 ).encode()
             ).hexdigest()
@@ -2102,6 +2113,11 @@ class ImageRoutesMixin:
                     self._select_workspace_page, listings, filters, after, limit, scope
                 )
             )
+            # #498: Show removed images (N), every removed file in the selected
+            # source(s) whatever the filters (the hidden set is cached work).
+            removed_total = len(
+                await self._run_in_executor(self._hidden_entries, listings)
+            )
         except CollectionMissing:
             return collection_not_found()
         except Exception:
@@ -2128,6 +2144,7 @@ class ImageRoutesMixin:
             "limit": limit,
             "has_more": has_more,
             "next_cursor": next_cursor,
+            "removed_total": removed_total,
         }
         if positive_count is _COUNT_OMITTED:
             del result["positive_count"]
@@ -2451,9 +2468,12 @@ class ImageRoutesMixin:
             def key(entry):
                 return _workspace_key(entry, order)
 
-        # #480: files removed from the library stay on disk, hidden here.
+        # #480: files removed from the library stay on disk, hidden here; the
+        # removed view (#498) lists only them.
         hidden = self._hidden_entries(listings)
-        if hidden:
+        if filters.get("removed"):
+            entries = [entry for entry in entries if entry.normalized in hidden]
+        elif hidden:
             entries = [entry for entry in entries if entry.normalized not in hidden]
         return (
             entries,

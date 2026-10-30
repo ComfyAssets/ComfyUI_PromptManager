@@ -53,7 +53,7 @@ export function cardMedia(image, lazy = false) {
  * cannot be served, and `showInfo: false` hides the title and file line (D97). A `linked_only` image (LoRA media in
  * LoraManager's folders, #355) has no Tag action.
  */
-export function createImageCard(image, { checked = null, favoriteBusy = false, media = true, showInfo = true } = {}) {
+export function createImageCard(image, { checked = null, favoriteBusy = false, media = true, showInfo = true, removed = false } = {}) {
     const card = el('article', undefined, 'media-card');
     card.dataset.imageKey = imageKey(image); card.setAttribute('role', 'listitem');
     card.style.setProperty('--media-ratio', mediaRatio(image));
@@ -71,7 +71,7 @@ export function createImageCard(image, { checked = null, favoriteBusy = false, m
         label.append(box);
         overlays.append(label);
     }
-    if (typeof image.favorite === 'boolean') {
+    if (typeof image.favorite === 'boolean' && !removed) {
         const star = createButton('', 'star-button');
         star.setAttribute('aria-label', `Favorite ${image.filename}`);
         paintStar(star, image.favorite, favoriteBusy);
@@ -82,6 +82,8 @@ export function createImageCard(image, { checked = null, favoriteBusy = false, m
     const text = el('div');
     const title = el('h3', cardTitle(image)); if (image.path) title.title = image.path;
     text.append(title, el('p', cardSubtitle(image)));
+    // #498 (D162): a card in Show removed images carries the concept's `.chip`.
+    if (removed) text.append(el('span', 'Removed', 'chip'));
     // D97: `showInfo` false (System › Appearance) hides the title and file line; Info and Tag stay.
     if (!showInfo) text.hidden = true;
     const actions = el('div', undefined, 'image-card-actions');
@@ -90,7 +92,7 @@ export function createImageCard(image, { checked = null, favoriteBusy = false, m
     inspectButton.setAttribute('aria-label', `Inspect ${image.filename}`);
     actions.append(inspectButton);
     // #355: LoRA-linked media lives in LoraManager's folders; tags are kept for output files only.
-    if (image.linked_only !== true) actions.append(createTagButton(image));
+    if (image.linked_only !== true && !removed) actions.append(createTagButton(image));
     info.append(text, actions);
     card.append(art, info);
     return card;

@@ -2487,9 +2487,8 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   `$RECYCLE.BIN` (any case), as none descends `thumbnails`: the workspace and legacy
   listings (`_walk_media`, `_settled_entry`), the metadata scan and duplicate find
   (`_collect_media_files`), the legacy auto-tag listing (`_collect_scan_files`) and the
-  delete review (`trash-folder`). The image monitor tests every folder of the new file's
-  absolute path, so it also ignores outputs written into a source that itself lies
-  inside such a folder. Tests: `tests/test_media_folders.py`,
+  delete review (`trash-folder`), and the image monitor, which tests the folders below the
+  watched folder holding the new file (a source named like a trash folder is still watched). Tests: `tests/test_media_folders.py`,
   `tests/test_image_removal_gaps.py`.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's
@@ -2519,6 +2518,34 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   volume, a name clash, fresh APFS and FAT32 disk images, an image used as an output root,
   a read-only image and an unwritable folder (design and probe:
   `docs/egm/499-macos-trash/`, local).
+
+- **D162** (#498, maintainer ruling Q1 of #480; the concept has no screen for removed images, so this follows D152's
+  Show archived prompts): **Show removed images (N)** in the Images heading actions, before Import, a toggle
+  (`aria-pressed`) shown only while N > 0 or the view is on. N is `removed_total`, every removed image in the selected
+  source(s) whatever the filters (D152 counts the matching ones). The view (`GET /images/output?mode=workspace&
+  removed=1`, refused with `favorites`, `collection`, `category`, `tags` or `sort=rating`; a cursor never crosses
+  views) lists only files a removal mark hides, each card with a "Removed" `.chip` and without the star or Tag action;
+  the caption reads "N removed images · files on disk, hidden from Images", the empty view "No removed images." /
+  "No removed images match.". Entering clears Category and Tags; choosing a category or tags while it is on
+  (toolbar, Refine this view) ends the view. A card's image and Info both inspect (the viewer is
+  not opened: its Collections… and Delete… would write); the panel shows Return to library in Delete…'s place and
+  no Collections… or tag-filter chips. The bar reads "N selected", Return to library, Clear. The view is never saved
+  or restored: leaving the page, Browse or a saved view ends it, and a return that leaves N = 0 ends it too.
+  - **Return to library** (no review: nothing is lost or moved, as D152's Restore) posts `{items | filter}` to
+    `POST /prompt_manager/images/removed/return` (only this route takes `filter.removed`; every other bulk route
+    refuses it). 202 `{job, returned, not_removed}` (400 `no-images` when none is hidden now, `too-many-images` over
+    500; 409 `busy` beside a scan, restore or delete, nothing changed). The job is a `scan`, "Return images to the
+    library": its first step deletes, in one transaction, the marks that still hide their file (same size and
+    `mtime_ns`; the marks generation moves again after the commit), then it scans exactly those files with the scan's
+    pipeline and groups. Toasts: "Returning N images to the library…", then "Returned N images to the library; K
+    linked to their prompts. Tags, categories, collections and favorites do not come back." When it ends, the
+    sidebar's Needs review, Library and Images counts are read again (`JOB_END_COUNTS.scan`).
+  - What comes back: the file in Images; its prompt, links, pairs and Needs review items from its embedded metadata
+    (a file without usable metadata comes back unlinked); previews on demand. Not: image tags, auto-tag marks, own
+    category, collection memberships, favorite (only a safety-backup restore has them). If the server stops between
+    the mark delete and the scan, the files are back unlinked and a "new files" scan links them.
+  Tests: `tests/test_image_return.py`, `tests/js/workspace-images-return.test.js`,
+  `tests/browser/workspace-images-removed.spec.mjs`. A Python change: ComfyUI needs a restart.
 
 ### Prompt library cards and recorded deviations (#249 PR E)
 
