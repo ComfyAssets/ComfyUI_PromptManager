@@ -47,12 +47,16 @@ from .maintenance import MAINTENANCE_PREVIEW_LEASE, _fail_job, _failure, backup_
 
 try:
     from ...database import image_removal_schema
+    from ...database.image_removal import mark_hides
     from ...database.annotation_schema import MAX_LOCATOR_LENGTH
     from ...utils import trash
+    from ...utils.media_folders import is_trash_folder
 except ImportError:
     from database import image_removal_schema
+    from database.image_removal import mark_hides
     from database.annotation_schema import MAX_LOCATOR_LENGTH
     from utils import trash
+    from utils.media_folders import is_trash_folder
 
 IMAGE_DELETE = "delete_images"
 MODES = ("library", "trash")
@@ -61,7 +65,9 @@ TITLES = {
     "trash": "Delete images (move to the trash)",
 }
 MAX_DETAIL_ROWS = 50
-TRASH_FOLDERS = frozenset({".trash", ".trashes", "$recycle.bin"})
+# The system moved the file but its place in a trash could not be shown (#499).
+TRASH_UNCONFIRMED = "trash-unconfirmed"
+RECORDS_FAILED_CODE = "records-failed"
 
 # Reason codes (design §4.4) and the sentence each shows.
 REASONS = {
@@ -80,6 +86,21 @@ REASONS = {
     trash.TRASH_IN_ROOT: "This drive's trash is inside an output folder.",
     trash.LOCKED: "The file is open in another program. Close it and try again.",
     trash.FAILED: "The file could not be moved to the trash.",
+    trash.NO_PERMISSION: (
+        "PromptManager isn't allowed to move this file (no permission, or it is "
+        "locked in Finder)."
+    ),
+    trash.CLOUD_SYNC: (
+        "Files in iCloud Drive or a cloud-synced folder can't be moved to the "
+        "trash here."
+    ),
+    TRASH_UNCONFIRMED: (
+        "Moved by macOS, but its place in the trash could not be confirmed."
+    ),
+    trash.WINDOWS_RECYCLE: (
+        "Moving files to the Recycle Bin isn't available on Windows: files larger "
+        "than the bin's capacity would be deleted permanently."
+    ),
     "not-attempted": "Not attempted: the job stopped after an error.",
 }
 _PROBLEM_CODES = {
@@ -93,19 +114,12 @@ SOURCES_CHANGED = "The sources changed since the review; nothing was changed."
 RECORDS_FAILED = "The image records could not be removed; the job stopped."
 
 
-def _is_trash_folder(name: str) -> bool:
-    folded = name.casefold()
-    return folded in TRASH_FOLDERS or (
-        folded.startswith(".trash-") and folded[7:].isdigit()
-    )
-
-
 def lexical_problem(relative: str) -> str | None:
     """The refusal code a root-relative POSIX path earns before any file access."""
     parts = relative.split("/")
     if "thumbnails" in parts[:-1]:
         return "thumbnail"
-    if any(_is_trash_folder(part) for part in parts[:-1]):
+    if any(is_trash_folder(part) for part in parts[:-1]):
         return "trash-folder"
     if os.path.splitext(parts[-1])[1].lower() not in DELETABLE_MEDIA_EXTENSIONS:
         return "not-media"
@@ -327,7 +341,7 @@ class ImageDeleteMixin:
         job.update(total=len(targets), status_line=TITLES[mode])
         roots = [str(root) for root in self._get_all_output_dirs()]
         done_group = "trashed" if mode == "trash" else "removed"
-        changed, failed = 0, False
+        changed, failed = 0, None
         for done, target in enumerate(targets, start=1):
             if failed:
                 self._record_delete(job, "not_changed", target, "not-attempted")
@@ -336,7 +350,8 @@ class ImageDeleteMixin:
                 self._delete_one_image, db, target, mode, roots
             )
             if group == "errors":
-                failed = True
+                failed = code or RECORDS_FAILED_CODE
+                text = REASONS[code] if code else RECORDS_FAILED
                 job.record(
                     "errors",
                     {
@@ -344,9 +359,9 @@ class ImageDeleteMixin:
                         "root": target["root_label"],
                         "root_index": target["root_index"],
                         "root_scope": target["root_scope"],
-                        "detail": RECORDS_FAILED,
+                        "detail": text,
                     },
-                    f"! {target['root_label']}/{target['rel']} · {RECORDS_FAILED}",
+                    f"! {target['root_label']}/{target['rel']} · {text}",
                 )
             elif group == done_group:
                 changed += 1
@@ -365,8 +380,10 @@ class ImageDeleteMixin:
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
         if failed:
-            job.scope["failure"] = "records-failed"
-            job.publish({"type": "error", "code": "records-failed", "message": line})
+            # "records-failed" names every stop at an errors row (the page's
+            # "Stopped after N of M" toast); the row says which error it was.
+            job.scope["failure"] = RECORDS_FAILED_CODE
+            job.publish({"type": "error", "code": failed, "message": line})
             job.finish("failed")
 
     @staticmethod
@@ -405,7 +422,19 @@ class ImageDeleteMixin:
                 label = trash.move_to_trash(target["abs"], roots)
             except trash.TrashRefused as refused:
                 code = refused.code if refused.code in REASONS else trash.FAILED
+                self.logger.info(
+                    "Not moved to the trash (%s): %s %s",
+                    code,
+                    target["rel"],
+                    refused.detail,
+                )
                 return "not_changed", code, None
+            except trash.TrashUnconfirmed as unconfirmed:
+                # The file left its folder: keep its records, stop the job.
+                self.logger.warning(
+                    "Trash move not confirmed: %s %s", target["rel"], unconfirmed.detail
+                )
+                return "errors", TRASH_UNCONFIRMED, None
             mark = None
         else:
             mark = (target["size"], target["mtime_ns"])
@@ -443,36 +472,48 @@ class ImageDeleteMixin:
         if not marks:
             return set()
         located = self._workspace_locators(listings)
-        hidden = set()
-        for locator, (size, mtime_ns) in marks.items():
-            entry = located.get(locator)
-            if entry is None:
-                continue
-            try:
-                info = os.lstat(entry.path)
-            except OSError:
-                continue
-            if (info.st_size, info.st_mtime_ns) == (size, mtime_ns):
-                hidden.add(entry.normalized)
-        return hidden
+        return {
+            entry.normalized
+            for locator, entry in ((locator, located.get(locator)) for locator in marks)
+            if entry is not None and mark_hides(marks, locator, entry.path)
+        }
 
     def _removed_paths(self, paths) -> set:
         """The absolute paths among *paths* a removal mark hides (blocking)."""
         marks = self._removal_marks()
         if not marks:
             return set()
-        hidden = set()
-        for path in paths:
-            mark = marks.get(os.path.normcase(os.path.realpath(str(path))))
-            if mark is None:
-                continue
-            try:
-                info = os.lstat(path)
-            except OSError:
-                continue
-            if (info.st_size, info.st_mtime_ns) == tuple(mark):
-                hidden.add(str(path))
+        return {
+            str(path)
+            for path in paths
+            if mark_hides(marks, os.path.normcase(os.path.realpath(str(path))), path)
+        }
+
+    def _removal_check_under(self, root):
+        """``hidden(path) -> bool`` for files a walk of *root* found (blocking).
+
+        A walk never follows a link below *root*, so a file's locator is
+        ``normcase(join(realpath(root), relative))``: no ``realpath`` per
+        file, and an ``lstat`` only for a marked one. Without marks it
+        answers False at once.
+        """
+        marks = self._removal_marks()
+        if not marks:
+            return lambda _path: False
+        root = os.fspath(root)
+        real = os.path.realpath(root)
+
+        def hidden(path):
+            relative = os.path.relpath(os.fspath(path), root)
+            locator = os.path.normcase(os.path.join(real, relative))
+            return mark_hides(marks, locator, path)
+
         return hidden
+
+    def _without_removed(self, root, paths) -> list:
+        """*paths* found by a walk of *root*, less the hidden ones (blocking)."""
+        removed = self._removal_check_under(root)
+        return [path for path in paths if not removed(path)]
 
 
 def parse_mode(value):

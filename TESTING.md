@@ -53,6 +53,14 @@ stdin open and the server (`--exit-on-stdin-eof`) shuts down cleanly, removing i
 temp root, when that pipe closes, so a worker killed without teardown leaves no
 server behind. A test that fails gets the stderr its server wrote during the test
 attached to the report as `server-stderr` (an aiohttp traceback behind a 500).
+Each worker also records its browser's own log (#513, `tools/vendor/browser-logs.mjs`):
+Playwright's `pw:browser` channel, kept as a 300-line tail without printing it
+unless `DEBUG` asks for it. A browser that exits abnormally writes one
+`pm-browser-exit| browser pid=<n> exited: exitCode=<c>, signal=<s>` line to the job
+log, and a test that fails on a closed or crashed target ("Target page, context or
+browser has been closed") gets the tail attached as `browser-stderr.txt`, which the
+uploaded test-results carry. `tests/browser/browser-logs.spec.mjs` kills a browser of
+its own on purpose, so each browser job logs that line once for it.
 A `/__test__/.../reset` still running after 2 s writes a report to the job log,
 passing test or not: every thread's stack taken while it waits, the default
 executor's threads and queue, the open connections and WAL size, then the total
@@ -2460,14 +2468,57 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   back records of files that are in the trash (Missing-file links cleans them up). The
   legacy gallery lists every file on disk, removed or not. Hard links have one mark per
   path, and on FAT/exFAT/SMB a same-size replacement can stay hidden.
+  Since #501 the thumbnail jobs (System › Thumbnails' counts and its missing, rebuild and
+  convert runs, and the previews after a scan) and the legacy `GET /scan_output_dir`
+  listing skip hidden files too; an on-demand preview the legacy gallery asks for is still
+  made, and a one-image auto-tag (`/autotag/single` + `/autotag/apply`) is an explicit
+  write that shows the file again. System › Maintenance **Missing-file links** also
+  forgets the marks that hide nothing any more (the file is gone from a folder that still
+  exists, or its bytes changed), counted in its scope ("K removed images whose files are
+  gone or changed") and job line, judged only under a source that is readable and lists
+  something (an unplugged drive's empty mount point keeps its marks), never for a source
+  no longer configured, and re-checked at apply (`plan-changed`). The sidebar's Images,
+  Favorites and Needs review counts and the collection counts are read again when an
+  `image_delete` job ends in the tab that followed it (`JOB_END_COUNTS`, `state.mjs`).
+  Tests: `tests/test_image_removal_gaps.py`, the sidebar case in
+  `tests/browser/workspace-images-delete.spec.mjs`.
+- **Trash folders inside an output root** (#501, `utils/media_folders.py`): no walker
+  descends a folder below a root named `.Trash`, `.Trash-<digits>`, `.Trashes` or
+  `$RECYCLE.BIN` (any case), as none descends `thumbnails`: the workspace and legacy
+  listings (`_walk_media`, `_settled_entry`), the metadata scan and duplicate find
+  (`_collect_media_files`), the legacy auto-tag listing (`_collect_scan_files`) and the
+  delete review (`trash-folder`). The image monitor tests every folder of the new file's
+  absolute path, so it also ignores outputs written into a source that itself lies
+  inside such a folder. Tests: `tests/test_media_folders.py`,
+  `tests/test_image_removal_gaps.py`.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with
   `renameat2(RENAME_NOREPLACE)`; without it, across devices, on a read-only mount or with
-  a trash inside an output root the move is refused (`no-trash`, `trash-in-root`). Windows
-  and macOS report `no-trash` until their own backends land; library-only removal works
-  everywhere. Tests use `tests/fake_trash.py`; the browser test server installs it, so no
-  test touches a real trash.
+  a trash inside an output root the move is refused (`no-trash`, `trash-in-root`). macOS
+  (#499, `utils/trash_macos.py`) calls `-[NSFileManager trashItemAtURL:resultingItemURL:error:]`
+  through `ctypes` (ten fixed `objc_msgSend` prototypes, nil checks before every send, one
+  autorelease pool per call, loaded on first use). It answers in the review dialog, without
+  writing: `network` (not a local volume), `no-trash` (read-only, or no trash folder
+  macOS would use), `cloud-sync` (iCloud Drive, `~/Library/CloudStorage`, or ubiquitous),
+  `trash-in-root` (the trash folder is inside an output root, compared by `(st_dev,
+  st_ino)` of every ancestor) and `no-permission` (folder not writable, an immutable or
+  append flag, a foreign file in a sticky folder). A fresh volume's `.Trashes/<uid>` is
+  predicted (`URLForDirectory` answers 3328/`ENOENT` until macOS makes it). A refused move
+  keeps the file and logs the `NSError`; a move macOS reports done but whose place cannot be
+  shown (no result URL, or one inside an output root) goes under `errors` as
+  `trash-unconfirmed`, keeps its records and stops the job. Windows
+  never uses the Recycle Bin (#500, maintainer ruling (a)): files larger than the bin's
+  capacity are deleted permanently and IFileOperation's `PreDeleteItem` guard cannot detect
+  it (native probe runs 40951037575, 40953347904), so every file answers `windows-recycle`
+  ("Moving files to the Recycle Bin isn't available on Windows: files larger than the bin's
+  capacity would be deleted permanently."). Library-only removal works everywhere. Tests use `tests/fake_trash.py`; the
+  browser test server installs it, so no test touches a real trash. The native proof,
+  `tests/test_trash_macos_native.py`, runs only with `PM_NATIVE_TRASH=macos` in
+  portability.yml's `native-trash` job (`macos-latest` and `macos-15-intel`): the startup
+  volume, a name clash, fresh APFS and FAT32 disk images, an image used as an output root,
+  a read-only image and an unwritable folder (design and probe:
+  `docs/egm/499-macos-trash/`, local).
 
 ### Prompt library cards and recorded deviations (#249 PR E)
 

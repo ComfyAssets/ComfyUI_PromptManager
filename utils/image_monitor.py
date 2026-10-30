@@ -45,6 +45,7 @@ from .foreign_runs import (
     store_foreign,
 )
 from .hashing import generate_prompt_hash
+from .media_folders import in_skipped_folder
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .parallel import note_refusal, refused_at_shutdown
 from .logging_config import get_logger
@@ -428,11 +429,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
         Returns:
             True if the file has a supported image extension and is not
-            inside a thumbnails directory, False otherwise
+            inside a thumbnails or trash folder, False otherwise
         """
-        # Skip files in thumbnails directory - those are derivatives, not
-        # generated images
-        if "/thumbnails/" in filepath or "\\thumbnails\\" in filepath:
+        # Previews are derivatives, and a trash folder inside an output
+        # folder holds thrown-away files (#501): neither is a new output.
+        folders = filepath.replace("\\", "/").split("/")[:-1]
+        if in_skipped_folder(folders):
             return False
         return filepath.lower().endswith(self.supported_extensions)
 

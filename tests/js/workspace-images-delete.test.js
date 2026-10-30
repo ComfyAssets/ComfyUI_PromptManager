@@ -65,6 +65,8 @@ test('sentences follow the mode and the backup policy', () => {
     assert.deepEqual(deleteSentences(plan(), 'trash'), [SENTENCES.trash, USE_LIBRARY_ONLY]);
     const nowhere = plan({ trash: { count: 0 }, trash_refused: { count: 3, rows: [] } });
     assert.deepEqual(deleteSentences(nowhere, 'trash'), [SENTENCES.trash, NO_TRASH_HERE, USE_LIBRARY_ONLY]);
+    // #500: no "yet" (Windows is unavailable by design); each file's reason says why.
+    assert.equal(NO_TRASH_HERE, 'Moving to the trash is not available for these files; each one lists why.');
     assert.deepEqual(deleteSentences(plan({ trash_refused: { count: 0 } }), 'trash'), [SENTENCES.trash]);
 });
 

@@ -643,7 +643,11 @@ test('restored storage after a confirmed save or before an archive offers an exp
         const response=await route.fetch();await expect(await restore()).toBeOK();return route.fulfill({response});
     });
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();let dialog=editorDialog(page);await ready(dialog);
-    await field(dialog,'Notes').fill('Lost to a restore');await button(dialog,'Save').click();
+    await field(dialog,'Notes').fill('Lost to a restore');
+    // The save's answer waits for a whole restore in the route above; wait for that answer, not the 5 s expect
+    // default (#501 merge queue: under load the restore outlasted it on WebKit).
+    const saved=page.waitForResponse(item=>item.request().method()==='PATCH'&&new URL(item.url()).pathname===`/prompt_manager/library/${f.positive_id}`);
+    await button(dialog,'Save').click();await saved;
     await expect(note(dialog)).toHaveText('Saved; Library refresh failed because prompt storage was restored. Reload the Library to see current data.');
     expect(await actionNames(dialog)).toEqual(['Reload Library','Create text revision','Archive variant…','Delete prompt…','Cancel','Save']);
     for(const name of ['Create text revision','Archive variant…','Delete prompt…'])await expect(button(dialog,name)).toBeDisabled();
