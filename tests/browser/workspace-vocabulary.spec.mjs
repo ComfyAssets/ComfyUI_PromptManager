@@ -1,6 +1,7 @@
 import {startCoverage,saveCoverage} from '../../tools/vendor/browser-coverage.mjs';
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
+import {mapConceptLayout} from './concept-inventory.mjs';
 import {armUnseenRestores,unseenRestore,followRestore,SEEN_RESTORE_PILL,SEEN_RESTORE_TOAST} from './unseen-restore.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog,d149Of,toolbarInventoryOf} from './vocabulary-canonical-comparison.mjs';
@@ -134,7 +135,9 @@ test('long vocabularies append and Load more is keyboard reachable',async({page,
     await rows(page).last().getByRole('button',{name:'Rename / merge',exact:true}).evaluate(button=>button.focus({preventScroll:true}));
     await page.keyboard.press('Tab');
     await expect(loadMore(page)).toBeFocused();
-    // Focus scrolled the end of the list into view, which appends the next page.
+    // D183: Load more sits below the tag window, so reaching it does not move the window's end into view.
+    await expect(rows(page)).toHaveCount(100);
+    await page.keyboard.press('Enter');
     await expect(rows(page)).toHaveCount(200);
     await expect(loadMore(page)).toBeFocused();
     await page.keyboard.press('Enter');
@@ -142,11 +145,12 @@ test('long vocabularies append and Load more is keyboard reachable',async({page,
     await expect(loadMore(page)).toHaveCount(0);
     await expect(rows(page).nth(200).getByRole('button',{name:'Browse',exact:true})).toBeFocused();
     await expect(rows(page).locator('td:nth-child(1)')).toHaveText(manifest.tags);
-    // Reload at the top so restored scroll does not append before the check.
-    await page.evaluate(()=>window.scrollTo(0,0));
+    // Reload with the window at its top: Firefox restores a scrolled window, whose end then appends a page before the check.
+    await main(page).locator('.two-col .table-wrap').evaluate(node=>new Promise(resolve=>{node.scrollTop=0;requestAnimationFrame(()=>requestAnimationFrame(resolve));}));
     await page.reload();
     await expect(rows(page)).toHaveCount(100);
-    const scroll=top=>page.evaluate(y=>new Promise(resolve=>{window.scrollTo(0,y ?? document.documentElement.scrollHeight);requestAnimationFrame(()=>requestAnimationFrame(resolve));}),top);
+    // D183: the end of the list arrives inside the tag window.
+    const scroll=top=>main(page).locator('.two-col .table-wrap').evaluate((node,y)=>new Promise(resolve=>{node.scrollTop=y ?? node.scrollHeight;requestAnimationFrame(()=>requestAnimationFrame(resolve));}),top);
     for(const count of [200,230]) {
         // Each new arrival of the end of the list appends one page.
         await scroll(0);await scroll(null);
@@ -206,12 +210,12 @@ test('route disposal aborts requests and removes observers',async({page})=>{
     await page.route('**/prompt_manager/vocabulary/**',route=>{held.push(route);});
     await page.goto(route);
     await expect.poll(()=>page.evaluate(()=>window.__vocabularySignals.length)).toBe(2);
-    expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>name.includes('vocabulary-continuation'))).length)).toBe(2);
+    expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>/vocabulary-(continuation|end)/.test(name))).length)).toBe(2);
     await expect(main(page).getByText('Loading…',{exact:true})).toHaveCount(2);
     await page.getByRole('navigation',{name:'Workspace',exact:true}).getByRole('link',{name: /^Prompt library(?:\s*[\d,]+)?$/}).click();
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
     expect(await page.evaluate(()=>window.__vocabularySignals.map(signal=>signal.aborted))).toEqual([true,true]);
-    expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>name.includes('vocabulary-continuation'))).map(item=>item.disconnected))).toEqual([true,true]);
+    expect(await page.evaluate(()=>window.__vocabularyObservers.filter(item=>item.targets.some(name=>/vocabulary-(continuation|end)/.test(name))).map(item=>item.disconnected))).toEqual([true,true]);
     await expect(main(page).locator('.two-col')).toHaveCount(0);
     expect(await page.evaluate(()=>document.getElementById('workspace-main').classList.contains('vocabulary-main'))).toBe(false);
     await page.unroute('**/prompt_manager/vocabulary/**');
@@ -775,7 +779,7 @@ const SIZES=[[1600,1100],[390,844]];
 const MOTIONS=['no-preference','reduce'];
 async function openConceptTags(page,theme,motion) {
     await page.emulateMedia({reducedMotion:motion});
-    await page.goto('about:blank');await page.goto(`${concept}#tags`);
+    await page.goto('about:blank');await page.goto(`${concept}#tags`);await mapConceptLayout(page);
     await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     await expect(page.locator('#main h1')).toHaveText('Tags & categories');
 }
@@ -791,7 +795,7 @@ async function conceptToolbar(page,theme) {
     await page.goto('about:blank');await page.goto(`${concept}#library`);
     await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     const inventory=await page.locator('#main search.toolbar').evaluate(toolbarInventoryOf);
-    await page.goto('about:blank');await page.goto(`${concept}#tags`);await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
+    await page.goto('about:blank');await page.goto(`${concept}#tags`);await mapConceptLayout(page);await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
     return inventory;
 }
 const tagToolbar=page=>page.locator('#workspace-main .two-col > section.surface:first-child > search.toolbar').evaluate(toolbarInventoryOf);

@@ -33,8 +33,8 @@ function measureSystem(mainSelector) {
         const rect = node.getBoundingClientRect(), base = origin.getBoundingClientRect();
         return { left: Math.round(rect.left - base.left), width: Math.round(rect.width) };
     };
-    // A surface's top: from `.two-col` beside its neighbour, else from the bottom of the surface above it. This pins the
-    // concept's `.surface + .surface` 18px offset, which concept.css applies inside `.two-col` too (copied, not ruled).
+    // A surface's top: from `.two-col` beside its neighbour, else from the bottom of the surface above it. D182 (#530)
+    // levels the second `.two-col` card, on both sides through mapConceptLayout; the real values are in workspace-layout-tags-system.spec.
     const top = node => {
         const rect = node.getBoundingClientRect(), previous = node.previousElementSibling?.getBoundingClientRect();
         if (previous && rect.top >= previous.bottom) return Math.round(rect.top - previous.bottom);
