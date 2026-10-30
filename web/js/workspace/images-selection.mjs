@@ -51,7 +51,7 @@ function el(tag, text, className) {
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
     getListing, getFilter, getCategories, checked: initial = Object.freeze(new Set()), collections = null,
-    collection = null, onCollectionsChanged = null, onSourceChanged = null, onDeleted = null, removedView = () => false,
+    collection = null, onCollectionsChanged = null, onSourceChanged = null, onDeleted = null, removedView = null,
     onReturn = null }) {
     let checked = initial;
     let exporting = false, categorizing = false;
@@ -116,7 +116,7 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     }
     let shownRemoved = false;
     function paintMode() {
-        const removed = Boolean(returnButton && removedView());
+        const removed = Boolean(returnButton && removedView?.());
         if (removed === shownRemoved) return;
         shownRemoved = removed;
         for (const node of [...normalActions, returnButton]) node?.remove();
