@@ -2494,7 +2494,8 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   `_media_access_error` is the one gate (by-id, inspect, reveal, link, rescope as
   `file-missing`, a prompt's media listing); `/images/serve` and the autotag target ask
   `in_trash_below_roots` too, `media_target` refuses by name (annotations, collections,
-  whose capture store denies links and aliases), and previews are not made. The delete
+  whose capture store denies links and aliases), and previews are neither made nor served, the fallback past the preview gate's cap
+  included (`_quick_source`). A History output in one answers `missing`. The delete
   and Return flows never use this gate. Windows spellings (trailing dots and spaces, case,
   8.3) run for real on the Windows job in `tests/test_trash_gate_routes.py`.
 - **An output folder that is a mount point** (#543): the mount's own `.Trash-$uid` and

@@ -11,6 +11,7 @@ import os
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 try:
     from tests.test_api_admin import _write_png
@@ -20,7 +21,8 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_image_delete_routes import ImageDeleteTestCase
 
 from py.api.images import media_thumbnail_rel
-from py.api.thumbnail_auto import _thumbnail_source
+from py.api.history_current import CurrentLocationUnavailable, _open_current_target
+from py.api.thumbnail_auto import OVER, _quick_source, _thumbnail_source
 from utils.media_folders import in_trash_below_roots, in_trash_folder, is_trash_folder
 
 ON_CI = bool(os.environ.get("GITHUB_ACTIONS"))
@@ -203,6 +205,28 @@ class TestTheGate(_GateCase):
         self.assertIsNone(_thumbnail_source(self.root, preview))
         kept = Path(media_thumbnail_rel(Path("kept.png"))).parts
         self.assertIsNotNone(_thumbnail_source(self.root, kept))
+
+    async def test_the_preview_fallback_past_the_cap_is_gated_too(self):
+        # The gate's OVER branch looks the source up by name and serves it.
+        self.links()
+        gate = self.api._preview_gate()
+        with patch.object(gate, "run", AsyncMock(return_value=OVER)):
+            linked = media_thumbnail_rel(Path("linkdir/x.png"))
+            self.assertEqual(await self.serve(linked), 404)
+            kept = media_thumbnail_rel(Path("kept.png"))
+            self.assertEqual(await self.serve(kept), 200)
+        self.assertIsNone(
+            _quick_source(
+                self.root, Path(media_thumbnail_rel(Path("linkdir/x.png"))).parts
+            )
+        )
+
+    async def test_a_history_output_in_a_trash_folder_does_not_open(self):
+        self.links()
+        target = self.root / ".Trash-1000" / "files" / "x.png"
+        with self.assertRaises(CurrentLocationUnavailable) as caught:
+            _open_current_target(Path(os.path.realpath(target)), self.root, None)
+        self.assertEqual(caught.exception.reason, "missing")
 
     async def test_a_source_named_like_a_trash_folder_still_reads(self):
         source = self.root / ".Trash-77"

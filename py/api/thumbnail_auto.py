@@ -225,6 +225,8 @@ def _quick_source(root, parts):
         for name in (base + extension, base + extension.upper()):
             path = folder / name
             if _regular_file(path) and _is_within(path, root):
+                if in_trash_below_roots(path, [root]):
+                    return None  # also the fallback past the gate's cap (#543)
                 return path, extension in VIDEO_EXTENSIONS
     return None
 

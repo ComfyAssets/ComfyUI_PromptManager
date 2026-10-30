@@ -17,6 +17,7 @@ from aiohttp import web
 
 from . import thumbnail_settings
 from .images import _canonical, _public_path, SERVABLE_EXTENSIONS, VIDEO_EXTENSIONS
+from .images import in_trash_below_roots
 from .images import existing_media_thumbnail, media_thumbnail_rel
 
 try:
@@ -248,6 +249,9 @@ def _open_current_target(
     A *preview* (a file under ``thumbnails/``) may also be JPEG XL (#317)."""
     if _canonical(target) != target:
         raise CurrentLocationUnavailable("not_authorized", stale=True)
+    if in_trash_below_roots(target, [namespace]):
+        # An output recorded before #501 skipped trash folders (#543).
+        raise CurrentLocationUnavailable("missing")
     if not _authorized(target, namespace, scope):
         raise CurrentLocationUnavailable("not_authorized")
     suffix = target.suffix.lower()
