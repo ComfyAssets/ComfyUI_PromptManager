@@ -1,6 +1,7 @@
 """#424: each tagging backend reports the Python packages it cannot import.
 
-``find_spec`` is patched throughout: no ML backend is installed or imported.
+``find_spec`` is patched throughout, and a backend an earlier test imported is
+hidden where it matters, so these pass with or without the ML packages (#472).
 """
 
 import os
@@ -75,8 +76,13 @@ class TestMissingPackages(unittest.TestCase):
     def test_find_spec_errors_count_as_missing(self):
         for error in (ValueError("no spec"), ImportError("broken"), OSError("io")):
             with self.subTest(error=type(error).__name__):
-                with patch.object(
-                    autotag.importlib.util, "find_spec", side_effect=error
+                # Hide an onnxruntime an earlier test imported, so the check
+                # reaches find_spec (#472).
+                with (
+                    _patch_modules({"onnxruntime": None}),
+                    patch.object(
+                        autotag.importlib.util, "find_spec", side_effect=error
+                    ),
                 ):
                     self.assertEqual(missing_packages("wd14-vit"), ["onnxruntime"])
 
