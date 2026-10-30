@@ -2861,6 +2861,23 @@ with its own negative, a self-pair, each drift, validation); `tests/test_library
 copy, the server after, archive-only, reset to Archive) and `library-delete-concept.spec.mjs`. A Python
 change: ComfyUI needs a restart.
 
+### Delete on a prompt's own page (#481)
+
+**D161** (beyond the concept, coordinator ruling (A) 2026-10-29, open to the maintainer at the live test): the recipe
+editor (Edit metadata, the concept's app.js 976 row "Create text revision", "Archive…", Cancel, Save) reads "Create
+text revision", **"Archive variant…"** (the selected negative variant's archive, #235, which used the concept's
+"Archive…" label) and **"Delete prompt…"** (danger), then Cancel and Save. "Delete prompt…" closes the editor and runs
+D152/D160's Delete… review for that one prompt (`reviewPromptDelete`: the same preview, review with the saved-pair
+choice, backup and write, fenced by the page's `library_epoch`). Cancel changes nothing and returns focus to Edit
+metadata. A delete toasts and opens the Prompt library; an archive (or a drift) toasts and reads the page again, so an
+archived prompt shows its Archived notice. The button is disabled while the editor saves or after a restore.
+
+The concept comparison applies D161 in `mapConcept` (`tests/browser/library-editor-canonical-comparison.mjs`): the
+concept's danger "Archive…" maps to "Archive variant…" followed by a "Delete prompt…" with the same geometry and tokens.
+
+Tests: `tests/browser/workspace-library-delete.spec.mjs` (#481 cases), and `workspace-library-editor.spec.mjs` (the
+hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the renamed button. JS only: no restart.
+
 ### No 1–5 prompt rating in the workspace (#447)
 
 **D153** (maintainer ruling 2026-10-28: the star is only for favorites; the concept keeps

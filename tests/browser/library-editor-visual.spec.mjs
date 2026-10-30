@@ -24,7 +24,7 @@ for(const [width,height,theme] of [[1600,1100,'dark'],[390,844,'light']])test(`e
     await variants(page).getByRole('button',{name:'Select negative variant 2',exact:true}).click();
     await page.getByRole('button',{name:'Edit metadata',exact:true}).click();await expect(editor(page)).toBeVisible();
     await expect(editor(page).getByRole('button',{name:'Save',exact:true})).toBeEnabled();
-    await editor(page).getByRole('button',{name:'Archive…',exact:true}).click();
+    await editor(page).getByRole('button',{name:'Archive variant…',exact:true}).click();
     await expect(editor(page).getByRole('button',{name:'Archive',exact:true})).toBeEnabled();await shot('editor-archive');
 
     let release;const held=new Promise(resolve=>{release=resolve;});

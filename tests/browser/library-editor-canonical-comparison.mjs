@@ -26,9 +26,15 @@ export function inventoryOf(dialog) {
     };
 }
 // Documented differences only: prototype Save label, prototype demo note, data-dependent values, and D153 (#447): the
-// concept's "Rating" select is not drawn.
+// concept's "Rating" select is not drawn. D161 (#481): the concept's one danger "Archive…" becomes "Archive variant…" and
+// is followed by the prompt's own "Delete prompt…", drawn as the same danger button.
+function mapButton(item) {
+    if(item.text==='Save in prototype') return [{...item,text:'Save'}];
+    if(item.text==='Archive…') return [{...item,text:'Archive variant…'},{...item,text:'Delete prompt…'}];
+    return [item];
+}
 export function mapConcept(reference) {
-    return {...reference,demo:false,fields:reference.fields.filter(item=>item.label!=='Rating'),actions:{...reference.actions,buttons:reference.actions.buttons.map(item=>item.text==='Save in prototype'?{...item,text:'Save'}:item)}};
+    return {...reference,demo:false,fields:reference.fields.filter(item=>item.label!=='Rating'),actions:{...reference.actions,buttons:reference.actions.buttons.flatMap(mapButton)}};
 }
 
 // Flatten an inventory to path->value so a comparison reports exactly which leaves differ.

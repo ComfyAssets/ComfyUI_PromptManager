@@ -122,7 +122,7 @@ function datalist(id, values) {
  * exit when prompt storage was restored; the dialog closes first.
  */
 export function createLibraryEditor({api, parentScope, onCommitted = () => {}, onReconciled = () => {},
-    onRefreshRequired = () => window.location.reload()}) {
+    onRefreshRequired = () => window.location.reload(), onDeletePrompt = null}) {
     let session = null, disposed = false;
     const dialog = el('dialog', undefined, 'library-editor');
     dialog.setAttribute('aria-labelledby', 'library-editor-title');
@@ -222,7 +222,10 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         } else form.append(el('p', NEGATIVE_HELP, 'small'));
         const line = statusLine(), recovery = new Map();
         const actions = el('div', undefined, 'dialog-actions');
-        const revise = createButton('Create text revision'), archive = createButton('Archive…', 'danger');
+        // D161 (#481): the variant's archive is named for it, beside the prompt's own Delete prompt… (the concept's one
+        // "Archive…" in this row archives the prompt, app.js 976).
+        const revise = createButton('Create text revision'), archive = createButton('Archive variant…', 'danger');
+        const removePrompt = createButton('Delete prompt…', 'danger');
         const cancel = createButton('Cancel'), save = createButton('Save', 'ca-primary');
         save.type = 'submit';
         form.append(line.note, actions);
@@ -237,6 +240,12 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
         cancel.addEventListener('click', () => finish(), {signal: views.signal});
         revise.addEventListener('click', () => open({mode: 'revision', positiveId, pairId, trigger: session.trigger}), {signal: views.signal});
         archive.addEventListener('click', () => archiveView(), {signal: views.signal});
+        // #481: the prompt's own delete review (#443/#482) replaces this dialog; focus returns to its trigger.
+        removePrompt.addEventListener('click', () => {
+            const {trigger} = session;
+            finish();
+            onDeletePrompt?.({positiveId, trigger});
+        }, {signal: views.signal});
         if (!negativeOnly) loadVocabulary(tags, views.signal);
 
         let categoryKey = null, refocus = null;
@@ -256,6 +265,7 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             cancel.disabled = close.disabled = saving;
             // After a restore the numeric IDs may name another prompt; only the Library reload exit stays.
             revise.disabled = saving || restoredStorage(state);
+            removePrompt.disabled = saving || restoredStorage(state);
             const pairProblem = readOnly && !state.pair && pairId === null ? NO_PAIR : state.pair?.archived ? ALREADY_ARCHIVED : null;
             archive.disabled = !SUBMITTABLE.has(state.phase) || !state.pair || state.pair.archived;
             const status = statusOf(state, false, mode);
@@ -263,7 +273,8 @@ export function createLibraryEditor({api, parentScope, onCommitted = () => {}, o
             if (!status && pairProblem) archive.setAttribute('aria-describedby', line.note.id);
             else archive.removeAttribute('aria-describedby');
             const retry = recoveryButton(recovery, status?.action, views.signal);
-            setChildren(actions, [...(retry ? [retry] : []), ...(readOnly ? [revise, archive] : []), cancel, save]);
+            const prompt = readOnly && onDeletePrompt ? [removePrompt] : [];
+            setChildren(actions, [...(retry ? [retry] : []), ...(readOnly ? [revise, archive, ...prompt] : []), cancel, save]);
             refocus = restoreFocus(refocus, state, [retry, save]);
             if (state.phase === 'complete') finish();
         }
