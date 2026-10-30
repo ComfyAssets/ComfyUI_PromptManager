@@ -7,8 +7,11 @@
  *   "No images need a decision" and the scan/new-generation sentence, and nothing else.
  * - `.gallery-layout`: the queue's concept media cards (image-card.mjs; the image opens the shared viewer, Info selects
  *   the item, Tag opens the shared Tag image dialog with the review scope note), then `section.surface` "Resolve the
- *   association": filename, Tag image, Sampler context, the chosen path's prompt blocks and the actions Leave for later
- *   and Apply association. Both return to Images (ruling R7).
+ *   association": filename, Tag image, Link to a prompt…, Sampler context, the chosen path's prompt blocks and the
+ *   actions Leave for later, Leave unresolved and Apply association. Each opens the next item (#536, overturning R7).
+ * - D179: Leave unresolved is a button, not the select's last option; a disabled option names the server's reason.
+ * - D180: with nothing to apply the select, the prompt blocks and Apply are gone: the panel says why and Link to a
+ *   prompt… is the primary action.
  * - States the concept lacks (loading, a failed read, a refused or unanswered decision, a limited or unavailable file)
  *   are text: `p.warning-note` in the panel, or the page's status line (D119).
  * - The open page re-reads its queue on each `change` of the review change stream (`/prompt_manager/review/events`,
@@ -29,6 +32,7 @@
 import { createButton } from '../shared/toolkit/core.js';
 import { createReviewController, COPY, noticeTitle } from './review-state.mjs';
 import { createImageCard } from './image-card.mjs';
+import { openPromptLink } from './review-link.mjs';
 import { isTagButton, openImageTagging } from './image-tagging.mjs';
 import { mountPromptBlocks } from './prompt-blocks.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -38,6 +42,7 @@ import { createWorkspaceIcon } from './icons.mjs';
 import { field } from './workspace-dialogs.mjs';
 import { pageHeading } from './heading.mjs';
 import { navigateTo } from './state.mjs';
+import { noun } from './plural.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imageKey } from './images-state.mjs';
 
@@ -123,17 +128,22 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     const tagRow = el('div', undefined, 'row-actions spaced-15');
     const tagButton = createButton('');
     tagButton.append(createWorkspaceIcon('tagImage'), ' Tag image');
-    tagRow.append(tagButton);
+    const linkButton = createButton('Link to a prompt…');
+    linkButton.classList.add('review-link-open');
+    tagRow.append(tagButton, linkButton);
     const select = el('select');
     const contextField = field('Sampler context', select, 'review-context');
+    const unreadable = el('div', undefined, 'review-unreadable'); // D180
     const warning = el('p', '', 'warning-note'); // D119: the states the concept lacks
     warning.setAttribute('role', 'status');
     const blocks = el('div');
     const actions = el('div', undefined, 'dialog-actions');
     const later = createButton('Leave for later');
+    const leaveUnresolved = createButton('Leave unresolved');
+    leaveUnresolved.classList.add('review-leave-unresolved');
     const apply = createButton('Apply association', 'ca-primary');
-    actions.append(later, apply);
-    panel.append(panelTitle, filename, tagRow, contextField, warning, blocks, actions);
+    actions.append(later, leaveUnresolved, apply);
+    panel.append(panelTitle, filename, tagRow, contextField, unreadable, warning, blocks, actions);
     layout.append(grid, panel);
 
     const live = el('p', NOT_LIVE, 'small review-live'); // D120: the change stream is down
@@ -155,7 +165,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         sender, onSelect: image => inspection.select(image) });
 
     const cards = new Map();
-    let shownItems = null, shownSelected, shownOptions = null, shownPrompts, shownDetail;
+    let shownItems = null, shownSelected, shownOptions = null, shownPrompts, shownDetail, shownUnreadable = null, shownDecisions = 0;
 
     function createCard(item) {
         // D119: no selection checkbox and no star on a queue card.
@@ -192,10 +202,26 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         }
     }
 
+    /** D180: nothing to apply, so say why and lead with the picker. */
+    function renderUnreadable(state) {
+        const none = state.detailStatus === 'ready' && !state.choice;
+        contextField.hidden = blocks.hidden = apply.hidden = none;
+        linkButton.classList.toggle('ca-primary', none && Boolean(state.detail?.target));
+        unreadable.hidden = !state.unreadable;
+        if (state.unreadable === shownUnreadable) return;
+        shownUnreadable = state.unreadable;
+        if (!state.unreadable) { unreadable.replaceChildren(); return; }
+        const { count, reasons } = state.unreadable;
+        unreadable.replaceChildren(el('p', COPY.unreadable(count)),
+            ...reasons.map(({ reason, count: paths }) => el('p', `${reason} (${paths} ${noun(paths, 'path')})`, 'small')));
+    }
+
     function renderPanel(state) {
         const item = state.items.find(entry => entry.id === state.selectedId);
         setText(filename, item?.filename ?? '');
         setDisabled(tagButton, !item?.target || state.phase === 'applying');
+        setDisabled(linkButton, !item?.target || state.detailStatus !== 'ready' || state.phase !== 'idle');
+        renderUnreadable(state);
         if (state.options !== shownOptions) {
             shownOptions = state.options;
             select.replaceChildren(...state.options.map(option => {
@@ -212,16 +238,22 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         if (state.prompts !== shownPrompts || state.detailStatus !== shownDetail) {
             shownPrompts = state.prompts;
             shownDetail = state.detailStatus;
-            if (state.detailStatus === 'ready') prompts.setState({ prompts: state.prompts });
+            if (state.detailStatus === 'ready' && state.prompts) prompts.setState({ prompts: state.prompts });
+            else if (state.detailStatus === 'ready') prompts.setState({ prompts: null });
             else prompts.setState({ loading: state.detailStatus === 'loading', error: state.detailStatus === 'error' });
         }
-        setDisabled(apply, state.detailStatus !== 'ready' || state.phase !== 'idle');
+        setDisabled(apply, state.detailStatus !== 'ready' || state.phase !== 'idle' || !state.choice);
+        setDisabled(leaveUnresolved, state.detailStatus !== 'ready' || state.phase !== 'idle');
         setDisabled(later, state.phase === 'applying');
     }
 
     function render(state) {
         if (scope.signal.aborted) return;
-        if (state.phase === 'done') return finish(state);
+        if (state.decisions !== shownDecisions) {
+            shownDecisions = state.decisions;
+            showWorkspaceToast(state.toast);
+            onDecision();
+        }
         const ready = state.status === 'ready';
         if (!ready) {
             setText(status, state.status === 'error' ? COPY.loadFailed : COPY.loading);
@@ -249,23 +281,17 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         } else continuation.remove();
     }
 
-    let finished = false;
-    function finish(state) {
-        if (finished) return;
-        finished = true;
-        if (state.toast) {
-            showWorkspaceToast(state.toast);
-            onDecision();
-        }
-        // Ruling R7: Apply association and Leave for later both return to Images.
-        navigateTo('#/images');
-    }
-
     scope.listen(retryLoad, 'click', () => controller.load());
     scope.listen(more, 'click', () => { if (!isDisabled(more)) controller.loadMore(); });
     scope.listen(select, 'change', () => controller.choose(select.value));
     scope.listen(apply, 'click', () => { if (!isDisabled(apply)) controller.apply(); });
     scope.listen(later, 'click', () => { if (!isDisabled(later)) controller.leave(); });
+    scope.listen(leaveUnresolved, 'click', () => { if (!isDisabled(leaveUnresolved)) controller.leaveUnresolved(); });
+    scope.listen(linkButton, 'click', () => {
+        const item = controller.state.items.find(entry => entry.id === controller.state.selectedId);
+        if (isDisabled(linkButton) || !item?.target) return;
+        openPromptLink({ api, scope, controller, filename: item.filename, trigger: linkButton });
+    });
     scope.listen(tagButton, 'click', () => {
         const item = controller.state.items.find(entry => entry.id === controller.state.selectedId);
         if (isDisabled(tagButton) || !item?.target) return;
@@ -292,7 +318,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
 
     let shownTotal = null;
     const reportTotal = state => {
-        if (state.status !== 'ready' || state.phase === 'done' || state.total === shownTotal) return;
+        if (state.status !== 'ready' || state.total === shownTotal) return;
         shownTotal = state.total;
         onTotal?.(state.total);
     };

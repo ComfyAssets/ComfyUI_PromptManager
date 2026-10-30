@@ -19,6 +19,10 @@ after the plain ones in this order:
   recorder stores ``limited`` (more than 16 candidates, so none are stored).
   An A1111 block with two negative lines is not queued any more: it offers
   no candidate to choose (#284).
+- ``unreadable`` (#536): an item whose stored candidates are all
+  ``unresolved``, as items recorded before the choice rule are, written directly
+  (the recorder no longer stores one). The Library holds "Golden dunes at
+  dusk" with its negative, and "Quiet harbor" with two.
 - ``unavailable``: a file recorded under the ``temp`` directory while it was a
   gallery root; the root is then removed again, so no current root lists it.
 
@@ -41,6 +45,7 @@ page closed is dropped at such a write.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -58,10 +63,11 @@ if TYPE_CHECKING:
     from py.api import PromptManagerAPI
 
 POSITIVES = ("Golden dunes at dusk", "Harbor lights at night")
+UNREADABLE_REASON = "Unsupported latent ancestry"
 NEGATIVE = "Soft negative, blur"
 # The prompt the conflict item's file is linked to after it was queued.
 FALLBACK = "Misty forest path"
-SPECIAL = ("conflict", "limited", "unavailable")
+SPECIAL = ("conflict", "limited", "unavailable", "unreadable")
 # The concept's first three images (concept app.js `images`) and first prompt.
 CONCEPT_IMAGES = (
     ("alpine_00001.png", (1536, 1152)),
@@ -215,6 +221,38 @@ def _unavailable(api: PromptManagerAPI, root: Path, path: Path) -> None:
         GalleryConfig.MONITORING_DIRECTORIES = roots
 
 
+def _unreadable(api: PromptManagerAPI, path: Path) -> None:
+    """Queue ``path`` with candidates no reviewer can apply, and Library prompts."""
+    facts = path.stat()
+    spelled = os.path.join(os.path.realpath(path.parent), path.name)
+    candidates = [
+        {
+            "hash": hashlib.sha256(f"unreadable-{sampler}".encode()).hexdigest(),
+            "sampler_id": sampler,
+            "state": "unresolved",
+            "reason": UNREADABLE_REASON,
+            "positive": None,
+            "negative": None,
+        }
+        for sampler in ("11", "13")
+    ]
+    api.db.record_review_item(
+        locator=os.path.normcase(spelled),
+        spelled_path=spelled,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        size=facts.st_size,
+        mtime_ns=facts.st_mtime_ns,
+        epoch=api.db.get_execution_epoch(),
+        resolver_version=1,
+        evidence={"reason": "", "resolver_version": 1, "candidates": candidates},
+        candidate_count=len(candidates),
+        limited=False,
+    )
+    api.db.save_prompt_pair(POSITIVES[0], NEGATIVE)
+    api.db.save_prompt_pair("Quiet harbor", "grainy")
+    api.db.save_prompt_pair("Quiet harbor", "washed out")
+
+
 def seed_review(
     api: PromptManagerAPI,
     root: Path,
@@ -254,6 +292,9 @@ def seed_review(
         path = (root / "temp" if kind == "unavailable" else output) / relative
         if kind == "conflict":
             _linked_after_queueing(api, path)
+        elif kind == "unreadable":
+            _png(path, (70, 40, 120))
+            _unreadable(api, path)
         elif kind == "limited":
             many = tuple(f"{POSITIVES[0]} {n}" for n in range(LIMITED_SAMPLERS))
             _png(path, (90, 90, 90), graph=_graph(positives=many))

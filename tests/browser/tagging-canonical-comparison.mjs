@@ -279,7 +279,7 @@ export function mapConceptReview(reference,actual) {
     });
     main=editNodes(main,'select',select=>{
         const twin=findNode(actual.main,'select');
-        return select.id==='review-context'?{...select,options:[...twin.options.slice(0,-1),select.options.at(-1)]}:select;
+        return select.id==='review-context'?{...select,options:twin.options}:select; // D179: no Leave unresolved option
     });
     main=editNodes(main,node=>/^section\..*\bprompt-section\b/.test(node.tag),section=>({...section,label:section.tag.includes('positive')?'Positive prompt':'Negative prompt'}));
     main=editNodes(main,node=>node.tag?.startsWith('button')&&/^(Copy|Send) (positive|negative) prompt/.test(node.label??''),

@@ -26,6 +26,10 @@ async function openReview(page, theme) {
     await openProduction(page, 'review', theme);
     await expect(panel(page).getByRole('combobox', { name: 'Sampler context', exact: true })).toBeEnabled();
     await settle(page);
+    // D179, D181: the two buttons the concept lacks are pinned here, then left out of the comparison.
+    await expect(panel(page).getByRole('button', { name: 'Leave unresolved', exact: true })).toBeVisible();
+    await expect(panel(page).getByRole('button', { name: 'Link to a prompt…', exact: true })).toBeVisible();
+    await page.addStyleTag({ content: '.review-panel .review-leave-unresolved, .review-panel .review-link-open { display: none !important; }' });
 }
 async function settle(page) {
     await page.mouse.move(0, 0);
@@ -90,7 +94,7 @@ for (const [width, height] of SIZES) for (const theme of THEMES) {
         expect(surface.children[1].text).toBe(CONCEPT_FILE);
         const actions = surface.children.at(-1);
         expect(actions.children.map(button => [button.text, button.primary])).toEqual([['Leave for later', false], ['Apply association', true]]);
-        expect(node(surface, 'select').options.at(-1)).toEqual(['Leave unresolved', false]);
+        expect(node(surface, 'select').options.map(option => option[0])).not.toContain('Leave unresolved'); // D179
         expect(node(main, 'div.image-grid').children.map(card => node(card, 'h3').text))
             .toEqual(['alpine_00001.png', 'dunes_00001.png', 'forest_00001.png']);
         expect(actual.noPageScroll).toBe(true);
@@ -169,7 +173,7 @@ test('the comparison notices a dropped notice border and reordered actions', asy
     const reordered = await productionInventory(page);
     expect(diffInventory(reference, reordered).map(item => item.path)).toEqual(expect.arrayContaining([
         'main.children.2.children.1.children.6.children.0.text', 'main.children.2.children.1.children.6.children.0.primary']));
-    await panel(page).locator('.dialog-actions').evaluate(row => row.prepend(row.lastElementChild));
+    await panel(page).locator('.dialog-actions').evaluate(row => row.append(row.firstElementChild));
     expect(diffInventory(reference, await productionInventory(page))).toEqual([]);
 });
 

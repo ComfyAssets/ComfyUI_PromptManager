@@ -112,6 +112,7 @@ COUNTED = (
 # The ladder steps whose answer is certain enough to keep a link.
 KEEP_SOURCES = ("recorded-run", "inspector")
 # What must be unchanged since the dry run for a row to be written.
+MANUAL_REASON = "linked by hand in Needs review"
 DRIFT_KEYS = (
     "action",
     "file",
@@ -181,6 +182,13 @@ class Judge:
             )
         return self.decisions[path]
 
+    def _manually_linked(self, image_id):
+        """True when the reviewer named this row's prompt in Needs review (#536)."""
+        return any(
+            link["provenance"].get("kind") == "manual-link"
+            for link in self.db.get_image_prompt_pairs(image_id)
+        )
+
     def row(self, row):
         """The plan entry of one ``generated_images`` row."""
         conn = self.db.model.get_connection()
@@ -200,6 +208,8 @@ class Judge:
         except OSError:
             return {**item, "action": "skip", "reason": "file gone"}
         item.update(file_size=stat.st_size, file_mtime_ns=stat.st_mtime_ns)
+        if self._manually_linked(row["id"]):
+            return {**item, "action": "skip", "reason": MANUAL_REASON}
         decision = self.decide(path, stat.st_size)
         action = action_of(decision, prompt_hash)
         if action == "skip":
