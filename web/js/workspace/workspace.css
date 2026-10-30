@@ -197,11 +197,13 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* `!important` only to beat the concept's `.icon-btn { display: inline-grid !important }`. */
 @media (max-width: 700px) { #viewer-dialog .dialog-header > :is(#viewer-mode, #viewer-keys) { display: none !important; } }
 /* #532 D170: the shortcuts overlay, a small dialog over the viewer. */
-.ca-tools #viewer-keys-dialog { width: min(420px, calc(100vw - 32px)); height: fit-content; max-height: 90dvh; }
+.ca-tools #viewer-keys-dialog { width: min(600px, calc(100vw - 32px)); height: fit-content; max-height: 90dvh; overflow: auto; }
+#viewer-keys-dialog .viewer-keys-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px 24px; margin-bottom: 14px; }
+#viewer-keys-dialog h3 { margin: 0 0 8px; }
 #viewer-keys-dialog .dialog-header > button { margin-inline-start: auto; }
-#viewer-keys-dialog dl { display: grid; gap: 10px; margin: 0 0 14px; }
+#viewer-keys-dialog dl { display: grid; gap: 8px; margin: 0; }
 #viewer-keys-dialog dl > div { display: flex; align-items: center; gap: 12px; }
-#viewer-keys-dialog dt { min-width: 48px; }
+#viewer-keys-dialog dt { flex: 0 0 64px; }
 #viewer-keys-dialog dd { margin: 0; }
 #viewer-keys-dialog kbd { display: inline-block; min-width: 28px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; text-align: center; }
 #viewer-keys-dialog > p { margin: 0; }

@@ -3997,12 +3997,18 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   `title` "Keyboard shortcuts", a `command` outline icon, hidden at ≤700px with the
   switch). It opens `dialog#viewer-keys-dialog`, a modal built on demand inside the
   viewer, so a closed overlay adds nothing to the concept comparisons but the button:
-  `.dialog-header` with × and a list of ← Previous file, → Next file, Esc Close the
-  viewer. Esc or × closes only the overlay and focus returns to the button; opening it
+  `.dialog-header` with × and the keys grouped as Move (← → Space), Image (+ - 0 R H),
+  View (F I ? Esc) and File (D, Delete where the viewer has Delete…), one column at
+  390px. Esc or × closes only the overlay and focus returns to the button; opening it
   stops the slideshow. ← and → navigate from anywhere in the viewer, on `document` as the
   legacy gallery does, unless a modifier is held, text is selected, another dialog is on
   top, or focus is in a video, form field, `pre`, `summary`, or anything in the details
-  but a button or link. `workspace-viewer-keys.spec.mjs` pins this.
+  but a button or link. The other keys share that gate but allow Shift, and each clicks
+  the toolbar's own control, so an aria-disabled, missing or hidden control does nothing
+  (Rotate on a video, I when Centered, F at ≤700px, Delete without Delete…). `?` opens
+  the overlay directly. Delete only opens the review. Space on a focused button or link
+  activates it instead, and only + and - repeat. `workspace-viewer-keys.spec.mjs` pins
+  this.
 - **D156** (#450, maintainer request 2026-10-28, beyond the concept): every viewer (the
   shared `dialog#viewer-dialog` of Images, Library, History, collections and Inspect) has
   `button#viewer-mode.icon-btn` in `.dialog-header`, right before ✕ (a direct child, so

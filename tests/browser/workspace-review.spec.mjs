@@ -95,6 +95,9 @@ test('queue shows persisted items and the nav count', async ({ page, request }) 
     const before = await page.locator('#viewer-dialog .media-position').textContent();
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('#viewer-dialog .media-position')).not.toHaveText(before);
+    // This viewer has no Delete…, so the Delete key does nothing.
+    await page.keyboard.press('Delete');
+    await expect(page.locator('dialog#modal[open]')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(page.locator('#viewer-dialog')).toHaveCount(0);
     // Open activity.
