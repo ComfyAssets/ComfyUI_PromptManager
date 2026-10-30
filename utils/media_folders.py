@@ -26,6 +26,15 @@ def is_skipped_folder(name: str) -> bool:
     return name == PREVIEW_FOLDER or is_trash_folder(name)
 
 
+def in_trash_folder(relative: str) -> bool:
+    """Whether a root-relative file path lies in a trash folder (#543).
+
+    Takes either separator. Previews of it (``thumbnails/.Trash-1000/...``) count.
+    """
+    folders = relative.replace("\\", "/").split("/")[:-1]
+    return any(is_trash_folder(part) for part in folders)
+
+
 def in_skipped_folder(parts) -> bool:
     """Whether any of the folder names *parts* is skipped."""
     return any(is_skipped_folder(part) for part in parts)

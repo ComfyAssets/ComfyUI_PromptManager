@@ -169,6 +169,59 @@ test('without a chosen mode nothing can start a delete', async ({ page }) => {
     expect(applies).toEqual([]);
 });
 
+// #543 (D190): a review where nothing can move shows a primary that clearly cannot act: no danger colors, ignored presses.
+test('a trash review with nothing to move has a clearly disabled primary', async ({ page }) => {
+    const before = await openImages(page);
+    await check(page, 0);
+    await page.route('**/images/delete/preview', async route => {
+        const response = await route.fetch();
+        const plan = await response.json();
+        const reason = "This drive's trash is inside an output folder.";
+        await route.fulfill({ response, json: {
+            ...plan,
+            trash: { count: 0 },
+            trash_refused: { count: 1, counts: { 'trash-in-root': 1 }, rows: [{ name: 'a.png', code: 'trash-in-root', detail: reason }] },
+        } });
+    });
+    const applies = [];
+    page.on('request', request => { if (request.url().includes('/maintenance/apply')) applies.push(request.url()); });
+    await bar(page).getByRole('button', { name: 'Delete…', exact: true }).click();
+    const dialog = review(page);
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('radio', { name: /^Also move the files to the trash/ }).check();
+    const primary = dialog.locator('.dialog-actions button.danger');
+    await expect(primary).toHaveText('Move 0 images to the trash');
+    await expect(primary).toHaveAttribute('aria-disabled', 'true');
+    await expect(primary).toHaveCSS('cursor', 'not-allowed');
+    const look = element => { const style = getComputedStyle(element); return [style.color, style.borderTopColor]; };
+    const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+    const [color, border] = await primary.evaluate(look);
+    const [cancelColor] = await cancel.evaluate(look);
+    const red = await page.evaluate(() => {
+        const probe = document.createElement('i');
+        probe.style.color = 'var(--red)';
+        document.querySelector('.ca-tools').append(probe);
+        const value = getComputedStyle(probe).color;
+        probe.remove();
+        return value;
+    });
+    expect(color).not.toBe(red);
+    expect(border).not.toBe(red);
+    expect(color).not.toBe(cancelColor);
+    await primary.hover({ force: true });
+    await expect(primary).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await primary.click({ force: true });
+    await primary.focus();
+    await page.keyboard.press('Enter');
+    await expect(dialog).toBeVisible();
+    expect(applies).toEqual([]);
+    await dialog.getByRole('radio', { name: /^Remove from the library only/ }).check();
+    await expect(primary).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(primary).toHaveCSS('color', red);
+    await cancel.click();
+    await expect(page.locator(CARDS)).toHaveCount(before);
+});
+
 test('a chosen mode starts exactly one delete, with that mode, however often it is pressed', async ({ page }) => {
     const before = await openImages(page);
     await check(page, 0);

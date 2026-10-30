@@ -15,7 +15,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from .images import _canonical, _media_access_error
+from .images import _canonical, _media_access_error, _record_in_trash_folder
 from .pairs import pair_response
 
 try:
@@ -267,6 +267,8 @@ class LibraryRoutesMixin:
                 path = _canonical(raw_path)
                 denied = _media_access_error(path, roots)
                 if denied is not None or not path.is_file():
+                    continue
+                if _record_in_trash_folder(path, roots):
                     continue
                 for index, root in enumerate(roots):
                     canonical_root = _canonical(root)

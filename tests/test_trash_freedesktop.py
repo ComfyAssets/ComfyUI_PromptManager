@@ -114,11 +114,12 @@ class FreedesktopTrashTests(unittest.TestCase):
         self.assertEqual(os.listdir(elsewhere), [])
 
     def test_trash_inside_an_output_root_is_refused(self):
-        # The drive's top folder is itself an output root: its .Trash-uid
-        # would be listed as images.
+        # A root above the drive's top folder would hold the drive's .Trash-uid.
+        # (A root that is exactly the top folder is allowed: #543,
+        # tests/test_trash_mount_root.py.)
         path = self._file(self.root)
         with self.assertRaises(trash.TrashRefused) as caught:
-            self.backend.move(path, [self.drive])
+            self.backend.move(path, [self.tmp])
         self.assertEqual(caught.exception.code, trash.TRASH_IN_ROOT)
         self.assertTrue(os.path.exists(path))
         self.assertFalse(
@@ -147,9 +148,8 @@ class FreedesktopTrashTests(unittest.TestCase):
     def test_available_reports_without_writing(self):
         path = self._file(self.root)
         self.assertIsNone(self.backend.available(path, [self.root]))
-        self.assertEqual(
-            self.backend.available(path, [self.drive]), trash.TRASH_IN_ROOT
-        )
+        self.assertEqual(self.backend.available(path, [self.tmp]), trash.TRASH_IN_ROOT)
+        self.assertIsNone(self.backend.available(path, [self.drive]))
         self.assertEqual(os.listdir(self.drive), ["output"])
 
     # ── names and the no-replace rename ───────────────────────────────
