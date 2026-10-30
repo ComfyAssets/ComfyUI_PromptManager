@@ -529,6 +529,60 @@ test('a deleted prompt\'s page says it no longer exists, with the way back and n
     await expect(page).toHaveURL(/#\/library$/);
 });
 
+// #524 (live test of #522): a long title clamps beside the heading actions, which stay on one row at desktop widths.
+const LONG_TITLE='masterpiece, high quality, very_awa, newest, absurdres, highres, depth_of_field, detailed eyes, realistic eyes, fake eyelashes, black eyes, white_nails, 1girl, solo, black bob_cut, upper body';
+async function openLongTitle(page,request,width) {
+    const dual=byText(await items(request),'Dual role portrait');
+    await page.route(new RegExp(`/prompt_manager/library/${dual.id}\\?`),async route=>{
+        const response=await route.fetch(),json=await response.json();
+        await route.fulfill({response,json:{...json,positive:{...json.positive,title:LONG_TITLE}}});
+    });
+    await page.setViewportSize({width,height:900});
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    await expect(page.locator('#workspace-main h1')).toHaveText(LONG_TITLE);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
+    return page.locator('#workspace-main .heading-actions > button, #workspace-main .heading-actions > .more-menu > button');
+}
+for(const width of [1440,951]) test(`a long title clamps and the heading actions stay on one row at ${width}px (#524)`,async({page,request})=>{
+    const actions=await openLongTitle(page,request,width);
+    await expect(actions).toHaveText(['← Prompt library','Edit metadata','Send to ComfyUI','⋯']);
+    const tops=await actions.evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
+    expect(new Set(tops).size).toBe(1);
+    const h1=page.locator('#workspace-main h1');
+    const shape=await h1.evaluate(node=>({scroll:node.scrollHeight,client:node.clientHeight,line:parseFloat(getComputedStyle(node).lineHeight),title:node.title}));
+    expect(shape.scroll).toBeGreaterThan(shape.client);
+    expect(shape.client).toBeLessThanOrEqual(Math.ceil(shape.line*2));
+    // The clamp hides pixels only: the whole title stays the text and shows on hover.
+    expect(shape.title).toBe(LONG_TITLE);
+    // The buttons do not shrink: no label is cut or broken onto a second line.
+    const broken=await actions.evaluateAll(nodes=>nodes.filter(node=>node.scrollWidth>node.clientWidth||node.getBoundingClientRect().height>44).length);
+    expect(broken).toBe(0);
+    const [h1Box,firstBox]=[await h1.boundingBox(),await actions.first().boundingBox()];
+    expect(h1Box.x+h1Box.width).toBeLessThanOrEqual(firstBox.x);
+});
+
+test('a long title at 390px keeps the concept\'s stacked heading, not clamped, inside the viewport (#524)',async({page,request})=>{
+    const actions=await openLongTitle(page,request,390);
+    const h1=await page.locator('#workspace-main h1').evaluate(node=>({scroll:node.scrollHeight,client:node.clientHeight}));
+    expect(h1.scroll).toBeLessThanOrEqual(h1.client);
+    const right=await actions.evaluateAll(nodes=>Math.max(...nodes.map(node=>node.getBoundingClientRect().right)));
+    expect(right).toBeLessThanOrEqual(390);
+});
+
+test('a deleted prompt\'s page has no history subtitle, and a page that loads shows it (#524)',async({page,request})=>{
+    const list=await items(request),dual=byText(list,'Dual role portrait'),dog=byText(list,'Dog landscape');
+    const description=page.locator('#workspace-main > .heading p.muted');
+    await deleteFromPage(page,dual.id);
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await review(page).getByRole('button',{name:'Delete 1 prompt',exact:true}).click();
+    await expect(page).toHaveURL(/#\/library$/);
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    await expect(page.locator('#workspace-main .library-status')).toHaveText('This prompt no longer exists. It may have been deleted.');
+    await expect(description).toBeHidden();await expect(description).toHaveText('');
+    await page.goto(`/prompt_manager/workspace#/library/${dog.id}`);
+    await expect(description).toHaveText('Prompt history · one positive, one shared gallery');await expect(description).toBeVisible();
+});
+
 test('the archived shelf\'s heading count and its list agree under a remembered search (#512 item 5)',async({page,request})=>{
     const all=await items(request);
     const dual=byText(all,'Dual role portrait'),dog=byText(all,'Dog landscape');
