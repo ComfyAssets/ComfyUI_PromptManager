@@ -21,11 +21,14 @@ export function mountedDom() {
         removeEventListener(type,callback){this.listeners.set(type,(this.listeners.get(type)||[]).filter(e=>e.callback!==callback));}
         fire(type,event={}){for(const e of [...(this.listeners.get(type)||[])])if(!e.signal?.aborted)e.callback({target:this,preventDefault(){},...event});}
         focus(){this.focused=true;}
+        click(){this.fire('click');}
+        getClientRects(){return this.isConnected&&!this.layoutHidden?[{}]:[];}
         showModal(){this.open=true;}
         close(){this.open=false;this.fire('close');}
         contains(node){return node===this||this.children.some(c=>c.contains(node));}
         closest(selector){if(selector==='section'&&this.tagName==='section')return this;if(selector==='[data-send-role]'&&this.dataset.sendRole)return this;if(selector==='[data-copy-role]'&&this.dataset.copyRole)return this;return this.parent?.closest(selector)||null;}
         querySelector(selector){return walk(this,n=>n.tagName===selector)[0]||null;}
+        querySelectorAll(selector){return walk(this,n=>n.tagName===selector);}
         pause(){this.paused=true;}
         load(){this.loaded=true;}
         play(){this.played=true;return Promise.resolve();}
