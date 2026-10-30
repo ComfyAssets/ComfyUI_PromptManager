@@ -281,7 +281,7 @@ def short_space_message(short):
     )
 
 
-def _changed_line(operation, count):
+def _changed_line(operation, count, marks=0):
     if operation == "optimize":
         return "Optimized the database"
     if operation == "duplicate_prompts":
@@ -291,7 +291,11 @@ def _changed_line(operation, count):
         noun = "unused prompt component" if count == 1 else "unused prompt components"
         return f"Removed {count:,} {noun}"
     noun = "link to a missing file" if count == 1 else "links to missing files"
-    return f"Removed {count:,} {noun}"
+    line = f"Removed {count:,} {noun}"
+    if marks:
+        gone = "removed image" if marks == 1 else "removed images"
+        line += f"; forgot {marks:,} {gone} whose files are gone or changed"
+    return line
 
 
 def take_safety_backup(model, label="backup"):
@@ -419,6 +423,7 @@ class MaintenanceRoutesMixin:
             draft.public(),
             {
                 "targets": draft.targets,
+                "marks": draft.marks,
                 "roots": roots,
                 "protected": draft.protected["count"],
                 "rows": draft.scope["count"],
@@ -653,6 +658,7 @@ class MaintenanceRoutesMixin:
                 plan.fingerprint,
                 payload["targets"],
                 payload["roots"],
+                payload.get("marks", ()),
             )
         except PlanChanged:
             return _fail_job(job, "plan-changed", PLAN_CHANGED)
@@ -664,7 +670,7 @@ class MaintenanceRoutesMixin:
         )
         job.record_counted("changed", result["changed"], rows)
         job.record_counted("protected", payload["protected"])
-        line = _changed_line(plan.operation, result["changed"])
+        line = _changed_line(plan.operation, result["changed"], result.get("marks", 0))
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
 

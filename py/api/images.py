@@ -66,6 +66,7 @@ try:
     from ...database.models import normalize_image_path
     from ...database.run_attribution import recorded_output_lookup
     from ...utils.card_seed import card_seed, header_params, parsed_positive
+    from ...utils.media_folders import in_skipped_folder, is_skipped_folder
     from ...utils.parallel import map_parallel
     from ...utils.json_strict import dumps_strict
     from ...utils.inspection_response import (
@@ -91,6 +92,7 @@ except ImportError:
     from database.models import normalize_image_path
     from database.run_attribution import recorded_output_lookup
     from utils.card_seed import card_seed, header_params, parsed_positive
+    from utils.media_folders import in_skipped_folder, is_skipped_folder
     from utils.parallel import map_parallel
     from utils.json_strict import dumps_strict
     from utils.inspection_response import (
@@ -915,7 +917,8 @@ def _name_suffix(name):
 def _walk_media(output_path, max_files):
     """Yield the ``os.DirEntry`` of each media file under *output_path*.
 
-    Symlinks are never followed, ``thumbnails/`` is skipped, descent stops
+    Symlinks are never followed, ``thumbnails/`` and trash folders are
+    skipped (``utils.media_folders``, #501), descent stops
     at MAX_SCAN_DEPTH and at most *max_files* entries are produced. The order
     is ``os.walk``'s (top-down, subfolders in ``os.scandir`` order, files by
     name), which the gallery's ties in mtime keep. Each entry's type comes
@@ -927,8 +930,6 @@ def _walk_media(output_path, max_files):
     produced = 0
     while stack:
         top, rel_parts = stack.pop()
-        if "thumbnails" in rel_parts:
-            continue
         dirs, files = [], []
         try:
             with os.scandir(top) as entries:
@@ -952,7 +953,7 @@ def _walk_media(output_path, max_files):
         if len(rel_parts) >= MAX_SCAN_DEPTH:
             continue
         for entry in reversed(dirs):
-            if not entry.is_symlink():
+            if not entry.is_symlink() and not is_skipped_folder(entry.name):
                 stack.append((entry.path, rel_parts + (entry.name,)))
 
 
@@ -976,7 +977,7 @@ def _settled_entry(root, relative):
     *folders, name = relative.split(os.sep)
     if _name_suffix(name).lower() not in MEDIA_EXTENSIONS:
         return None
-    if "thumbnails" in folders or len(folders) > MAX_SCAN_DEPTH:
+    if in_skipped_folder(folders) or len(folders) > MAX_SCAN_DEPTH:
         return None
     folder = os.fspath(root)
     for part in ("", *folders):
@@ -3075,7 +3076,9 @@ class ImageRoutesMixin:
         no symlinks), each preview folder is listed once, and at most
         MAX_THUMBNAIL_FILES targets are queued per batch (a job plans again
         after each batch); ``remaining`` counts the targets beyond that cap.
-        Sources in *exclude* (worked on by an earlier batch) are left out.
+        Sources in *exclude* (worked on by an earlier batch) are left out, and
+        so are files removed from the library (#501: a removal mark hides
+        them, and their previews went with their records).
         ``stop()`` true ends the walk before the next file.
         """
         settings = writer_settings(settings)
@@ -3084,10 +3087,13 @@ class ImageRoutesMixin:
         plan = {key: 0 for key in _PLAN_COUNTS}
         plan.update(targets=[], fresh_files=[])
         folders = {}
+        removed = self._removal_check_under(output_path)
         for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
             if stop is not None and stop():
                 break
             if exclude and src in exclude:
+                continue
+            if removed(src):
                 continue
             rel_no_ext = src.relative_to(output_path).with_suffix("")
             stem = f"{rel_no_ext.name}{thumbnail_settings.THUMB_SUFFIX}"

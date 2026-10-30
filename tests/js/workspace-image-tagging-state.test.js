@@ -876,3 +876,63 @@ test('retry after a changed storage, file or expired capture observes again and 
     await settle();
     assert.equal(c.state.manual, 'Minimal, warm_light');
 });
+
+test('#515: text typed while the first observation is pending is kept, after the saved tags', async () => {
+    const { createImageTaggingController } = await load();
+    const answers = [deferred(), deferred()];
+    let n = 0;
+    const h = harness(defaultRoutes({ [`POST ${OBSERVE}`]: () => answers[n++].promise }));
+    // An untagged file: the typed text is the whole draft and Save sends it.
+    const bare = createImageTaggingController({ api: h.api, target: TARGET, source: 'review' });
+    const first = bare.open();
+    bare.setManual('dunes');
+    answers[0].resolve(response(200, observed({ tags: [], tag_revision: 0 })));
+    await first;
+    await settle();
+    assert.equal(bare.state.phase, 'ready');
+    assert.equal(bare.state.manual, 'dunes');
+    assert.equal(bare.state.statusText, '', 'nothing changed elsewhere');
+    await bare.save();
+    await settle();
+    assert.deepEqual(h.of('PUT', TAGS).at(-1).body.tags, ['dunes']);
+    // A tagged file: its saved tags lead, so a Save never drops tags the user had not seen yet.
+    const tagged = createImageTaggingController({ api: h.api, target: TARGET });
+    const second = tagged.open();
+    tagged.setManual('dunes, minimal');
+    answers[1].resolve(response(200, observed()));
+    await second;
+    await settle();
+    assert.equal(tagged.state.manual, 'Minimal, warm_light, dunes');
+    assert.equal(tagged.state.statusText, '');
+});
+
+test('#515: a kept draft takes the text typed while the reopen observes', async () => {
+    const { c } = await opened({ [`PUT ${TAGS}`]: () => fail(409, 'file-changed', 'The file changed.') });
+    c.setManual('kept draft');
+    await c.save();
+    await settle();
+    const reopened = c.retry();
+    c.setManual('kept draft, later');
+    await reopened;
+    await settle();
+    assert.equal(c.state.phase, 'ready');
+    assert.equal(c.state.manual, 'kept draft, later');
+});
+
+test('#515: text typed before Retry after a failed first observation follows the saved tags', async () => {
+    const { createImageTaggingController } = await load();
+    let n = 0;
+    const h = harness(defaultRoutes({
+        [`POST ${OBSERVE}`]: () => (n++ === 0 ? fail(500, 'internal', 'boom') : response(200, observed())),
+    }));
+    const c = createImageTaggingController({ api: h.api, target: TARGET });
+    await c.open();
+    await settle();
+    assert.equal(c.state.phase, 'observe-error');
+    c.setManual('dunes');
+    await c.retry();
+    await settle();
+    assert.equal(c.state.phase, 'ready');
+    assert.equal(c.state.manual, 'Minimal, warm_light, dunes');
+    assert.equal(c.state.statusText, '');
+});
