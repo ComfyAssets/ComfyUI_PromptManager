@@ -5,8 +5,12 @@ A decision is one row of ``media_review_decisions`` for one item revision.
 ingester's compatible-only rules (``_ingest_resolved_pair_in``) in the same
 ``_pair_transaction`` as the decision row, the item's new state and revision
 and the review index revision; any conflict or later failure rolls all of it
-back. ``unresolved`` records the decision and links nothing. No decision
-counts a run, touches usage or calls an execution writer.
+back. ``manual`` (#536) is the same but for a Library prompt the reviewer chose:
+its link's provenance names a manual choice and carries no prompt sides, so it
+cannot pose as file evidence, and the decision's ``candidate_hash`` (the table
+requires one) is the digest of that choice. ``unresolved`` records the decision
+and links nothing. No decision counts a run, touches usage or calls an execution
+writer.
 
 Callers verify the file first (the capture must be the item's bytes and the
 current file must still hash to them); nothing here reads the filesystem.
@@ -17,6 +21,7 @@ import sqlite3
 
 from .annotation_schema import BYTES_TABLE
 from .annotations import _new_id
+from .library import _ELIGIBLE, _FROM, SHELVED
 from .library_commands import LibraryCommandError
 from .models import utc_now_iso
 from .review import (
@@ -30,9 +35,28 @@ from .review import (
     same_name_rows,
 )
 from .review_changes import notify_review_change
-from .review_schema import DECISIONS_TABLE, ITEMS_TABLE, canonical_evidence
+from .review_schema import (
+    DECISIONS_TABLE,
+    ITEMS_TABLE,
+    canonical_evidence,
+    evidence_digest,
+)
 
 DECISION_KIND = "user-selection"
+MANUAL_KIND = "manual-link"
+_MANUAL_POSITIVE = (
+    f"SELECT p.id,p.text FROM {_FROM} "  # nosec B608
+    f"WHERE p.id=? AND {_ELIGIBLE} AND {SHELVED}"
+)
+_MANUAL_PAIR = (
+    "SELECT COALESCE(n.text,'') AS negative FROM prompt_pairs pp "
+    "LEFT JOIN prompts n ON n.id=pp.negative_prompt_id "
+    "WHERE pp.id=? AND pp.positive_prompt_id=? AND pp.archived=0"
+)
+_ARCHIVED_BARE_PAIR = (
+    "SELECT 1 FROM prompt_pairs WHERE positive_prompt_id=? "
+    "AND negative_prompt_id IS NULL AND archived=1"
+)
 _INSERT_DECISION = (
     f"INSERT INTO {DECISIONS_TABLE}(id,item_id,decision_revision,"  # nosec B608
     "created_at,outcome,candidate_hash,evidence,pair_id,image_id) "
@@ -59,6 +83,8 @@ class ReviewCommandError(LibraryCommandError):
     ``fingerprint`` the current dependency fingerprint, when known;
     ``changed`` marks an association conflict caused by links that changed
     since the reviewer read them (rather than an incompatible choice).
+    ``prompt-missing``: the Library prompt or recipe of a manual link is gone,
+    archived or not that prompt's.
     """
 
     def __init__(
@@ -93,6 +119,7 @@ class ReviewDecisionOperations:
         sha256: str,
         outcome: str,
         candidate: dict | None = None,
+        manual: dict | None = None,
         image_path: str | None = None,
         metadata: dict | None = None,
         expected_fingerprint: str | None = None,
@@ -101,7 +128,9 @@ class ReviewDecisionOperations:
     ) -> dict:
         """Record the decision; return ``{item, total, pair}``.
 
-        ``selected`` needs the evidence ``candidate`` (with its ``hash``), the
+        ``selected`` needs the evidence ``candidate`` (with its ``hash``) or
+        ``manual`` (``{positive_id, pair_id}``; a null ``pair_id`` is no
+        negative), the
         ``image_path`` the scan and the monitor link under, the captured
         ``metadata`` and the ``expected_fingerprint`` the reviewer saw.
         ``aliases`` are the other spellings legacy rows of the same physical
@@ -115,9 +144,12 @@ class ReviewDecisionOperations:
         if outcome not in ("selected", "unresolved"):
             raise ValueError("outcome must be selected or unresolved")
         if outcome == "selected" and (
-            not isinstance(candidate, dict) or not image_path
+            (not isinstance(candidate, dict)) == (not isinstance(manual, dict))
+            or not image_path
         ):
-            raise ValueError("A selected decision needs a candidate and a file")
+            raise ValueError(
+                "A selected decision needs one candidate or manual choice and a file"
+            )
         try:
             with self._pair_transaction() as conn:
                 decided = self._decide_in(
@@ -128,6 +160,7 @@ class ReviewDecisionOperations:
                     sha256=sha256,
                     outcome=outcome,
                     candidate=candidate,
+                    manual=manual,
                     image_path=image_path,
                     metadata=metadata or {},
                     expected_fingerprint=expected_fingerprint,
@@ -158,13 +191,24 @@ class ReviewDecisionOperations:
             raise _Rollback(ReviewCommandError("file-changed", epoch))
         decision_id = _new_id()
         pair = None
-        candidate = command["candidate"] if command["outcome"] == "selected" else None
+        selected = command["outcome"] == "selected"
+        candidate = command["candidate"] if selected else None
+        manual = command["manual"] if selected else None
+        candidate_hash = candidate["hash"] if candidate is not None else None
         if candidate is not None:
             pair = self._apply_candidate(
                 conn, epoch, current, decision_id, total, **command
             )
+        elif manual is not None:
+            pair = self._apply_manual(
+                conn, epoch, current, decision_id, total, **command
+            )
+            manual = {"positive_id": manual["positive_id"], "pair_id": pair["id"]}
+            candidate_hash = evidence_digest(
+                canonical_evidence({"kind": MANUAL_KIND, **manual})
+            )
         evidence = {
-            "kind": DECISION_KIND,
+            "kind": MANUAL_KIND if manual is not None else DECISION_KIND,
             "decision_id": decision_id,
             "outcome": command["outcome"],
             "reviewed_digest": command["sha256"],
@@ -174,6 +218,8 @@ class ReviewDecisionOperations:
             "dependency_fingerprint": command["expected_fingerprint"],
             "pair": pair,
         }
+        if manual is not None:
+            evidence["manual"] = manual
         now = utc_now_iso()
         self._insert_review_decision(
             conn,
@@ -183,7 +229,7 @@ class ReviewDecisionOperations:
                 current["revision"] + 1,
                 now,
                 command["outcome"],
-                candidate["hash"] if candidate is not None else None,
+                candidate_hash,
                 canonical_evidence(evidence),
                 pair["id"] if pair else None,
                 pair["image_id"] if pair else None,
@@ -204,6 +250,77 @@ class ReviewDecisionOperations:
         self, conn, epoch, current, decision_id, total, **command
     ) -> dict:
         """Link the candidate's pair, compatible-only; raise on any conflict."""
+        candidate = command["candidate"]
+        positive, negative = candidate["positive"], candidate["negative"]
+        provenance = {
+            "kind": DECISION_KIND,
+            "decision_id": decision_id,
+            "reviewed_digest": command["sha256"],
+            "candidate_hash": candidate["hash"],
+            "resolver_version": current["resolver_version"],
+            "positive": positive,
+            "negative": negative,
+        }
+        return self._link_compatible(
+            conn, epoch, current, total, positive, negative, provenance, command
+        )
+
+    def _apply_manual(self, conn, epoch, current, decision_id, total, **command):
+        """Link the chosen Library prompt, compatible-only; raise otherwise."""
+        missing = _Rollback(
+            ReviewCommandError("prompt-missing", epoch, item=current, total=total)
+        )
+        positive_id = command["manual"]["positive_id"]
+        pair_id = command["manual"]["pair_id"]
+        row = conn.execute(_MANUAL_POSITIVE, (positive_id,)).fetchone()
+        if row is None:
+            raise missing
+        positive_text, negative_text = row[1], ""
+        if pair_id is not None:
+            chosen = conn.execute(_MANUAL_PAIR, (pair_id, positive_id)).fetchone()
+            if chosen is None:
+                raise missing
+            negative_text = chosen[0]
+        elif conn.execute(_ARCHIVED_BARE_PAIR, (positive_id,)).fetchone():
+            raise missing
+        provenance = {
+            "kind": MANUAL_KIND,
+            "decision_id": decision_id,
+            "reviewed_digest": command["sha256"],
+            "resolver_version": current["resolver_version"],
+            "positive_id": positive_id,
+            "pair_id": pair_id,
+        }
+        # The sides name no provenance: only the ingester reads them.
+        pair = self._link_compatible(
+            conn,
+            epoch,
+            current,
+            total,
+            {"text": positive_text},
+            {"text": negative_text},
+            provenance,
+            command,
+        )
+        # A prompt whose stored hash is stale reaches another row: never link that.
+        reached = conn.execute(
+            "SELECT positive_prompt_id FROM prompt_pairs WHERE id=?", (pair["id"],)
+        ).fetchone()[0]
+        if reached != positive_id or pair_id not in (None, pair["id"]):
+            raise missing
+        return pair
+
+    def _link_compatible(
+        self,
+        conn,
+        epoch,
+        current,
+        total,
+        positive,
+        negative,
+        provenance,
+        command,
+    ) -> dict:
         # Imported here: pair_ingestion imports operations, which composes this.
         from .pair_ingestion import _ingest_resolved_pair_in
 
@@ -242,17 +359,6 @@ class ReviewDecisionOperations:
             # Enrich the one row of this file under the spelling it was
             # linked with, so the ingester's compatibility rules see it.
             image_path = rows[0][1]
-        candidate = command["candidate"]
-        positive, negative = candidate["positive"], candidate["negative"]
-        provenance = {
-            "kind": DECISION_KIND,
-            "decision_id": decision_id,
-            "reviewed_digest": command["sha256"],
-            "candidate_hash": candidate["hash"],
-            "resolver_version": current["resolver_version"],
-            "positive": positive,
-            "negative": negative,
-        }
         result = _ingest_resolved_pair_in(
             conn,
             self,

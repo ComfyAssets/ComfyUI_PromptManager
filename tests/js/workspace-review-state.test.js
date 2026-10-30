@@ -128,9 +128,7 @@ test('selecting a card loads detail and option labels, first workable preselecte
         ['Sampler 9 · No positive / Soft negative', true],
         ['Sampler 12 · Dunes / Soft negative', false],
         ['Sampler 28 · Dunes / Harsh negative', false],
-        ['Leave unresolved', false],
     ]);
-    assert.equal(c.state.options.at(-1).value, 'unresolved');
     assert.equal(c.state.choice, HASH_A);
     assert.deepEqual(c.state.prompts, { positive: { status: 'resolved', text: 'golden dunes' }, negative: { status: 'resolved', text: 'blur' } });
     c.choose(HASH_C);
@@ -138,16 +136,17 @@ test('selecting a card loads detail and option labels, first workable preselecte
     c.choose(HASH_B);
     assert.equal(c.state.prompts.negative.text, 'noise');
     c.choose('unresolved');
-    assert.equal(c.state.prompts.positive.status, 'ambiguous');
+    assert.equal(c.state.choice, HASH_B, 'Leave unresolved is its own action');
     await c.select('two');
     await settle();
     assert.equal(c.state.selectedId, 'two');
-    assert.deepEqual(c.state.options.map(option => option.label), ['Leave unresolved']);
-    assert.equal(c.state.choice, 'unresolved');
+    assert.deepEqual(c.state.options, []);
+    assert.equal(c.state.choice, null);
+    assert.equal(c.state.unreadable, null, 'a limited file keeps its own warning');
     assert.match(c.state.warning, /too many sampler paths/i);
 });
 
-test('apply sends the selected candidate hash or unresolved with a fresh capture', async () => {
+test('apply sends the selected candidate hash with a fresh capture and the next item opens', async () => {
     const { c, h } = await loaded();
     c.choose(HASH_B);
     const done = await c.apply();
@@ -157,31 +156,105 @@ test('apply sends the selected candidate hash or unresolved with a fresh capture
     const [decision] = h.of('POST', `${ITEMS}/one/decision`);
     assert.deepEqual(decision.body, { expected_epoch: EPOCH, expected_revision: 0, capture_token: 'capture-1', sha256: SHA,
         dependency_fingerprint: PRINT, choice: HASH_B });
-    assert.equal(c.state.phase, 'done');
-    assert.equal(c.state.total, 1);
+    assert.equal(c.state.phase, 'idle');
+    assert.equal(c.state.selectedId, 'two');
     assert.equal(c.state.toast, 'Association accepted.');
+    assert.equal(c.state.decisions, 1);
     // The server releases a used capture itself.
     assert.equal(h.of('DELETE', CAPTURE).length, 0);
-
-    const again = await loaded();
-    again.c.choose('unresolved');
-    assert.equal(await again.c.apply(), true);
-    const [unresolved] = again.h.of('POST', `${ITEMS}/one/decision`);
-    assert.equal(unresolved.body.choice, 'unresolved');
-    assert.equal(unresolved.body.capture_token, 'capture-1');
-    assert.equal(again.c.state.toast, 'Left unresolved.');
 });
 
-test('an unavailable file can only be left unresolved, without a capture', async () => {
+test('leave unresolved is its own action', async () => {
+    const { c, h } = await loaded();
+    assert.equal(await c.leaveUnresolved(), true);
+    const [unresolved] = h.of('POST', `${ITEMS}/one/decision`);
+    assert.equal(unresolved.body.choice, 'unresolved');
+    assert.equal(unresolved.body.capture_token, 'capture-1');
+    assert.equal(c.state.toast, 'Left unresolved.');
+    assert.equal(c.state.selectedId, 'two');
+});
+
+const unreadable = () => detailOf(QUEUE[0], { candidates: [
+    { ...candidate(HASH_A, '9', 'No positive / No negative', null, null, 'unresolved'), reason: 'Unsupported latent ancestry' },
+    { ...candidate(HASH_B, '12', 'No positive / No negative', null, null, 'unresolved'), reason: 'Unsupported latent ancestry' },
+    { ...candidate(HASH_C, '14', 'No positive / No negative', null, null, 'unresolved'), reason: 'Unsupported node' },
+] });
+
+test('nothing selectable: the reasons are summed, there is no choice and apply sends nothing', async () => {
+    const { c, h } = await loaded({ [`GET ${ITEMS}/one`]: () => response(200, unreadable()) });
+    assert.equal(c.state.choice, null);
+    assert.equal(c.state.prompts, null);
+    assert.deepEqual(c.state.options.map(option => [option.label, option.disabled]), [
+        ['Sampler 9 · No positive / No negative (Unsupported latent ancestry)', true],
+        ['Sampler 12 · No positive / No negative (Unsupported latent ancestry)', true],
+        ['Sampler 14 · No positive / No negative (Unsupported node)', true],
+    ]);
+    assert.deepEqual(c.state.unreadable, { count: 3, reasons: [{ reason: 'Unsupported latent ancestry', count: 2 }, { reason: 'Unsupported node', count: 1 }] });
+    assert.equal(await c.apply(), false);
+    assert.equal(h.of('POST', '/').length, 0);
+});
+
+const linkRoute = (body = {}) => ({ [`POST ${ITEMS}/one/link`]: call => response(200, { success: true, library_epoch: EPOCH, total: 1,
+    item: { ...QUEUE[0], state: 'selected', revision: 1 }, pair: { id: call.body.pair_id ?? 7, image_id: 3, status: 'added' }, ...body }) });
+
+test('link posts the chosen prompt and recipe with a fresh capture, then the next item opens', async () => {
+    const { c, h } = await loaded({ ...linkRoute(), [`GET ${ITEMS}/one`]: () => response(200, unreadable()) });
+    assert.equal(await c.link({ itemId: 'one', positiveId: 4, pairId: 9, title: 'Harbor' }), true);
+    const [link] = h.of('POST', `${ITEMS}/one/link`);
+    assert.deepEqual(link.body, { expected_epoch: EPOCH, expected_revision: 0, capture_token: 'capture-1', sha256: SHA,
+        dependency_fingerprint: PRINT, positive_id: 4, pair_id: 9 });
+    assert.equal(c.state.toast, 'Linked to Harbor.');
+    assert.equal(c.state.selectedId, 'two');
+    assert.equal(c.state.decisions, 1);
+});
+
+test('a refused link keeps the item, releases the capture and names the reason', async () => {
+    const { c, h } = await loaded({ [`POST ${ITEMS}/one/link`]: () => fail(409, 'association-conflict', 'This image is already linked') });
+    assert.equal(await c.link({ itemId: 'one', positiveId: 4, pairId: null, title: 'Harbor' }), false);
+    assert.equal(c.state.selectedId, 'one');
+    assert.equal(c.state.warning, 'This image is already linked');
+    assert.equal(c.state.decisions, 0);
+    assert.equal(h.of('DELETE', CAPTURE).length, 1);
+});
+
+test('an unanswered link resends the same body once; another choice takes a new capture', async () => {
+    let answers = 0;
+    const { c, h } = await loaded({ [`POST ${ITEMS}/one/link`]: () => {
+        answers += 1;
+        return answers === 1 ? Promise.reject(new TypeError('Failed to fetch')) : response(200, { success: true, total: 1 });
+    } });
+    assert.equal(await c.link({ itemId: 'two', positiveId: 4, pairId: 9, title: 'Harbor' }), false, 'not the open item');
+    assert.equal(h.of('POST', OBSERVE).length, 0);
+    assert.equal(await c.link({ itemId: 'one', positiveId: 4, pairId: 9, title: 'Harbor' }), false);
+    assert.match(c.state.warning, /Link image again/);
+    assert.equal(await c.link({ itemId: 'one', positiveId: 4, pairId: 9, title: 'Harbor' }), true);
+    const [first, second] = h.of('POST', `${ITEMS}/one/link`);
+    assert.deepEqual(first.body, second.body);
+    assert.equal(h.of('POST', OBSERVE).length, 1);
+});
+
+test('the last decision empties the page and a later page still comes back from the re-read', async () => {
+    let queue = [QUEUE[0]];
+    const { c } = await loaded({ [`GET ${ITEMS}`]: () => response(200, page(queue)) });
+    queue = [];
+    assert.equal(await c.leaveUnresolved(), true);
+    await settle();
+    assert.equal(c.state.selectedId, null);
+    assert.deepEqual(c.state.items, []);
+    assert.equal(c.state.warning, '');
+});
+
+test('an unavailable file can only be left unresolved, without a capture or a link', async () => {
     const gone = item('one', { target: null, unavailable: true, url: null });
     const { c, h } = await loaded({
         [`GET ${ITEMS}`]: () => response(200, page([gone])),
         [`GET ${ITEMS}/one`]: () => response(200, detailOf(gone)),
     });
-    assert.ok(c.state.options.slice(0, -1).every(option => option.disabled));
-    assert.equal(c.state.choice, 'unresolved');
+    assert.ok(c.state.options.every(option => option.disabled));
+    assert.equal(c.state.choice, null);
     assert.match(c.state.warning, /not under a current image source/i);
-    assert.equal(await c.apply(), true);
+    assert.equal(await c.link({ itemId: 'one', positiveId: 1, pairId: null, title: 'x' }), false);
+    assert.equal(await c.leaveUnresolved(), true);
     assert.equal(h.of('POST', OBSERVE).length, 0);
     const [decision] = h.of('POST', `${ITEMS}/one/decision`);
     assert.equal(decision.body.capture_token, null);
@@ -275,11 +348,14 @@ test('a review-conflict on a still pending item reads its detail again', async (
     assert.equal(h.of('POST', `${ITEMS}/one/decision`).at(-1).body.expected_revision, 1);
 });
 
-test('leave for later writes nothing', async () => {
+test('leave for later writes nothing, opens the next item and wraps', async () => {
     const { c, h } = await loaded();
-    c.leave();
-    assert.equal(c.state.phase, 'done');
+    await c.leave();
+    assert.equal(c.state.selectedId, 'two');
     assert.equal(c.state.toast, null);
+    assert.equal(c.state.decisions, 0);
+    await c.leave();
+    assert.equal(c.state.selectedId, 'one');
     assert.equal(h.of('POST', '/').length, 0);
     assert.equal(h.of('DELETE', '/').length, 0);
 });
@@ -781,7 +857,9 @@ test('M5: an unanswered decision that landed finishes as recorded, not as decide
     queue = [QUEUE[1]]; // the server did record it: its change arrives
     await c.refresh();
     await settle();
-    assert.equal(c.state.phase, 'done');
+    assert.equal(c.state.phase, 'idle');
+    assert.equal(c.state.decisions, 1);
+    assert.equal(c.state.selectedId, 'two');
     assert.equal(c.state.toast, 'Association accepted.');
     assert.doesNotMatch(c.state.warning, /decided elsewhere/);
     assert.equal(h.of('DELETE', CAPTURE).length, 0, 'the server used the capture');

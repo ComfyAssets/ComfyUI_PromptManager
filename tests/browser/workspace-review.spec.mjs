@@ -15,8 +15,11 @@ const cards = page => main(page).locator('.review-queue article.media-card');
 const toast = page => page.locator('#workspace-toast');
 const NOTICE = 'Multiple sampler paths were found. The existing image links were preserved. Choose the correct context or leave them unresolved.';
 const EMPTY = 'Ambiguous images are added when a metadata scan or a new generation finds more than one sampler path.';
-const OPTIONS = ['Sampler 11 · Golden dunes at dusk / Soft negative, blur', 'Sampler 13 · Harbor lights at night / Soft negative, blur',
-    'Leave unresolved'];
+const OPTIONS = ['Sampler 11 · Golden dunes at dusk / Soft negative, blur', 'Sampler 13 · Harbor lights at night / Soft negative, blur'];
+
+const leaveUnresolved = page => panel(page).getByRole('button', { name: 'Leave unresolved', exact: true });
+const linkButton = page => panel(page).getByRole('button', { name: 'Link to a prompt…', exact: true });
+const linkDialog = page => page.getByRole('dialog', { name: 'Link to a prompt', exact: true });
 
 async function seed(request, items = 3, special = {}) {
     const response = await request.post('/__test__/review/reset', { data: { items, ...special } });
@@ -44,7 +47,7 @@ const warning = page => panel(page).locator('.warning-note');
 /** The page with its first item's sampler paths loaded. */
 async function open(page) {
     await page.goto(review);
-    await expect(context(page)).toBeEnabled();
+    await expect(leaveUnresolved(page)).not.toHaveAttribute('aria-disabled', 'true');
 }
 
 test.beforeEach(async ({ page, browserName }) => {
@@ -80,8 +83,6 @@ test('queue shows persisted items and the nav count', async ({ page, request }) 
     await expect(panel(page).locator('.prompt-section.negative .prompt-text')).toHaveText('Soft negative, blur');
     await context(page).selectOption({ label: OPTIONS[1] });
     await expect(panel(page).locator('.prompt-section.positive .prompt-text')).toHaveText('Harbor lights at night');
-    await context(page).selectOption({ label: 'Leave unresolved' });
-    await expect(panel(page).locator('.prompt-section.positive .prompt-text')).toHaveText('Multiple possible prompts. Source could not be determined.');
     // Info selects another item.
     await cards(page).nth(1).getByRole('button', { name: 'Inspect review_0001.png', exact: true }).click();
     await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
@@ -105,7 +106,9 @@ test('apply candidate links the pair and the item leaves the queue and the count
     await panel(page).getByRole('button', { name: 'Apply association', exact: true }).click();
     expect((await decided).status()).toBe(200);
     await expect(toast(page)).toHaveText('Association accepted.');
-    await expect(page).toHaveURL(/#\/images$/);
+    // #536: the page stays and the next item opens.
+    await expect(page).toHaveURL(/#\/review$/);
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
     await expect(reviewRow(page)).toHaveText('Needs review1');
     expect(await pending(request)).toBe(1);
     // The first sampler path's pair is linked to that file, and only to it.
@@ -135,20 +138,20 @@ test('conflict leaves links unchanged and explains', async ({ page, request }) =
     expect(await pending(request)).toBe(1);
     await expect(reviewRow(page)).toHaveText('Needs review1');
     // The file can still be left unresolved, which links nothing either.
-    await context(page).selectOption({ label: 'Leave unresolved' });
-    await apply(page).click();
+    await leaveUnresolved(page).click();
     await expect(toast(page)).toHaveText('Left unresolved.');
     expect(await links(request)).toEqual(before);
     expect(await pending(request)).toBe(0);
 });
 
-test('a limited item and an unavailable file can only be left unresolved', async ({ page, request }) => {
+test('a limited item can be linked or left unresolved; an unavailable file only left unresolved', async ({ page, request }) => {
     await seed(request, 0, { limited: true, unavailable: true });
     await open(page);
     await expect(cards(page)).toHaveCount(2);
     await expect(panel(page).locator('p.small')).toHaveText('limited.png');
-    await expect(context(page).locator('option')).toHaveText(['Leave unresolved']);
-    await expect(warning(page)).toHaveText('This file has too many sampler paths to list. You can leave it unresolved.');
+    await expect(context(page)).toBeHidden();
+    await expect(warning(page)).toHaveText('This file has too many sampler paths to list. Link it to a prompt or leave it unresolved.');
+    await expect(linkButton(page)).toHaveClass(/ca-primary/);
     // The unavailable file: no current root lists it, so its media and Tag are inert.
     const unavailable = cards(page).nth(1);
     await expect(unavailable.locator('.image-open')).toHaveAttribute('aria-disabled', 'true');
@@ -166,7 +169,8 @@ test('a limited item and an unavailable file can only be left unresolved', async
     await expect(panel(page).getByRole('button', { name: 'Tag image', exact: true })).toHaveAttribute('aria-disabled', 'true');
     const observes = [];
     page.on('request', item => { if (item.url().endsWith('/image-annotations/observe')) observes.push(item.url()); });
-    await apply(page).click();
+    await expect(linkButton(page)).toHaveAttribute('aria-disabled', 'true');
+    await leaveUnresolved(page).click();
     await expect(toast(page)).toHaveText('Left unresolved.');
     expect(observes).toEqual([]);
     expect(await pending(request)).toBe(1);
@@ -175,20 +179,20 @@ test('a limited item and an unavailable file can only be left unresolved', async
 test('leave unresolved removes the item from pending', async ({ page, request }) => {
     await seed(request, 2);
     await open(page);
-    await context(page).selectOption({ label: 'Leave unresolved' });
-    await panel(page).getByRole('button', { name: 'Apply association', exact: true }).click();
+    await leaveUnresolved(page).click();
     await expect(toast(page)).toHaveText('Left unresolved.');
-    await expect(page).toHaveURL(/#\/images$/);
+    await expect(page).toHaveURL(/#\/review$/);
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
     expect(await pending(request)).toBe(1);
 });
 
-test('leave for later writes nothing and goes to Images', async ({ page, request }) => {
+test('leave for later writes nothing and opens the next item', async ({ page, request }) => {
     await seed(request, 2);
     await open(page);
     const writes = [];
     page.on('request', item => { if (item.method() !== 'GET') writes.push(item.url()); });
     await panel(page).getByRole('button', { name: 'Leave for later', exact: true }).click();
-    await expect(page).toHaveURL(/#\/images$/);
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
     expect(writes).toEqual([]);
     expect(await pending(request)).toBe(2);
 });
@@ -332,7 +336,7 @@ test('keyboard focus labels and touch targets', async ({ page, request }) => {
     const order = await panel(page).evaluate(node => [...node.querySelectorAll('button, select')]
         .filter(control => control.offsetParent !== null).map(control => control.getAttribute('aria-label') || control.textContent.trim()));
     expect(order[0]).toBe('Tag image');
-    expect(order.slice(-2)).toEqual(['Leave for later', 'Apply association']);
+    expect(order.slice(-3)).toEqual(['Leave for later', 'Leave unresolved', 'Apply association']);
     // Targets: the panel's controls are 40px on a coarse pointer (the concept's coarse buttons) and 24px otherwise (the
     // WCAG 2.2 minimum); the card's buttons keep the concept's compact size, never under 24px (its ≤700px rule).
     const coarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches);
@@ -350,10 +354,10 @@ test('keyboard focus labels and touch targets', async ({ page, request }) => {
         expect(box.height, label).toBeGreaterThanOrEqual(minimum);
         expect(box.width, label).toBeGreaterThanOrEqual(24);
     }
-    // Enter on Leave for later returns to Images.
+    // Enter on Leave for later stays on the page; the only item stays open.
     await panel(page).getByRole('button', { name: 'Leave for later', exact: true }).focus();
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/#\/images$/);
+    await expect(page).toHaveURL(/#\/review$/);
 });
 
 test('an open page shows items a scan adds and keeps the open choice', async ({ page, request }) => {
@@ -391,9 +395,8 @@ test('a decision in another tab leaves the open page and opens the next image', 
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
     const other = await browserContext.newPage();
     await open(other);
-    await context(other).selectOption({ label: 'Leave unresolved' });
-    await apply(other).click();
-    await expect(other).toHaveURL(/#\/images$/);
+    await leaveUnresolved(other).click();
+    await expect(toast(other)).toHaveText('Left unresolved.');
     await other.close();
     await expect(cards(page)).toHaveCount(1);
     await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
@@ -612,4 +615,61 @@ test('teardown releases captures listeners and requests', async ({ page, request
     await route.abort().catch(() => {});
     await closedStreamsDropped(request);
     await expect.poll(() => inFlight.size).toBe(0);
+});
+
+test('#536: nothing selectable says why and links through the picker, then the next item opens', async ({ page, request }) => {
+    await seed(request, 1, { unreadable: true });
+    await open(page);
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect unreadable.png', exact: true }).click();
+    await expect(panel(page)).toContainText("None of this file's 2 sampler paths could be traced to a complete prompt");
+    await expect(panel(page)).toContainText('Unsupported latent ancestry (2 paths)');
+    await expect(context(page)).toBeHidden();
+    await expect(panel(page).getByRole('button', { name: 'Apply association', exact: true })).toBeHidden();
+    await expect(panel(page)).not.toContainText('Multiple possible prompts');
+    await expect(linkButton(page)).toHaveClass(/ca-primary/);
+
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    await expect(dialog).toContainText("This records your choice; the file's metadata does not confirm it.");
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await dialog.getByRole('searchbox').fill('harbor');
+    const harbor = dialog.getByRole('button', { name: 'Quiet harbor', exact: true });
+    await expect(harbor).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Golden dunes at dusk', exact: true })).toHaveCount(0);
+    await harbor.click();
+    // Several recipes: the reviewer must choose.
+    const negative = dialog.getByRole('combobox', { name: 'Negative prompt', exact: true });
+    await expect(negative.locator('option')).toHaveText(['Choose a negative…', 'washed out', 'grainy', 'No negative']);
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await negative.selectOption({ label: 'grainy' });
+    const linked = page.waitForResponse(item => /\/link$/.test(item.url()));
+    await submit.click();
+    expect((await linked).status()).toBe(200);
+    await expect(toast(page)).toHaveText('Linked to Quiet harbor.');
+    await expect(dialog).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/review$/);
+    await expect(panel(page).locator('p.small')).toHaveText('review_0000.png');
+    expect(await pending(request)).toBe(1);
+    const link = (await links(request)).find(row => row.filename === 'unreadable.png');
+    expect([link.positive, link.negative]).toEqual(['Quiet harbor', 'grainy']);
+});
+
+test('#536: a refused link stays in the dialog with the server\'s sentence', async ({ page, request }) => {
+    await seed(request, 0, { unreadable: true });
+    await open(page);
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    await dialog.getByRole('button', { name: 'Golden dunes at dusk', exact: true }).click();
+    // One recipe: preselected and visible.
+    const negative = dialog.getByRole('combobox', { name: 'Negative prompt', exact: true });
+    await expect(negative).toHaveValue(/^[0-9]+$/);
+    await page.route(/\/link$/, route => route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ success: false, code: 'association-conflict', error: 'This image is already linked.' }) }));
+    await dialog.getByRole('button', { name: 'Link image', exact: true }).click();
+    await expect(dialog.locator('.warning-note')).toHaveText('This image is already linked.');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await pending(request)).toBe(1);
+    expect(await links(request)).toEqual([]);
 });

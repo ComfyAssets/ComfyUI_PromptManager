@@ -3396,15 +3396,20 @@ document title "Review" (the concept's), heading "Metadata review" with its line
 concept's sentence, then `.gallery-layout`: the queue's concept media cards
 (`image-card.mjs`, shared with Images; the image opens the shared viewer, Info selects
 the item, Tag opens the shared Tag image dialog with the review scope note) and
-`section.surface` "Resolve the association" (filename, Tag image, Sampler context,
-the chosen path's prompt blocks, Leave for later and primary Apply association). The
+`section.surface` "Resolve the association" (filename, Tag image, Link to a prompt…,
+Sampler context, the chosen path's prompt blocks, Leave for later, Leave unresolved and
+primary Apply association). The
 first item is selected on load, as the concept's first image is. Sampler context lists
 "Sampler <id> · <positive> / <negative>" per candidate (the server's label), disables
-unusable ones, preselects the first workable one and ends with "Leave unresolved"
-(rulings R2/R3); "Leave unresolved" shows the ambiguous status in both blocks. Apply
+unusable ones with the server's reason and preselects the first workable one
+(rulings R2/R3). Apply
 takes a fresh capture (`observe`) and posts the decision; Leave unresolved on a file
-under no current root posts without a capture. Both actions return to Images (R7); a
-recorded decision re-reads the row's count, as does every metadata scan that ends. A
+under no current root posts without a capture. Each decision and Leave for later opens
+the next item and the page stays (#536 overturns ruling R7); Leave for later writes
+nothing. Link to a prompt… (#536) records a Library prompt the reviewer chose,
+`POST /prompt_manager/review/items/{id}/link`: the capture guards of Apply, the same
+one-prompt-per-file rules, and link provenance `kind: "manual-link"` with no prompt
+sides, so it never reads as file evidence. A recorded decision re-reads the row's count, as does every metadata scan that ends. A
 refused decision keeps the selection and shows the server's sentence (the
 association conflict's explanation included) as `p.warning-note` in the panel; a
 restored storage or a changed queue reads the queue again; a request with no answer
@@ -3419,6 +3424,14 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   carries the concept's **Review metadata** (app.js a738 `go-review`): in its Activity
   item after the item's line, and in its job view's heading after Download report. The
   item's chip still names its state (D54), where the concept's says "Needs attention".
+- **D179** (#536, maintainer decision 2026-10-30): "Leave unresolved" is a button beside
+  Leave for later, not the Sampler context select's last option; a disabled option names
+  the server's reason.
+- **D180** (#536): with nothing to apply, the select, the prompt blocks and Apply are
+  hidden; the panel gives the path count and each reason, and Link to a prompt… is primary.
+- **D181** (#536): the concept has no picker. Link to a prompt… opens the shared content
+  dialog: Library search, the prompt's recipes as Negative prompt (one preselected,
+  several must be chosen, always "No negative"), Cancel and Link image.
 - **D119**: the queue cards have no selection checkbox and
   no star (the page has no selection bar and the queue carries no favorite state); a
   file under no current root has an empty, `aria-disabled` image button and Tag; more
