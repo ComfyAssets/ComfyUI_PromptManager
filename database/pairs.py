@@ -195,6 +195,43 @@ class PairOperations:
             self._sync_pair_tags(conn, pair_id, tags)
         return pair_id, True
 
+    def fill_empty_prompt_metadata(
+        self,
+        prompt_id: int,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> bool:
+        """Give a prompt a category and tags where it has none (#546).
+
+        Each field fills on its own and never replaces a value already there.
+        Tags are not additive: a prompt with any tag keeps exactly those tags.
+        Returns True if the prompt changed.
+        """
+        tags = _validate_metadata(None, category, tags, None, None)
+        with self._pair_transaction() as conn:
+            changed = False
+            if category:
+                changed = (
+                    conn.execute(
+                        "UPDATE prompts SET category = ? WHERE id = ? "
+                        "AND (category IS NULL OR TRIM(category) = '')",
+                        (category, prompt_id),
+                    ).rowcount
+                    == 1
+                )
+            has_tags = conn.execute(
+                "SELECT 1 FROM prompt_tags WHERE prompt_id = ? LIMIT 1", (prompt_id,)
+            ).fetchone()
+            if tags and not has_tags:
+                self._sync_prompt_tags(conn, prompt_id, tags)
+                changed = True
+            if changed:
+                conn.execute(
+                    "UPDATE prompts SET updated_at = ? WHERE id = ?",
+                    (utc_now_iso(), prompt_id),
+                )
+            return changed
+
     def _read_pair_rows(
         self, conn: sqlite3.Connection, where: str, params: List[Any], suffix: str = ""
     ) -> List[Dict[str, Any]]:

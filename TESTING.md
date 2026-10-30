@@ -2888,6 +2888,13 @@ with its own negative, a self-pair, each drift, validation); `tests/test_library
 copy, the server after, archive-only, reset to Archive) and `library-delete-concept.spec.mjs`. A Python
 change: ComfyUI needs a restart.
 
+### Pair node fills the prompt's empty category and tags (#546)
+
+A Pair save fills the positive prompt's category and tags where each is empty and never replaces a value; a prompt
+with any tag keeps exactly those tags. The negative stays empty, the saved pair keeps its own metadata, and
+`save_prompt_pair` itself still writes no component metadata. There is no backfill: a prompt fills when a Pair node
+next executes. Tests: `tests/test_prompt_pair_node.py`. A Python change: ComfyUI needs a restart.
+
 ### Delete… on the archived shelf (#492)
 
 Extends **D160** (coordinator ruling 2026-10-29, cutover item): the archived shelf's bar reads "N selected · Restore ·

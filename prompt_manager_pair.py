@@ -233,6 +233,16 @@ class PromptManagerPair(PromptManagerFocused):
         )
         pair = self.db.get_prompt_pair(pair_id)
         prompt_id = pair["positive_prompt_id"]
+        # The Library shows the prompt's own category and tags, not the pair's.
+        # A failure here must not cost the run its count or image link.
+        try:
+            self.db.fill_empty_prompt_metadata(
+                prompt_id,
+                category=category.strip() or None,
+                tags=self._parse_tags(tags),
+            )
+        except Exception as error:
+            self.logger.warning(f"Could not fill prompt metadata: {error}")
         resolved_positive = (
             resolve_text_input(prompt, node_id, "text") if known else None
         )

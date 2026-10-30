@@ -13,6 +13,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
 
 from database.operations import PromptDatabase
 from prompt_manager_pair import PromptManagerPair
+from utils.hashing import generate_prompt_hash
 from utils.usage_tracking import PendingFirstUse
 
 
@@ -109,13 +110,88 @@ class TestPromptPairNode(unittest.TestCase):
             ),
             ("cat", "blur", "Animals", ["studio"]),
         )
-        self.assertIsNone(
-            self.db.get_prompt_by_id(pair["positive_prompt_id"])["category"]
+        self.assertEqual(
+            self.db.get_prompt_by_id(pair["positive_prompt_id"])["category"],
+            "Animals",
         )
         tracked = self.node.prompt_tracker.set_current_prompt.call_args.kwargs
         self.assertEqual(tracked["additional_data"]["pair_id"], pair["id"])
         self.assertEqual(tracked["additional_data"]["negative_text"], " blur ")
         self.assertEqual(tracked["additional_data"]["positive_storage_text"], "cat")
+
+    def save(self, text="cat", negative="blur", **widgets):
+        self.node.encode_prompt(
+            self.clip,
+            text,
+            negative_text=negative,
+            prompt=pair_graph(text, negative),
+            unique_id="1",
+            **widgets,
+        )
+        hash_of = generate_prompt_hash
+        return (
+            self.db.get_prompt_by_hash(hash_of(text)),
+            self.db.get_prompt_by_hash(hash_of(negative)),
+        )
+
+    def test_first_save_gives_the_positive_its_category_and_tags(self):
+        positive, negative = self.save(category=" Animals ", tags="studio, macro")
+        self.assertEqual(positive["category"], "Animals")
+        self.assertCountEqual(positive["tags"], ["studio", "macro"])
+        self.assertIsNone(negative["category"])
+        self.assertEqual(negative["tags"], [])
+
+    def test_a_later_save_never_changes_a_category_or_tags_already_set(self):
+        self.save(category="Animals", tags="studio")
+        positive, _ = self.save(negative="noise", category="Pets", tags="other")
+        self.assertEqual(positive["category"], "Animals")
+        self.assertEqual(positive["tags"], ["studio"])
+
+    def test_a_save_keeps_metadata_a_person_set_on_the_prompt(self):
+        text = "cat"
+        self.db.save_prompt(
+            text,
+            category="Mine",
+            tags=["kept"],
+            prompt_hash=generate_prompt_hash(text),
+        )
+        positive, _ = self.save(category="Animals", tags="studio")
+        self.assertEqual(positive["category"], "Mine")
+        self.assertEqual(positive["tags"], ["kept"])
+
+    def test_category_and_tags_fill_independently_where_empty(self):
+        self.save(category="Animals")
+        positive, _ = self.save(negative="noise", category="Pets", tags="studio")
+        self.assertEqual(positive["category"], "Animals")
+        self.assertEqual(positive["tags"], ["studio"])
+
+    def test_blank_widgets_leave_the_prompt_empty(self):
+        positive, _ = self.save(category="  ", tags=" ")
+        self.assertIsNone(positive["category"])
+        self.assertEqual(positive["tags"], [])
+
+    def test_a_filled_prompt_does_not_change_the_saved_pair(self):
+        self.save(category="Animals", tags="studio")
+        positive, _ = self.save(category="Pets", tags="other")
+        pairs = self.db.list_prompt_pairs()["pairs"]
+        self.assertEqual(
+            [(pair["category"], pair["tags"]) for pair in pairs],
+            [("Animals", ["studio"])],
+        )
+        self.assertEqual(positive["category"], "Animals")
+
+    def test_a_failed_fill_still_tracks_the_run(self):
+        self.db.fill_empty_prompt_metadata = Mock(side_effect=RuntimeError("locked"))
+        self.save(category="Animals")
+        self.node.prompt_tracker.set_current_prompt.assert_called_once()
+
+    def test_library_shows_filled_metadata_without_repeating_a_tag(self):
+        self.save(category="Animals", tags="studio")
+        item = self.db.list_library()["items"][0]
+        self.assertEqual(item["category"], "Animals")
+        self.assertEqual(item["tags"], ["studio"])
+        tag = self.db.list_vocabulary_tags(limit=5)["tags"][0]
+        self.assertEqual(tag["prompt_count"], 1)
 
     def test_empty_negative_encodes_empty_text_and_stores_null_component(self):
         result = self.node.encode_prompt(self.clip, "cat", negative_text="")
