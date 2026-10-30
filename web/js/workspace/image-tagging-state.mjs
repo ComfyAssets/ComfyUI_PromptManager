@@ -317,6 +317,9 @@ export function createImageTaggingController({api, target, source = 'images', on
     // A save in flight: closing hands the capture release to its completion.
     let saving = false;
     let observedOnce = false;
+    // #515: the user typed since the last observation started (or before the first one answered), so the answer
+    // keeps that text.
+    let typed = false;
 
     function set(patch) {
         if (closed) return;
@@ -345,7 +348,8 @@ export function createImageTaggingController({api, target, source = 'images', on
     async function open({keepDraft = false} = {}) {
         if (closed) return;
         const serial = ++openSerial;
-        const draft = keepDraft ? state.manual : null;
+        // A reopen after an observation starts from its answer; text typed before any observation is kept (#515).
+        if (observedOnce) typed = false;
         const seenRevision = state.tagRevision;
         stopGenerating();
         releaseCapture();
@@ -385,15 +389,19 @@ export function createImageTaggingController({api, target, source = 'images', on
         const savedModel = !chosen && !modelPicked && read.model ? {model: read.model} : {};
         observedOnce = true;
         const {width, height, media_type: mediaType, preview_url: previewUrl, generate} = value.capture;
-        // A kept draft stays as typed unless another writer changed the set meanwhile: then the set leads it (I2).
-        const changed = draft !== null && value.tag_revision !== seenRevision;
+        // The draft is read now, so text typed while observing is kept (#515). A kept draft stays as typed unless
+        // another writer changed the set meanwhile: then the set leads it (I2). Text typed before the user saw any
+        // saved tags follows them, so a Save never drops tags it never showed.
+        const draft = keepDraft || typed ? state.manual : null;
+        const changed = keepDraft && value.tag_revision !== seenRevision;
+        const unseen = draft !== null && !keepDraft;
         const reason = generate.supported ? '' : (generate.reason || '');
         set({
             phase: 'ready',
             image: {filename: value.filename, title: value.title, width, height, mediaType, previewUrl,
                 dimensions: width && height ? `${width} × ${height}` : null},
             savedTags: value.tags.slice(), tagRevision: value.tag_revision,
-            manual: draft === null ? value.tags.join(', ') : changed ? mergeCurrent(value.tags, draft) : draft,
+            manual: draft === null ? value.tags.join(', ') : changed || unseen ? mergeCurrent(value.tags, draft) : draft,
             draftRevision: state.draftRevision + 1,
             ...savedModel, options: {...defaults, ...chosen?.options}, optionsRevision: state.optionsRevision + 1,
             generateSupported: generate.supported, generateReason: generate.reason,
@@ -402,6 +410,7 @@ export function createImageTaggingController({api, target, source = 'images', on
     }
 
     function setManual(text) {
+        typed = true;
         set({manual: typeof text === 'string' ? text : ''});
     }
 
