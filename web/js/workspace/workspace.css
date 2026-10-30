@@ -109,9 +109,9 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 
 /* D182 (#530, the concept has the offset): the second card of a `.two-col` starts level with the first. The grid gap
    already spaces them; `.surface + .surface` is for surfaces stacked in plain flow. */
-.two-col > .surface + .surface { margin-top: 0; }
+.two-col > .surface + .surface { margin-top: 0; /* D182 */ }
 /* D184 (#530, the concept stops System at 1000px): every System section uses the full content width, as other pages do. */
-.settings-layout { max-width: none; }
+.settings-layout { max-width: none; /* D184 */ }
 
 /* Tags & categories (#245): real vocabulary has unbounded names and bounded lists, which the concept's short samples
    never show. Proven by the 390px layout and long-name cases in workspace-vocabulary.spec.mjs. */
