@@ -428,6 +428,8 @@ const SYSTEM_SECTION_LABELS = ['Overview', 'Appearance', 'Sources & scans', 'Int
     'Backup & export', 'Diagnostics & logs'];
 const SYSTEM_HASHES = ['overview', 'appearance', 'sources', 'integrations', 'tagging', 'maintenance', 'backups', 'diagnostics'];
 
+test.describe(() => {
+test.use({ olderImagesNotice: true });
 test('System is native: the concept shell, section navigation, sections and the Save row', async ({ page }) => {
     const mutations = [];
     page.on('request', item => { if (!['GET', 'HEAD', 'OPTIONS'].includes(item.method())) mutations.push(item.url()); });
@@ -505,6 +507,7 @@ test('System is native: the concept shell, section navigation, sections and the 
     await expect(main.locator('.section-nav')).toHaveCount(1);
     await expect(main.locator('.settings-layout')).toHaveCount(1);
     expect(mutations).toEqual([]);
+});
 });
 
 test('Overview opens native System from its System card (Q12)', async ({ page }) => {

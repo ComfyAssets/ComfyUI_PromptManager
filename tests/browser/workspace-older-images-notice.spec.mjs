@@ -17,6 +17,11 @@ async function openRoute(page, route) {
     await expect(page.locator('#workspace-main h1').first()).toBeVisible();
 }
 
+// Every spec on this worker's server shares its job list.
+test.beforeEach(async ({ request }) => {
+    await expect(await request.post('/__test__/jobs/restart')).toBeOK();
+});
+
 test.describe('with the notice not dismissed', () => {
     test.use({ olderImagesNotice: true });
 
