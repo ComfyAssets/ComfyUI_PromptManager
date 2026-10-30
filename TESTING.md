@@ -1402,6 +1402,13 @@ seeds two seedless files (`seedless_images` on `/__test__/concept/reset`, with
 Tag) and asserts that every row reserves the tallest footer and that their own footer
 is shorter than the row it reserves.
 
+### Overview counts (#547)
+
+Each Overview card is the count of the page it names: the shell's Library, Images and Tags sidebar counts, one source,
+so a card and its badge cannot differ. `/prompt_manager/stats` is for the legacy page and counts raw rows. A visit re-reads
+the three unless a read is in flight. An unread or failed card shows a dash; Retry re-reads only the failed counts.
+Tests: `tests/js/workspace-state.test.js`, `tests/browser/workspace.spec.mjs`, `tests/comfyui/workspace.spec.mjs`.
+
 ### Images page controls and recorded deviations (#249 PR C)
 
 The Images page renders the concept's DOM with real data. Its controls, top to bottom:

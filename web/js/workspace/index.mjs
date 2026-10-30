@@ -1,6 +1,6 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigateTo, COLLECTION_ROUTE,
+import { routes, mountRouter, summarizeOverviewCounts, OVERVIEW_COUNT_ROUTES, routeTitle, loadNavCounts, navigateTo, COLLECTION_ROUTE,
     LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS,
     JOB_END_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
@@ -149,9 +149,13 @@ function mountWorkspace() {
             countRequests.get(id)?.abort();
             const request = new AbortController();
             countRequests.set(id, request);
+            // A failed count reads as loading again while it is retried; a known one stays until replaced.
+            if (knownCounts.get(id) === null) { knownCounts.delete(id); notifyCounts(); }
             // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
             loadNavCounts(api, request.signal, (_, count) => {
-                if (!request.signal.aborted) showCount(id, count);
+                if (request.signal.aborted) return;
+                countRequests.delete(id);
+                showCount(id, count);
             }, [id]);
         }
     }
@@ -159,7 +163,15 @@ function mountWorkspace() {
         const link = sidebar.querySelector(`nav [data-route="${id}"]`);
         link?.querySelector('.nav-count')?.remove();
         if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+        knownCounts.set(id, count);
+        notifyCounts();
     }
+    /** #547: Overview shows these same counts, so a card and its badge cannot differ, and no read runs twice. */
+    const knownCounts = new Map();
+    const countListeners = new Set();
+    function notifyCounts() { for (const listener of countListeners) listener(); }
+    /** Re-read the given counts unless a read is already in flight. */
+    function freshenCounts(ids) { refreshCounts(ids.filter(id => !countRequests.has(id))); }
     /** A count a page has just read itself: it replaces the badge, and an older read in flight no longer lands. */
     function setCount(id, count) {
         countRequests.get(id)?.abort();
@@ -494,34 +506,38 @@ function mountWorkspace() {
         }
         tools.append(cards);
         main.append(tools);
-        async function loadStats() {
-            const status = element('p', 'Loading library statistics…');
-            status.setAttribute('role', 'status');
-            stats.replaceChildren(status);
-            try {
-                const result = await api.get('/prompt_manager/stats', { signal: view.signal });
-                if (view.signal.aborted) return;
-                const values = summarizeStats(result.stats);
+        function showStats() {
+            const { cards, pending, failed, empty } = summarizeOverviewCounts(knownCounts);
+            const parts = [];
+            if (cards.some(([, count]) => count !== null)) {
                 const list = element('dl', undefined, 'stat-grid');
-                for (const [label, count] of values) {
+                for (const [label, count] of cards) {
                     const stat = element('div', undefined, 'stat');
-                    stat.append(element('dt', label), element('dd', count.toLocaleString()));
+                    stat.append(element('dt', label), element('dd', count === null ? '–' : count.toLocaleString()));
                     list.append(stat);
                 }
-                stats.replaceChildren(list);
-                if (values.every(([, count]) => count === 0)) {
-                    stats.append(element('p', 'Your library is empty. Add a prompt in the prompt library or configure sources in System.', 'empty-state'));
-                }
-            } catch (error) {
-                if (view.signal.aborted) return;
+                parts.push(list);
+            }
+            if (pending) {
+                const status = element('p', 'Loading library statistics…');
+                status.setAttribute('role', 'status');
+                parts.push(status);
+            } else if (failed) {
                 const alert = element('p', 'Library statistics could not be loaded. Your saved data has not changed.');
                 alert.setAttribute('role', 'alert');
                 const retry = createButton('Retry');
-                view.listen(retry, 'click', loadStats);
-                stats.replaceChildren(alert, retry);
+                view.listen(retry, 'click', () => refreshCounts(OVERVIEW_COUNT_ROUTES.filter(id => knownCounts.get(id) === null)));
+                parts.push(alert, retry);
+            } else if (empty) {
+                parts.push(element('p', 'Your library is empty. Add a prompt in the prompt library or configure sources in System.', 'empty-state'));
             }
+            stats.replaceChildren(...parts);
         }
-        loadStats();
+        countListeners.add(showStats);
+        view.cleanup(() => countListeners.delete(showStats));
+        showStats();
+        // A visit reads them again, as a generation since the last read changes the sidebar's badges too.
+        freshenCounts(OVERVIEW_COUNT_ROUTES);
     }
     scope.cleanup(mountRouter(window, render));
     scope.listen(window, 'pagehide', () => scope.dispose());
