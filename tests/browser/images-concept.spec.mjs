@@ -318,8 +318,6 @@ async function behaviorsOf(page,scope) {
     await settle(page);
     const focusAfterViewer=await activeOf(page);
     await page.locator(CARDS).nth(2).locator('[aria-label^="Inspect"]').click();
-    // D189: at one column Info also opens the viewer's details, over the panel it updates.
-    if(page.viewportSize().width<=700){await page.keyboard.press('Escape');await expect(page.locator('#viewer-dialog')).toBeHidden();}
     await expect.poll(()=>selectedOf(page)).toEqual([2]);
     const selected=await selectedOf(page);
     const layouts=await layoutsOf(page,scope);

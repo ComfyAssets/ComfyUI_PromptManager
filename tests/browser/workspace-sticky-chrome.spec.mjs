@@ -217,21 +217,27 @@ test('at 390px Info on a lower review card brings the panel into view', async ({
     await expect(reviewPanel(page)).toBeInViewport();
 });
 
-// D189: at one column the Images panel follows the whole list, so scrolling to it would run into infinite scroll.
-test('at 390px Info on an image opens the viewer with its details; loading the page does not', async ({ page, request }) => {
+// D189: at one column the Images panel follows the whole list: Info goes there, and a batch doesn't push it away.
+test('at 390px Info on an image brings its panel into view and loading waits for the next move', async ({ page, request }) => {
     await page.setViewportSize(PHONE);
-    await openImages(page, request, 20);
-    await expect(page.locator('#viewer-dialog')).toBeHidden();
+    await openImages(page, request);
+    expect(await page.evaluate(() => scrollY)).toBe(0);
+    await expect(page.locator('#image-inspector')).not.toBeInViewport();
+    let reads = 0;
+    page.on('request', item => { if (new URL(item.url()).pathname.endsWith('/images/recent')) reads++; });
     const card = imageCards(page).nth(3);
     await card.scrollIntoViewIfNeeded();
-    const scrolled = await page.evaluate(() => scrollY);
     await card.getByRole('button', { name: /^Inspect / }).click();
-    await expect(page.locator('#viewer-dialog')).toBeVisible();
-    await expect(page.locator('#viewer-details')).toBeVisible();
-    await page.keyboard.press('Escape');
+    await expect(page.locator('#image-inspector')).toBeInViewport();
     await expect(page.locator('#viewer-dialog')).toBeHidden();
-    await expect(card.getByRole('button', { name: /^Inspect / })).toBeFocused();
-    expect(await page.evaluate(() => scrollY)).toBe(scrolled);
+    const held = (await box(page.locator('#image-inspector'))).top;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect((await box(page.locator('#image-inspector'))).top).toBe(held);
+    expect(reads).toBe(0);
+    // The next move releases it: loading resumes.
+    const next = page.waitForRequest(item => new URL(item.url()).pathname.includes('/images'));
+    await page.mouse.wheel(0, 40);
+    await next;
 });
 
 // Review's review-state load more is a button, so Library's anchor stays honest through a compensated bar.

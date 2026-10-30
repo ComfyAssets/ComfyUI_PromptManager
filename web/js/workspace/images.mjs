@@ -302,6 +302,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     collection.append(continuation);
     // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
     let focusAfterLoad = null;
+    let panelHold = false;
     // The concept's side panel (app.js a426, D20); the Library-embedded gallery has its own page around it.
     const details = el('aside', undefined, 'detail-panel');
     if (!embedded) details.id = 'image-inspector';
@@ -407,8 +408,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         else if (action && !openCardTagging({api, scope, image, action, embedded, onSourceChanged:recovery.recover,
             onRefresh:refreshInspectionCollection})) {
             inspect(image);
-            // D189: at one column the panel follows the whole list, past infinite scroll, so Info opens the viewer's details.
-            if (getComputedStyle(details).position === 'static') previewImage(image);
+            bringPanelIntoView();
         }
     });
 
@@ -644,7 +644,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     scope.listen(more, 'click', pressLoad);
     scope.listen(retry, 'click', () => (state?.error?.code === 'cursor-stale' ? refreshInspectionCollection() : pressLoad()));
+    /**
+     * D189: at one column the panel follows the whole list, so Info goes to it. That passes the continuation, so loading
+     * waits for the reader's next move: a batch appended now would push the panel away.
+     */
+    function bringPanelIntoView() {
+        if (getComputedStyle(details).position !== 'static') return;
+        panelHold = true;
+        details.scrollIntoView({ block: 'start' });
+    }
+    const releasePanel = () => { if (panelHold) { panelHold = false; scheduleLoad(); } };
+    for (const name of ['wheel', 'touchmove', 'keydown']) scope.listen(window, name, releasePanel, { passive: true });
     function maybeLoad() {
+        if (panelHold) return;
         if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('#viewer-dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();

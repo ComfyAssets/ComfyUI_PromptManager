@@ -5631,9 +5631,8 @@ Beyond the concept, from the maintainer's test of #528; the concept is unchanged
 - **D187:** Back to top: one shell chip past 200px of scroll, above the toast's spot; it rises only for a toast taller than two lines. It never animates, because the
   pages' height corrections would cancel a smooth scroll, and focus moves to `#workspace-main`. D42's band grows to 140px.
 - **D188:** the Needs review panel is sticky like the Images panel, with its own scroll on a window under 720px tall, and static at 700px and below.
-- **D189:** where a panel is one column (static): Info on a review card brings the panel into view; Info on an image opens
-  the viewer's details, because the Images panel follows the whole list, past infinite scroll. The removed-images view keeps
-  today's panel, because the viewer can write there.
+- **D189:** where a panel is one column (static): Info brings the panel into view. On
+  Images the panel follows the whole list, past infinite scroll, so loading waits for the reader's next move (wheel, touch or key) rather than pushing the panel away.
 
 ## Workspace data fields for the concept pages (#249)
 
