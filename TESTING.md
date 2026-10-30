@@ -2924,6 +2924,14 @@ with its own negative, a self-pair, each drift, validation); `tests/test_library
 copy, the server after, archive-only, reset to Archive) and `library-delete-concept.spec.mjs`. A Python
 change: ComfyUI needs a restart.
 
+### Pair node gives a new prompt its category and tags (#546)
+
+A Pair save, by a run or the node's Save pair button, writes the category and tags to the positive prompt only when that
+save creates the prompt row (maintainer ruling). An existing prompt never changes on a run: empty, cleared or set by a person, including one first seen as
+another pair's negative. The negative stays empty, the saved pair keeps its own metadata, and `save_prompt_pair` writes
+no prompt metadata unless called with `fill_new_positive`. No backfill; optional repair is #550.
+Tests: `tests/test_prompt_pair_node.py`, `tests/test_api_pairs.py`, `tests/comfyui/pair-node.spec.mjs`. A Python change: ComfyUI needs a restart.
+
 ### Delete… on the archived shelf (#492)
 
 Extends **D160** (coordinator ruling 2026-10-29, cutover item): the archived shelf's bar reads "N selected · Restore ·
