@@ -6,6 +6,8 @@ records provenance that cannot pose as what the file says.
 """
 
 import json
+import os
+import unittest
 
 try:
     from tests.test_api_review import ITEMS_URL, ReviewRoutesTestCase
@@ -339,3 +341,54 @@ def detail_version(case, item):
     return conn.execute(
         "SELECT resolver_version FROM media_review_items WHERE id=?", (item["id"],)
     ).fetchone()[0]
+
+
+class TestLinkNeverActsOnATrashedFile(LinkTestCase):
+    """#543's gate: a link needs a capture, and neither way to one reaches a trash."""
+
+    TRASH = ".Trash-1000"
+
+    async def _captured_in_sub(self):
+        path = self._ambiguous("sub/two.png")
+        self._record(path)
+        item, detail, observed = await self._open()
+        positive_id, pair_id = self._pair()
+        return path, item, self._link_body(detail, observed, positive_id, pair_id)
+
+    async def _assert_refused(self, item, body):
+        before = self._snapshot()
+        status, data = await self._link(item["id"], body)
+        self.assertGreaterEqual(status, 400, data)
+        self.assertFalse(data.get("success"), data)
+        self.assertEqual(self._snapshot(), before)
+
+    async def test_a_file_moved_to_a_trash_folder_after_its_capture_is_refused(self):
+        path, item, body = await self._captured_in_sub()
+        trash = self.output_dir / self.TRASH / "files"
+        trash.mkdir(parents=True)
+        os.rename(path, trash / path.name)
+        await self._assert_refused(item, body)
+
+    async def test_a_folder_swapped_for_a_link_into_a_trash_folder_is_refused(self):
+        path, item, body = await self._captured_in_sub()
+        trash = self.output_dir / self.TRASH / "files"
+        trash.parent.mkdir(parents=True)
+        os.rename(path.parent, trash)
+        try:
+            os.symlink(trash, path.parent, target_is_directory=True)
+        except OSError as exc:
+            raise unittest.SkipTest(f"no symlinks here: {exc}")
+        self.assertTrue(path.exists())
+        await self._assert_refused(item, body)
+
+    async def test_an_item_in_a_trash_folder_cannot_get_a_capture(self):
+        path = self._ambiguous(f"{self.TRASH}/files/two.png")
+        self._record(path)
+        item = (await self._list())["items"][0]
+        status, data = await self._json(
+            "POST",
+            "/prompt_manager/image-annotations/observe",
+            json={"target": item["target"]},
+        )
+        self.assertEqual(status, 404, data)
+        self.assertFalse(data.get("capture"), data)
