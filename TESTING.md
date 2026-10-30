@@ -2498,7 +2498,8 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   removed=1`, refused with `favorites`, `collection`, `category`, `tags` or `sort=rating`; a cursor never crosses
   views) lists only files a removal mark hides, each card with a "Removed" `.chip` and without the star or Tag action;
   the caption reads "N removed images · files on disk, hidden from Images", the empty view "No removed images." /
-  "No removed images match.". Entering clears Category and Tags. A card's image and Info both inspect (the viewer is
+  "No removed images match.". Entering clears Category and Tags; choosing a category or tags while it is on
+  (toolbar, Refine this view) ends the view. A card's image and Info both inspect (the viewer is
   not opened: its Collections… and Delete… would write); the panel shows Return to library in Delete…'s place and
   no Collections… or tag-filter chips. The bar reads "N selected", Return to library, Clear. The view is never saved
   or restored: leaving the page, Browse or a saved view ends it, and a return that leaves N = 0 ends it too.

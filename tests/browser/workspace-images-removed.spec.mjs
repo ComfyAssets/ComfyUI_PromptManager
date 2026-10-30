@@ -129,3 +129,15 @@ test('the removed view is never saved and ends when the page is left', async ({ 
     await expect(toggle(page)).toHaveAttribute('aria-pressed', 'false');
     await expect(page.locator('#result-count')).not.toContainText('removed');
 });
+
+test('choosing a category in the removed view ends the view and lists the category', async ({ page }) => {
+    await openImages(page);
+    await removeFromLibrary(page, 1);
+    await toggle(page).click();
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('combobox', { name: 'Filter by category', exact: true }).selectOption('Landscapes');
+    // A removed file has no category: the view ends instead of refusing the listing.
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator(CARDS).first()).toBeVisible();
+    await expect(page.locator('#result-count')).not.toContainText('removed');
+});

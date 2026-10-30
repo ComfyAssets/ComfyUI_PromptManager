@@ -722,6 +722,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (savedScopePending && !discoverySettled) { updateScope(); return; }
         settleSavedScope();
         updateScope();
+        // #498: a removed file has no category or tags, so choosing one (toolbar, Refine, a tag chip) ends the view.
+        if (filters.removed && (filters.category || filters.tags.length)) filters.removed = false;
         stream.reset(filters, {load:!recovering});
     }
     /** A saved view's Source and Folder apply only while the discovered sources still list them (#249 D16). */
