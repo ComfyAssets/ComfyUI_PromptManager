@@ -493,3 +493,15 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 }
 .more-menu-list[hidden] { display: none; }
 .more-menu-list > button { justify-content: flex-start; text-align: left; width: 100%; white-space: nowrap; }
+
+/* D164 (#524): the prompt page has four heading actions and titles of any length, which the concept never shows. From
+   the concept's sidebar breakpoint up the actions keep one row and the title takes what is left, clamped to two lines
+   (its full text stays in the DOM and in `title`). A short title lays out exactly as the concept's. */
+@media (min-width: 951px) {
+    .heading.prompt-page-heading > div:first-child { min-width: 0; }
+    .heading.prompt-page-heading > .heading-actions { flex: 0 0 auto; }
+    .heading.prompt-page-heading h1 {
+        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+        overflow: hidden; overflow-wrap: anywhere;
+    }
+}
