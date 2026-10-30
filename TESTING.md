@@ -2928,6 +2928,14 @@ concept's danger "Archive…" maps to "Archive variant…" followed by a "Delete
 Tests: `tests/browser/workspace-library-delete.spec.mjs` (#481 cases), and `workspace-library-editor.spec.mjs` (the
 hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the renamed button. JS only: no restart.
 
+### Prompt page heading on one row (#524)
+
+**D164** (beyond the concept, which never has four heading actions beside a long title): from 951px, the concept's
+sidebar breakpoint, the prompt page's heading actions keep one row and the title takes the remaining width, clamped to
+two lines with its full text in the DOM and in `title`. Below 951px the concept's wrapping and stacked heading is
+unchanged. A short title lays out as the concept's, so the history concept comparison is unaffected. A deleted prompt's
+page has no "Prompt history · …" description: it is emptied and hidden while the gone message shows.
+
 ### Delete review and prompt-page polish (#512)
 
 Found in the live test of #505/#507/#509. **D163** (beyond the concept, maintainer ruling 2026-10-29: delete was hard to

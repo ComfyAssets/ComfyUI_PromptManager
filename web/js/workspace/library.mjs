@@ -23,6 +23,7 @@ import {createMoreMenu} from './more-menu.mjs';
 let shelfVisit=null;
 // #512: what a prompt page says when its prompt no longer exists (404).
 const PROMPT_GONE='This prompt no longer exists. It may have been deleted.';
+const HISTORY_DESCRIPTION='Prompt history · one positive, one shared gallery';
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
 let writeGeneration=0, focusHeadingOnMount=false, savedParentId=null;
 // The pair one reconciled save names, taken once by the history it opens (the concept selects it after a save, app.js 986).
@@ -62,8 +63,9 @@ function headingActions(main,fallback) {
 }
 /** The shell heading's description (concept `p.muted`); a view mounted without one shows it at the top of `fallback`. */
 function headingDescription(main,fallback,text) {
-    const description=pageHeading(main)?.description;
-    if(description) description.textContent=text;else fallback.prepend(el('p',text,'muted'));
+    let description=pageHeading(main)?.description;
+    if(description) description.textContent=text;else {description=el('p',text,'muted');fallback.prepend(description);}
+    return description;
 }
 
 /** A confirmed receipt makes cached shelf items, cursor and measured heights stale; filters and anchor survive. */
@@ -488,7 +490,9 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const history=el('section',undefined,'library-history');history.setAttribute('aria-label','Prompt history');main.append(history);
         const body=el('div');history.append(body);
         // Concept heading (app.js a591–597): ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
-        headingDescription(main,history,'Prompt history · one positive, one shared gallery');
+        const description=headingDescription(main,history,HISTORY_DESCRIPTION);
+        // #524 D164: at desktop widths a long title clamps beside the actions.
+        pageHeading(main)?.heading.classList.add('prompt-page-heading');
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
         send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;
@@ -584,7 +588,9 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             // Edit metadata and ⋯ act on a loaded prompt only (review M2).
             const hadFocus=[edit,moreMenu.button].includes(document.activeElement);
             const loaded=!state.loading && !state.error;edit.disabled=!loaded;moreMenu.setDisabled(!loaded);
-            if(state.error?.status===404) {
+            // #524: a prompt that no longer exists has no history to describe.
+            const gone=state.error?.status===404;description.textContent=gone?'':HISTORY_DESCRIPTION;description.hidden=gone;
+            if(gone) {
                 const message=el('p',PROMPT_GONE,'library-status');message.setAttribute('role','status');body.append(message);
                 const open=createButton('Open the Prompt library');contentScope.listen(open,'click',()=>{window.location.hash='#/library';});body.append(open);
                 // A focused control that was just disabled hands focus to the way back (review M3).
@@ -741,7 +747,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             const updateMeta=()=>{imagesMeta.textContent=countOf(detail.positive.image_count ?? 0,'image');variantsMeta.textContent=countOf(detail.positive.variant_count ?? 0,'negative variant');};
             updateParent=()=>{
                 const name=displayTitle(detail.positive);
-                main.querySelector('h1').textContent=name;categoryChip.textContent=detail.positive.category || 'Uncategorized';updateMeta();
+                const h1=main.querySelector('h1');h1.textContent=name;h1.title=name;categoryChip.textContent=detail.positive.category || 'Uncategorized';updateMeta();
                 send.setAttribute('aria-label',`Send prompt pair to ComfyUI: ${name}`);blocks?.setTitle(name);
             };
             let activePairId;
