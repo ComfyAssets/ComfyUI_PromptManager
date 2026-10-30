@@ -104,6 +104,21 @@ class ReviewToolTests(ToolFixture):
             sorted(os.listdir(self.tmp)), ["output", "prompts.db"], "no side files"
         )
 
+    def test_a_manual_link_is_not_ours_to_undo(self):
+        db = PromptDatabase(self.db_path)
+        try:
+            pair = db.save_prompt_pair("a woman holding a coffee cup", "")
+            db.link_image_to_pair(pair, self.guessed[0], {"kind": "manual-link"})
+        finally:
+            db.close_all()
+        before = self.links()
+        code, out = self.run_tool("--ids", str(self.guessed[0]), "--json")
+        self.assertEqual(code, 0)
+        (verdict,) = json.loads(out.split("--apply, for")[0])
+        self.assertEqual(verdict["verdict"], "manual")
+        code, _out = self.run_tool("--ids", str(self.guessed[0]), "--apply")
+        self.assertEqual(self.links(), before)
+
     def test_prompt_selection_and_text_report(self):
         code, out = self.run_tool("--prompt", str(self.coffee))
         self.assertEqual(code, 0)

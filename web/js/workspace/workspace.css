@@ -449,6 +449,13 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 .review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; aspect-ratio: 1.33; /* D119 */ }
 /* D119: a long file name in the panel wraps inside the panel, where the concept's sample name never overflows. */
 .review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; /* D119 */ }
+/* #536: the concept's rows hidden when there is nothing to apply (D180), and the picker (D181). */
+.review-panel > [hidden], .review-panel .dialog-actions > [hidden], #modal .field[hidden] { display: none; }
+.review-unreadable { display: grid; gap: 6px; margin-block: 12px; overflow-wrap: anywhere; }
+.review-link-results { display: grid; gap: 6px; max-block-size: 40vh; overflow-y: auto; }
+.review-link-results > button { justify-content: flex-start; inline-size: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-link-results > button[aria-pressed="true"] { border-color: var(--ca-accent); background: var(--soft-blue); }
+.review-panel button[aria-disabled="true"], .review-link-actions button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 /* Auto-tag selected images (#249 PR D, D85/D90): the Tag image dialog's model panel, then How to apply, a radio group
    in the concept's `.field` row whose radios keep their own size (the concept's `.field input` is a full-width text
    field) beside their label, as the concept's own radio rows (s1160 `.compare-item label`). */
