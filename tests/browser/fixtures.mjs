@@ -4,13 +4,29 @@
 // points at that worker's server. A server that dies fails the running test
 // with its stderr tail, and the next test in the worker gets a fresh server.
 // A test that fails gets the stderr its server wrote during it attached as
-// `server-stderr`.
+// `server-stderr`. The worker also records its browser's own log (#513): a
+// browser that exits abnormally prints one `pm-browser-exit|` line, and a test
+// that fails on a closed or crashed target gets that log attached as
+// `browser-stderr`.
 import { test as base, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import { attachServerStderr, createServerSupervisor, startBrowserServer } from '../../tools/vendor/start-browser-server.mjs';
+import { attachBrowserLogs, createBrowserLogRecorder } from '../../tools/vendor/browser-logs.mjs';
 
 const SERVER_FIXTURE_TIMEOUT_MS = 90_000;
 
 export const test = base.extend({
+    browserLogs: [async ({}, use) => {
+        const recorder = createBrowserLogRecorder();
+        try {
+            await use(recorder);
+        } finally {
+            recorder.uninstall();
+        }
+    }, { scope: 'worker', auto: true }],
+    browserLogsOnFailure: [async ({ browserLogs }, use, testInfo) => {
+        await use();
+        await attachBrowserLogs(testInfo, browserLogs);
+    }, { auto: true }],
     testServer: [async ({}, use) => {
         const supervisor = createServerSupervisor({ start: () => startBrowserServer() });
         try {

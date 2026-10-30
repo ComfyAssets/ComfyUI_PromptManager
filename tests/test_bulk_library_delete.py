@@ -66,13 +66,14 @@ class LibraryDeleteCase(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        # Cleanups run last-in first-out and after every cleanup a test adds,
+        # so a database a test opens (and closes via addCleanup) is closed
+        # before the folder goes; Windows cannot delete an open file (#510).
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.db = PromptDatabase(str(self.root / "delete.db"))
+        self.addCleanup(self.db.close_all)
         self.epoch = self.db.get_library_options()["library_epoch"]
-
-    def tearDown(self):
-        self.db.close_all()
-        self.temp.cleanup()
 
     def paired(self, positive, negative="blur"):
         pair = self.db.save_prompt_pair(positive, negative)

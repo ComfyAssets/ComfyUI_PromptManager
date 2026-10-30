@@ -274,11 +274,18 @@ test('level filter is minimum-level over all six choices', async ({ page, reques
     for (const line of (await lines(page).textContent()).split('\n')) expect(line).toMatch(/^\d\d:\d\d:\d\d [A-Z]+ +\S/);
     expect(urls.at(-1)).toBe('?limit=100');
     for (const minimum of LEVELS) {
+        // Wait for this level's answer: the previous level's lines also hold the CRITICAL line, so seeing it proved
+        // nothing, and under load the filtered answer painted after the check (#501 merge queue, firefox).
+        const answered = page.waitForResponse(item => new URL(item.url()).pathname === LOGS_URL
+            && new URL(item.url()).search === `?limit=100&level=${minimum}`);
         await level.selectOption(minimum);
+        await answered;
         await expect.poll(() => urls.at(-1)).toBe(`?limit=100&level=${minimum}`);
         await expect(lines(page)).toContainText('CRITICAL The database could not be opened');
-        const shown = await shownLevels(page);
-        expect(shown.every(name => LEVELS.indexOf(name) >= LEVELS.indexOf(minimum)), `${minimum}: ${shown}`).toBe(true);
+        await expect.poll(async () => {
+            const shown = await shownLevels(page);
+            return shown.every(name => LEVELS.indexOf(name) >= LEVELS.indexOf(minimum)) || `${minimum}: ${shown}`;
+        }).toBe(true);
         if (minimum === 'DEBUG') await expect(lines(page)).toContainText('DEBUG Thumbnail cache lookup');
         if (minimum === 'WARNING') {
             await expect(lines(page)).not.toContainText('Database backup verified');

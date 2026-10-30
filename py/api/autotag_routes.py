@@ -23,6 +23,11 @@ from .prompts import thumbnail_url_for
 from . import thumbnail_settings
 from .. import model_gate
 
+try:
+    from ...utils.media_folders import is_skipped_folder
+except ImportError:
+    from utils.media_folders import is_skipped_folder
+
 from aiohttp import web
 
 _INTERNAL_ERROR = "An internal error occurred. Check server logs for details."
@@ -1319,8 +1324,9 @@ class AutotagRoutesMixin:
     def _collect_scan_files(output_path: Path):
         """Media files under ``output_path`` from a bounded, symlink-free walk.
 
-        Descends at most ``_SCAN_MAX_DEPTH`` levels, skips ``thumbnails``
-        trees and symlinked files, and stops after ``_SCAN_MAX_FILES`` files.
+        Descends at most ``_SCAN_MAX_DEPTH`` levels, skips ``thumbnails`` and
+        trash folders (``utils.media_folders``) and symlinked files, and stops
+        after ``_SCAN_MAX_FILES`` files.
         Returns ``(paths, truncated)``.
         """
         found = []
@@ -1330,7 +1336,7 @@ class AutotagRoutesMixin:
             dirnames[:] = sorted(
                 name
                 for name in dirnames
-                if name != "thumbnails" and depth + 1 <= _SCAN_MAX_DEPTH
+                if not is_skipped_folder(name) and depth + 1 <= _SCAN_MAX_DEPTH
             )
             for name in sorted(filenames):
                 if Path(name).suffix.lower() not in _MEDIA_EXTENSIONS:
@@ -1356,6 +1362,10 @@ class AutotagRoutesMixin:
             output_path = Path(output_dir)
             files, truncated = await self._run_in_executor(
                 self._collect_scan_files, output_path
+            )
+            # #501: a file removed from the library is not offered for tagging.
+            files = await self._run_in_executor(
+                self._without_removed, output_path, files
             )
             has_thumbnails = (output_path / "thumbnails").is_dir()
 
