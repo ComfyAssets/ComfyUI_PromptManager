@@ -230,6 +230,8 @@ class PromptManagerPair(PromptManagerFocused):
             negative_text,
             category=category.strip() or None,
             tags=self._parse_tags(tags),
+            # The Library shows the prompt's own category and tags, not the pair's.
+            fill_new_positive=True,
         )
         pair = self.db.get_prompt_pair(pair_id)
         prompt_id = pair["positive_prompt_id"]
