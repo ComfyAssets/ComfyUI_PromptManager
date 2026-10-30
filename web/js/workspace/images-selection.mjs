@@ -1,3 +1,4 @@
+import { keepingPlace, publishBarHeight } from './sticky-chrome.mjs';
 import { createButton } from '../shared/toolkit/core.js';
 import { imageKey, toggleSelection, selectionLabel } from './images-state.mjs';
 import { inspectPath, toInspectionRecord } from './inspection-state.mjs';
@@ -51,7 +52,7 @@ function el(tag, text, className) {
  */
 export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, onCategorySet, activity = null, onTagged,
     getListing, getFilter, getCategories, checked: initial = Object.freeze(new Set()), collections = null,
-    collection = null, onCollectionsChanged = null, onSourceChanged = null, onDeleted = null, removedView = null,
+    collection = null, onCollectionsChanged = null, onSourceChanged = null, onCollectionAdded = null, onDeleted = null, removedView = null,
     onReturn = null }) {
     let checked = initial;
     let exporting = false, categorizing = false;
@@ -59,6 +60,7 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     let anchor = null, allMatching = false, touchMode = false, lastPointer = 'mouse', shiftBox = null;
     const element = el('div');
     element.id = 'bulkbar';
+    publishBarHeight(scope, element);
     const bulk = el('div', undefined, 'bulkbar'), count = el('strong');
     const selectMatching = createButton('');
     scope.listen(selectMatching, 'click', () => {
@@ -87,7 +89,7 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     if (collections) {
         const addToCollection = createButton('Add to collection');
         scope.listen(addToCollection, 'click', () => openAddToCollection({ scope, collections, images: checkedImages(),
-            trigger: addToCollection, ...collectionSelection(), onSourceChanged }));
+            trigger: addToCollection, ...collectionSelection(), onSourceChanged, onAdded: onCollectionAdded }));
         bulk.append(addToCollection);
     }
     if (collections && collection) {
@@ -124,7 +126,8 @@ export function mountSelectionBar({ scope, api, grid, getItems, focusFallback, o
     }
 
     /** The count updates in place: the same bar and `strong`, its text written only when it changes. */
-    function render() {
+    function render() { keepingPlace(element, paintBar); }
+    function paintBar() {
         if (!checked.size && !allMatching) { touchMode = false; bulk.remove(); return; }
         paintMode();
         const listing = getListing();

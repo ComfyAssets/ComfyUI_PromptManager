@@ -288,6 +288,8 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         }
         // Info selects the item, as the concept's `inspect` does on this page (app.js a1244–1248).
         controller.select(item.id);
+        // D189: at one column the panel cannot stay beside the queue, so Info brings it into view.
+        if (getComputedStyle(panel).position === 'static') panel.scrollIntoView({ block: 'nearest' });
     });
 
     let shownTotal = null;

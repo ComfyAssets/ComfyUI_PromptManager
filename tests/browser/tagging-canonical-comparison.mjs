@@ -231,6 +231,9 @@ export function mapConceptReview(reference,actual) {
     const actualActions=findNode(actual.main,'div.dialog-actions');
     let cardIndex=0;
     let main={...reference.main,id:actual.main.id};
+    // D188: the Resolve panel is sticky.
+    const actualPanel=findNode(actual.main,'div.gallery-layout')?.children[1];
+    if(actualPanel)main=editNodes(main,'div.gallery-layout',layout=>({...layout,children:layout.children.map((child,index)=>index===1?{...child,position:actualPanel.position}:child)}));
     let noticeLoss=0;
     main=editNodes(main,'div.notice',notice=>{
         const chip=notice.children.find(child=>child.tag==='span.chip');

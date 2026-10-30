@@ -4,6 +4,7 @@ import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigat
     LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS,
     JOB_END_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
+import { mountBackToTop } from './sticky-chrome.mjs';
 import { forgetImagesVisit, mountImages, onFavoriteChange } from './images.mjs';
 import { forgetLibraryVisit, mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
@@ -83,6 +84,7 @@ function mountWorkspace() {
     // row's count and the Activity page, on every route.
     const activity = createActivityStore({ api, scope, connect: url => new EventSource(resolveUrl(url)) });
     mountActivityTopbar({ store: activity, scope });
+    mountBackToTop({ scope, toast: document.getElementById('workspace-toast') });
     activity.load();
     // D129: a node-folder library is offered a move (or "Keep it here") above every page.
     mountLibraryBanner(document.getElementById('library-banner'), { api, activity, scope });

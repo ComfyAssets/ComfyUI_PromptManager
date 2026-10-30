@@ -70,12 +70,20 @@ test('native Images keeps colliding filenames distinct and inspects the selected
     await page.setViewportSize({width:390,height:844});
     for (const [index,source] of [[1,'input'],[0,'output']]) {
         await cards(page).nth(index).getByRole('button',{name:'Inspect same.png',exact:true}).click();
+        await closeInfoViewer(page); // D189
         await expectPanelSource(page, source);
         await details(page).scrollIntoViewIfNeeded();
         await capture(`after-images-source-collision-${source}-390`);
     }
     expect((await (await request.get('/prompt_manager/stats')).json()).stats).toEqual(snapshot.stats);
 });
+
+/** D189: at one column Info also opens the viewer's details; the panel is updated behind it. */
+async function closeInfoViewer(page) {
+    await expect(page.locator('#viewer-dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#viewer-dialog')).toBeHidden();
+}
 
 test('workspace defaults to the native Images collection without a hash route', async ({ page }) => {
     await page.goto('/prompt_manager/workspace');
@@ -669,6 +677,7 @@ test('mobile Images keeps filters, layouts and selected details within the viewp
     for (const layout of ['List', 'Masonry', 'Grid']) {
         await page.getByRole('button', { name: layout, exact: true }).click();
         await cards(page).last().getByRole('button', { name: 'Inspect same.png', exact: true }).click();
+        await closeInfoViewer(page); // D189
         await expectPanelSource(page, 'input');
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     }
@@ -2260,6 +2269,7 @@ test('at 390px in light theme the Set category dialog and the category chip fit 
     const card = cardOf(page, '0:bulk/0001.png');
     // The chip wraps inside the side panel; its origin never splits.
     await card.getByRole('button', { name: 'Inspect 0001.png', exact: true }).click();
+    await closeInfoViewer(page); // D189
     const chip = details(page).locator('span.chip', { has: page.locator('span.chip-source') });
     await expect(chip).toHaveText(`Image category: ${LONG} · this image`);
     const fit = await chip.evaluate(node => {

@@ -261,7 +261,7 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 }
 /* #249 D42: a discovery alert a rescan leaves scrolls clear of the concept's fixed toast (22px inset, 12px at 700px and
    below, two 12px lines at 390px), never under it; the toast itself keeps the concept's placement. */
-.options-status { font-size: 12px; padding-inline: 4px; scroll-margin-block-end: 96px; /* D42 */ }
+.options-status { font-size: 12px; padding-inline: 4px; scroll-margin-block-end: 140px; /* D42, D187: clear of the toast and the chip above it */ }
 
 /* Prompt library cards (#249 PR E): the concept's `article.prompt-card` (s653–708) with real prompts, titles and media. */
 /* #249 D23: real prompts are far longer than the concept's samples, so the card clamps the positive to two lines; copy
@@ -505,3 +505,34 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
         overflow: hidden; overflow-wrap: anywhere;
     }
 }
+
+/* D186 (#531, beyond the concept): the selection bars stay in view while you select. This one rule is their position. `--selection-bar-block`
+   (sticky-chrome.mjs) is the room a shown bar takes; a focused card control and the Images panel keep clear of it
+   (scroll-margin on them, not scroll-padding on the root, which would scroll the page to reveal the bar's own buttons). At one
+   column the bar is one row that scrolls sideways, so it does not take a fifth of a phone screen. */
+#bulkbar, #library-bulkbar { position: sticky; inset-block-start: 8px; z-index: 5; }
+:is(#image-grid, .library-grid) :is(article, a, button, input, select, textarea, [tabindex]) { scroll-margin-block-start: var(--selection-bar-block, 0px); }
+.detail-panel { inset-block-start: max(20px, var(--selection-bar-block, 0px)); max-block-size: calc(100dvh - 20px - max(20px, var(--selection-bar-block, 0px))); }
+@media (max-width: 700px) {
+    .detail-panel { max-block-size: none; }
+    .bulkbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+    .bulkbar > * { flex: none; }
+}
+@container images-page (inline-size < 600px) { .detail-panel { max-block-size: none; } }
+
+/* D187 (#531, beyond the concept): Back to top, in the toast's column. It rests above a two-line toast, so the usual
+   toast does not move it under a finger, and rises only for a taller one. */
+.ca-tools .back-to-top {
+    --toast-rest: 70px;
+    position: fixed; inset-inline-start: 50%; transform: translateX(-50%); z-index: 10;
+    inset-block-end: calc(22px + max(var(--toast-rest), var(--toast-block, 0px)));
+    padding: 6px 12px; border: 1px solid var(--ca-line); border-radius: 999px; background: var(--ca-surface);
+    box-shadow: 0 8px 35px #0004; font-size: 12px; white-space: nowrap;
+}
+@media (max-width: 700px) { .ca-tools .back-to-top { inset-block-end: calc(12px + max(var(--toast-rest), var(--toast-block, 0px))); } }
+@media (pointer: coarse) { .ca-tools .back-to-top { min-block-size: 40px; } }
+
+/* D188 (#531, beyond the concept): the Resolve panel stays with you as the Images panel does. */
+.review-panel { position: sticky; inset-block-start: 20px; }
+@media (max-width: 700px) { .review-panel { position: static; } }
+@media (min-width: 701px) and (max-height: 720px) { .review-panel { max-block-size: calc(100dvh - 40px); overflow: auto; } }

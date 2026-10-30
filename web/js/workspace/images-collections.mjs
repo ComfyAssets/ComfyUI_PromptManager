@@ -35,7 +35,7 @@ export function collectionTargets(images, { allMatching = false, total = images.
  * the dialog seam. A stale source (409) calls `onSourceChanged()` after its toast, so the page reloads the listing.
  */
 export function openAddToCollection({ scope, collections, images, trigger = null, allMatching = false, total = images.length,
-    notify = showWorkspaceToast, openInput = openInputDialog, onSourceChanged = null }) {
+    notify = showWorkspaceToast, openInput = openInputDialog, onSourceChanged = null, onAdded = null }) {
     const { targets, refusal } = collectionTargets(images, { allMatching, total });
     if (refusal) { notify(refusal); return; }
     openInput({ scope, trigger, title: ADD_DIALOG_TITLE, label: ADD_DIALOG_LABEL, action: ADD_DIALOG_ACTION,
@@ -45,7 +45,7 @@ export function openAddToCollection({ scope, collections, images, trigger = null
             if (name === null) { notify(ADD_FAILED_TOAST); return; }
             try {
                 const result = await collections.add({ name }, targets);
-                if (!scope.signal.aborted) notify(addedMessage(result));
+                if (!scope.signal.aborted) { notify(addedMessage(result)); onAdded?.(); }
             } catch (error) {
                 if (scope.signal.aborted) return;
                 notify(writeFailure(error, ADD_FAILED_TOAST));
