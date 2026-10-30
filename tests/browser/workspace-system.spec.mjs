@@ -897,6 +897,8 @@ test('reset restores defaults without touching other keys', async ({ page }) => 
 // System section, found by role and accessible name (a `term` by its text, a disclosure by its summary). Collapsed
 // `details` are opened first, so a control inside one counts once it is shown. tests/vendor/legacy-coverage.test.mjs
 // checks the rest of each row.
+test.describe(() => {
+test.use({ olderImagesNotice: true });
 test('every covered legacy System capability has its native control', async ({ page, request }) => {
     // Download is offered for a model that is not on disk ("Download again" otherwise): the selected default's file is
     // missing here.
@@ -906,6 +908,7 @@ test('every covered legacy System capability has its native control', async ({ p
     } finally {
         await request.post('/__test__/tagging/reset', { data: {} });
     }
+});
 });
 
 async function findControls(page) {

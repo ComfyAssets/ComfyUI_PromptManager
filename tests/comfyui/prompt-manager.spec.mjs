@@ -84,7 +84,7 @@ test('all node schemas and extension entrypoints load from the real host', async
 });
 
 for (const type of ['PromptManager', 'PromptManagerText']) {
-    test(`${type} Web UI button opens actual standalone pages`, async ({ page }) => {
+    test(`${type} Web UI button opens the workspace; legacy pages still load`, async ({ page }) => {
         await page.evaluate(async type => {
             const { app } = await import('/scripts/app.js');
             const node = LiteGraph.createNode(type);
@@ -95,11 +95,71 @@ for (const type of ['PromptManager', 'PromptManagerText']) {
         await page.getByRole('button', { name: '🌐 Web UI', exact: true }).click();
         const popup = await popupPromise;
         await popup.waitForLoadState('domcontentloaded');
-        await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
-        await expect(popup.locator('body')).toContainText('Prompt');
+        await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+        await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
         await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
         await expect(popup.locator('#addPromptBtn')).toBeVisible();
         await popup.close();
+    });
+}
+
+test('top-bar PM button opens the workspace in either renderer', async ({ page }) => {
+    const button = page.locator('.promptmanager-top-button-group button, #pm-toolbar-btn').first();
+    await expect(button).toBeVisible();
+    const popupPromise = page.waitForEvent('popup');
+    await button.click();
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+    await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
+    await popup.close();
+});
+
+for (const [type, buttonName] of [['PromptManager', '🌐 Web UI'], ['PromptManagerFocused', 'Web UI ↗'], ['PromptManagerPair', 'Web UI ↗']]) {
+    test(`${type} and the PM button open the workspace after switching renderers both ways, a workflow reload and node removal`, async ({ page }, testInfo) => {
+        const id = await page.evaluate(async type => {
+            const { app } = await import('/scripts/app.js');
+            const node = LiteGraph.createNode(type);
+            app.graph.add(node);
+            node.setSize([900, 800]);
+            app.canvas.centerOnNode(node);
+            return node.id;
+        }, type);
+        const webUi = page.getByRole('button', { name: buttonName, exact: true });
+        const pm = page.locator('.promptmanager-top-button-group button, #pm-toolbar-btn').first();
+        const opensWorkspace = async button => {
+            await expect(button).toHaveCount(1);
+            await expect(button).toBeVisible();
+            const popupPromise = page.waitForEvent('popup');
+            await button.click();
+            const popup = await popupPromise;
+            await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+            await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
+            await popup.close();
+        };
+        await opensWorkspace(webUi);
+        for (const renderer of [!testInfo.project.metadata.initialRenderer, testInfo.project.metadata.initialRenderer]) {
+            await page.evaluate(async renderer => {
+                const { app } = await import('/scripts/app.js');
+                await app.ui.settings.setSettingValue('Comfy.VueNodes.Enabled', renderer);
+                app.canvas.ds.scale = .8;
+                app.canvas.centerOnNode(app.graph._nodes[0]);
+            }, renderer);
+            await expect.poll(() => page.evaluate(() => LiteGraph.vueNodesMode)).toBe(renderer);
+            await opensWorkspace(webUi);
+            await opensWorkspace(pm);
+        }
+        await page.evaluate(async () => {
+            const { app } = await import('/scripts/app.js');
+            await app.loadGraphData(app.graph.serialize());
+        });
+        await opensWorkspace(webUi);
+        await opensWorkspace(pm);
+        await page.evaluate(async id => {
+            const { app } = await import('/scripts/app.js');
+            app.graph.remove(app.graph.getNodeById(id));
+        }, id);
+        await expect(webUi).toHaveCount(0);
+        await opensWorkspace(pm);
     });
 }
 

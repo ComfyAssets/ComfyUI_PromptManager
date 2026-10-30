@@ -13,6 +13,13 @@
     <script src="js/comfy-metadata.js" defer></script>
     <script src="js/gallery-settings.js" defer></script>
     <script src="js/png-metadata.js" defer></script>
+    <script>
+        // #525: no module of the workspace can show this. A failed fetch or a throw while starting leaves the mark
+        // unset, and modules run before `load`.
+        window.addEventListener('load', () => {
+            if (!document.documentElement.dataset.workspaceBooted) document.getElementById('workspace-boot-failure').hidden = false;
+        });
+    </script>
     <script type="module" src="js/workspace/index.mjs"></script>
 </head>
 <body class="ca-tools">
@@ -45,11 +52,20 @@
             </header>
             <!-- D129: the library-location notice, shown above every page while a node-folder library can move. -->
             <div id="library-banner" class="library-banner" hidden></div>
+            <!-- D166: the one-time upgrade notice, shown above every page until dismissed. -->
+            <div id="older-images-notice" class="library-banner" hidden></div>
             <main id="workspace-main" tabindex="-1"></main>
             <footer class="app-footer"><span>ComfyAssets · Local tools. Your library.</span></footer>
         </div>
     </div>
     <div id="workspace-toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="workspace-boot-failure" role="alert" hidden style="position: fixed; inset: 16px 16px auto; z-index: 1000; padding: 16px; border: 1px solid #888; border-radius: 8px; background: #1b1b1f; color: #eee; font: 14px/1.5 system-ui, sans-serif;">
+        <p style="margin: 0;">The workspace couldn't load. Reload the page, or use a legacy page:
+            <a style="color: inherit;" href="admin">Dashboard</a> ·
+            <a style="color: inherit;" href="admin#/tags">Tags</a> ·
+            <a style="color: inherit;" href="gallery">Gallery</a> ·
+            <a style="color: inherit;" href="gallery.html">Metadata viewer</a></p>
+    </div>
     <noscript><p>This workspace needs JavaScript. <a href="admin">Open the existing dashboard</a>.</p></noscript>
 </body>
 </html>

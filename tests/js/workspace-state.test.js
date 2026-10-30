@@ -17,7 +17,7 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
     const tags = resolveRoute('#/tags');
     assert.equal(tags.label, 'Tags & categories');
     assert.equal(routeTitle(tags), 'Tags');
-    assert.equal(tags.href, '/prompt_manager/admin#/tags', 'Overview keeps the existing tag manager card');
+    assert.equal(tags.href, '#/tags', 'Overview opens the native page (#525)');
     for (const id of ['images', 'library', 'inspect', 'overview', 'system']) {
         const route = resolveRoute(`#/${id}`);
         assert.equal(routeTitle(route), route.label);
@@ -48,7 +48,6 @@ test('system resolves its sections; #/overview stays the production hub', async 
     // Q12: Overview's System card opens the native System Overview, with no legacy href or action.
     const card = routes.find(route => route.id === 'system');
     assert.equal(card.href, '#/system/overview');
-    assert.equal(card.native, true);
     assert.equal(card.action, 'Open System');
 });
 
@@ -77,9 +76,28 @@ test('inspect is the native Inspect a file page with the concept description', a
     // The concept's heading description (app.js renderMetadata 743).
     assert.equal(inspect.description, 'A standalone file uses the same image viewer and prompt actions.');
     assert.equal(isHandoff(inspect), false);
-    // Overview keeps its card for the legacy metadata page, which stays working.
-    assert.equal(inspect.href, '/prompt_manager/gallery.html');
-    assert.equal(inspect.action, 'Open existing metadata inspector');
+    // Overview's card opens the native page (#525); the legacy metadata page stays at its URL.
+    assert.equal(inspect.href, '#/inspect');
+    assert.equal(inspect.action, 'Open Inspect a file');
+});
+
+test('every Overview card opens its own native page, never a legacy one (#525)', async () => {
+    const { resolveRoute, routes } = await source;
+    const cards = routes.filter(route => route.href);
+    assert.deepEqual(cards.map(card => card.id), ['images', 'library', 'tags', 'inspect', 'system']);
+    for (const card of cards) {
+        assert.match(card.href, /^#\//, card.id);
+        assert.equal(resolveRoute(card.href).id, card.id);
+        assert.match(card.action, /^Open /, card.id);
+        assert.doesNotMatch(card.action, /existing/, card.id);
+    }
+});
+
+test('the legacy pages System links are the four that stay at their URLs (#525 D165)', async () => {
+    const { LEGACY_PAGES } = await source;
+    assert.deepEqual(LEGACY_PAGES.map(page => page.href), ['/prompt_manager/admin', '/prompt_manager/admin#/tags',
+        '/prompt_manager/gallery', '/prompt_manager/gallery.html']);
+    for (const page of LEGACY_PAGES) assert.ok(page.label);
 });
 
 test('a job of the Activity page is its own deep link', async () => {

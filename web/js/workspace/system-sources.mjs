@@ -2,8 +2,9 @@
  * System › Sources & scans (#249 System S4 Task 11): the concept's `renderSystem` "sources" body (app.js 679–681).
  *
  * - The optional `.notice` "Bring older images into your prompt history" shows until this browser dismissed the 3.2.0
- *   update notice (`pm_update_notice_dismissed`, the legacy admin page's own key). Later dismisses it without scanning;
- *   Review scan dismisses it, as the legacy page's Scan does, and reviews every source.
+ *   update notice (older-images-notice.mjs, the legacy admin page's own key). Later dismisses it without scanning;
+ *   Review scan dismisses it, as the legacy page's Scan does, and reviews every source. D166: dismissing it in the shell
+ *   or another tab removes it here too, and the shell does not show it on this section.
  * - "Image sources" lists the server's sources (GET /settings, S4 Task 9) in `#source-list`, one `.operation` each:
  *   its label, "<path> · watching | watching until restart | manual scan | restart pending" and "Scan changes"
  *   (watched) or "Scan folder", which opens the shared "Review metadata scan" (D55) for that one source ("1 output
@@ -38,14 +39,15 @@ import { settingRow, operationRow } from './system-controls.mjs';
 import { HOST_UNAVAILABLE } from './system-appearance.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { noun } from './plural.mjs';
+import { dismissNotice, noticeDismissed, noticeNode, watchNoticeDismissal } from './older-images-notice.mjs';
+
+export { NOTICE_KEY, NOTICE_VERSION, dismissNotice, noticeDismissed } from './older-images-notice.mjs';
 
 const SETTINGS_URL = '/prompt_manager/settings';
 const VALIDATE_URL = '/prompt_manager/settings/validate-source';
 const RESCAN_URL = '/prompt_manager/gallery/rescan';
 const ROOTS_KEY = 'gallery_root_paths';
 
-export const NOTICE_KEY = 'pm_update_notice_dismissed';
-export const NOTICE_VERSION = '3.2.0';
 export const WATCH_COPY = Object.freeze({ watching: 'watching', stopping: 'watching until restart', manual: 'manual scan',
     restart_pending: 'restart pending' });
 // The states whose observer runs now: their scan only has to catch up on changes.
@@ -86,25 +88,6 @@ export function foreignRunsState({ value, monitoring, stopping = false }) {
 const addedLabels = new Map();
 
 const defaultStorage = () => window.localStorage;
-
-/** Whether this browser dismissed the 3.2.0 notice; storage that cannot be read shows it. */
-export function noticeDismissed(getStorage = defaultStorage) {
-    try {
-        return getStorage().getItem(NOTICE_KEY) === NOTICE_VERSION;
-    } catch {
-        return false;
-    }
-}
-
-/** Dismiss the notice for this browser; false when storage refused (it stays dismissed for this view). */
-export function dismissNotice(getStorage = defaultStorage) {
-    try {
-        getStorage().setItem(NOTICE_KEY, NOTICE_VERSION);
-        return true;
-    } catch {
-        return false;
-    }
-}
 
 const sameRoots = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((path, index) => path === b[index]);
 
@@ -166,22 +149,6 @@ function el(tag, text, className) {
     if (text !== undefined) node.textContent = text;
     if (className) node.className = className;
     return node;
-}
-
-/** The concept's `.notice` with Later and Review scan. */
-function noticeNode({ scope, onLater, onReview }) {
-    const notice = el('div', undefined, 'notice');
-    const text = el('div');
-    text.append(el('h2', 'Bring older images into your prompt history'),
-        el('p', 'The schema upgrades automatically. An optional metadata scan links existing positives and negatives without regenerating all thumbnails.'));
-    const actions = el('div', undefined, 'row-actions');
-    const later = createButton('Later');
-    const review = createButton('Review scan', 'ca-primary');
-    scope.listen(later, 'click', onLater);
-    scope.listen(review, 'click', onReview);
-    actions.append(later, review);
-    notice.append(text, actions);
-    return notice;
 }
 
 /**
@@ -263,6 +230,7 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
                 notice.remove();
                 scanAll(addButton);
             } });
+        watchNoticeDismissal({ scope, storage, onDismissed: () => notice.remove() });
         nodes.push(notice);
     }
 

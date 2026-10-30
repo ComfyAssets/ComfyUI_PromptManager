@@ -23,6 +23,7 @@ import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
 import { createRestoreReload, onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
+import { mountOlderImagesNotice } from './older-images-notice.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
@@ -34,10 +35,9 @@ function element(tag, text, className) {
     return node;
 }
 
-function legacyLink(route) {
+function cardLink(route) {
     const link = element('a', route.action, 'workspace-link');
-    // A native card (System, Q12) links its workspace hash; a legacy tool's page goes through the mount prefix.
-    link.href = route.native ? route.href : resolveUrl(route.href);
+    link.href = route.href;
     return link;
 }
 
@@ -86,6 +86,8 @@ function mountWorkspace() {
     activity.load();
     // D129: a node-folder library is offered a move (or "Keep it here") above every page.
     mountLibraryBanner(document.getElementById('library-banner'), { api, activity, scope });
+    // D166: the one-time upgrade notice, above every page until dismissed; System > Sources shows its own.
+    const olderImages = mountOlderImagesNotice(document.getElementById('older-images-notice'), { api, activity, scope, main });
     const sidebar = document.querySelector('aside.sidebar');
     // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`, a collection's `collection/<id>`.
     const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}`
@@ -260,6 +262,7 @@ function mountWorkspace() {
 
     function renderNow(route) {
         leaveGuard = null;
+        olderImages.showFor(route);
         // A shared page dialog never stays open over the next route.
         closeWorkspaceDialog();
         if (route.id === 'system' && system && currentKey === 'system') {
@@ -485,11 +488,11 @@ function mountWorkspace() {
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);
         const tools = element('section', undefined, 'surface');
-        tools.append(element('h2', 'Continue creating'), element('p', 'Your existing tools remain available while the new workspaces take shape.'));
+        tools.append(element('h2', 'Continue creating'), element('p', 'Pick up where you left off in your images, prompts and tools.'));
         const cards = element('div', undefined, 'tool-grid');
         for (const target of routes.filter(item => item.href)) {
             const card = element('article', undefined, 'tool-card');
-            card.append(element('h3', target.label), element('p', target.description, 'small'), legacyLink(target));
+            card.append(element('h3', target.label), element('p', target.description, 'small'), cardLink(target));
             cards.append(card);
         }
         tools.append(cards);
@@ -529,6 +532,8 @@ function mountWorkspace() {
 }
 
 mountWorkspace();
+// #525: web/workspace.html shows its legacy-page fallback at `load` unless the shell got this far.
+document.documentElement.dataset.workspaceBooted = 'true';
 window.addEventListener('pageshow', event => {
     if (event.persisted) mountWorkspace();
 });

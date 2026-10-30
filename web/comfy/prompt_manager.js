@@ -7,6 +7,7 @@ const { installFocusedNode, installSplitNode, installPairNode } = await import(a
 const { installPromptBridge } = await import(api.fileURL('/prompt_manager/js/prompt-bridge-host.js'));
 const { collapseLinkedWidget, isLinked, linkNoteText, primitiveTextValue, storedWidgetValue } = await import(api.fileURL('/prompt_manager/js/text-links.js'));
 const { normalizeSaveWidget } = await import(api.fileURL('/prompt_manager/js/save-to-library.js'));
+const { WORKSPACE_ENTRY_ROUTE } = await import(api.fileURL('/prompt_manager/js/workspace-entry.js'));
 const promptManagerTypes = new Set(['PromptManager', 'PromptManagerText', 'PromptManagerFocused', 'PromptManagerSplit', 'PromptManagerPair']);
 
 // ============================================================================
@@ -109,7 +110,7 @@ function addPMTopBarButton() {
   // Create PM button
   const pmButton = $el("button", {
     classList: "comfyui-button comfyui-menu-mobile-collapse primary",
-    title: "PromptManager - Open Admin Dashboard",
+    title: "PromptManager - Open workspace",
     style: {
       display: "flex",
       alignItems: "center",
@@ -125,7 +126,7 @@ function addPMTopBarButton() {
       transition: "background 0.2s",
     },
     onclick: () => {
-      window.open(api.fileURL("/prompt_manager/admin"), "_blank");
+      window.open(api.fileURL(WORKSPACE_ENTRY_ROUTE), "_blank");
     },
     onmouseenter: (e) => { e.target.style.background = "#0d9488"; },
     onmouseleave: (e) => { e.target.style.background = "#14b8a6"; },
@@ -161,7 +162,7 @@ function addPMTopBarButtonLegacy() {
   const btn = document.createElement("button");
   btn.id = "pm-toolbar-btn";
   btn.innerText = "PM";
-  btn.title = "Open PromptManager Admin Dashboard";
+  btn.title = "Open PromptManager workspace";
 
   // Teal button styling
   btn.style.cssText = `
@@ -181,7 +182,7 @@ function addPMTopBarButtonLegacy() {
   btn.onmouseleave = () => btn.style.background = "#14b8a6";
 
   btn.onclick = () => {
-    window.open(api.fileURL("/prompt_manager/admin"), "_blank");
+    window.open(api.fileURL(WORKSPACE_ENTRY_ROUTE), "_blank");
   };
 
   topBar.appendChild(btn);
@@ -1184,9 +1185,7 @@ app.registerExtension({
       // Method to open web interface
       nodeType.prototype.openWebInterface = function () {
         try {
-          // Open the web interface served via our API endpoint
-          const currentOrigin = window.location.origin;
-          const webUrl = `${currentOrigin}/prompt_manager/web`;
+          const webUrl = api.fileURL(WORKSPACE_ENTRY_ROUTE);
 
           if (this.properties.webuiDisplayMode === "newtab") {
             // Open in new tab without window options
@@ -1198,7 +1197,8 @@ app.registerExtension({
                 "success",
               );
             } else {
-              window.location.href = webUrl;
+              // Never navigate the canvas away: it may hold unsaved work.
+              this.showNotification("Allow popups to open Web UI, then try again.", "error");
             }
           } else {
             // Default popup mode with specific dimensions
@@ -1211,7 +1211,8 @@ app.registerExtension({
             if (newWindow) {
               this.showNotification("Web interface opened in popup", "success");
             } else {
-              window.location.href = webUrl;
+              // Never navigate the canvas away: it may hold unsaved work.
+              this.showNotification("Allow popups to open Web UI, then try again.", "error");
             }
           }
         } catch (error) {
