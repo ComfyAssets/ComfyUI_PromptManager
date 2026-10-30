@@ -69,6 +69,7 @@ function fakeDOM() {
         createElement: tag => new Element(tag),
         createTextNode: text => Object.assign(new Element('#text'), { _text: String(text) }),
         getElementById: id => (id === 'workspace-toast' ? toast : null),
+        querySelectorAll: () => [],
     };
     return { Element, body, toast, restore() { globalThis.document = previous; } };
 }

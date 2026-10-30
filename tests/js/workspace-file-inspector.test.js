@@ -79,9 +79,9 @@ test('Show in folder needs the full listing identity (D38)',async()=>{
 });
 test('Show in folder outcomes use the D38 toasts',async()=>{
     const {revealOutcome}=await load();
-    assert.equal(revealOutcome(null),'Opened the folder on this computer.');
-    assert.equal(revealOutcome({status:403,code:'not-local'}),'Show in folder works only in a browser on the computer running ComfyUI.');
-    assert.equal(revealOutcome({status:501,code:'unavailable'}),'No file manager is available on this computer.');
+    assert.equal(revealOutcome(null),'Opened the folder on the computer running ComfyUI.');
+    assert.equal(revealOutcome({status:403,code:'not-same-origin'}),'The folder was not opened: this page\'s address does not match the server\'s.');
+    assert.equal(revealOutcome({status:501,code:'unavailable'}),'No file manager is available on the computer running ComfyUI.');
     assert.equal(revealOutcome({status:429,code:'busy'}),'The folder is already opening.');
     for(const error of [{status:403,code:null},{status:409,code:'source-changed'},{status:415,code:'unsupported-media-type'},{status:429,code:null},{status:500},new TypeError('offline')])
         assert.equal(revealOutcome(error),'The folder could not be opened. Try again.');

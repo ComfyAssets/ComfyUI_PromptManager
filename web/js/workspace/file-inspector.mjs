@@ -26,9 +26,9 @@ const CATEGORY_PREFIX = {image: 'Image category: ', positive: 'Positive prompt c
 const CATEGORY_ORIGIN = {image: 'this image', positive: 'prompt', pair: 'recipe'};
 const REVEAL_URL = '/prompt_manager/images/reveal';
 // D38 Show in folder: the route's answers, in the maintainer's words.
-const REVEAL_OPENED = 'Opened the folder on this computer.';
-const REVEAL_NOT_LOCAL = 'Show in folder works only in a browser on the computer running ComfyUI.';
-const REVEAL_UNAVAILABLE = 'No file manager is available on this computer.';
+const REVEAL_OPENED = 'Opened the folder on the computer running ComfyUI.';
+const REVEAL_REFUSED = "The folder was not opened: this page's address does not match the server's.";
+const REVEAL_UNAVAILABLE = 'No file manager is available on the computer running ComfyUI.';
 const REVEAL_BUSY = 'The folder is already opening.';
 const REVEAL_FAILED = 'The folder could not be opened. Try again.';
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
@@ -109,7 +109,7 @@ export function revealTarget(identity) {
 /** The toast for a reveal outcome: null is success, otherwise the request's error (D38). */
 export function revealOutcome(error) {
     if (error === null) return REVEAL_OPENED;
-    if (error?.status === 403 && error.code === 'not-local') return REVEAL_NOT_LOCAL;
+    if (error?.status === 403 && error.code === 'not-same-origin') return REVEAL_REFUSED;
     if (error?.status === 501) return REVEAL_UNAVAILABLE;
     if (error?.status === 429 && error.code === 'busy') return REVEAL_BUSY;
     return REVEAL_FAILED;
