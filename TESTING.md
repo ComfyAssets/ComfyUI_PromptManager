@@ -1615,10 +1615,14 @@ Recorded deviations on this page (spec §8):
   LoRA Manager's open-location route has no local-only gate, so it also opens the
   server's file manager for a proxied or remote browser; ours says it cannot.
 
-  Residual risk, accepted: a reverse proxy or tunnel that adds no forwarding header
-  (a bare nginx `proxy_pass` to 127.0.0.1, `ssh -R`, `socat`) cannot be told apart
-  from a local client, and a non-browser client behind it can forge a matching
-  `Host` and `Origin`. Such a client can open a folder of a listed file on the host's
+  A browser behind a proxy that keeps its `Host` or `Origin`, or adds a forwarding
+  header, or connects from another address (a Docker bridge) is always `not-local`.
+
+  Residual risk, accepted: a tunnel or proxy that adds no forwarding header and
+  rewrites `Host` and `Origin` to loopback (`ssh -L` or `-R`, `socat`, a bare
+  `proxy_pass` to 127.0.0.1 with both set), and a non-browser client behind a bare
+  proxy that forges them, cannot be told apart from a local client: the folder opens
+  on the host's screen and the toast says it opened. Such a client can open a folder of a listed file on the host's
   screen, at most once a second, and learn whether that file exists (which the
   listing routes already tell it). Operators who expose ComfyUI that way accept this.
 - **D39** (ruled 2026-10-21: fallback): a recipe-linked image shows its recipe's own

@@ -118,6 +118,56 @@ class TestIsLocalRequest(unittest.TestCase):
                 self.assertFalse(is_local_request("127.0.0.1", headers(Origin=origin)))
         self.assertFalse(is_local_request("127.0.0.1", headers(Origin=ORIGIN), "https"))
 
+    def test_a_browser_behind_a_reverse_proxy_is_never_local(self):
+        # The maintainer's setup (#533): a Mac reaching the Linux box through
+        # a Docker proxy at comfy.sansfam.org. Every line must fail safe.
+        site = "comfy.sansfam.org"
+        origin = f"https://{site}"
+        forwarded = {"X_Forwarded_For": "192.168.1.30", "X_Forwarded_Proto": "https"}
+        cases = {
+            "docker bridge peer, forwarded headers": (
+                "172.18.0.2",
+                headers(Host=site, Origin=origin, **forwarded),
+            ),
+            "docker bridge peer, bare proxy": (
+                "172.18.0.2",
+                headers(Host=site, Origin=origin),
+            ),
+            "loopback peer, forwarded headers": (
+                "127.0.0.1",
+                headers(Host=site, Origin=origin, **forwarded),
+            ),
+            "loopback peer, Host kept, no forwarded headers": (
+                "127.0.0.1",
+                headers(Host=site, Origin=origin),
+            ),
+            "loopback peer, Host rewritten, Origin kept": (
+                "127.0.0.1",
+                headers(Origin=origin),
+            ),
+            "loopback peer, everything rewritten but a forwarded header": (
+                "127.0.0.1",
+                headers(X_Real_IP="192.168.1.30"),
+            ),
+            "spoofed local Host from another computer": (
+                "192.168.1.30",
+                headers(),
+            ),
+            "spoofed local forwarded value": (
+                "127.0.0.1",
+                headers(X_Forwarded_For="127.0.0.1"),
+            ),
+        }
+        for name, (remote, request_headers) in cases.items():
+            with self.subTest(name):
+                self.assertFalse(is_local_request(remote, request_headers, "https"))
+                self.assertFalse(is_local_request(remote, request_headers, "http"))
+
+    def test_what_cannot_be_told_apart_from_a_local_browser(self):
+        # Known limit, in TESTING.md: an ssh -L tunnel, or a proxy that rewrites
+        # Host and Origin and adds no header, looks exactly like this.
+        self.assertTrue(is_local_request("127.0.0.1", headers()))
+
     def test_sec_fetch_site_must_be_same_origin_when_sent(self):
         self.assertTrue(
             is_local_request("127.0.0.1", headers(Sec_Fetch_Site="same-origin"))
@@ -838,6 +888,18 @@ class TestRevealRoute(ImageAPITestCase):
                 self.assertEqual((status, data["code"]), (403, "not-local"))
         status, data = await self.post(self.body(), Host="evil.example:8188")
         self.assertEqual((status, data["code"]), (403, "not-local"))
+        self.assertEqual(self.opened, [])
+
+    async def test_a_proxied_browser_gets_the_message_and_opens_nothing(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        status, data = await self.post(
+            self.body(),
+            Host="comfy.sansfam.org",
+            Origin="https://comfy.sansfam.org",
+            **{"X-Forwarded-For": "192.168.1.30"},
+        )
+        self.assertEqual((status, data["code"]), (403, "not-local"))
+        self.assertIn("only on the computer running ComfyUI", data["error"])
         self.assertEqual(self.opened, [])
 
     async def test_missing_or_foreign_origin_is_not_local(self):
