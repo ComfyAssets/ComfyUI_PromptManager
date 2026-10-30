@@ -23,6 +23,7 @@ import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
 import { createRestoreReload, onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
+import { mountOlderImagesNotice } from './older-images-notice.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
@@ -86,6 +87,8 @@ function mountWorkspace() {
     activity.load();
     // D129: a node-folder library is offered a move (or "Keep it here") above every page.
     mountLibraryBanner(document.getElementById('library-banner'), { api, activity, scope });
+    // D166: the one-time upgrade notice, above every page until dismissed; System > Sources shows its own.
+    const olderImages = mountOlderImagesNotice(document.getElementById('older-images-notice'), { api, activity, scope, main });
     const sidebar = document.querySelector('aside.sidebar');
     // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`, a collection's `collection/<id>`.
     const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}`
@@ -260,6 +263,7 @@ function mountWorkspace() {
 
     function renderNow(route) {
         leaveGuard = null;
+        olderImages.showFor(route);
         // A shared page dialog never stays open over the next route.
         closeWorkspaceDialog();
         if (route.id === 'system' && system && currentKey === 'system') {

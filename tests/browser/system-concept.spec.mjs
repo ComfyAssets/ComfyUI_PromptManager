@@ -683,6 +683,8 @@ async function watchedSources(request) {
 
 for (const theme of THEMES) for (const [width, height] of SIZES) for (const notice of [true, false]) {
     const variant = notice ? 'with' : 'without';
+    test.describe(() => {
+    test.use({ olderImagesNotice: notice });
     test(`sources matches the concept ${variant} the notice ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
         await page.setViewportSize({ width, height });
         const server = await watchedSources(request);
@@ -693,8 +695,11 @@ for (const theme of THEMES) for (const [width, height] of SIZES) for (const noti
         expect(diffInventory(mapSourcesConcept(concept, server), production)).toEqual([]);
         expect(production.pageScroll).toBe(false);
     });
+    });
 }
 
+test.describe(() => {
+test.use({ olderImagesNotice: true });
 test('sources comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     const server = await watchedSources(request);
@@ -736,6 +741,7 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     expect(await paths()).toEqual(expect.arrayContaining(['operation.borderTopColor']));
     await undoToken();
     expect(diffInventory(expected, await measure())).toEqual([]);
+});
 });
 
 /**

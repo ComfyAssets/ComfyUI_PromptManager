@@ -174,3 +174,19 @@ test('D158: "Save prompts from other workflows" drafts save_foreign_runs, disabl
     assert.deepEqual(foreignRunsState({ value: true, monitoring: false, stopping: true }),
         { disabled: false, checked: true, note: FOREIGN_RUNS.off });
 });
+
+test('a failed notice write still dismisses for this page and tells watchers (#527)', async () => {
+    const { noticeDismissed, dismissNotice } = await sourcesModule;
+    const denied = () => { throw new Error('SecurityError'); };
+    assert.equal(noticeDismissed(denied), false);
+    assert.equal(dismissNotice(denied), false);
+    assert.equal(noticeDismissed(denied), true);
+});
+
+test('sourceCount reads the effective sources, null when the answer does not say (#527)', async () => {
+    const { sourceCount } = await import('../../web/js/workspace/older-images-notice.mjs');
+    assert.equal(sourceCount({ sources: { effective: [{}, {}] } }), 2);
+    assert.equal(sourceCount({ sources: { effective: [] } }), 0);
+    assert.equal(sourceCount({ sources: {} }), null);
+    assert.equal(sourceCount(null), null);
+});
