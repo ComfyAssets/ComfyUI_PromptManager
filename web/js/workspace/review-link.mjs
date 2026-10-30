@@ -71,7 +71,7 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
     const warning = el('p', '', 'warning-note');
     warning.setAttribute('role', 'status');
     warning.hidden = true;
-    const actions = el('div', undefined, 'dialog-actions');
+    const actions = el('div', undefined, 'dialog-actions review-link-actions');
     const cancel = createButton(LINK_COPY.cancel);
     const submit = createButton(LINK_COPY.action, 'ca-primary');
     actions.append(cancel, submit);

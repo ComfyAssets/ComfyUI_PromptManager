@@ -642,6 +642,8 @@ test('#536: nothing selectable says why and links through the picker, then the n
     const negative = dialog.getByRole('combobox', { name: 'Negative prompt', exact: true });
     await expect(negative.locator('option')).toHaveText(['Choose a negative…', 'washed out', 'grainy', 'No negative']);
     await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await expect(submit).toHaveCSS('opacity', '0.55');
+    await expect(harbor).toHaveAttribute('aria-pressed', 'true');
     await negative.selectOption({ label: 'grainy' });
     const linked = page.waitForResponse(item => /\/link$/.test(item.url()));
     await submit.click();
