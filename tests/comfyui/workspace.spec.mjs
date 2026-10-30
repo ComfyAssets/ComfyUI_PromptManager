@@ -8,7 +8,7 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
         text: `Workspace host smoke ${testInfo.project.name}`, tags: ['workspace-host'],
     } });
     expect(saved.ok()).toBe(true);
-    const stats = (await (await request.get('/prompt_manager/stats')).json()).stats;
+    const library = await (await request.get('/prompt_manager/library?limit=1')).json();
     const workspace = await context.newPage();
     const errors = [];
     workspace.on('pageerror', error => errors.push(error.message));
@@ -16,7 +16,7 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
         await workspace.goto('/prompt_manager/workspace#/overview');
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Overview');
         await expect(workspace.locator('dt').filter({ hasText: /^Prompts$/ }).locator('+ dd'))
-            .toHaveText(stats.total_prompts.toLocaleString());
+            .toHaveText(library.total.toLocaleString());
         await workspace.getByRole('combobox', { name: 'Theme' }).selectOption('light');
         await expect(workspace.locator('body')).toHaveAttribute('data-ca-theme', 'light');
         const imageResponse = workspace.waitForResponse(response => {

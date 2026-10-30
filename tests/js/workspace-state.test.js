@@ -123,17 +123,29 @@ test('a job of the Activity page is its own deep link', async () => {
     dispose();
 });
 
-test('statistics preserve zero and reject incomplete or invalid counts', async () => {
-    const { summarizeStats } = await source;
-    assert.deepEqual(summarizeStats({total_prompts:0, total_images:12, total_tags:3}), [
-        ['Prompts', 0], ['Images', 12], ['Tags', 3],
-    ]);
-    for (const stats of [undefined, null, {}, {total_prompts:0, total_images:-1, total_tags:0},
-        {total_prompts:'2', total_images:0, total_tags:0},
-        {total_prompts:Infinity, total_images:0, total_tags:0},
-        {total_prompts:0, total_images:1.5, total_tags:0}]) {
-        assert.throws(() => summarizeStats(stats), /statistics/i);
-    }
+test('Overview cards show the count of the page they name', async () => {
+    const { summarizeOverviewCounts, OVERVIEW_COUNT_ROUTES } = await source;
+    assert.deepEqual(OVERVIEW_COUNT_ROUTES, ['library', 'images', 'tags']);
+    const counts = new Map([['library', 64], ['images', 122], ['tags', 306], ['favorites', 8]]);
+    assert.deepEqual(summarizeOverviewCounts(counts), {
+        cards: [['Prompts', 64], ['Images', 122], ['Tags', 306]], pending: false, failed: false, empty: false,
+    });
+});
+
+test('Overview tells loading, failed and really empty counts apart', async () => {
+    const { summarizeOverviewCounts } = await source;
+    const nothing = summarizeOverviewCounts(new Map());
+    assert.deepEqual([nothing.pending, nothing.failed, nothing.empty], [true, false, false]);
+    assert.deepEqual(nothing.cards, [['Prompts', null], ['Images', null], ['Tags', null]]);
+    // A slow Images read does not hold back the cards already read.
+    const partial = summarizeOverviewCounts(new Map([['library', 0], ['tags', 0]]));
+    assert.deepEqual(partial.cards, [['Prompts', 0], ['Images', null], ['Tags', 0]]);
+    assert.deepEqual([partial.pending, partial.failed, partial.empty], [true, false, false]);
+    const failed = summarizeOverviewCounts(new Map([['library', 2], ['images', null], ['tags', 3]]));
+    assert.deepEqual([failed.pending, failed.failed, failed.empty], [false, true, false]);
+    assert.deepEqual(failed.cards[1], ['Images', null]);
+    const empty = summarizeOverviewCounts(new Map([['library', 0], ['images', 0], ['tags', 0]]));
+    assert.deepEqual([empty.pending, empty.failed, empty.empty], [false, false, true]);
 });
 
 test('router normalizes unknown routes, avoids duplicate renders, and disposes its listener', async () => {

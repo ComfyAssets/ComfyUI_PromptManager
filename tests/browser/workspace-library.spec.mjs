@@ -176,7 +176,7 @@ test('failed library reads retry while late search responses cannot overwrite ne
 // D153 (#447): a Browse visit that still names the retired "Highest rated" sort opens the shelf on Recently added.
 test('a Library visit with the retired rating sort opens on Recently added',async({page})=>{
     await page.goto(route);await expect(cards(page)).toHaveCount(3);
-    const sorts=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library')sorts.push(url.searchParams.get('sort'));});
+    const sorts=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library'&&url.searchParams.get('limit')!=='1')sorts.push(url.searchParams.get('sort'));});// limit=1 is a sidebar count read, not the shelf
     await page.goto('/prompt_manager/workspace#/overview');await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     await page.evaluate(async()=>{const {browseLibrary}=await import('/prompt_manager/js/workspace/library.mjs');browseLibrary({sort:'rating'});});
     await expect(cards(page)).toHaveCount(3);

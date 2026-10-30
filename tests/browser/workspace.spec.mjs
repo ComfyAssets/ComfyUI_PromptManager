@@ -60,6 +60,10 @@ test.afterEach(async ({ page, browserName }) => {
 
 test('workspace starts with real persisted statistics without mutating data', async ({ page, request }) => {
     const before = await (await request.get('/prompt_manager/stats')).json();
+    const total = async path => (await (await request.get(`/prompt_manager/${path}`)).json()).total;
+    const counts = [['Prompts', await total('library?limit=1')],
+        ['Images', await total('images/output?mode=workspace&limit=1')],
+        ['Tags', await total('vocabulary/tags?limit=1')]];
     const mutations = [];
     page.on('request', request => {
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) mutations.push(request.url());
@@ -69,10 +73,11 @@ test('workspace starts with real persisted statistics without mutating data', as
     await expect(page.getByRole('navigation', { name: 'Workspace', exact: true })).toBeVisible();
     const main = page.locator('#workspace-main');
     await expect(main.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
-    for (const [label, key] of [['Prompts', 'total_prompts'], ['Images', 'total_images'], ['Tags', 'total_tags']]) {
-        await expect(statistic(page, label)).toHaveText(String(before.stats[key]));
+    for (const [label, count] of counts) await expect(statistic(page, label)).toHaveText(String(count));
+    // #547: a card and the sidebar badge of the page it names show one number.
+    for (const [route, count] of [['library', counts[0][1]], ['images', counts[1][1]], ['tags', counts[2][1]]]) {
+        await expect(page.locator(`aside.sidebar nav [data-route="${route}"] .nav-count`)).toHaveText(String(count));
     }
-    expect(before.stats.total_prompts).toBe(2);
     expect((await (await request.get('/prompt_manager/stats')).json()).stats).toEqual(before.stats);
     expect(mutations).toEqual([]);
     await expect(page.locator('iframe')).toHaveCount(0);
@@ -373,25 +378,65 @@ test('unavailable host palette falls back to the system theme and tracks system 
 });
 
 test('overview reports loading, offers retry after failure and renders real empty statistics', async ({ page }) => {
+    const sources = ['**/prompt_manager/library?limit=1', '**/prompt_manager/images/output?mode=workspace&limit=1',
+        '**/prompt_manager/vocabulary/tags?limit=1'];
     let release;
     const pending = new Promise(resolve => { release = resolve; });
-    await page.route('**/prompt_manager/stats', async route => {
-        await pending;
-        await route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } });
-    });
+    for (const source of sources) {
+        await page.route(source, async route => {
+            await pending;
+            await route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } });
+        });
+    }
     await page.goto(`${workspace}#/overview`);
     await expect(page.locator('#workspace-main').getByRole('status')).toBeVisible();
     release();
     await expect(page.locator('#workspace-main').getByRole('alert')).toBeVisible();
-    await page.unroute('**/prompt_manager/stats');
-    await page.route('**/prompt_manager/stats', route => route.fulfill({
-        json: { success: true, stats: { total_prompts: 0, total_images: 0, total_tags: 0 } },
-    }));
+    for (const source of sources) {
+        await page.unroute(source);
+        await page.route(source, route => route.fulfill({ json: { success: true, total: 0, items: [], images: [], tags: [] } }));
+    }
     await page.getByRole('button', { name: 'Retry', exact: true }).click();
     await expect(page.locator('#workspace-main').getByRole('alert')).toHaveCount(0);
     for (const label of ['Prompts', 'Images', 'Tags']) {
         await expect(statistic(page, label)).toHaveText('0');
     }
+    await expect(page.locator('#workspace-main .empty-state')).toBeVisible();
+});
+
+test('a slow or failed Images read leaves the other Overview cards and retries only itself', async ({ page }) => {
+    const images = '**/prompt_manager/images/output?mode=workspace&limit=1';
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await page.route(images, async route => {
+        await pending;
+        await route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } });
+    });
+    await page.goto(`${workspace}#/overview`);
+    await expect(statistic(page, 'Prompts')).toHaveText('2');
+    await expect(statistic(page, 'Images')).toHaveText('–');
+    await expect(page.locator('#workspace-main').getByRole('status')).toBeVisible();
+    release();
+    await expect(page.locator('#workspace-main').getByRole('alert')).toBeVisible();
+    await expect(statistic(page, 'Prompts')).toHaveText('2');
+    await page.unroute(images);
+    let libraryReads = 0;
+    page.on('request', request => { if (new URL(request.url()).pathname === '/prompt_manager/library') libraryReads++; });
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(page.locator('#workspace-main').getByRole('alert')).toHaveCount(0);
+    await expect(statistic(page, 'Images')).toHaveText(/^\d+$/);
+    expect(libraryReads).toBe(0);
+});
+
+test('opening Overview reads each count once beside the sidebar', async ({ page }) => {
+    let reads = 0;
+    page.on('request', request => {
+        const url = new URL(request.url());
+        if (url.pathname === '/prompt_manager/images/output' && url.searchParams.get('favorites') === null) reads++;
+    });
+    await page.goto(`${workspace}#/overview`);
+    await expect(statistic(page, 'Images')).toHaveText(/^\d+$/);
+    expect(reads).toBe(1);
 });
 
 test('small screens keep navigation and the theme accessible without horizontal page overflow', async ({ page }) => {
@@ -410,11 +455,9 @@ test('leaving a loading overview prevents its delayed result from replacing the 
     let completed;
     const pending = new Promise(resolve => { release = resolve; });
     const finished = new Promise(resolve => { completed = resolve; });
-    await page.route('**/prompt_manager/stats', async route => {
+    await page.route('**/prompt_manager/library?limit=1', async route => {
         await pending;
-        await route.fulfill({ json: {
-            success: true, stats: { total_prompts: 999, total_images: 888, total_tags: 777 },
-        } }).catch(() => {});
+        await route.fulfill({ json: { success: true, total: 999, items: [] } }).catch(() => {});
         completed();
     });
     await page.goto(`${workspace}#/overview`);
@@ -437,7 +480,7 @@ test('leaving a loading overview prevents its delayed result from replacing the 
 test('cached-page restoration remounts one working shell and refreshes its data', async ({ page }) => {
     let reads = 0;
     page.on('request', request => {
-        if (new URL(request.url()).pathname === '/prompt_manager/stats') reads++;
+        if (new URL(request.url()).pathname === '/prompt_manager/vocabulary/tags') reads++;
     });
     await page.goto(`${workspace}#/overview`);
     await expect(statistic(page, 'Prompts')).toHaveText('2');
