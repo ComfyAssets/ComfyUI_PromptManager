@@ -36,10 +36,18 @@ except ImportError:
 
 try:
     from ...utils import exit_signal
-    from ...utils.media_folders import in_trash_below_roots, is_skipped_folder
+    from ...utils.media_folders import (
+        in_trash_below_roots,
+        in_trash_folder,
+        is_skipped_folder,
+    )
 except ImportError:
     from utils import exit_signal
-    from utils.media_folders import in_trash_below_roots, is_skipped_folder
+    from utils.media_folders import (
+        in_trash_below_roots,
+        in_trash_folder,
+        is_skipped_folder,
+    )
 
 try:
     from ...database.image_removal import mark_hides
@@ -1089,13 +1097,21 @@ class AdminRoutesMixin:
         return result
 
     def _delete_one_duplicate(self, image_path, output_path):
-        """Delete one file and its thumbnail; return a failure reason or None."""
+        """Delete one file and its thumbnail; return a failure reason or None.
+
+        What is removed is exactly the folder's real path plus the name: a
+        link is removed itself, never its target, and the preview removed is
+        that name's. Both the link's place and what it leads to are checked.
+        """
         file_path = Path(image_path)
         if not file_path.is_absolute():
             file_path = output_path / file_path
 
         try:
-            rel_path = file_path.resolve().relative_to(output_path.resolve())
+            real_root = output_path.resolve()
+            rel_path = file_path.resolve().relative_to(real_root)
+            exact = Path(os.path.realpath(file_path.parent)) / file_path.name
+            exact_rel = exact.relative_to(real_root)
         except ValueError:
             self.logger.warning(
                 f"Attempted to delete file outside output directory: {image_path}"
@@ -1104,17 +1120,19 @@ class AdminRoutesMixin:
 
         if file_path.suffix.lower() not in DELETABLE_MEDIA_EXTENSIONS:
             return "not a media file"
-        if "thumbnails" in rel_path.parts:
+        if "thumbnails" in rel_path.parts or "thumbnails" in exact_rel.parts:
             return "thumbnails are managed by the gallery"
-        if in_trash_below_roots(file_path, [output_path]):
+        if in_trash_below_roots(file_path, [output_path]) or in_trash_folder(
+            str(exact_rel)
+        ):
             return "it is in a trash folder"  # never unlinked from a trash (#543)
 
         if not file_path.is_file():
             return "file not found"
 
-        os.remove(file_path)
+        os.remove(exact)
         self.logger.info(f"Deleted duplicate image: {image_path}")
-        _remove_thumbnail(output_path.resolve(), rel_path, self.logger)
+        _remove_thumbnail(real_root, exact_rel, self.logger)
         return None
 
     async def get_statistics(self, request):

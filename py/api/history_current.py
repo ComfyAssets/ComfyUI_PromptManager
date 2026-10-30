@@ -252,6 +252,10 @@ def _open_current_target(
     A *preview* (a file under ``thumbnails/``) may also be JPEG XL (#317)."""
     if _canonical(target) != target:
         raise CurrentLocationUnavailable("not_authorized", stale=True)
+    if in_trash_below_roots(target, [namespace]):
+        # Also at the open: the cover chooses its preview after the candidate
+        # check, and a preview can be a link into a trash folder (#543).
+        raise CurrentLocationUnavailable("missing")
     if not _authorized(target, namespace, scope):
         raise CurrentLocationUnavailable("not_authorized")
     suffix = target.suffix.lower()

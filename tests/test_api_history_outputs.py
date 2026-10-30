@@ -26,6 +26,7 @@ from tests.test_recorded_saver_anchor import LLM_TEXT, text_generate_run
 from utils.execution_contexts import ContextBundle
 from utils.execution_history_events import make_finish, make_start
 from utils.execution_outputs import OutputBundle, OutputReference, snapshot_output_roots
+from py.api.images import media_thumbnail_rel
 from py.config import GalleryConfig
 
 
@@ -236,6 +237,32 @@ class HistoryOutputAPITests(ImageAPITestCase):
         candidate = page["items"][0]["current_candidate"]
         self.assertEqual(candidate["status"], "unavailable")
         self.assertEqual(candidate["reason"], "missing")
+
+    async def test_a_preview_linked_into_a_trash_folder_does_not_open(self):
+        # #543: the cover picks its preview after the candidate check.
+        make_png(self.output_dir / "image.png")
+        trashed = self.output_dir / ".Trash-1000" / "files"
+        trashed.mkdir(parents=True)
+        make_png(trashed / "secret.png", color=(0, 0, 255))
+        preview = self.output_dir / media_thumbnail_rel(Path("image.png"))
+        preview.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(trashed / "secret.png", preview)
+        except OSError:
+            if os.environ.get("GITHUB_ACTIONS"):
+                raise
+            self.skipTest("this machine cannot make symlinks")
+        media = await self.media(self.capture([self.ref()]))
+        response = await self.current(media["thumbnail_url"])
+        body = await response.read()
+        # Never the trashed bytes: the link is ignored or refused at the open.
+        self.assertNotEqual(body, (trashed / "secret.png").read_bytes())
+        mod = importlib.import_module("py.api.history_current")
+        scope = mod.snapshot_current_output_scope(self.api)
+        with self.assertRaises(mod.CurrentLocationUnavailable):
+            mod._open_current_target(
+                mod._canonical(preview), self.output_dir, scope, True
+            )
 
     async def test_complete_zero_incomplete_unavailable_and_not_captured_are_distinct(
         self,

@@ -2495,7 +2495,10 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   `file-missing`, a prompt's media listing); `/images/serve` and the autotag target ask
   `in_trash_below_roots` too, `media_target` refuses by name (annotations, collections,
   whose capture store denies links and aliases), and previews are neither made nor served, the fallback past the preview gate's cap
-  included (`_quick_source`). A History output in one answers `missing`. The delete
+  included (`_quick_source`). A History output in one answers `missing`, checked at the
+  candidate and again at the open (a preview can be a link). The legacy duplicate delete
+  removes exactly the folder's real path plus the name (a link itself, never its target)
+  and refuses if either spelling is in a trash folder; `file_problem` refuses too. The delete
   and Return flows never use this gate. Windows spellings (trailing dots and spaces, case,
   8.3) run for real on the Windows job in `tests/test_trash_gate_routes.py`.
 - **An output folder that is a mount point** (#543): the mount's own `.Trash-$uid` and

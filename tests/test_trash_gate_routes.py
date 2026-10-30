@@ -26,6 +26,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_api_admin import _write_png
     from test_image_delete_routes import ImageDeleteTestCase
 
+from py.api.duplicate_review import OUTSIDE_SOURCE, file_problem
 from py.api.images import media_thumbnail_rel
 from py.api.thumbnail_auto import OVER, _quick_source, _thumbnail_source
 from utils.media_folders import in_trash_below_roots, in_trash_folder, is_trash_folder
@@ -233,6 +234,46 @@ class TestTheGate(_GateCase):
                 reason = self.api._delete_one_duplicate(relative, self.root)
                 self.assertEqual(reason, "it is in a trash folder")
                 self.assertTrue((self.root / relative).exists())
+
+    async def test_a_link_inside_a_trash_folder_is_never_removed(self):
+        self.links()
+        link = self.root / ".Trash-1000" / "files" / "back.png"
+        os.symlink(self.root / "kept.png", link)
+        reason = self.api._delete_one_duplicate(".Trash-1000/files/back.png", self.root)
+        self.assertEqual(reason, "it is in a trash folder")
+        self.assertTrue(link.is_symlink())
+        self.assertTrue((self.root / "kept.png").exists())
+
+    async def test_the_legacy_delete_removes_the_link_itself_and_its_own_preview(self):
+        self.links()
+        os.symlink(self.root / "kept.png", self.root / "alias.png")
+        thumbs = {}
+        for name in ("kept.png", "alias.png"):
+            thumbs[name] = self.root / media_thumbnail_rel(Path(name))
+            thumbs[name].parent.mkdir(parents=True, exist_ok=True)
+            thumbs[name].write_bytes(b"preview")
+        self.assertIsNone(self.api._delete_one_duplicate("alias.png", self.root))
+        self.assertFalse((self.root / "alias.png").is_symlink())
+        self.assertTrue((self.root / "kept.png").is_file())
+        self.assertFalse(thumbs["alias.png"].exists())
+        self.assertTrue(thumbs["kept.png"].exists())
+
+    async def test_a_linked_folder_out_of_the_root_removes_nothing_there(self):
+        self.links()
+        outside = self.outside_dir / "elsewhere"
+        outside.mkdir(parents=True)
+        os.symlink(self.root / "kept.png", outside / "back.png")
+        os.symlink(outside, self.root / "out", target_is_directory=True)
+        reason = self.api._delete_one_duplicate("out/back.png", self.root)
+        self.assertEqual(reason, "outside output directory")
+        self.assertTrue((outside / "back.png").is_symlink())
+
+    async def test_a_duplicate_removal_review_refuses_a_trash_folder(self):
+        path = self.root / ".Trash-1000" / "files" / "x.png"
+        problem = file_problem(
+            path, self.root, None, path.stat().st_size, hash_check=False
+        )
+        self.assertEqual(problem, OUTSIDE_SOURCE)
 
     async def test_a_source_named_like_a_trash_folder_still_reads(self):
         source = self.root / ".Trash-77"
