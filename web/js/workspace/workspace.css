@@ -493,6 +493,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 }
 .more-menu-list[hidden] { display: none; }
 .more-menu-list > button { justify-content: flex-start; text-align: left; width: 100%; white-space: nowrap; }
+.legacy-pages { margin: 16px 0 0; color: var(--muted); /* D165 */ }
 
 /* D164 (#524): the prompt page has four heading actions and titles of any length, which the concept never shows. From
    the concept's sidebar breakpoint up the actions keep one row and the title takes what is left, clamped to two lines

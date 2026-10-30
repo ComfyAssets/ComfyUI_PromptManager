@@ -485,7 +485,7 @@ test(`${variant} respects the existing Web UI display preference`,async({page})=
     });
     await page.evaluate(()=>node._focusedSettingsReady);
     await page.getByRole('button',{name:'Web UI ↗',exact:true}).click();
-    expect(await page.evaluate(()=>window.openArgs)).toEqual(['/prompt_manager/web','_blank']);
+    expect(await page.evaluate(()=>window.openArgs)).toEqual(['/prompt_manager/workspace#/library','_blank']);
 });
 
 test(`${variant} reports blocked Web UI popups without leaving the workflow`,async({page})=>{

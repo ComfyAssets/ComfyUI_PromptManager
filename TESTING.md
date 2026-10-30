@@ -2641,8 +2641,8 @@ applied), D35 (singular captions), D36 (sorted categories), D40 (the continuatio
 the grid) and D43 (sorted chips, checked against the concept with its chips sorted).
 D44 needs no mapping: the comparison runs with no Refine filter active, so the button
 reads "Filters" as the concept's does. Nothing else follows the grid: the legacy
-"Current prompt library" link is removed from the shelf; Overview's legacy card ("Open
-existing prompt library") and the sidebar still link `/prompt_manager/admin`
+"Current prompt library" link is removed from the shelf; the legacy Library stays at
+`/prompt_manager/admin` by direct URL, linked only from System (#525, D165)
 (`tests/browser/workspace.spec.mjs`). `library comparison detects
 mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
 
@@ -3117,8 +3117,8 @@ npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
 ### Inspect a file page and recorded deviations (#249 local Inspect, PR L2)
 
 `#/inspect` ("Inspect a file") is a native workspace route; it no longer hands off to
-the legacy metadata page, which stays reachable from Overview's "Open existing metadata
-inspector" card (`/prompt_manager/gallery.html`). The page is the concept's `#metadata`
+the legacy metadata page, which stays at its URL
+(`/prompt_manager/gallery.html`) linked only from System (#525, D165). The page is the concept's `#metadata`
 (app.js `renderMetadata` a740–748, selection a1715–1729; style.css 709–722, 1180–1194,
 1543–1545, 1559–1564) in the concept's own classes (`.surface`, `.file-drop`,
 `.spaced-20`, `.local-file-preview`, all from the synced `concept.css`), with no
@@ -7029,8 +7029,8 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 ## Native vocabulary UI (#236)
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
-longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for its own page; tag search and sort, the untagged
+longer hands off to the legacy tag manager. That page stays at
+`/prompt_manager/admin#/tags` linked only from System (#525, D165); tag search and sort, the untagged
 entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
 (#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
 library's selection bar, D151). A prompt's category is changed in the Prompt library
@@ -7152,3 +7152,23 @@ until acceptance. Not compared: hover states and the dialog focus ring (the page
 keyboard ring and link ring offsets are asserted). No coverage floor was lowered;
 `vocabulary-state.mjs`, `vocabulary.mjs` and `vocabulary-dialog.mjs` have additive
 floors in `frontend-coverage-baseline.json`.
+
+## Cutover entry points (#525)
+
+The top-bar PM button, both Web UI buttons and `/prompt_manager/web` open
+`/prompt_manager/workspace#/library` (`web/js/workspace-entry.js`; `web/index.html` keeps its
+own copy, pinned by `tests/js/workspace-entry.test.js`). Overview's cards open native hashes.
+The legacy pages (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.html`) stay at
+their URLs, and admin's Metadata and Gallery buttons still open their legacy pages (maintainer
+ruling; pinned by `legacy-system-links.spec.mjs`).
+
+- **D165** (beyond the concept, maintainer ruling 2026-10-30): System's Overview section ends
+  with one small line, "Legacy pages: Dashboard · Tags · Gallery · Metadata viewer"
+  (`.legacy-pages`, new tabs), outside `.settings-layout`. The concept has no such line;
+  `mapOverviewConcept` adds it to the page tree.
+- **Load failure** (maintainer ruling 2026-10-30): `web/workspace.html` holds static
+  `#workspace-boot-failure` with the same four links, styled inline so it needs no stylesheet.
+  An inline guard shows it at `load` unless `index.mjs` set `data-workspace-booted`, so a failed
+  fetch of any module and a throw while starting are both covered; `workspace.spec.mjs` tests
+  both. Editing `workspace.html` needs a ComfyUI restart, because the server caches it. The PM button has no
+page-fixture test; it is proven on the managed host (`tests/comfyui/prompt-manager.spec.mjs`).

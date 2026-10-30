@@ -34,10 +34,9 @@ function element(tag, text, className) {
     return node;
 }
 
-function legacyLink(route) {
+function cardLink(route) {
     const link = element('a', route.action, 'workspace-link');
-    // A native card (System, Q12) links its workspace hash; a legacy tool's page goes through the mount prefix.
-    link.href = route.native ? route.href : resolveUrl(route.href);
+    link.href = route.href;
     return link;
 }
 
@@ -485,11 +484,11 @@ function mountWorkspace() {
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);
         const tools = element('section', undefined, 'surface');
-        tools.append(element('h2', 'Continue creating'), element('p', 'Your existing tools remain available while the new workspaces take shape.'));
+        tools.append(element('h2', 'Continue creating'), element('p', 'Pick up where you left off in your images, prompts and tools.'));
         const cards = element('div', undefined, 'tool-grid');
         for (const target of routes.filter(item => item.href)) {
             const card = element('article', undefined, 'tool-card');
-            card.append(element('h3', target.label), element('p', target.description, 'small'), legacyLink(target));
+            card.append(element('h3', target.label), element('p', target.description, 'small'), cardLink(target));
             cards.append(card);
         }
         tools.append(cards);
@@ -529,6 +528,8 @@ function mountWorkspace() {
 }
 
 mountWorkspace();
+// #525: web/workspace.html shows its legacy-page fallback at `load` unless the shell got this far.
+document.documentElement.dataset.workspaceBooted = 'true';
 window.addEventListener('pageshow', event => {
     if (event.persisted) mountWorkspace();
 });

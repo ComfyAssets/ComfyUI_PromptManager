@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PromptManager - Redirecting to Admin</title>
+    <title>PromptManager - Opening the workspace</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -49,13 +49,13 @@
     <div class="container">
         <div class="spinner"></div>
         <h1>🔍 PromptManager</h1>
-        <p>Redirecting to Admin Dashboard...</p>
-        <p><small>Loading the full-featured prompt management interface</small></p>
+        <p>Opening the workspace...</p>
+        <noscript><p><a href="workspace#/library">Open the workspace</a></p></noscript>
     </div>
 
     <script>
-        // Redirect to admin interface immediately
-        window.location.href = window.location.pathname.replace(/\/(?:web|index\.html)\/?$/, '/admin');
+        // Replace, so Back doesn't return here and bounce. Same route as web/js/workspace-entry.js (#525).
+        window.location.replace(window.location.pathname.replace(/\/(?:web|index\.html)\/?$/, '/workspace#/library'));
     </script>
 </body>
 </html>

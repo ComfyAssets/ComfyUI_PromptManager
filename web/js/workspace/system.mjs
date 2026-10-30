@@ -12,7 +12,7 @@
  * listeners and timers never outlive it. The drafts are module-level (Q10): they live for the page session.
  */
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { SYSTEM_SECTIONS, navigateTo } from './state.mjs';
+import { LEGACY_PAGES, SYSTEM_SECTIONS, navigateTo } from './state.mjs';
 import { createSystemDrafts, DRAFT_DOMAINS, INVALID_SETTING_CODE } from './system-state.mjs';
 import { sectionNav } from './system-controls.mjs';
 import { mountOverview } from './system-overview.mjs';
@@ -143,6 +143,22 @@ export const DELIVERED_SECTIONS = Object.freeze({
  * under one of this tab's drafts flags that draft (D92's conflict status), including a change made while System was
  * not mounted (the drafts outlive it, Q10).
  */
+/** D165 (#525): one small line under System's Overview, the workspace's only visible way to the legacy pages. */
+function legacyPagesLine() {
+    const line = el('p', 'small legacy-pages');
+    line.append('Legacy pages: ');
+    LEGACY_PAGES.forEach((page, index) => {
+        const link = document.createElement('a');
+        link.textContent = page.label;
+        link.href = window.ApiClient.resolveUrl(page.href);
+        link.target = '_blank';
+        link.rel = 'noopener';
+        if (index) line.append(' · ');
+        line.append(link);
+    });
+    return line;
+}
+
 export function mountSystem(main, api, scope, { section, activity, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
     const store = systemDrafts(api);
     jobs = activity;
@@ -168,6 +184,7 @@ export function mountSystem(main, api, scope, { section, activity, sections = DE
     saveRow.append(status, save);
     layout.append(saveRow);
     main.append(nav, layout);
+    const legacyPages = legacyPagesLine();
 
     const paintStatus = () => {
         status.textContent = store.statusText();
@@ -193,6 +210,8 @@ export function mountSystem(main, api, scope, { section, activity, sections = DE
         // Every section is delivered (S12), and the router only names known sections (state.mjs).
         const nodes = sections[next](layout, { api, activity, scope: sectionScope, drafts: store });
         layout.prepend(...nodes);
+        if (next === 'overview') main.append(legacyPages);
+        else legacyPages.remove();
         paintStatus();
     }
     show(section);
