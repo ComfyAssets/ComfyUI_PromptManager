@@ -11,12 +11,12 @@ const sidebarLink = (page, label) => page.locator('aside.sidebar nav').getByRole
 const sidebarLinks = page => page.locator('aside.sidebar nav a');
 const routes = [
     ['overview', 'Overview', null],
-    // D29: Images no longer links the legacy gallery; Overview's tool cards still do.
+    // D29: Images no longer links the legacy gallery.
     ['images', 'Images', null],
-    // #249 E3: the shelf no longer links the legacy Library; Overview's tool card still does.
+    // #249 E3: the shelf no longer links the legacy Library.
     ['library', 'Prompt library', null],
     ['tags', 'Tags & categories', null],
-    // #249 local Inspect: the native Inspect a file page; Overview's tool card still links the legacy metadata page.
+    // #249 local Inspect: the native Inspect a file page.
     ['inspect', 'Inspect a file', null],
     // #249 System S2: native System; every section native since S12 (D94 retired, asserted below).
     ['system', 'System', null],
@@ -93,20 +93,41 @@ test('all shell destinations deep-link, reload and expose working existing appli
         await page.reload();
         await expect(main.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible();
     }
-    // D29 and #249 E3: the legacy gallery and Library are reached from Overview's tool cards, not from their pages.
+    // #525: Overview's cards open the native pages, and no workspace page links a legacy one.
+    for (const [action, hash, title] of [
+        ['Open Images', '#/images', 'Images'],
+        ['Open Prompt library', '#/library', 'Prompt library'],
+        ['Open Tags & categories', '#/tags', 'Tags & categories'],
+        ['Open Inspect a file', '#/inspect', 'Inspect a file'],
+        ['Open System', '#/system/overview', 'System'],
+    ]) {
+        await page.goto(`${workspace}#/overview`);
+        const main = page.locator('#workspace-main');
+        const card = main.getByRole('link', { name: action, exact: true });
+        await expect(card).toHaveAttribute('href', hash);
+        await card.click();
+        await expect(page).toHaveURL(new RegExp(`/prompt_manager/workspace${hash}$`));
+        await expect(main.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible();
+    }
     await page.goto(`${workspace}#/overview`);
-    const library = page.locator('#workspace-main').getByRole('link', { name: 'Open existing prompt library', exact: true });
-    await expect(library).toHaveAttribute('href', '/prompt_manager/admin');
-    await expect(await request.get('/prompt_manager/admin')).toBeOK();
-    // The legacy metadata page stays reachable from Overview beside the native Inspect page.
-    const metadata = page.locator('#workspace-main').getByRole('link', { name: 'Open existing metadata inspector', exact: true });
-    await expect(metadata).toHaveAttribute('href', '/prompt_manager/gallery.html');
-    await expect(await request.get('/prompt_manager/gallery.html')).toBeOK();
-    const gallery = page.locator('#workspace-main').getByRole('link', { name: 'Open existing image gallery', exact: true });
-    await expect(gallery).toHaveAttribute('href', '/prompt_manager/gallery');
-    await expect(await request.get('/prompt_manager/gallery')).toBeOK();
-    await gallery.click();
-    await expect(page).toHaveURL(/\/prompt_manager\/gallery$/);
+    await expect(page.locator('#workspace-main').getByRole('link', { name: 'Open Images', exact: true })).toBeVisible();
+    await expect(page.locator('a[href*="/prompt_manager/admin"], a[href*="/prompt_manager/gallery"]')).toHaveCount(0);
+    await expect(page.locator('#workspace-main').getByText('Your existing tools remain available')).toHaveCount(0);
+    // The legacy pages themselves stay at their URLs.
+    for (const legacy of ['/prompt_manager/admin', '/prompt_manager/gallery', '/prompt_manager/gallery.html']) {
+        await expect(await request.get(legacy)).toBeOK();
+    }
+});
+
+test('/prompt_manager/web lands on the workspace Library and Back does not bounce through it (#525)', async ({ page }) => {
+    await page.goto(`${workspace}#/overview`);
+    await page.evaluate(() => { location.href = '/prompt_manager/web'; });
+    await expect(page).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+    const main = page.locator('#workspace-main');
+    await expect(main.getByRole('heading', { level: 1, name: 'Prompt library', exact: true })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/prompt_manager\/workspace#\/overview$/);
+    await expect(main.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
 });
 
 test('keyboard navigation, browser history and unknown routes remain usable', async ({ page }) => {

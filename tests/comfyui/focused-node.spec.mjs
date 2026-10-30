@@ -210,14 +210,14 @@ test(`${label} follows actual ComfyUI light and dark palettes`, async ({ page },
     }
 });
 
-test(`${label} Web UI button opens actual standalone pages`, async ({ page }) => {
+test(`${label} Web UI button opens the workspace; legacy pages still load`, async ({ page }) => {
     await addEditor(page, type);
     const popupPromise = page.waitForEvent('popup');
     await page.locator('.pm-focused').getByRole('button', { name: 'Web UI ↗', exact: true }).click();
     const popup = await popupPromise;
     await popup.waitForLoadState('domcontentloaded');
-    await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
-    await expect(popup.locator('body')).toContainText('Prompt');
+    await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+    await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
     await expect(page.locator('.pm-focused').getByRole('status').filter({ hasText: 'Web UI opened.' })).toHaveText('Web UI opened.');
     await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
     await expect(popup.locator('#addPromptBtn')).toBeVisible();

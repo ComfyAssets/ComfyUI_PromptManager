@@ -1,14 +1,15 @@
 export const routes = [
-    { id: 'images', label: 'Images', href: '/prompt_manager/gallery',
-        description: 'Browse your images, inspect their metadata and review generated tags.', action: 'Open existing image gallery' },
-    { id: 'library', label: 'Prompt library', href: '/prompt_manager/admin',
-        description: 'Find, edit and organize the prompts already in your library.', action: 'Open existing prompt library' },
-    // Native screen; `title` is the concept's breadcrumb/title, the href stays for Overview's card.
-    { id: 'tags', label: 'Tags & categories', title: 'Tags', href: '/prompt_manager/admin#/tags',
-        description: 'Explore your vocabulary and find the prompts associated with each tag.', action: 'Open existing tag manager' },
-    // Native screen (#249 local Inspect); the href stays for Overview's card to the legacy metadata page.
-    { id: 'inspect', label: 'Inspect a file', href: '/prompt_manager/gallery.html',
-        description: 'A standalone file uses the same image viewer and prompt actions.', action: 'Open existing metadata inspector' },
+    // `href` and `action` are Overview's card (#525): every card opens its native page, never a legacy one.
+    { id: 'images', label: 'Images', href: '#/images',
+        description: 'Browse your images, inspect their metadata and review generated tags.', action: 'Open Images' },
+    { id: 'library', label: 'Prompt library', href: '#/library',
+        description: 'Find, edit and organize the prompts already in your library.', action: 'Open Prompt library' },
+    // `title` is the concept's breadcrumb/title.
+    { id: 'tags', label: 'Tags & categories', title: 'Tags', href: '#/tags',
+        description: 'Explore your vocabulary and find the prompts associated with each tag.', action: 'Open Tags & categories' },
+    // #249 local Inspect.
+    { id: 'inspect', label: 'Inspect a file', href: '#/inspect',
+        description: 'A standalone file uses the same image viewer and prompt actions.', action: 'Open Inspect a file' },
     { id: 'overview', label: 'Overview' },
     // SAVED VIEWS' first row (#249 D51): Images filtered to favorites. No href, so Overview lists no card for it.
     { id: 'favorites', label: 'Favorites' },
@@ -18,10 +19,9 @@ export const routes = [
     { id: 'review', label: 'Needs review', title: 'Review' },
     // The concept's Activity (app.js renderActivity 732–738): this server session's jobs. No href: no Overview card.
     { id: 'activity', label: 'Activity' },
-    // Native System (#249 System S2): `#/system/<section>`. Q12: Overview's card opens its Overview section (`native`:
-    // a workspace hash, not a legacy page); every section is native (S12 retired D94's hand-off). The description is
-    // the concept's System heading (app.js renderSystem 700).
-    { id: 'system', label: 'System', href: '#/system/overview', native: true,
+    // Native System (#249 System S2): `#/system/<section>`. Q12: Overview's card opens its Overview section; every
+    // section is native (S12 retired D94's hand-off). The description is the concept's System heading (app.js renderSystem 700).
+    { id: 'system', label: 'System', href: '#/system/overview',
         description: 'Configuration, maintenance and recovery—with browsing kept in the workspace.', action: 'Open System' },
 ];
 

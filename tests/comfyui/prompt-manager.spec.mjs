@@ -84,7 +84,7 @@ test('all node schemas and extension entrypoints load from the real host', async
 });
 
 for (const type of ['PromptManager', 'PromptManagerText']) {
-    test(`${type} Web UI button opens actual standalone pages`, async ({ page }) => {
+    test(`${type} Web UI button opens the workspace; legacy pages still load`, async ({ page }) => {
         await page.evaluate(async type => {
             const { app } = await import('/scripts/app.js');
             const node = LiteGraph.createNode(type);
@@ -95,13 +95,24 @@ for (const type of ['PromptManager', 'PromptManagerText']) {
         await page.getByRole('button', { name: '🌐 Web UI', exact: true }).click();
         const popup = await popupPromise;
         await popup.waitForLoadState('domcontentloaded');
-        await expect(popup).toHaveURL(/\/prompt_manager\/(web|admin)/);
-        await expect(popup.locator('body')).toContainText('Prompt');
+        await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+        await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
         await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
         await expect(popup.locator('#addPromptBtn')).toBeVisible();
         await popup.close();
     });
 }
+
+test('top-bar PM button opens the workspace in either renderer', async ({ page }) => {
+    const button = page.locator('.promptmanager-top-button-group button, #pm-toolbar-btn').first();
+    await expect(button).toBeVisible();
+    const popupPromise = page.waitForEvent('popup');
+    await button.click();
+    const popup = await popupPromise;
+    await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
+    await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
+    await popup.close();
+});
 
 test('Classic controls follow actual ComfyUI light and dark palettes', async ({ page }, testInfo) => {
     await page.evaluate(async () => {
