@@ -560,6 +560,33 @@ class TestRevealInFileManager(unittest.TestCase):
                 shell.assert_not_called()
         self.popen.assert_not_called()
 
+    def test_a_path_outside_the_root_reaches_no_opener_on_any_branch(self):
+        # What limits a same-origin request's reach (#533): one check ahead of
+        # every branch, needing no symlink, so it also runs on plain Windows.
+        outside = self.root.parent / "elsewhere.png"
+        outside.write_bytes(b"png")
+        both = {"dbus-send": "/usr/bin/dbus-send", "xdg-open": "/usr/bin/xdg-open"}
+        shell = FakeShell()
+        startfile = MagicMock()
+        for platform in ("win32", "darwin", "linux"):
+            with (
+                self.subTest(platform=platform),
+                patch.object(file_reveal.sys, "platform", platform),
+                patch.object(
+                    file_reveal,
+                    "_windows_libraries",
+                    return_value=(shell.ole32, shell.shell32),
+                ) as libraries,
+                patch.object(file_reveal.os, "startfile", startfile, create=True),
+                patch.object(file_reveal, "_macos_open", return_value="/usr/bin/open"),
+                self.which(both),
+                self.assertRaises(file_reveal.RevealTargetChanged),
+            ):
+                self.reveal(outside)
+            libraries.assert_not_called()
+        startfile.assert_not_called()
+        self.popen.assert_not_called()
+
     def test_a_path_on_another_drive_is_not_contained(self):
         # Windows: commonpath raises ValueError across drives.
         with (

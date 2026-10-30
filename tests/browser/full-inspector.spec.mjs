@@ -383,7 +383,7 @@ test('Show in folder asks the server to open the listed file and announces each 
     await show.click();await expect(toast).toHaveText('Opened the folder on the computer running ComfyUI.');
     expect(await opened()).toHaveLength(2);
     await page.unroute('**/prompt_manager/images/reveal');
-    // A third-party page is refused, and says so.
+    // A plain cross-site POST is refused, and the toast says so.
     // Chromium keeps its own Origin on a routed fetch, so the real route is asked directly and the toast gets its answer.
     const refused=await request.post('/prompt_manager/images/reveal',{data:body,headers:{origin:'https://evil.example'}});
     expect(refused.status()).toBe(403);expect((await refused.json()).code).toBe('not-same-origin');

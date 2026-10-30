@@ -1615,8 +1615,9 @@ Recorded deviations on this page (spec §8):
 
   Limits of that check: a proxy that rewrites `Host` and sends no `X-Forwarded-Host` is
   refused with that toast until it sends one. A non-browser client can forge every
-  header. A DNS-rebinding page has a matching `Host` and `Origin`, so it can open a
-  folder of a listed file, at most once a second; the path check still confines it.
+  header. The check stops a plain cross-site POST, not every other site: a DNS-rebinding
+  page has a matching `Host` and `Origin`, so it can open a folder of a listed file, at
+  most once a second. The path check confines it, one check ahead of every opener.
 - **D39** (ruled 2026-10-21: fallback): a recipe-linked image shows its recipe's own
   category when set, otherwise the linked positive prompt's, and its recipe's own tags
   when it has any, otherwise the positive's; each field falls back on its own and the

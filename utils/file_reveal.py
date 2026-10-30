@@ -162,11 +162,10 @@ def is_same_origin_request(headers: Mapping, scheme="http") -> bool:
     Compares ``Origin`` (browsers send it on every fetch POST, so a missing one
     is refused) with ``X-Forwarded-Host`` when present, else ``Host``, and with
     ``X-Forwarded-Proto`` when present, else *scheme*. ``Sec-Fetch-Site`` must
-    be ``same-origin`` whenever it is sent. A third-party page in a browser cannot
-    pass under its own address: it cannot change its ``Origin`` or
-    ``Sec-Fetch-Site``, and a custom forwarding header needs a preflight that
-    ComfyUI's CORS option does not allow. The exception is a page whose own name
-    was rebound to this server (TESTING.md D38, accepted).
+    be ``same-origin`` whenever it is sent. That stops a plain cross-site POST,
+    whose browser sets ``Origin`` and ``Sec-Fetch-Site`` itself. It does not stop
+    a page whose name was rebound to this server, as it trusts ``Host`` and
+    ``X-Forwarded-Host`` (TESTING.md D38): what limits that is the path check.
     """
     origin = headers.get("Origin")
     if not origin:
