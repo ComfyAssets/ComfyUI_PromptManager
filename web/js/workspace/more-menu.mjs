@@ -1,7 +1,7 @@
 import { createButton } from '../shared/toolkit/core.js';
 
 /**
- * A "⋯" (More) menu button for a page heading (D162, #512; the concept has no menu, so it uses the concept's button
+ * A "⋯" (More) menu button for a page heading (D163, #512; the concept has no menu, so it uses the concept's button
  * and surface styles). The button carries `aria-haspopup="menu"` and `aria-expanded`; Enter, Space or ArrowDown opens
  * the menu on its first item, ArrowUp on its last; ArrowUp/ArrowDown/Home/End move between items; Escape closes it and
  * returns focus to the button; Tab, an outside pointer press or choosing an item closes it. A held button

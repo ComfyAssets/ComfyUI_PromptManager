@@ -421,7 +421,7 @@ export function measureInventory(scope) {
             description:when(description,()=>({className:description.className,text:description.textContent,...font(description),...edges(description)})),
             actions:when(actions,()=>({...layout(actions),...edges(actions),
                 fullWidth:px(rect(actions).width)===px(rect(heading).width),stacked:copy?rect(actions).top>=rect(copy).bottom-0.5:null,
-                // D162: a closed menu's items are not heading actions.
+                // D163: a closed menu's items are not heading actions.
                 buttons:[...actions.querySelectorAll('button')].filter(node=>!node.closest('[role="menu"]')).map(node=>({text:node.textContent.trim(),primary:node.classList.contains('ca-primary'),
                     ...font(node),...edges(node),minHeight:getComputedStyle(node).minHeight,height:px(rect(node).height)}))}))};
     }

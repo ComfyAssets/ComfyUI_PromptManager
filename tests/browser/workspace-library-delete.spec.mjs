@@ -462,10 +462,10 @@ test('a failed review keeps the selection, and a selection nothing can change op
     expect(byText(await items(request),'Library extra 0000')).toBeDefined();
 });
 
-// #512 (live test of #505/#507/#509): the prompt page's "⋯" More menu (D162), a gone prompt's page, single-prompt titles.
+// #512 (live test of #505/#507/#509): the prompt page's "⋯" More menu (D163), a gone prompt's page, single-prompt titles.
 const more=page=>page.locator('#workspace-main .heading-actions').getByRole('button',{name:'More actions for this prompt',exact:true});
 const moreMenu=page=>page.getByRole('menu',{name:'More actions for this prompt'});
-test('the prompt page\'s More menu opens Delete prompt…, by mouse and keyboard, and closes on Escape or outside (#512 D162)',async({page,request})=>{
+test('the prompt page\'s More menu opens Delete prompt…, by mouse and keyboard, and closes on Escape or outside (#512 D163)',async({page,request})=>{
     const dual=byText(await items(request),'Dual role portrait');
     await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
     const heading=page.locator('#workspace-main .heading-actions > button, #workspace-main .heading-actions > .more-menu > button');
@@ -495,7 +495,7 @@ test('the prompt page\'s More menu opens Delete prompt…, by mouse and keyboard
     expect(byText(await items(request),'Dual role portrait')?.id).toBe(dual.id);
 });
 
-test('the More menu fits a 390px viewport and works by touch (#512 D162)',async({page,request})=>{
+test('the More menu fits a 390px viewport and works by touch (#512 D163)',async({page,request})=>{
     const dual=byText(await items(request),'Dual role portrait');
     await page.setViewportSize({width:390,height:844});
     await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);

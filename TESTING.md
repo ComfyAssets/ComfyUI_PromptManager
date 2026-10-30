@@ -2852,7 +2852,7 @@ hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the rena
 
 ### Delete review and prompt-page polish (#512)
 
-Found in the live test of #505/#507/#509. **D162** (beyond the concept, maintainer ruling 2026-10-29: delete was hard to
+Found in the live test of #505/#507/#509. **D163** (beyond the concept, maintainer ruling 2026-10-29: delete was hard to
 find on a prompt's page): the prompt page heading ends with a **"⋯" More menu** button after Send to ComfyUI
 (`more-menu.mjs`: `aria-haspopup="menu"`, `aria-expanded`; Enter, Space or ArrowDown opens it on its first item, ArrowUp
 on its last; arrows, Home and End move; Escape closes it and returns focus to ⋯; Tab, an outside press or a choice

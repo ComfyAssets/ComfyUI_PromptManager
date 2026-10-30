@@ -541,7 +541,7 @@ test('new from Images cancel preserves browse',async({page})=>{
 test('history heading follows the concept and sends the selected saved pair',async({page})=>{
     const f=page.fixture;await openHistory(page,f.positive_id);
     const actions=headingActions(page).locator('button:not([role="menuitem"])');
-    // D162 (#512): the More menu button follows Send to ComfyUI.
+    // D163 (#512): the More menu button follows Send to ComfyUI.
     expect(await visibleNames(actions)).toEqual(['← Prompt library','Edit metadata','Send to ComfyUI','⋯']);
     await expect(page.getByRole('link',{name:'Back to library',exact:true})).toHaveCount(0);
     const send=actions.nth(2);await expect(send).toHaveClass(/\bsend\b/);await expect(send.locator('svg')).toHaveCount(1);

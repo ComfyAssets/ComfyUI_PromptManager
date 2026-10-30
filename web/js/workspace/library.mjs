@@ -492,7 +492,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
         send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;
-        // D162 (#512, maintainer 2026-10-29): a "⋯" More menu after Send to ComfyUI holds Delete prompt…, so delete is
+        // D163 (#512, maintainer 2026-10-29): a "⋯" More menu after Send to ComfyUI holds Delete prompt…, so delete is
         // findable on the page; Edit metadata keeps its own Delete prompt… (D161).
         const moreMenu=createMoreMenu({scope,label:'More actions for this prompt',items:[{label:'Delete prompt…',danger:true,onSelect:()=>deletePrompt(moreMenu.button)}]});
         actions.append(back,edit,send,moreMenu.element);
