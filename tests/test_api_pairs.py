@@ -1,6 +1,7 @@
 """Pair routes preserve shared text and expose portable combinations."""
 
 from tests.test_api_prompts import PromptAPITestCase
+from utils.hashing import generate_prompt_hash
 
 
 class TestPairAPI(PromptAPITestCase):
@@ -8,6 +9,31 @@ class TestPairAPI(PromptAPITestCase):
         payload = {"positive_text": "cat", "negative_text": "blur"}
         payload.update(overrides)
         return await self.client.post("/prompt_manager/pairs", json=payload)
+
+    async def _prompt_saved_by_route(self, text, **fields):
+        response = await self._create(positive_text=text, **fields)
+        self.assertEqual(response.status, 200)
+        return self.api.db.get_prompt_by_hash(generate_prompt_hash(text))
+
+    async def test_a_new_prompt_gets_the_saved_category_and_tags(self):
+        prompt = await self._prompt_saved_by_route(
+            "route cat", category="Animals", tags=["studio"]
+        )
+        self.assertEqual(prompt["category"], "Animals")
+        self.assertEqual(prompt["tags"], ["studio"])
+
+    async def test_saving_never_changes_an_existing_prompt(self):
+        self.api.db.save_prompt(
+            "route dog",
+            category="Mine",
+            tags=["kept"],
+            prompt_hash=generate_prompt_hash("route dog"),
+        )
+        prompt = await self._prompt_saved_by_route(
+            "route dog", category="Animals", tags=["studio"]
+        )
+        self.assertEqual(prompt["category"], "Mine")
+        self.assertEqual(prompt["tags"], ["kept"])
 
     async def test_create_reuse_read_and_search(self):
         response = await self._create(tags=["studio"], title="Portrait")

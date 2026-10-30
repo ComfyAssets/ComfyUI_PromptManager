@@ -60,6 +60,15 @@ test('paired explicit Save persists an empty negative through actual API and pre
     await expect(root.getByRole('status').filter({hasText:'Pair saved.'})).toBeVisible();const response=await request.get(`/prompt_manager/pairs?text=${encodeURIComponent(text)}`);expect(response.ok()).toBe(true);expect((await response.json()).pairs).toEqual(expect.arrayContaining([expect.objectContaining({positive_text:text,negative_text:''})]));expect(await values(page,id)).toMatchObject({text,negative_text:''});
 });
 
+test('Save pair gives a new prompt the category and tags shown on the node',async({page,request},testInfo)=>{
+    await addPair(page);const root=page.locator('.pm-pair');const text=`Saved pair metadata ${testInfo.project.name}`;await root.getByRole('textbox',{name:'Positive prompt',exact:true}).fill(text);
+    await root.getByText('Metadata · category / tags',{exact:true}).click();await root.getByRole('combobox',{name:'Category',exact:true}).fill('Saved category');await root.getByRole('combobox',{name:'Tags',exact:true}).fill('saved-tag');
+    await root.getByRole('button',{name:'Save pair',exact:true}).click();await expect(root.getByRole('status').filter({hasText:'Pair saved.'})).toBeVisible();
+    const [pair]=(await (await request.get(`/prompt_manager/pairs?text=${encodeURIComponent(text)}`)).json()).pairs;
+    const library=await (await request.get(`/prompt_manager/library?text=${encodeURIComponent(text)}&limit=10`)).json();const prompt=library.items.find(item=>item.id===pair.positive_prompt_id);
+    expect([prompt.category,prompt.tags]).toEqual(['Saved category',['saved-tag']]);
+});
+
 test('paired library filters search both texts, persist on reload and keep editor metadata separate',async({page,request},testInfo)=>{
     const token=`paired-filter-${testInfo.project.name}`;await seed(request,`Matching ${token}`,`Negative ${token}`);const other=await request.post('/prompt_manager/pairs',{data:{positive_text:`Other ${token}`,negative_text:'different',category:'Other paired category',tags:['other-pair-tag']}});expect(other.ok()).toBe(true);
     const id=await addPair(page);const root=page.locator('.pm-pair');await root.getByRole('textbox',{name:'Positive prompt',exact:true}).fill('Draft positive');await root.getByRole('textbox',{name:'Negative prompt',exact:true}).fill('Draft negative');
