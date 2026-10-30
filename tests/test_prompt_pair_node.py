@@ -159,11 +159,31 @@ class TestPromptPairNode(unittest.TestCase):
         self.assertEqual(positive["category"], "Mine")
         self.assertEqual(positive["tags"], ["kept"])
 
-    def test_category_and_tags_fill_independently_where_empty(self):
-        self.save(category="Animals")
-        positive, _ = self.save(negative="noise", category="Pets", tags="studio")
-        self.assertEqual(positive["category"], "Animals")
-        self.assertEqual(positive["tags"], ["studio"])
+    def test_a_run_on_an_existing_empty_prompt_changes_nothing(self):
+        self.db.save_prompt("cat", prompt_hash=generate_prompt_hash("cat"))
+        before = self.db.get_prompt_by_hash(generate_prompt_hash("cat"))["updated_at"]
+        positive, _ = self.save(category="Animals", tags="studio")
+        self.assertIsNone(positive["category"])
+        self.assertEqual(positive["tags"], [])
+        self.assertEqual(positive["updated_at"], before)
+
+    def test_a_pair_saved_without_metadata_stays_empty_on_a_later_run(self):
+        self.save()
+        positive, _ = self.save(negative="noise", category="Animals", tags="studio")
+        self.assertIsNone(positive["category"])
+        self.assertEqual(positive["tags"], [])
+
+    def test_a_cleared_category_and_tags_stay_cleared(self):
+        positive, _ = self.save(category="Animals", tags="studio")
+        self.db.update_prompt_metadata(positive["id"], category="", tags=[])
+        positive, _ = self.save(negative="noise", category="Animals", tags="studio")
+        self.assertEqual(positive["category"], "")
+        self.assertEqual(positive["tags"], [])
+
+    def test_a_prompt_first_seen_as_a_negative_stays_empty(self):
+        self.save(text="dog", negative="cat")
+        positive, _ = self.save(text="cat", negative="blur", category="Animals")
+        self.assertIsNone(positive["category"])
 
     def test_blank_widgets_leave_the_prompt_empty(self):
         positive, _ = self.save(category="  ", tags=" ")
@@ -179,11 +199,6 @@ class TestPromptPairNode(unittest.TestCase):
             [("Animals", ["studio"])],
         )
         self.assertEqual(positive["category"], "Animals")
-
-    def test_a_failed_fill_still_tracks_the_run(self):
-        self.db.fill_empty_prompt_metadata = Mock(side_effect=RuntimeError("locked"))
-        self.save(category="Animals")
-        self.node.prompt_tracker.set_current_prompt.assert_called_once()
 
     def test_library_shows_filled_metadata_without_repeating_a_tag(self):
         self.save(category="Animals", tags="studio")

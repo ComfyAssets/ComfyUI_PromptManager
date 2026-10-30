@@ -112,8 +112,14 @@ class PairOperations:
         tags: Optional[List[str]] = None,
         rating: Optional[int] = None,
         notes: Optional[str] = None,
+        fill_new_positive: bool = False,
     ) -> int:
-        """Save an ordered pair atomically; repeat saves preserve its metadata."""
+        """Save an ordered pair atomically; repeat saves preserve its metadata.
+
+        ``fill_new_positive`` also gives the positive prompt the category and
+        tags, only if this save inserted its row (#546). An existing prompt
+        never changes, so a cleared category stays cleared.
+        """
         with self._pair_transaction() as conn:
             return self._save_pair(
                 conn,
@@ -124,6 +130,7 @@ class PairOperations:
                 tags=tags,
                 rating=rating,
                 notes=notes,
+                fill_new_positive=fill_new_positive,
             )
 
     def _save_pair(
@@ -137,6 +144,7 @@ class PairOperations:
         tags: Optional[List[str]] = None,
         rating: Optional[int] = None,
         notes: Optional[str] = None,
+        fill_new_positive: bool = False,
     ) -> int:
         """Save an ordered pair atomically; repeat saves preserve its metadata."""
         if not isinstance(positive_text, str) or not positive_text.strip():
@@ -144,8 +152,13 @@ class PairOperations:
         if not isinstance(negative_text, str):
             raise ValueError("Negative prompt text must be a string; use '' for empty")
         # Validate metadata before any component insertion.
-        _validate_metadata(title, category, tags, rating, notes)
-        positive = self._pair_component(conn, positive_text)
+        tags = _validate_metadata(title, category, tags, rating, notes)
+        positive, created = self._pair_component_outcome(conn, positive_text)
+        if created and fill_new_positive:
+            conn.execute(
+                "UPDATE prompts SET category = ? WHERE id = ?", (category, positive)
+            )
+            self._sync_prompt_tags(conn, positive, tags or [])
         negative = (
             self._pair_component(conn, negative_text) if negative_text.strip() else None
         )
@@ -194,43 +207,6 @@ class PairOperations:
         if tags:
             self._sync_pair_tags(conn, pair_id, tags)
         return pair_id, True
-
-    def fill_empty_prompt_metadata(
-        self,
-        prompt_id: int,
-        category: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> bool:
-        """Give a prompt a category and tags where it has none (#546).
-
-        Each field fills on its own and never replaces a value already there.
-        Tags are not additive: a prompt with any tag keeps exactly those tags.
-        Returns True if the prompt changed.
-        """
-        tags = _validate_metadata(None, category, tags, None, None)
-        with self._pair_transaction() as conn:
-            changed = False
-            if category:
-                changed = (
-                    conn.execute(
-                        "UPDATE prompts SET category = ? WHERE id = ? "
-                        "AND (category IS NULL OR TRIM(category) = '')",
-                        (category, prompt_id),
-                    ).rowcount
-                    == 1
-                )
-            has_tags = conn.execute(
-                "SELECT 1 FROM prompt_tags WHERE prompt_id = ? LIMIT 1", (prompt_id,)
-            ).fetchone()
-            if tags and not has_tags:
-                self._sync_prompt_tags(conn, prompt_id, tags)
-                changed = True
-            if changed:
-                conn.execute(
-                    "UPDATE prompts SET updated_at = ? WHERE id = ?",
-                    (utc_now_iso(), prompt_id),
-                )
-            return changed
 
     def _read_pair_rows(
         self, conn: sqlite3.Connection, where: str, params: List[Any], suffix: str = ""
