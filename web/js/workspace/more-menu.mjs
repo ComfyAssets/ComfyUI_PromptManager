@@ -7,7 +7,7 @@ import { createButton } from '../shared/toolkit/core.js';
  * returns focus to the button; Tab, an outside pointer press or choosing an item closes it. A held button
  * (`aria-disabled`) or a disabled one opens nothing. Listeners live on `scope`.
  *
- * `items`: `[{ label, danger, onSelect }]`. Returns `{ element, button, close, setDisabled(disabled) }`.
+ * `items`: `[{ label, danger, onSelect }]`. Returns `{ element, button, setDisabled(disabled) }`.
  */
 let menus = 0;
 export function createMoreMenu({ scope, label, items }) {
@@ -80,7 +80,6 @@ export function createMoreMenu({ scope, label, items }) {
     return {
         element,
         button,
-        close: () => close(false),
         setDisabled(disabled) { button.disabled = disabled; if (disabled) close(false); },
     };
 }

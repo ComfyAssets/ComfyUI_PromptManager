@@ -480,8 +480,12 @@ test('the prompt page\'s More menu opens Delete prompt…, by mouse and keyboard
     await page.keyboard.press('ArrowDown');await expect(item).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(moreMenu(page)).toBeHidden();await expect(more(page)).toBeFocused();await expect(more(page)).toHaveAttribute('aria-expanded','false');
+    // ArrowUp opens on the last item; ArrowUp, Home and End move within it (one item here); Tab closes it.
+    await page.keyboard.press('ArrowUp');await expect(item).toBeFocused();
+    for(const key of ['ArrowUp','Home','End']) {await page.keyboard.press(key);await expect(item).toBeFocused();}
+    await page.keyboard.press('Tab');await expect(moreMenu(page)).toBeHidden();await expect(more(page)).toHaveAttribute('aria-expanded','false');
     // Space opens too; an outside press closes it.
-    await page.keyboard.press(' ');await expect(item).toBeFocused();
+    await more(page).focus();await page.keyboard.press(' ');await expect(item).toBeFocused();
     await page.locator('#workspace-main h1').click();await expect(moreMenu(page)).toBeHidden();
     // Choosing it opens the page's review, titled for this prompt; Cancel returns focus to ⋯.
     await more(page).click();await item.click();
