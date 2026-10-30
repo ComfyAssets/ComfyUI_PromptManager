@@ -3020,6 +3020,8 @@ class TestSharedListing(ImageAPITestCase):
                 "limit",
                 "has_more",
                 "next_cursor",
+                # #498: Show removed images (N).
+                "removed_total",
             },
         )
         _, folders = await self._json("GET", "/prompt_manager/gallery/subfolders")

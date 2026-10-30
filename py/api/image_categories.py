@@ -232,15 +232,17 @@ class ImageCategoryRoutesMixin:
             return None, _coded(400, "too-many-images", TOO_MANY)
         return tuple(selection.targets), None
 
-    async def _category_request(self, request, fields: frozenset):
+    async def _category_request(self, request, fields: frozenset, data=None):
         """``(data, targets, roots, None)`` or ``(None, None, None, error)``.
 
         The images are ``items`` (1 to 500 targets) or ``filter`` (all images
-        an Images listing filter admits), besides *fields*.
+        an Images listing filter admits), besides *fields*. *data* is the body
+        when the caller has already read it (a body is read once).
         """
-        data, error = await _json_body_or_error(request)
-        if error is not None:
-            return None, None, None, error
+        if data is None:
+            data, error = await _json_body_or_error(request)
+            if error is not None:
+                return None, None, None, error
         names = set(data) - fields
         if set(data) & fields != fields or names not in ({"items"}, {"filter"}):
             return (

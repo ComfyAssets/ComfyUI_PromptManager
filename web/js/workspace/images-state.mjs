@@ -62,6 +62,14 @@ function queryFor(filters, batchSize) {
     const media = filters.media ?? 'all';
     if (!['all', 'image', 'video'].includes(media)) throw new TypeError('Invalid media filter');
     if (media !== 'all') query.set('media', media);
+    // #498 (D162): Show removed images lists only the files a removal mark hides; never with a category, tags,
+    // favorites or a collection (the server refuses them: such a file has no records).
+    const removed = filters.removed ?? false;
+    if (typeof removed !== 'boolean') throw new TypeError('Invalid removed filter');
+    if (removed && (filters.category || (filters.tags ?? []).length || filters.favorites || (filters.collection ?? '') !== '')) {
+        throw new TypeError('Invalid removed filter');
+    }
+    if (removed) query.set('removed', '1');
     const sort = filters.sort ?? 'newest';
     if (!IMAGE_SORTS.includes(sort)) throw new TypeError('Invalid sort filter');
     query.set('sort', sort);
@@ -107,6 +115,9 @@ function validatePage(page, cursor) {
     }
 }
 
+/** A page's `removed_total` (#498), or null from an older server. */
+const removedOf = page => (isCount(page?.removed_total) ? page.removed_total : null);
+
 /** `state` with the item named by `key` patched (both frozen); the same state when no item has that key. */
 export function withItem(state, key, patch) {
     if (!patch || typeof patch !== 'object' || 'path' in patch || 'root_index' in patch) {
@@ -128,8 +139,9 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         throw new TypeError('Invalid image batch size');
     }
     // positiveCount: distinct linked positives over the whole matching set, or null while unknown (PR B contract).
+    // removedTotal (#498): the removed images in the selected source(s), from the first page; null while unknown.
     let state = Object.freeze({ items: Object.freeze([]), total: 0, cursor: null,
-        hasMore: true, loading: false, error: null, loaded: 0, positiveCount: null });
+        hasMore: true, loading: false, error: null, loaded: 0, positiveCount: null, removedTotal: null });
     let query = queryFor({}, batchSize);
     let controller = null;
     let disposed = false;
@@ -149,7 +161,8 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         const items = Object.isFrozen(saved.items) && saved.items.every(Object.isFrozen) ? saved.items :
             Object.freeze(saved.items.map(item => Object.freeze({ ...item })));
         state = Object.freeze({ items, total: saved.total, cursor: saved.cursor, hasMore: saved.hasMore,
-            loading: false, error: null, loaded: items.length, positiveCount: saved.positiveCount ?? null });
+            loading: false, error: null, loaded: items.length, positiveCount: saved.positiveCount ?? null,
+            removedTotal: isCount(saved.removedTotal) ? saved.removedTotal : null });
     }
 
     function publish(update) {
@@ -188,8 +201,9 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
             // first page's count, and a first page without one leaves it unknown.
             const positiveCount = isCount(page.positive_count) ? page.positive_count : cursor === null ? null : state.positiveCount;
             controller = null;
+            const removedTotal = cursor === null ? removedOf(page) : state.removedTotal;
             publish({ items, total: page.total, cursor: page.next_cursor, hasMore: page.has_more,
-                loading: false, error: null, loaded: items.length, positiveCount });
+                loading: false, error: null, loaded: items.length, positiveCount, removedTotal });
             return incoming.length;
         } catch (error) {
             if (!disposed && request === controller) {
@@ -224,7 +238,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         const request = refreshing = new AbortController();
         const target = Math.max(state.loaded, 1);
         const items = [], keys = new Set();
-        let cursor = null, total = 0, hasMore = true, positiveCount = null;
+        let cursor = null, total = 0, hasMore = true, positiveCount = null, removedTotal = null;
         try {
             while (items.length < target && hasMore) {
                 const parameters = new URLSearchParams(query);
@@ -239,7 +253,10 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
                     keys.add(key);
                     items.push(Object.freeze({ ...item }));
                 }
-                if (cursor === null) positiveCount = isCount(page.positive_count) ? page.positive_count : null;
+                if (cursor === null) {
+                    positiveCount = isCount(page.positive_count) ? page.positive_count : null;
+                    removedTotal = removedOf(page);
+                }
                 ({total, next_cursor: cursor, has_more: hasMore} = page);
             }
         } catch (error) {
@@ -251,7 +268,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         refreshing = null;
         seen = keys;
         state = Object.freeze({ ...state, items: Object.freeze(items), total, cursor, hasMore, loading: false, error: null,
-            loaded: items.length, positiveCount });
+            loaded: items.length, positiveCount, removedTotal });
         onChange(state, {replaced: true});
         return items.length;
     }
@@ -267,7 +284,7 @@ export function createImageStream({ api, onChange = () => {}, batchSize = 40, re
         query = nextQuery;
         seen = new Set();
         publish({ items: Object.freeze([]), total: 0, cursor: null, hasMore: true,
-            loading: false, error: null, loaded: 0, positiveCount: null });
+            loading: false, error: null, loaded: 0, positiveCount: null, removedTotal: state.removedTotal });
         return load ? loadMore() : 0;
     }
 

@@ -43,6 +43,7 @@ from .image_categories import DELETE_SQL as DELETE_CATEGORY_SQL
 from .image_removal_schema import (
     META_TABLE,
     TABLE,
+    bump_generation,
     clear_marks,
     has_marks_table,
     mark_of,
@@ -319,4 +320,29 @@ class ImageRemovalOperations:
         if not locators:
             return 0
         with self._pair_transaction() as conn:
-            return clear_marks(conn, locators)
+            removed = clear_marks(conn, locators)
+        # #498: again after the commit, so a reader that cached the marks
+        # between the in-transaction bump and the commit reloads them.
+        bump_generation()
+        return removed
+
+    def clear_hiding_marks(self, files) -> set:
+        """Delete the marks that still hide their file (#498, Return to library).
+
+        *files* are ``(locator, path)`` pairs. In one ``BEGIN IMMEDIATE``
+        transaction each mark is read again and deleted only while the file at
+        *path* still has its size and ``mtime_ns``. Returns the locators whose
+        marks went.
+        """
+        cleared = set()
+        files = list(files)
+        if not files:
+            return cleared
+        with self._pair_transaction() as conn:
+            for locator, path in files:
+                mark = mark_of(conn, locator)
+                if mark is not None and mark_hides({locator: mark}, locator, path):
+                    cleared.add(locator)
+            clear_marks(conn, sorted(cleared))
+        bump_generation()
+        return cleared
