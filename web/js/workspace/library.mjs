@@ -491,7 +491,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const body=el('div');history.append(body);
         // Concept heading (app.js a591–597): ← Prompt library, Edit metadata, then the selected pair's Send to ComfyUI.
         const description=headingDescription(main,history,HISTORY_DESCRIPTION);
-        // #524 D164: at desktop widths a long title clamps beside the actions (workspace.css).
+        // #524 D164: at desktop widths a long title clamps beside the actions.
         pageHeading(main)?.heading.classList.add('prompt-page-heading');
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
