@@ -88,7 +88,7 @@ function measureIntegrations(mainSelector) {
     };
 }
 
-const SEND_REASON = 'Sending asks when there is more than one ComfyUI window or node and always previews, so “Ask each time” is the only option.';
+const SEND_REASON = 'Sending asks when there is more than one ComfyUI window or node, so “Ask each time” is the only option.';
 const RENDERER_REASON = 'Prompt Manager nodes always follow ComfyUI’s own renderer setting.';
 const RENDERER_NONE = 'No ComfyUI window is open in this browser, so its renderer is not known.';
 const RETURN_REASON = 'Not available: sending applies the text in ComfyUI and keeps this page open.';

@@ -74,7 +74,8 @@ test('native image inspector previews and sends a pair into real visible widgets
         expect(tabTitle).not.toContain('PromptManager');
         await expect(hosts).not.toHaveValue('');
         await expect(sender.getByRole('combobox',{name:'Destination node',exact:true})).not.toHaveValue('');
-        await expect(sender.getByRole('status')).toContainText(`in ${tabTitle}. Preview changes before applying.`);
+        await expect(sender.getByRole('status')).toContainText(`in ${tabTitle}. Apply to send it, or preview the changes first.`);
+        await expect(sender.getByRole('combobox',{name:'Destination node',exact:true}).locator('option').nth(1)).toHaveText(new RegExp(`^#${id} `));
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         for(const text of ['Before positive','Before negative',positive,negative,`LoRA trigger ${positive} fine detail`])await expect(sender).toContainText(text);
         await expect(nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true})).toHaveValue('Before positive');
@@ -91,6 +92,50 @@ test('native image inspector previews and sends a pair into real visible widgets
         for(const name of ['inputs','serialized'])expect(state[name]).toMatchObject({text:positive,negative_text:negative,prepend_text:'LoRA trigger',append_text:'fine detail'});
         expect(state.effects).toEqual({queue:0,load:0});expect(errors).toEqual([]);
         await workspace.screenshot({path:testInfo.outputPath('full-inspector-host-send.png')});
+        // #535 D175: Apply without Preview, one click, and a double click sends once.
+        const apply=sender.getByRole('button',{name:'Apply to ComfyUI',exact:true});
+        const find0=sender.getByRole('button',{name:'Find ComfyUI windows',exact:true});
+        const positiveBox=nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true});
+        await positiveBox.fill('Typed before one click');
+        await find0.click();
+        await expect(apply).toBeEnabled();
+        await apply.dblclick();
+        await expect(sender).toContainText('Sent to ComfyUI.');
+        await expect(positiveBox).toHaveValue(positive);
+        await expect(apply).toBeDisabled();
+        // Edited in ComfyUI after the send: a stray second send would overwrite this.
+        await positiveBox.fill('Typed after the send');
+        await expect(positiveBox).toHaveValue('Typed after the send');
+        // A changed workflow since discovery refuses through one-click Apply, and writes nothing.
+        await find0.click();
+        await expect(apply).toBeEnabled();
+        await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');await app.loadGraphData(app.graph.serialize());});
+        await apply.click();
+        await expect(sender.getByRole('alert')).toContainText(/workflow changed/i);
+        await expect(positiveBox).toHaveValue('Typed after the send');
+        // A field linked after discovery refuses the same way.
+        await find0.click();
+        await expect(apply).toBeEnabled();
+        await page.evaluate(async id=>{
+            const {app}=await import('/scripts/app.js');const {convertToInput}=await import('/extensions/core/widgetInputs.js');
+            const node=app.graph.getNodeById(id);const widget=node.widgets.find(widget=>widget.name==='negative_text');
+            if(!node.inputs.some(input=>input.name==='negative_text'))convertToInput(node,widget);
+            const source=LiteGraph.createNode('PrimitiveString');app.graph.add(source);
+            source.connect(0,node,node.inputs.findIndex(input=>input.name==='negative_text'));
+        },id);
+        await apply.click();
+        await expect(sender.getByRole('alert')).toContainText(/connected/i);
+        await expect(positiveBox).toHaveValue('Typed after the send');
+        await page.evaluate(async id=>{const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);node.disconnectInput(node.inputs.findIndex(input=>input.name==='negative_text'));},id);
+        // Two identical nodes are never selected for you, and read "#<id> <title>".
+        const twinId=await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');const node=LiteGraph.createNode('PromptManagerPair');app.graph.add(node);return node.id;});
+        await find0.click();
+        const targets=sender.getByRole('combobox',{name:'Destination node',exact:true});
+        await expect(targets.locator('option')).toHaveCount(3);
+        await expect(targets).toHaveValue('');
+        await expect(apply).toBeDisabled();
+        await expect(targets.locator('option').nth(2)).toHaveText(new RegExp(`^#${twinId} `));
+        await page.evaluate(async twinId=>{const {app}=await import('/scripts/app.js');app.graph.remove(app.graph.getNodeById(twinId));},twinId);
         // #535: the status line says why a window cannot receive.
         const find=sender.getByRole('button',{name:'Find ComfyUI windows',exact:true});
         const preview=sender.getByRole('button',{name:'Preview changes',exact:true});

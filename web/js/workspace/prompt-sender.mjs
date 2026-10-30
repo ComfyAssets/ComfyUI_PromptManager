@@ -8,12 +8,16 @@ const roleOf = target => Array.isArray(target.roles) ? target.roles : [];
 const accepts = (target,roles) => typeof target.id==='string' && Object.keys(roles).every(role=>roleOf(target).includes(role));
 const linkedTo = (target,roles) => Object.keys(roles).filter(role=>Array.isArray(target.linkedRoles) && target.linkedRoles.includes(role));
 
+const nodeLabel = target => `#${target.id} ${target.label}`;
+// A lost reply leaves the outcome unknown; anything else the host said is a refusal, and nothing was written.
+const LOST_REPLY = /timed out|aborted|disposed/i;
+
 /** Why nothing in the discovered windows can receive these roles, most specific first (D173). */
 function unavailableMessage(found,roles) {
     if (!found.length) return 'No ComfyUI window answered in this browser at this address. Open ComfyUI here, then find windows again.';
     for (const host of found) for (const target of host.targets) {
         const linked = accepts(target,roles) ? linkedTo(target,roles) : [];
-        if (linked.length) return `${target.label} in ${host.label} has its ${linked.join(' and ')} prompt linked to another node, so it cannot receive text. Disconnect the link, then find windows again.`;
+        if (linked.length) return `${nodeLabel(target)} in ${host.label} has its ${linked.join(' and ')} prompt linked to another node, so it cannot receive text. Disconnect the link, then find windows again.`;
     }
     const where = found.length===1 ? found[0].label : `None of the ${found.length} ComfyUI windows`;
     const verb = found.length===1 ? 'has no' : 'has a';
@@ -23,7 +27,7 @@ function unavailableMessage(found,roles) {
     }
     return `${where} ${verb} Prompt Manager node. Add one to the workflow, then find windows again.`;
 }
-/** Keeps same-named options apart: tabs on one workflow, or nodes that share a title. */
+/** Keeps same-named windows apart: tabs on one workflow. */
 function distinctLabels(items,suffix) {
     const seen = new Map();
     const totals = new Map();
@@ -36,17 +40,27 @@ function distinctLabels(items,suffix) {
 
 export function createSendSession({client, roles:rawRoles, onChange}) {
     const roles = Object.freeze(validateRoles(rawRoles));
-    let state = {phase:'idle',hosts:[],hostId:'',targetId:'',preview:null,message:''};
+    let state = {phase:'idle',hosts:[],hostId:'',targetId:'',preview:null,outcomeUnknown:false,message:''};
     let operation, generation = 0, disposed = false;
     const emit = patch => { if (!disposed) { state = Object.freeze({...state,...patch}); onChange(state); } };
     function invalidate() { generation++; operation?.abort(); operation = null; }
-    function begin(phase) { invalidate(); operation = new AbortController(); emit({phase,preview:null,message:''}); return {signal:operation.signal,version:generation}; }
+    function begin(phase) { invalidate(); operation = new AbortController(); emit({phase,preview:null,outcomeUnknown:false,message:''}); return {signal:operation.signal,version:generation}; }
     const current = request => !disposed && generation === request.version;
     const selected = () => state.hosts.find(host=>host.hostId===state.hostId)?.targets.find(target=>target.id===state.targetId);
+    async function fetchPreview(request) {
+        const preview=await client.preview(state.hostId,state.targetId,roles,{signal:request.signal});
+        if (!current(request)) return null;
+        const fields=preview?.fields;
+        if(typeof preview?.ticket!=='string' || !preview.ticket || preview.target?.id!==state.targetId || !Array.isArray(fields) || fields.length!==Object.keys(roles).length || new Set(fields.map(field=>field?.role)).size!==fields.length || Array.from(fields).some(field=>!field || !Object.hasOwn(roles,field.role) || typeof field.before!=='string' || field.after!==roles[field.role])) throw Error('ComfyUI returned an unexpected preview. Find the destination and preview again.');
+        // Undefined on a tab still running older code, which has nothing to compare.
+        const found=selected()?.revision;
+        if(found!==undefined && preview.revision!==found) throw Error('The workflow changed since this window was found. Nothing was sent. Find windows again.');
+        return preview;
+    }
     function hostChoice(host) {
         if (host.targets.length>1) return {hostId:host.hostId,targetId:'',message:`Choose a destination node in ${host.label}.`};
         const [target] = host.targets;
-        return {hostId:host.hostId,targetId:target.id,message:`Sending to ${target.label} in ${host.label}. Preview changes before applying.`};
+        return {hostId:host.hostId,targetId:target.id,message:`Sending to ${target.label} in ${host.label}. Apply to send it, or preview the changes first.`};
     }
     return {
         get state() { return state; },
@@ -56,7 +70,7 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
             try {
                 const found = (await client.discover({signal:request.signal,waitMs:DISCOVERY_WAIT_MS})).map(host=>({...host,targets:host.targets.filter(target=>target && typeof target==='object')}));
                 if (!current(request)) return;
-                const hosts = distinctLabels(found.toSorted((a,b)=>a.hostId<b.hostId?-1:1).map(host=>({...host,targets:distinctLabels(host.targets.filter(target=>accepts(target,roles) && !linkedTo(target,roles).length),(target)=>`${target.label} #${target.id}`)})).filter(host=>host.targets.length),(host,count)=>count>1 ? `${host.label} (window ${count})` : host.label);
+                const hosts = distinctLabels(found.toSorted((a,b)=>a.hostId<b.hostId?-1:1).map(host=>({...host,targets:host.targets.filter(target=>accepts(target,roles) && !linkedTo(target,roles).length).map(target=>({...target,label:nodeLabel(target)}))})).filter(host=>host.targets.length),(host,count)=>count>1 ? `${host.label} (window ${count})` : host.label);
                 // Nodes left out are counted so an auto-selected destination never hides the one the user meant.
                 const skipped = found.reduce((total,host)=>total+host.targets.length,0)-hosts.reduce((total,host)=>total+host.targets.length,0);
                 const note = skipped ? ` ${skipped} other Prompt Manager ${skipped===1?'node':'nodes'} cannot receive this prompt.` : '';
@@ -65,31 +79,39 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
                 else { const choice=hostChoice(hosts[0]); emit({phase:'select',hosts,...choice,message:choice.message+note}); }
             } catch (error) { if (current(request)) emit({phase:'error',message:error.message}); }
         },
-        selectHost(hostId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===hostId); emit({phase:'select',preview:null,...(host ? hostChoice(host) : {hostId:'',targetId:'',message:'Choose a ComfyUI window.'})}); },
-        selectTarget(targetId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===state.hostId); const chosen=host?.targets.some(target=>target.id===targetId); emit({phase:'select',targetId:chosen?targetId:'',preview:null,message:chosen?'Preview changes before applying.':'Choose a destination node, then preview changes.'}); },
+        selectHost(hostId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===hostId); emit({phase:'select',preview:null,outcomeUnknown:false,...(host ? hostChoice(host) : {hostId:'',targetId:'',message:'Choose a ComfyUI window.'})}); },
+        selectTarget(targetId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===state.hostId); const chosen=host?.targets.some(target=>target.id===targetId); emit({phase:'select',outcomeUnknown:false,targetId:chosen?targetId:'',preview:null,message:chosen?'Apply to send it, or preview the changes first.':'Choose a destination node, then preview changes.'}); },
         async preview() {
             if (disposed || !selected() || ['previewing','applying'].includes(state.phase)) return;
             const request=begin('previewing');
             try {
-                const preview=await client.preview(state.hostId,state.targetId,roles,{signal:request.signal});
-                if (!current(request)) return;
-                const fields=preview?.fields;
-                if(typeof preview?.ticket!=='string' || !preview.ticket || preview.target?.id!==state.targetId || !Array.isArray(fields) || fields.length!==Object.keys(roles).length || new Set(fields.map(field=>field?.role)).size!==fields.length || Array.from(fields).some(field=>!field || !Object.hasOwn(roles,field.role) || typeof field.before!=='string' || field.after!==roles[field.role])) throw Error('ComfyUI returned an unexpected preview. Find the destination and preview again.');
+                const preview=await fetchPreview(request);
+                if (!preview) return;
                 const windowLabel=state.hosts.find(host=>host.hostId===state.hostId)?.label;
-                emit({phase:'ready',preview,message:`Sending to ${preview.target.label ?? state.targetId} in ${windowLabel}. Review the complete changes, then apply.`});
+                emit({phase:'ready',preview,message:`Sending to ${nodeLabel({id:preview.target.id,label:preview.target.label ?? ''})} in ${windowLabel}. Review the complete changes, then apply.`});
             } catch(error) { if(current(request)) emit({phase:'error',preview:null,message:error.message}); }
         },
         async apply() {
-            if(disposed || state.phase!=='ready' || !state.preview) return;
-            const {ticket}=state.preview; const targetId=state.targetId; const hostId=state.hostId;
+            // Success stays closed: the second click of a double click must not send again.
+            if(disposed || !selected() || !['select','ready','error'].includes(state.phase) || state.outcomeUnknown) return;
+            const held=state.phase==='ready' ? state.preview : null;
+            const targetId=state.targetId; const hostId=state.hostId;
             const request=begin('applying');
             emit({message:'Waiting for ComfyUI confirmation. Closing this dialog does not undo a sent update.'});
+            let posted=false;
             try {
-                const acknowledgement=await client.apply(hostId,ticket,{signal:request.signal});
+                const preview=held ?? await fetchPreview(request);
+                if(!preview || !current(request)) return;
+                posted=true;
+                const acknowledgement=await client.apply(hostId,preview.ticket,{signal:request.signal});
                 if(!current(request)) return;
                 if(acknowledgement?.targetId!==targetId || !acknowledgement.values || Object.keys(acknowledgement.values).length!==Object.keys(roles).length || Object.keys(roles).some(role=>!Object.hasOwn(acknowledgement.values,role) || acknowledgement.values[role]!==roles[role])) throw Error('ComfyUI returned an unexpected acknowledgement.');
                 emit({phase:'success',message:'Sent to ComfyUI.'});
-            } catch(error) { if(current(request)) emit({phase:'error',preview:null,message:`No confirmation received. The update may have applied. Check ComfyUI, then preview again. ${error.message}`}); }
+            } catch(error) {
+                if(!current(request)) return;
+                const unknown=posted && (LOST_REPLY.test(error.message) || /unexpected acknowledgement/.test(error.message));
+                emit({phase:'error',preview:null,outcomeUnknown:unknown,message:unknown ? `No confirmation received. The update may have applied. Check ComfyUI, then preview again. ${error.message}` : error.message});
+            }
         },
         dispose() { if(disposed) return; disposed=true; invalidate(); client.dispose(); },
     };
@@ -126,7 +148,7 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
         const header=element('header',undefined,'prompt-sender-header');
         const title=element('h2','Send to ComfyUI');const dismiss=createButton('Close');
         header.append(title,dismiss);
-        const description=element('p','Choose where to send this prompt. Nothing changes until you approve the preview.');
+        const description=element('p','Choose where to send this prompt. Apply writes it to that node. Preview changes shows the result first, if you want to check it.');
         const status=element('p','', 'prompt-sender-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');
         const host=createSelect([['','Choose a ComfyUI window']], '');
         const target=createSelect([['','Choose a destination node']], '');
@@ -167,7 +189,7 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
             const selected=state.hosts.find(item=>item.hostId===state.hostId);
             options(target,'Choose a destination node',(selected?.targets || []).map(item=>[item.id,item.label]),state.targetId);
             host.disabled=busy;target.disabled=busy || !selected;
-            find.disabled=busy;inspect.disabled=busy || !state.targetId;apply.disabled=state.phase!=='ready';
+            find.disabled=busy;inspect.disabled=busy || !state.targetId;apply.disabled=busy || !state.targetId || state.phase==='success' || state.outcomeUnknown;
             preview.replaceChildren();
             if(state.preview) {
                 preview.append(element('h3','Review changes'));

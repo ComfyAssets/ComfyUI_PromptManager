@@ -33,7 +33,7 @@ async function chooseDestination(page) {
     const host=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
     await expect(host.locator('option')).toContainText(['Test ComfyUI']);
     await host.selectOption({label:'Test ComfyUI'});
-    await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'My prompt pair'});
+    await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair-1 My prompt pair'});
     return sender;
 }
 
@@ -165,7 +165,8 @@ test('host apply rejection retains the current text and requires a new preview',
         await page.goto(workspace);await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:/^Send positive prompt to ComfyUI: /}).click();
         const sender=await chooseDestination(page);await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText(/Workflow changed/);
-        await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeDisabled();
+        // D175: a refusal wrote nothing, so Apply may try again.
+        await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeEnabled();
         expect(await host.evaluate(()=>window.hostValues.positive)).toBe('Existing positive');
     } finally {await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
 });

@@ -42,7 +42,7 @@ export const LORA_KEYS = Object.freeze(['lora_enabled', 'lora_trigger_words_enab
 
 /** D106: why the options the bridge cannot honour are disabled. */
 export const REASONS = Object.freeze({
-    send: 'Sending asks when there is more than one ComfyUI window or node and always previews, so “Ask each time” is the only option.',
+    send: 'Sending asks when there is more than one ComfyUI window or node, so “Ask each time” is the only option.',
     renderer: 'Prompt Manager nodes always follow ComfyUI’s own renderer setting.',
     returnCanvas: 'Not available: sending applies the text in ComfyUI and keeps this page open.',
 });

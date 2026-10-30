@@ -14,7 +14,6 @@ test('sender requires explicit compatible host and target, preview, then acknowl
     await s.session.discover(); assert.equal(s.session.state.hostId,'host');assert.equal(s.session.state.targetId,'');
     await s.session.preview(); assert.equal(s.calls.length,0);
     s.session.selectTarget('one');
-    await s.session.apply();assert.equal(s.calls.length,0);
     await s.session.preview();assert.equal(s.session.state.phase,'ready');assert.equal(s.session.state.preview.composition.after,'prefix new');
     await s.session.apply();assert.equal(s.session.state.phase,'success');assert.equal(s.calls.filter(call=>call[0]==='apply').length,1);
     await s.session.apply();assert.equal(s.calls.filter(call=>call[0]==='apply').length,1); s.session.dispose();
@@ -66,7 +65,7 @@ async function discovered(createSendSession,found,roles={positive:'new'}) {
 test('one window with one eligible node is selected so Preview is available at once',async()=>{
     const {createSendSession}=await source;const s=await discovered(createSendSession,[window1([pm('1')])]);
     assert.equal(s.session.state.hostId,'a');assert.equal(s.session.state.targetId,'1');
-    assert.match(s.session.state.message,/Node 1 in Flow - ComfyUI.*Preview changes/);
+    assert.match(s.session.state.message,/#1 Node 1 in Flow - ComfyUI.*Apply/);
     await s.session.preview();assert.equal(s.session.state.phase,'ready');s.session.dispose();
 });
 test('several windows are left to choose, and choosing one with a single node selects that node',async()=>{
@@ -101,17 +100,69 @@ test('an auto-selected destination says how many other nodes cannot receive, and
     assert.equal(s.session.state.targetId,'2');assert.match(s.session.state.message,/1 other Prompt Manager node cannot receive/);
     await s.session.preview();s.session.dispose();
     const named=setup(createSendSession,{discover:async()=>[window1([pm('one')])],preview:async(_,id)=>({ticket:'t',target:{id,label:'Live title'},fields:[{role:'positive',before:'',after:'new'}]})});
-    await named.session.discover();await named.session.preview();assert.match(named.session.state.message,/Sending to Live title in Flow - ComfyUI/);named.session.dispose();
+    await named.session.discover();await named.session.preview();assert.match(named.session.state.message,/Sending to #one Live title in Flow - ComfyUI/);named.session.dispose();
 });
 test('window order and numbering do not depend on which tab answered first',async()=>{
     const {createSendSession}=await source;const s=await discovered(createSendSession,[window1([pm('1')],'T','b'),window1([pm('2')],'T','a')]);
     assert.deepEqual(s.session.state.hosts.map(host=>[host.hostId,host.label]),[['a','T'],['b','T (window 2)']]);s.session.dispose();
 });
+const applied=calls=>calls.filter(call=>call[0]==='apply').length;
+test('Apply without Preview fetches the ticket and applies in one click',async()=>{
+    const {createSendSession}=await source;const s=setup(createSendSession,{discover:async()=>[window1([pm('one')])]});
+    await s.session.discover();await s.session.apply();
+    assert.equal(s.session.state.phase,'success');assert.deepEqual(s.calls.map(call=>call[0]),['preview','apply']);s.session.dispose();
+});
+test('a double click applies once, during the send and after it',async()=>{
+    const {createSendSession}=await source;const s=setup(createSendSession,{discover:async()=>[window1([pm('one')])]});
+    await s.session.discover();const first=s.session.apply();const second=s.session.apply();await Promise.all([first,second]);
+    assert.equal(applied(s.calls),1);await s.session.apply();assert.equal(applied(s.calls),1);s.session.dispose();
+});
+test('Apply after a preview uses its ticket and does not preview again',async()=>{
+    const {createSendSession}=await source;const s=setup(createSendSession,{discover:async()=>[window1([pm('one')])]});
+    await s.session.discover();await s.session.preview();await s.session.apply();
+    assert.deepEqual(s.calls.map(call=>call[0]),['preview','apply']);assert.equal(s.session.state.phase,'success');s.session.dispose();
+});
+test('Apply needs a destination',async()=>{
+    const {createSendSession}=await source;const s=setup(createSendSession);
+    await s.session.discover();await s.session.apply();assert.equal(s.calls.length,0);s.session.dispose();
+});
+test('a refusal at the fetched preview says so plainly and writes nothing; Apply can try again',async()=>{
+    const {createSendSession}=await source;let refuse=true;
+    const s=setup(createSendSession,{discover:async()=>[window1([pm('one')])],preview:async(_,id)=>{if(refuse)throw Error('positive is connected to an upstream input.');return{ticket:'t',target:{id},fields:[{role:'positive',before:'',after:'new'}]};}});
+    await s.session.discover();await s.session.apply();
+    assert.equal(s.session.state.phase,'error');assert.match(s.session.state.message,/connected/);assert.doesNotMatch(s.session.state.message,/may have applied/);
+    refuse=false;await s.session.apply();assert.equal(s.session.state.phase,'success');s.session.dispose();
+});
+test('a host refusal at apply is a refusal; only a lost reply is an unknown outcome',async()=>{
+    const {createSendSession}=await source;
+    const s=setup(createSendSession,{discover:async()=>[window1([pm('one')])],apply:async()=>{throw Error('Workflow or prompt changed. Preview again.');}});
+    await s.session.discover();await s.session.apply();assert.match(s.session.state.message,/Workflow or prompt changed/);assert.doesNotMatch(s.session.state.message,/may have applied/);s.session.dispose();
+    const lost=setup(createSendSession,{discover:async()=>[window1([pm('one')])],apply:async()=>{throw Error('Bridge request timed out');}});
+    await lost.session.discover();await lost.session.apply();assert.match(lost.session.state.message,/may have applied/);
+    await lost.session.apply();assert.equal(lost.calls.filter(call=>call[0]==='preview').length,1);
+    lost.session.selectTarget('one');await lost.session.apply();assert.equal(lost.calls.filter(call=>call[0]==='preview').length,2);lost.session.dispose();
+});
+test('a workflow changed since discovery refuses before anything is written',async()=>{
+    const {createSendSession}=await source;
+    for(const op of ['apply','preview']){
+        const s=setup(createSendSession,{discover:async()=>[window1([pm('one',['positive'],{revision:'1:4'})])],preview:async(_,id)=>({ticket:'t',revision:'1:5',target:{id},fields:[{role:'positive',before:'',after:'new'}]})});
+        await s.session.discover();await s.session[op]();
+        assert.equal(s.session.state.phase,'error');assert.match(s.session.state.message,/workflow changed/i);assert.equal(applied(s.calls),0);s.session.dispose();
+    }
+    const stale=setup(createSendSession,{discover:async()=>[window1([pm('one')])]});await stale.session.discover();await stale.session.apply();assert.equal(stale.session.state.phase,'success');stale.session.dispose();
+});
+test('two or more eligible nodes are never auto-selected, and each option shows id and title',async()=>{
+    const {createSendSession}=await source;const twin=id=>({id,label:'Prompt Manager (+/-)',roles:['positive']});
+    const s=await discovered(createSendSession,[window1([twin('72'),twin('73')])]);
+    assert.equal(s.session.state.targetId,'');assert.deepEqual(s.session.state.hosts[0].targets.map(target=>target.label),['#72 Prompt Manager (+/-)','#73 Prompt Manager (+/-)']);
+    await s.session.apply();assert.equal(s.calls.length,0);s.session.dispose();
+    const one=await discovered(createSendSession,[window1([twin('72')])]);assert.equal(one.session.state.hosts[0].targets[0].label,'#72 Prompt Manager (+/-)');assert.equal(one.session.state.targetId,'72');one.session.dispose();
+});
 test('same-named windows and nodes stay distinguishable',async()=>{
     const {createSendSession}=await source;const twin=id=>({id,label:'Same',roles:['positive']});
     const s=await discovered(createSendSession,[window1([twin('7'),twin('8')],'T','a'),window1([pm('1')],'T','b')]);
     assert.deepEqual(s.session.state.hosts.map(host=>host.label),['T','T (window 2)']);
-    assert.deepEqual(s.session.state.hosts[0].targets.map(target=>target.label),['Same #7','Same #8']);s.session.dispose();
+    assert.deepEqual(s.session.state.hosts[0].targets.map(target=>target.label),['#7 Same','#8 Same']);s.session.dispose();
 });
 function fakeDOM() {
     class Node extends EventTarget {
