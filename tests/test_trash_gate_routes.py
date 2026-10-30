@@ -313,7 +313,6 @@ class TestWindowsSpellings(_GateCase):
     def spellings(self):
         spelled = [
             "$RECYCLE.BIN./x.png",
-            "$RECYCLE.BIN /x.png",
             "$recycle.bin/x.png",
             ".TRASH-1000/files/x.png",
             ".Trash-1000./files/x.png",
@@ -331,6 +330,12 @@ class TestWindowsSpellings(_GateCase):
             with self.subTest(relative=relative):
                 self.assertTrue((self.root / relative).is_file(), "spelling is real")
                 await self.assert_hidden_everywhere(relative)
+
+    async def test_a_folder_spelled_with_a_trailing_space_is_hidden_by_name(self):
+        # Measured on the Windows job (run 41123443497): unlike a trailing dot,
+        # this spelling does not reach the file through a longer path. The name
+        # check still answers for it, whatever a volume does.
+        await self.assert_hidden_everywhere("$RECYCLE.BIN /x.png")
 
     async def test_a_root_spelled_in_another_case_does_not_fail_open(self):
         inside = self.root / ".Trash-1000" / "files" / "x.png"
