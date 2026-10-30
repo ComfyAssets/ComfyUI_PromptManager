@@ -95,15 +95,6 @@ export function resolveRoute(hash) {
     return routes.find(route => hash === `#/${route.id}`) || routes[0];
 }
 
-export function summarizeStats(stats) {
-    return [['Prompts', 'total_prompts'], ['Images', 'total_images'], ['Tags', 'total_tags']]
-        .map(([label, key]) => {
-            const count = stats?.[key];
-            if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid library statistics');
-            return [label, count];
-        });
-}
-
 // The sidebar's real counts (D27): one bounded `limit=1` read each, whose `total` is the count. Favorites (D51) is the
 // Favorites page's own listing, so its count is what that page lists.
 const NAV_COUNT_SOURCES = Object.freeze([
@@ -156,6 +147,18 @@ export async function loadNavCounts(api, signal, onCount = () => {}, ids = NAV_C
         onCount(id, summarizeNavCounts(pages).get(id));
     }));
     return new Map([...summarizeNavCounts(pages)].filter(([id]) => ids.includes(id)));
+}
+
+// #547: each Overview card is the count of the page it names, the same number as that page's sidebar badge.
+const OVERVIEW_CARDS = Object.freeze([['Prompts', 'library'], ['Images', 'images'], ['Tags', 'tags']]);
+export const OVERVIEW_COUNT_ROUTES = Object.freeze(OVERVIEW_CARDS.map(([, id]) => id));
+
+/** Overview's state from the shell's counts: no entry is a read not settled yet, null a read that failed. */
+export function summarizeOverviewCounts(counts) {
+    const cards = OVERVIEW_CARDS.map(([label, id]) => [label, counts.get(id) ?? null]);
+    const pending = OVERVIEW_COUNT_ROUTES.some(id => !counts.has(id));
+    const failed = OVERVIEW_COUNT_ROUTES.some(id => counts.get(id) === null);
+    return { cards, pending, failed, empty: !pending && cards.every(([, count]) => count === 0) };
 }
 
 /** Fired on the window to render the current route again, where setting the same hash fires no `hashchange`. */

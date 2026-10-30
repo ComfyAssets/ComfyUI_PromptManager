@@ -602,7 +602,8 @@ async function staleSourceRecovery(page, request, roots) {
     const pages = [], inspections = [], options = [], mutations = [];
     page.on('request', request => {
         const url = new URL(request.url());
-        if (url.pathname.endsWith('/images/output')) pages.push(url);
+        // limit=1 is a sidebar count read (Overview re-reads it on a visit, #547), not a page of images.
+        if (url.pathname.endsWith('/images/output') && url.searchParams.get('limit') !== '1') pages.push(url);
         if (url.pathname.includes('/images/inspect/')) inspections.push(url);
         if (request.method() !== 'GET') mutations.push(url.pathname);
     });
