@@ -2,6 +2,7 @@
 // you. Beyond the concept; the concept itself is unchanged.
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { startAndAwaitJob } from './job-end.mjs';
 
 const IMAGES = '/prompt_manager/workspace#/images';
 const LIBRARY = '/prompt_manager/workspace#/library';
@@ -303,7 +304,7 @@ test('Images: Delete… returns to the top of the reloaded list', async ({ page,
     await imageBar(page).getByRole('button', { name: 'Delete…', exact: true }).click();
     const dialog = page.locator('dialog[open]');
     await dialog.getByRole('radio', { name: /^Remove from the library only/ }).check();
-    await dialog.locator('.dialog-actions button.danger').click();
+    await startAndAwaitJob(page, () => dialog.locator('.dialog-actions button.danger').click());
     await expect(toast(page)).toContainText('Removed 1 image from the library.');
     await atTop(page);
     await expect(page.locator('#bulkbar')).toBeEmpty();
