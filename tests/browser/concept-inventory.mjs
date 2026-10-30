@@ -116,9 +116,10 @@ async function selectTheme(page,theme) {
  * follows from them (wider columns, wrapped text, row heights) is compared rather than excused path by path.
  * Every other measurement still differs if production moves. workspace-layout-tags-system.spec.mjs pins the real values
  * and that the concept itself still has the old ones.
- * D182: the second `.two-col` card starts level. D184: no 1000px limit on System. D183: the sticky tag header's background and drawn line.
+ * D182: the second `.two-col` card starts level, and a surface after a row is 18px below it. D184: no 1000px limit on System. D183: the sticky tag header's background and drawn line.
  */
 export const CONCEPT_LAYOUT_DEVIATIONS=`.two-col > .surface + .surface { margin-top: 0; }
+.two-col + .surface { margin-top: 18px; }
 .settings-layout { max-width: none; }
 .two-col > .surface > .table-wrap thead th { background: var(--ca-surface); border-bottom-color: transparent; }`;
 export const mapConceptLayout=page=>page.addStyleTag({content:CONCEPT_LAYOUT_DEVIATIONS});

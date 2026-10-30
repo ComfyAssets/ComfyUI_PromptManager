@@ -110,6 +110,8 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* D182 (#530, the concept has the offset): the second card of a `.two-col` starts level with the first. The grid gap
    already spaces them; `.surface + .surface` is for surfaces stacked in plain flow. */
 .two-col > .surface + .surface { margin-top: 0; /* D182 */ }
+/* D182: a surface after a two-column row has the same gap as stacked surfaces; the concept has none there. */
+.two-col + .surface { margin-top: 18px; /* D182 */ }
 /* D184 (#530, the concept stops System at 1000px): every System section uses the full content width, as other pages do. */
 .settings-layout { max-width: none; /* D184 */ }
 

@@ -2931,13 +2931,14 @@ hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the rena
 ### Card tops, the Reusable tags window and System's width (#530)
 
 Found in the maintainer's test of the cutover branch; each departs from the concept, whose files are not edited. The
-comparisons add `CONCEPT_LAYOUT_DEVIATIONS` (`concept-inventory.mjs`, three rules: card margin, System limit, tag header
+comparisons add `CONCEPT_LAYOUT_DEVIATIONS` (`concept-inventory.mjs`, four rules: card margins, System limit, tag header
 background and line) to the opened concept page, so the boxes that follow from them are still compared. The new spec pins the
 real values and that the unmapped concept keeps its 18px offset.
 
 - **D182**: the second card of a `.two-col` starts level with the first. The concept's `.surface + .surface` 18px margin
   also applies inside its grid, which put Categories and Workspace preferences 18px lower. Stacked cards are now one 18px
-  gap apart instead of 36px.
+  gap apart instead of 36px. A surface after a two-column row (Backup & export's Recovery policy) touched the row in the
+  concept and on main; it now sits 18px below it.
 - **D183**: Reusable tags scrolls in its own window inside the card (`max(280px, 100dvh - 500px)`), so a long vocabulary no
   longer runs the page off screen. The column headers stick to the top of the window, with the surface background and a
   drawn line. Load more stays below the window; the end of the list inside the window (`.vocabulary-end`, observed with

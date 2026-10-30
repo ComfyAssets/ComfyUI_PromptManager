@@ -69,6 +69,35 @@ test('System sections use the full content width, as Inspect does (D184)',async(
     expect(inspect.width).toBeCloseTo(nav.width,0);
 });
 
+// Every System section and the Tags page: blocks stacked in one column are never closer than the concept's 18px surface
+// gap. Between a `.two-col` and the surface after it the concept has no gap at all (D182).
+const SECTIONS=['overview','appearance','sources','integrations','tagging','maintenance','backups','diagnostics'];
+const stackGaps=host=>host.evaluate(node=>{
+    const blocks=[...node.children].filter(child=>child.matches('.surface,.two-col')&&child.getClientRects().length);
+    return blocks.slice(1).map((block,index)=>[blocks[index].className,block.className,Math.round(block.getBoundingClientRect().top-blocks[index].getBoundingClientRect().bottom)]);
+});
+test('every stacked card has one 18px gap, including after a two-column row (D182)',async({page,request})=>{
+    for(const [width,height] of [[1600,1100],[390,844]]) {
+        await page.setViewportSize({width,height});
+        await seedConcept(request);await expect(await request.post('/__test__/system/reset')).toBeOK();
+        for(const section of SECTIONS) {
+            await page.goto('about:blank');await page.goto(`${workspace}#/system/${section}`);
+            const layout=main(page).locator('.settings-layout');
+            await expect(layout.locator(':scope > .surface, :scope > .two-col').first()).toBeVisible();
+            for(const gap of await stackGaps(layout)) expect([width,section,...gap]).toEqual([width,section,gap[0],gap[1],18]);
+        }
+        await seedTags(request);
+        await page.goto('about:blank');await page.goto(TAGS);await expect(rows(page).first()).toBeVisible();
+        for(const gap of await stackGaps(main(page))) expect([width,'tags',...gap]).toEqual([width,'tags',gap[0],gap[1],18]);
+    }
+    // The deviation is real: the immutable concept has no gap after its Backup & export columns.
+    await page.setViewportSize({width:1600,height:1100});
+    await page.goto('about:blank');await page.goto(`${CONCEPT_URL}#system`);
+    await page.locator('#main .section-nav').getByRole('button',{name:'Backup & export',exact:true}).click();
+    const policy=page.locator('#main .settings-layout > section.surface');await expect(policy).toBeVisible();
+    expect(await policy.evaluate(node=>Math.round(node.getBoundingClientRect().top-node.previousElementSibling.getBoundingClientRect().bottom))).toBe(0);
+});
+
 test('a long tag list scrolls in its own window and the page does not grow (D183)',async({page,request})=>{
     await page.setViewportSize({width:1600,height:1100});
     await seedTags(request,{extra_tags:211});
