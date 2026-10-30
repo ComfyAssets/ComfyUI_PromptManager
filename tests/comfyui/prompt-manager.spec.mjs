@@ -114,7 +114,7 @@ test('top-bar PM button opens the workspace in either renderer', async ({ page }
     await popup.close();
 });
 
-for (const [type, buttonName] of [['PromptManager', '🌐 Web UI'], ['PromptManagerFocused', 'Web UI ↗']]) {
+for (const [type, buttonName] of [['PromptManager', '🌐 Web UI'], ['PromptManagerFocused', 'Web UI ↗'], ['PromptManagerPair', 'Web UI ↗']]) {
     test(`${type} and the PM button open the workspace after switching renderers both ways, a workflow reload and node removal`, async ({ page }, testInfo) => {
         const id = await page.evaluate(async type => {
             const { app } = await import('/scripts/app.js');
