@@ -4340,6 +4340,15 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   `system shell and overview match the concept` (the mapping inserts the row) and
   `library notice matches the concept notice` with its mutation check
   (system-concept.spec), and the D129 tests of workspace-system.spec.
+- **D166** (one-time upgrade notice, #527): the concept's README puts the notice in the
+  new shell, while its `app.js` draws it in System › Sources. Production does both: the
+  Sources `.notice` is kept and compared as drawn, and `#older-images-notice`, styled as
+  `#library-banner`, shows the same notice above every other page until dismissed. The
+  shell hides on Sources, so they never show together. Dismissal is the legacy key
+  `pm_update_notice_dismissed`, shared with the admin modal and across tabs. Browser
+  contexts start dismissed (`tests/browser/fixtures.mjs`, `storageState`); a spec about
+  the notice sets `test.use({ olderImagesNotice: true })`. Pinned by
+  workspace-older-images-notice.spec.
 - **D130** (Appearance, #317): the concept keeps "Thumbnail quality, size limit" in
   Appearance (README) but draws no rows for them. Appearance gains a second
   `section.surface`, "Thumbnails", after "Browsing & display", built from the concept's

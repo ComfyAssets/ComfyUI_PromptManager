@@ -8,6 +8,9 @@
 // browser that exits abnormally prints one `pm-browser-exit|` line, and a test
 // that fails on a closed or crashed target gets that log attached as
 // `browser-stderr`.
+// The one-time older-images notice (#527) shows above every workspace page and as
+// a modal on the admin page until dismissed, so every context starts with it
+// dismissed. A spec about the notice sets `test.use({ olderImagesNotice: true })`.
 import { test as base, expect } from '../../tools/vendor/node_modules/@playwright/test/index.mjs';
 import { attachServerStderr, createServerSupervisor, startBrowserServer } from '../../tools/vendor/start-browser-server.mjs';
 import { attachBrowserLogs, createBrowserLogRecorder } from '../../tools/vendor/browser-logs.mjs';
@@ -44,6 +47,11 @@ export const test = base.extend({
         if (crash) throw crash;
     }, { auto: true, timeout: SERVER_FIXTURE_TIMEOUT_MS }],
     baseURL: async ({ workerServer }, use) => use(workerServer.url),
+    olderImagesNotice: [false, { option: true }],
+    storageState: async ({ baseURL, olderImagesNotice }, use) => use(olderImagesNotice ? undefined : {
+        cookies: [],
+        origins: [{ origin: new URL(baseURL).origin, localStorage: [{ name: 'pm_update_notice_dismissed', value: '3.2.0' }] }],
+    }),
 });
 
 export { expect };
