@@ -107,7 +107,7 @@ export async function exerciseCurrentPairSend(page, roles) {
         const send = viewer.getByRole('button', { name: /^Send prompt pair to ComfyUI: / });await send.click();
         const sender = page.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });await expect(sender).toBeVisible();
         await sender.getByRole('combobox', { name: 'ComfyUI window', exact: true }).selectOption({ label: 'Canonical ComfyUI' });
-        await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ label: 'Canonical destination' });
+        await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ label: '#canonical-pair Canonical destination' });
         await sender.getByRole('button', { name: 'Preview changes', exact: true }).click();
         await expect(sender).toContainText(roles.positive);await expect(sender).toContainText(roles.negative);
         await sender.getByRole('button', { name: 'Apply to ComfyUI', exact: true }).click();await expect(sender).toContainText('Sent to ComfyUI.');

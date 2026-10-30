@@ -464,7 +464,7 @@ test('full inspector preserves long role text and exact sends',async({page,reque
         await fullFixture(page,request);const panel=inspector(page);const positive=panel.locator('.prompt-section.positive .prompt-text');await expect(positive).toContainText('猫 😀');const text=await positive.textContent();expect(text.length).toBeGreaterThan(1000);
         await panel.locator('.detail-footer button.send').click();const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await expect(sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).locator('option')).toContainText(['Exact host']);
-        await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Exact host'});await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Exact pair'});
+        await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Exact host'});await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair Exact pair'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.sent)).toEqual([{positive:text,negative:'blurred edges, watermark'}]);
     } finally {await host.evaluate(()=>window.bridge.dispose());await host.close();}

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installPromptBridge } from '../../web/js/prompt-bridge-host.js';
+import { createBridgeClient, createBridgeHost } from '../../web/js/shared/toolkit/prompt-bridge.js';
 
 function fixture() {
     const runtime = new EventTarget();
@@ -19,7 +20,10 @@ test('host uses the exact deployment prefix and explicit pack label', () => {
     assert.equal(f.hosts.length, 1);
     assert.equal(f.hosts[0].config.namespace, '/team/');
     assert.equal(f.hosts[0].config.origin, 'https://comfy.example');
-    assert.equal(f.hosts[0].config.label, 'PromptManager — My workflow');
+    assert.equal(f.hosts[0].config.label, 'My workflow');
+    f.runtime.document.title = '';
+    assert.equal(f.hosts[0].config.label, 'ComfyUI');
+    f.runtime.document.title = 'My workflow';
     assert.equal(f.hosts[0].config.adapter, f.adapter);
     assert.equal(installPromptBridge(app, f.options), controller);
     controller.dispose(); controller.dispose();
@@ -65,4 +69,25 @@ test('deployment namespace rejects external origins and unexpected paths', () =>
         assert.throws(() => installPromptBridge({}, { ...f.options, baseUrl }), /deployment|origin|path/i);
         assert.equal(f.hosts.length, 0);
     }
+});
+
+test('each discovery reports the title the tab has now, through the real Toolkit host', async () => {
+    const f = fixture();
+    f.runtime.location = { origin: 'https://comfy.example', href: 'https://comfy.example/' };
+    f.options.baseUrl = '/prompt_manager/';
+    const listeners = new Set();
+    const channelFactory = () => { const own = new Set(); return {
+        addEventListener(type, listener) { if (type === 'message') { own.add(listener); listeners.add(listener); } }, removeEventListener(type, listener) { listeners.delete(listener); },
+        postMessage(data) { for (const listener of [...listeners]) if (!own.has(listener)) queueMicrotask(() => listener({ data: structuredClone(data), origin: 'https://comfy.example' })); }, close() {},
+    }; };
+    // Not spread: a copy would freeze the title the host must keep reading.
+    f.options.hostFactory = config => { config.channelFactory = channelFactory; return createBridgeHost(config); };
+    f.adapter.listTargets = () => []; f.adapter.preview = () => {}; f.adapter.apply = () => {};
+    f.runtime.document.title = 'ComfyUI';
+    const controller = installPromptBridge({}, f.options);
+    const client = createBridgeClient({ namespace: '/', origin: 'https://comfy.example', channelFactory });
+    f.runtime.document.title = '*Unsaved Workflow - ComfyUI';
+    try {
+        assert.equal((await client.discover({ waitMs: 100 }))[0].label, '*Unsaved Workflow - ComfyUI');
+    } finally { client.dispose(); controller.dispose(); }
 });

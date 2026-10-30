@@ -12,6 +12,7 @@ const compositionNames = ['prepend_text','append_text'];
 function nodes(graph) { return graph?._nodes || []; }
 function target(node) { return {id:String(node.id),label:String(node.title || node.type),type:node.type}; }
 function connected(node,name) { return Boolean(node.inputs?.some(input => input.name === name && input.link != null)); }
+function linkedRoles(node) { return Object.entries(schemas.get(node.type)).filter(([,name]) => connected(node,name)).map(([role]) => role); }
 function links(node) { return JSON.stringify((node.inputs || []).map(input => [input.name,input.link ?? null])); }
 function capture(node,name) {
     const widget = node.widgets?.find(item => item.name === name);
@@ -57,9 +58,16 @@ function renderer(runtime) {
 
 export function createPromptAdapter(app, {runtime = globalThis} = {}) {
     const snapshots = new WeakMap();
+    // Loading a workflow makes new node objects but can land on the same graph version, so a revision needs both.
+    const nodeSerials = new WeakMap();
+    let lastSerial = 0;
+    function revision(node) {
+        if (!nodeSerials.has(node)) nodeSerials.set(node,++lastSerial);
+        return `${nodeSerials.get(node)}:${app.graph?._version}`;
+    }
     function listTargets() {
         const drawn = renderer(runtime);
-        return nodes(app.graph).filter(node => schemas.has(node.type)).map(node => ({...target(node),roles:Object.keys(schemas.get(node.type)),...drawn}));
+        return nodes(app.graph).filter(node => schemas.has(node.type)).map(node => ({...target(node),roles:Object.keys(schemas.get(node.type)),linkedRoles:linkedRoles(node),revision:revision(node),...drawn}));
     }
     function preview(targetId,rawRoles) {
         const roles = validateRoles(rawRoles);
@@ -77,7 +85,7 @@ export function createPromptAdapter(app, {runtime = globalThis} = {}) {
         });
         const snapshot = Object.freeze({});
         snapshots.set(snapshot,{graph,node,type:node.type,id:String(node.id),version:graph._version,widgets:node.widgets,widgetOrder:[...node.widgets],fields,links:links(node),requested});
-        return {preview:{target:target(node),fields:requested.map(({role,after,field}) => ({role,before:String(field.value ?? ''),after})),composition:composition(node,fields,roles)},snapshot};
+        return {preview:{target:target(node),revision:revision(node),fields:requested.map(({role,after,field}) => ({role,before:String(field.value ?? ''),after})),composition:composition(node,fields,roles)},snapshot};
     }
     function apply(snapshot) {
         const state = snapshots.get(snapshot);

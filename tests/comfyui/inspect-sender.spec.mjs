@@ -93,7 +93,7 @@ test('local file roles send exactly across renderer transitions',async({page,con
                 } finally {await restore(page);}
             }
         }
-        // A connected destination input rejects the whole preview: neither role changes, nothing queues or loads.
+        // A connected destination input blocks the whole send: neither role changes, nothing queues or loads.
         const link=await page.evaluate(async id=>{
             const {app}=await import('/scripts/app.js');const {convertToInput}=await import('/extensions/core/widgetInputs.js');
             const node=app.graph.getNodeById(id);const widget=node.widgets.find(item=>item.name==='negative_text');
@@ -108,8 +108,11 @@ test('local file roles send exactly across renderer transitions',async({page,con
             const before=await nodeState(page,id);
             expect(before.widgets).toMatchObject({text:'Before positive',negative_text:'Before negative'});
             const rail=await inspect(workspace,FILES[1]);
-            const sender=await preview(workspace,rail);
-            await expect(sender.getByRole('alert')).toContainText(/connected/i);
+            // #535: the linked node is not offered, and the status line says why.
+            await rail.getByRole('button',{name:/^Send prompt pair to ComfyUI: /}).click();
+            const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
+            await expect(sender).toContainText(/has its negative prompt linked to another node/);
+            await expect(sender.getByRole('button',{name:'Preview changes',exact:true})).toBeDisabled();
             await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeDisabled();
             const rejected=await nodeState(page,id);
             expect(rejected.effects).toEqual({queue:0,load:0});

@@ -233,7 +233,7 @@ function productionSent(host) {
     return async page=>{
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Concept ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Concept destination'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair-1 Concept destination'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await expect.poll(()=>host.evaluate(()=>window.previewed.length)).toBe(1);
         const roles=await host.evaluate(()=>window.previewed.pop());

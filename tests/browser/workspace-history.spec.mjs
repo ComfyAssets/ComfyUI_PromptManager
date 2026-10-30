@@ -468,7 +468,7 @@ test('frozen Effective pair uses the shared acknowledged sender and Escape close
         const positive=await exact(dialog(page).getByRole('region',{name:'Positive prompt',exact:true}).locator('p.prompt-text'));
         const send=dialog(page).getByRole('button',{name:'Send prompt pair',exact:true});await send.click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'History ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'History destination'});await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#history-pair History destination'});await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeEnabled();await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.historyApplied)).toEqual([{positive,negative:'  \n\t '}]);
         await page.keyboard.press('Escape');await expect(sender).toHaveCount(0);await expect(dialog(page)).toBeVisible();await expect(send).toBeFocused();

@@ -99,7 +99,7 @@ test('send destination offers Ask each time; unsupported options disabled with t
         .toEqual([['Ask each time', false], ['Selected Prompt Manager node', true], ['Create a Prompt Manager (+/-) node', true]]);
     await expect(send.locator('select')).toHaveValue('Ask each time');
     await expect(send.locator('p.small')).toHaveText(
-        'Sending always asks for the ComfyUI window and node, so “Ask each time” is the only option.');
+        'Sending asks when there is more than one ComfyUI window or node, so “Ask each time” is the only option.');
     const renderer = settingOf(page, 'Host compatibility');
     expect(await renderer.locator('option').evaluateAll(options => options.map(option => [option.textContent, option.disabled])))
         .toEqual([['Follow host renderer', false], ['Classic', true], ['Nodes 2.0', true]]);
