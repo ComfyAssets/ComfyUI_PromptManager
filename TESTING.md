@@ -2673,7 +2673,7 @@ Category". It is built only from the concept's Images parts:
 - `div#library-bulkbar` sits between the toolbar and the caption, empty until something
   is checked, then the concept's `.bulkbar`: "N selected", Set category, Clear (D151
   adds Add tags before Set category, in the Images bar's order; D152 adds Delete… before
-  Clear, and Restore alone on the archived shelf). The
+  Clear, and Restore then Delete… on the archived shelf, #492). The
   selection is a set of prompt ids over the loaded shelf: windowed-out cards keep their
   state, Load more keeps it, and any shelf reload (search, category, sort, tags, a
   write) and leaving the page clear it. Clicking a checkbox toggles it and sets the
@@ -2887,6 +2887,29 @@ with its own negative, a self-pair, each drift, validation); `tests/test_library
 `setPrimary`); browser `tests/browser/workspace-library-delete.spec.mjs` (the choice, its grid and
 copy, the server after, archive-only, reset to Archive) and `library-delete-concept.spec.mjs`. A Python
 change: ComfyUI needs a restart.
+
+### Delete… on the archived shelf (#492)
+
+Extends **D160** (coordinator ruling 2026-10-29, cutover item): the archived shelf's bar reads "N selected · Restore ·
+Delete… · Clear". Its Delete… review is the permanent delete only, **without** #482's "Prompts in a saved pair" choice
+(on this shelf "Archive" would change nothing; Cancel keeps them archived). Title "Delete archived prompts"; the grid
+is #482's Delete permanently grid ("Saved pairs removed" and "Negatives kept" only when a selected prompt is in a saved
+pair); an archived prompt used as another prompt's negative cannot be deleted and **stays archived** ("Stays archived: R
+prompts used as another prompt's negative"); one restored since the shelf was read is "No longer archived (kept)" and
+never written; a review with nothing to delete is close-only ("None of the selected prompts can be deleted."). The
+primary is "Delete N prompts"; the review opens with focus on Cancel (it is only a permanent delete; `openReviewDialog`'s
+`focusCancel`). The same preview, safety backup, review digests, `records` hold and epoch fence apply.
+
+The routes take an optional `shelf` (`"active"`, the default, or `"archived"`; anything else 400). Under it an archived
+prompt is classified by its pairs and a prompt without an archive row is `not_archived`; the held write classifies the
+same shelf, so a permanent delete is backed up. The client sends only what it deletes. On this shelf the write archives
+and rewrites nothing; every reviewed id not deleted counts `changed`, and the answer adds `not_archived` ("N were
+restored since the review and kept."). The main shelf's archive sentence now ends "To delete them later or bring them
+back, press Show archived prompts, select them and press Delete… or Restore."
+
+Tests: `tests/test_bulk_library_delete.py` TestArchivedShelfDelete, `tests/test_library_delete_routes.py`
+TestArchivedShelfDeleteRoutes, `tests/js/workspace-library-delete.test.js` (archived shelf) and
+`tests/browser/workspace-library-delete.spec.mjs` (#492 cases). A Python change: ComfyUI needs a restart.
 
 ### Delete on a prompt's own page (#481)
 

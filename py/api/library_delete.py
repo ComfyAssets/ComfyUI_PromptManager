@@ -49,6 +49,8 @@ _SELECTION_KEYS = frozenset({"prompt_ids", "expected_epoch"})
 _DELETE_KEYS = frozenset({"archive_ids", "delete_ids", "expected_epoch", "backup"})
 # #482: Delete permanently, with its digests; both or neither (a #443 body).
 _PAIRED_KEYS = frozenset({"delete_paired_ids", "paired_digests"})
+# #492: the shelf the Delete… runs on, optional on its own (default "active").
+_SHELF_KEYS = frozenset({"shelf"})
 STORAGE_CHANGED = "Prompt storage was restored; refresh the library"
 
 
@@ -66,8 +68,8 @@ def _storage_changed(exc):
     return _failure(409, exc.code, STORAGE_CHANGED, library_epoch=exc.epoch)
 
 
-async def _body(request, keys, optional=frozenset()):
-    """The JSON object with exactly ``keys`` (plus all or none of ``optional``)."""
+async def _body(request, keys, *groups):
+    """The JSON object with exactly ``keys``, plus all or none of each group."""
     try:
         data = await request.json()
     except ValueError:
@@ -75,9 +77,22 @@ async def _body(request, keys, optional=frozenset()):
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
     extra = set(data) - keys
-    if not keys <= set(data) or (extra and extra != optional):
+    partial = False
+    for group in groups:
+        if extra & group:
+            partial = partial or not group <= extra
+            extra -= group
+    if not keys <= set(data) or extra or partial:
         raise ValueError("Request must contain exactly " + ", ".join(sorted(keys)))
     return data
+
+
+def _shelf(data):
+    """#492: the shelf a Delete… was reviewed on."""
+    shelf = data.get("shelf", "active")
+    if shelf not in ("active", "archived"):
+        raise ValueError("shelf must be active or archived")
+    return shelf
 
 
 def _paired_delete(data, archive_ids):
@@ -119,8 +134,9 @@ class LibraryDeleteRoutesMixin:
 
     async def preview_library_delete(self, request):
         try:
-            data = await _body(request, _SELECTION_KEYS)
+            data = await _body(request, _SELECTION_KEYS, _SHELF_KEYS)
             ids = parse_bulk_prompt_ids(data["prompt_ids"])
+            shelf = _shelf(data)
         except ValueError as exc:
             return _invalid(str(exc))
         db = self.db
@@ -131,6 +147,7 @@ class LibraryDeleteRoutesMixin:
                     db.classify_library_delete,
                     ids,
                     expected_epoch=data["expected_epoch"],
+                    shelf=shelf,
                 )
                 disk = None
                 if (review["delete"] or review["deletable"]) and policy == "on":
@@ -165,6 +182,7 @@ class LibraryDeleteRoutesMixin:
                 "archive": review["archive"],
                 "protected": review["protected"],
                 "already_archived": len(review["already_archived"]),
+                "not_archived": len(review["not_archived"]),
                 "not_found": len(review["not_found"]),
                 "image_links": review["image_links"],
                 # #482: the archive ids Delete permanently may delete with pairs.
@@ -181,7 +199,8 @@ class LibraryDeleteRoutesMixin:
 
     async def delete_library_prompts(self, request):
         try:
-            data = await _body(request, _DELETE_KEYS, _PAIRED_KEYS)
+            data = await _body(request, _DELETE_KEYS, _PAIRED_KEYS, _SHELF_KEYS)
+            shelf = _shelf(data)
             archive_ids = _reviewed_ids(data["archive_ids"], "archive_ids")
             delete_ids = _reviewed_ids(data["delete_ids"], "delete_ids")
             if not archive_ids and not delete_ids:
@@ -203,7 +222,7 @@ class LibraryDeleteRoutesMixin:
                 PROMPT_DELETE_JOB_KIND, DELETE_TITLE, admission="records"
             ) as job:
                 response = await self._held_library_delete(
-                    self.db, data, archive_ids, delete_ids, paired
+                    self.db, data, archive_ids, delete_ids, paired, shelf
                 )
                 if response.status >= 400:
                     job.finish("failed")
@@ -211,7 +230,9 @@ class LibraryDeleteRoutesMixin:
         except JobBusy as busy:
             return busy_response(busy)
 
-    async def _held_library_delete(self, db, data, archive_ids, delete_ids, paired):
+    async def _held_library_delete(
+        self, db, data, archive_ids, delete_ids, paired, shelf="active"
+    ):
         epoch = data["expected_epoch"]
         promised = data["backup"] == "on" or self._safety_backup_policy() == "on"
         backup = None
@@ -222,6 +243,8 @@ class LibraryDeleteRoutesMixin:
                     db.classify_library_delete,
                     [*delete_ids, *paired],
                     expected_epoch=epoch,
+                    # #492: the same shelf, or archived ids would skip the backup.
+                    shelf=shelf,
                 )
                 candidates = review["fingerprints"]
                 # #482: a permanent delete of a prompt in a saved pair is backed up too.
@@ -248,6 +271,7 @@ class LibraryDeleteRoutesMixin:
                 expected_epoch=epoch,
                 candidates=candidates if candidates is not None else {},
                 delete_paired=paired,
+                shelf=shelf,
             )
         except LibraryCommandError as exc:
             return _storage_changed(exc)

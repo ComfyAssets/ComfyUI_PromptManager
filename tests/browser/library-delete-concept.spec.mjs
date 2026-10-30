@@ -96,8 +96,8 @@ function mapDeleteConcept({ danger, review }) {
             ['Backup', 'Create and verify before deleting']] },
         notes: [
             { ...note, text: 'Prompts in a saved pair, as its positive or its negative, are archived instead of deleted, so the '
-                + 'pair and its runs stay intact. Archived prompts cannot be deleted. To bring them back, press Show archived prompts, '
-                + 'select them and press Restore.' },
+                + 'pair and its runs stay intact. To delete them later or bring them back, press Show archived prompts, select them '
+                + 'and press Delete… or Restore.' },
             // A second paragraph takes the concept's own `p + p` margin (style.css 93-95).
             { ...note, marginTop: '10px', text: "Deleting removes each prompt's text, title, category, tags, rating, notes, run count, last use and "
                 + 'image links. Deleted prompts cannot be brought back one by one: the only way back is to restore the safety '
