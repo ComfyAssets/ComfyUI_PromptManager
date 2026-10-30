@@ -50,7 +50,8 @@ test('Delete… reviews the selection, deletes the unpaired, archives the paired
     await expect(review(page)).toHaveAccessibleName('Delete or archive selected prompts');
     const grid=review(page).locator('dl.meta-grid > div');
     await expect(grid.locator('dt')).toHaveText(['Delete permanently','Archive','Protected (kept)','Image links removed','Backup']);
-    await expect(grid.locator('dd')).toHaveText(['1 prompt not in a saved pair','1 prompt in a saved pair: hidden, restorable',
+    // #512: Cat portrait is also another prompt's negative in the fixture, so the review says so.
+    await expect(grid.locator('dd')).toHaveText(['1 prompt not in a saved pair',"1 prompt used as another prompt's negative: hidden, restorable",
         '1: Library extra 0000','0 images will no longer show these prompts (files stay on disk)','Create and verify before deleting']);
     await expect(review(page).locator('p.small')).toHaveCount(3);
     await expect(review(page).getByRole('button',{name:'Delete 1 and archive 1 prompt',exact:true})).toHaveClass(/danger/);
@@ -81,7 +82,7 @@ test('Show archived prompts lists archived prompts, and Restore on its bar retur
     await openReview(page);
     await expect(review(page)).toHaveAccessibleName('Archive selected prompts');
     // The archive reason is the saved pair, for one or many prompts (live note on #470): never negative variants.
-    await expect(review(page).locator('dl.meta-grid > div').filter({hasText:'Archive'}).locator('dd')).toHaveText('2 prompts in a saved pair: hidden, restorable');
+    await expect(review(page).locator('dl.meta-grid > div').filter({hasText:'Archive'}).locator('dd')).toHaveText("2 prompts in a saved pair (1 used as another prompt's negative): hidden, restorable");
     await review(page).getByRole('button',{name:'Archive 2 prompts',exact:true}).click();
     await expect(toast(page)).toHaveText('Archived 2 prompts.');
     await expect(cards(page)).toHaveCount(before.length-2);
@@ -300,7 +301,8 @@ test('the page\'s delete holds one review at a time, Escape returns focus, and a
     await review(page).getByRole('button',{name:'Archive 1 prompt',exact:true}).click();
     await expect(page.locator('.library-archived-notice')).toBeVisible();
     await editMetadata(page).click();await editor(page).getByRole('button',{name:'Delete prompt…',exact:true}).click();
-    await expect(review(page).locator('p.small').last()).toHaveText('None of the selected prompts can be deleted or archived.');
+    // #512: the page's review names its one prompt.
+    await expect(review(page).locator('p.small').last()).toHaveText('This prompt cannot be deleted or archived.');
     await expect(review(page).getByRole('button',{name:/^(Delete|Archive)/})).toHaveCount(0);
 });
 
@@ -458,4 +460,95 @@ test('a failed review keeps the selection, and a selection nothing can change op
     await review(page).getByRole('button',{name:'Close',exact:true}).click();
     await expect(bar(page).getByRole('button',{name:'Delete…',exact:true})).not.toHaveAttribute('aria-disabled','true');
     expect(byText(await items(request),'Library extra 0000')).toBeDefined();
+});
+
+// #512 (live test of #505/#507/#509): the prompt page's "⋯" More menu (D163), a gone prompt's page, single-prompt titles.
+const more=page=>page.locator('#workspace-main .heading-actions').getByRole('button',{name:'More actions for this prompt',exact:true});
+const moreMenu=page=>page.getByRole('menu',{name:'More actions for this prompt'});
+test('the prompt page\'s More menu opens Delete prompt…, by mouse and keyboard, and closes on Escape or outside (#512 D163)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    const heading=page.locator('#workspace-main .heading-actions > button, #workspace-main .heading-actions > .more-menu > button');
+    await expect(heading).toHaveText(['← Prompt library','Edit metadata','Send to ComfyUI','⋯']);
+    await expect(more(page)).toHaveAttribute('aria-haspopup','menu');await expect(more(page)).toHaveAttribute('aria-expanded','false');
+    await expect(moreMenu(page)).toBeHidden();
+    // Keyboard: Enter opens on the first item; Escape closes and returns focus.
+    await more(page).focus();await page.keyboard.press('Enter');
+    await expect(more(page)).toHaveAttribute('aria-expanded','true');
+    const item=moreMenu(page).getByRole('menuitem',{name:'Delete prompt…',exact:true});
+    await expect(item).toBeFocused();await expect(item).toHaveClass(/\bdanger\b/);
+    await page.keyboard.press('ArrowDown');await expect(item).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(moreMenu(page)).toBeHidden();await expect(more(page)).toBeFocused();await expect(more(page)).toHaveAttribute('aria-expanded','false');
+    // ArrowUp opens on the last item; ArrowUp, Home and End move within it (one item here); Tab closes it.
+    await page.keyboard.press('ArrowUp');await expect(item).toBeFocused();
+    for(const key of ['ArrowUp','Home','End']) {await page.keyboard.press(key);await expect(item).toBeFocused();}
+    await page.keyboard.press('Tab');await expect(moreMenu(page)).toBeHidden();await expect(more(page)).toHaveAttribute('aria-expanded','false');
+    // Space opens too; an outside press closes it.
+    await more(page).focus();await page.keyboard.press(' ');await expect(item).toBeFocused();
+    await page.locator('#workspace-main h1').click();await expect(moreMenu(page)).toBeHidden();
+    // Choosing it opens the page's review, titled for this prompt; Cancel returns focus to ⋯.
+    await more(page).click();await item.click();
+    await expect(moreMenu(page)).toBeHidden();
+    await expect(review(page)).toHaveAccessibleName('Archive this prompt');
+    await expect(choice(page).getByRole('radio',{name:'Archive (hidden, restorable)'})).toBeChecked();
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await expect(review(page).locator('#modal-title')).toHaveText('Delete this prompt');
+    await review(page).getByRole('button',{name:'Cancel',exact:true}).click();
+    await expect(review(page)).toHaveCount(0);await expect(more(page)).toBeFocused();
+    expect(byText(await items(request),'Dual role portrait')?.id).toBe(dual.id);
+});
+
+test('the More menu fits a 390px viewport and works by touch (#512 D163)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    await page.setViewportSize({width:390,height:844});
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    await more(page).click();
+    const item=moreMenu(page).getByRole('menuitem',{name:'Delete prompt…',exact:true});
+    await expect(item).toBeVisible();
+    const box=await moreMenu(page).boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);
+    await item.click();
+    await review(page).getByRole('button',{name:'Archive 1 prompt',exact:true}).click();
+    await expect(toast(page)).toHaveText('Archived 1 prompt.');
+    await expect(page.locator('.library-archived-notice')).toBeVisible();
+});
+
+test('a deleted prompt\'s page says it no longer exists, with the way back and no Retry (#512)',async({page,request})=>{
+    const dual=byText(await items(request),'Dual role portrait');
+    await deleteFromPage(page,dual.id);
+    await expect(review(page)).toHaveAccessibleName('Archive this prompt');
+    await choice(page).getByRole('radio',{name:'Delete permanently, with their saved pairs'}).check();
+    await review(page).getByRole('button',{name:'Delete 1 prompt',exact:true}).click();
+    await expect(page).toHaveURL(/#\/library$/);
+    await page.goto(`/prompt_manager/workspace#/library/${dual.id}`);
+    await expect(page.locator('#workspace-main .library-status')).toHaveText('This prompt no longer exists. It may have been deleted.');
+    await expect(page.getByRole('button',{name:'Retry prompt history'})).toHaveCount(0);
+    await expect(editMetadata(page)).toBeDisabled();await expect(more(page)).toBeDisabled();
+    await page.getByRole('button',{name:'Open the Prompt library',exact:true}).click();
+    await expect(page).toHaveURL(/#\/library$/);
+});
+
+test('the archived shelf\'s heading count and its list agree under a remembered search (#512 item 5)',async({page,request})=>{
+    const all=await items(request);
+    const dual=byText(all,'Dual role portrait'),dog=byText(all,'Dog landscape');
+    await archiveByApi(request,[dual.id]);
+    await page.goto(route);
+    // A search that matches a shelf prompt but not the archived one.
+    await page.getByRole('searchbox').fill('landscape');
+    await expect(card(page,dog.id)).toHaveCount(1);await expect(card(page,dual.id)).toHaveCount(0);
+    const matching=(await(await request.get('/prompt_manager/library?limit=100&shelf=archived&text=landscape')).json()).items.length;
+    await expect(showArchived(page)).toHaveText(`Show archived prompts (${matching})`);
+    // Leave and come back: the remembered search is shown and still counts the same.
+    await page.goto('/prompt_manager/workspace#/overview');await page.goto(route);
+    await expect(page.getByRole('searchbox')).toHaveValue('landscape');
+    await expect(showArchived(page)).toHaveText(`Show archived prompts (${matching})`);
+    await showArchived(page).click();
+    await expect(backToLibrary(page)).toBeVisible();
+    if(matching) await expect(cards(page)).toHaveCount(matching);
+    else await expect(page.locator('.library-status')).toHaveText('No archived prompts match.');
+    await page.getByRole('searchbox').fill('');
+    await expect(card(page,dual.id)).toHaveCount(1);
+    await backToLibrary(page).click();
+    await expect(showArchived(page)).toHaveText('Show archived prompts (1)');
 });

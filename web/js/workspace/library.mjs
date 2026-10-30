@@ -18,8 +18,11 @@ import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 import {mountLibrarySelection} from './library-selection.mjs';
 import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
 import {COPY as DELETE_COPY,RESTORE_URL,archivedNoticeText,restoreOutcome,reviewPromptDelete} from './library-delete.mjs';
+import {createMoreMenu} from './more-menu.mjs';
 
 let shelfVisit=null;
+// #512: what a prompt page says when its prompt no longer exists (404).
+const PROMPT_GONE='This prompt no longer exists. It may have been deleted.';
 // Every confirmed receipt advances this; a shelf mounted before it never restores its cached stream.
 let writeGeneration=0, focusHeadingOnMount=false, savedParentId=null;
 // The pair one reconciled save names, taken once by the history it opens (the concept selects it after a save, app.js 986).
@@ -488,7 +491,11 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         headingDescription(main,history,'Prompt history · one positive, one shared gallery');
         const actions=headingActions(main,history);
         const back=createButton('← Prompt library'),edit=createButton('Edit metadata'),send=createButton('','send');
-        send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;actions.append(back,edit,send);
+        send.append(createWorkspaceIcon('send'),el('span','Send to ComfyUI'));send.disabled=true;
+        // D163 (#512, maintainer 2026-10-29): a "⋯" More menu after Send to ComfyUI holds Delete prompt…, so delete is
+        // findable on the page; Edit metadata keeps its own Delete prompt… (D161).
+        const moreMenu=createMoreMenu({scope,label:'More actions for this prompt',items:[{label:'Delete prompt…',danger:true,onSelect:()=>deletePrompt(moreMenu.button)}]});
+        actions.append(back,edit,send,moreMenu.element);
         let blocks,galleryScope,detail,contentScope,updateBranches,updateParent,current=null;
         scope.cleanup(()=>{blocks?.dispose();galleryScope?.dispose();contentScope?.dispose();});
         // Every visit opens on the first negative, as the concept's navigate() does (app.js 1149: state.variant = 0);
@@ -504,14 +511,16 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         // can race the delete; aria-disabled keeps it focusable for the return.
         function holdEdit(held) {
             deleting=held;
-            if(held) edit.setAttribute('aria-disabled','true');else edit.removeAttribute('aria-disabled');
+            for(const button of [edit,moreMenu.button]) {
+                if(held) button.setAttribute('aria-disabled','true');else button.removeAttribute('aria-disabled');
+            }
         }
-        function deletePrompt() {
+        function deletePrompt(trigger=edit) {
             const shown=detail;if(deleting || !shown?.positive) return;
             // One review at a time, as the selection bar holds itself (a second press during the preview starts nothing).
             holdEdit(true);
-            reviewPromptDelete({api,scope,trigger:edit,ids:[shown.positive.id],epoch:shown.library_epoch,
-                titleOf:()=>displayTitle(shown.positive),onDismiss:()=>{holdEdit(false);if(edit.isConnected) edit.focus({preventScroll:true});},
+            reviewPromptDelete({api,scope,trigger,ids:[shown.positive.id],epoch:shown.library_epoch,
+                titleOf:()=>displayTitle(shown.positive),onDismiss:()=>{holdEdit(false);if(trigger.isConnected) trigger.focus({preventScroll:true});},
                 onSettled:(outcome,result,failure)=>{
                     holdEdit(false);
                     if(outcome.committed) invalidateLibraryAfterWrite({kind:'bulk-delete',receipt:result ?? {phase:'unconfirmed'}});
@@ -571,6 +580,17 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
             if(detail && state.detail && !state.loading && !state.error) {detail=state.detail;updateParent();updateBranches(state);return;}
             contentScope?.dispose();contentScope=createScope();detail=null;updateBranches=null;updateParent=null;current=null;send.disabled=true;
             blocks?.dispose();blocks=null;galleryScope?.dispose();galleryScope=null;body.replaceChildren();
+            // #512: a prompt that no longer exists (deleted, or a stale link) says so, with the way back; no Retry.
+            // Edit metadata and ⋯ act on a loaded prompt only (review M2).
+            const hadFocus=[edit,moreMenu.button].includes(document.activeElement);
+            const loaded=!state.loading && !state.error;edit.disabled=!loaded;moreMenu.setDisabled(!loaded);
+            if(state.error?.status===404) {
+                const message=el('p',PROMPT_GONE,'library-status');message.setAttribute('role','status');body.append(message);
+                const open=createButton('Open the Prompt library');contentScope.listen(open,'click',()=>{window.location.hash='#/library';});body.append(open);
+                // A focused control that was just disabled hands focus to the way back (review M3).
+                if(hadFocus) open.focus({preventScroll:true});
+                return;
+            }
             if(state.loading || state.error) {
                 const message=el('p',state.loading?'Loading prompt history…':'Prompt history could not be loaded.','library-status');message.setAttribute('role',state.error?'alert':'status');body.append(message);
                 if(state.error) {const retry=createButton('Retry prompt history');contentScope.listen(retry,'click',()=>loader.load(positiveId));body.append(retry);}return;

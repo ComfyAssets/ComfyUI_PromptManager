@@ -42,8 +42,13 @@ test('the grid shows each row only when it applies, with protected titles in sel
         ['Image links removed', '3 images will no longer show these prompts (files stay on disk)'],
         ['Backup', 'Create and verify before deleting'],
     ]);
+    // #512: a row with nothing in it is left out.
     const archiveOnly = reviewOf(preview({archive: [2]}));
-    assert.deepEqual(reviewGrid(archiveOnly).map(([term]) => term), ['Delete permanently', 'Archive']);
+    assert.deepEqual(reviewGrid(archiveOnly).map(([term]) => term), ['Archive']);
+    const deleteOnly = reviewOf(preview({delete: [1]}));
+    assert.deepEqual(reviewGrid(deleteOnly).map(([term]) => term), ['Delete permanently', 'Image links removed', 'Backup']);
+    const keptOnly = reviewOf(preview({protected: [7]}));
+    assert.deepEqual(reviewGrid(keptOnly, id => names[id]), [['Protected (kept)', '1: Seven']]);
     const off = reviewOf(preview({delete: [1], backup: 'off'}));
     assert.equal(reviewGrid(off).at(-1)[1], 'Off: no safety backup (System › Backup & export › Recovery policy)');
 });
@@ -136,7 +141,7 @@ test('reviewOf keeps only well-formed ids and counts from an answer', async () =
         not_found: 'x', image_links: 2, backup: 'maybe', not_archived: -3});
     assert.deepEqual(review, {shelf: 'active', notArchived: 0, epoch: null, delete: [1, 2], archive: [], protected: [], alreadyArchived: 0, notFound: 0,
         imageLinks: 2, backup: 'on', disk: null, deletable: [], digests: {},
-        pairedCounts: {pairs: 0, archivedPairs: 0, variants: 0, keptNegatives: 0}, pairedImageLinks: 0, choice: 'archive'});
+        pairedCounts: {pairs: 0, archivedPairs: 0, variants: 0, keptNegatives: 0}, pairedImageLinks: 0, choice: 'archive', archiveOnly: []});
 });
 
 test('the archived notice says why (the saved pair) and names negative variants only when there are any', async () => {
@@ -290,4 +295,33 @@ test('the outcome names prompts restored since the review', async () => {
         {protected: [], shelf: 'archived'});
     assert.equal(none.toast, 'Nothing was deleted. 1 was restored since the review and kept. 1 changed since the review and ' +
         'was not deleted. The Library was reloaded.');
+});
+
+// #512 (live test of #505/#507/#509): the review names a single prompt, and a negative selected without its positive.
+test('a review from a prompt\'s own page names that prompt', async () => {
+    const {reviewOf, reviewTitle, blockedReason} = await source;
+    const single = review => ({...review, single: true});
+    assert.equal(reviewTitle(single(reviewOf(preview({delete: [1]})))), 'Delete this prompt');
+    assert.equal(reviewTitle(single(reviewOf(preview({archive: [2]})))), 'Archive this prompt');
+    const kept = single(reviewOf(preview({protected: [3]})));
+    assert.equal(reviewTitle(kept), 'Delete this prompt');
+    assert.equal(blockedReason(kept), 'This prompt cannot be deleted or archived.');
+    assert.equal(reviewTitle(single(reviewOf(preview({archive: [2], deletable: [2], review_digests: {2: 'c'.repeat(64)}}),
+        'archived'))), 'Delete this prompt');
+});
+
+test('a negative used by another prompt is named as such when it is archived', async () => {
+    const {reviewOf, reviewGrid, reviewSentences} = await source;
+    const negative = reviewOf(preview({archive: [5], deletable: []}));
+    assert.deepEqual(reviewGrid(negative), [['Archive', "1 prompt used as another prompt's negative: hidden, restorable"]]);
+    assert.deepEqual(reviewSentences(negative), ["Prompts used as another prompt's negative are archived instead of deleted, so " +
+        "that prompt's variant stays. To bring them back, press Show archived prompts, select them and press Restore."]);
+    const mixed = reviewOf(preview({archive: [2, 5], deletable: [2], review_digests: {2: 'c'.repeat(64)}}));
+    assert.deepEqual(reviewGrid(mixed)[0], ['Archive', "2 prompts in a saved pair (1 used as another prompt's negative): hidden, restorable"]);
+    // A paired prompt whose review digest is missing is not called another prompt's negative (review M1).
+    const noDigest = reviewOf(preview({archive: [2], deletable: [2], review_digests: {}}));
+    assert.deepEqual(reviewGrid(noDigest), [['Archive', '1 prompt in a saved pair: hidden, restorable']]);
+    const sentences = reviewSentences(mixed);
+    assert.match(sentences[0], /^Prompts in a saved pair, as its positive or its negative, are archived instead of deleted/);
+    assert.match(sentences[1], /^Prompts used as another prompt's negative are archived instead of deleted, so that prompt's variant stays\.$/);
 });

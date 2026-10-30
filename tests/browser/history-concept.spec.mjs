@@ -26,7 +26,8 @@ const SECTIONS=['heading','history','noPageScroll'];
  */
 export function mapHistoryConcept(reference) {
     const {history}=reference.oracle;
-    return {...reference,history:{...history,
+    // D163 (#512): the heading as laid out with the More menu button (the oracle's heading).
+    return {...reference,heading:reference.oracle.heading,history:{...history,
         // D24: "N tracked runs" is the recorded window's `recorded_run_count`; the fixture records one run per image, so
         // the concept's "4 tracked runs" holds by construction (asserted on both documents below).
         summary:history.summary,
@@ -120,11 +121,14 @@ async function conceptAsRecorded(page) {
         const add=[...document.querySelectorAll('.timeline-panel .row-actions > button')].find(node=>node.textContent==='+ Add negative');
         const archived=add.cloneNode(false);archived.removeAttribute('data-action');archived.removeAttribute('data-prompt');
         archived.setAttribute('aria-pressed','false');archived.textContent=label;add.after(archived);
-        window.__historyOracle={timeline,order:[...lanes].reverse(),texts,archived};
+        // D163 (#512): the heading ends with the "⋯" More menu button, drawn as the concept's Edit metadata button.
+        const edit=[...document.querySelectorAll('#main > .heading .heading-actions > button')].find(node=>node.textContent.trim()==='Edit metadata');
+        const moreButton=edit.cloneNode(false);moreButton.removeAttribute('data-action');moreButton.textContent='⋯';edit.parentElement.append(moreButton);
+        window.__historyOracle={timeline,order:[...lanes].reverse(),texts,archived,moreButton};
     },SHOW_ARCHIVED);
     await settle(page);
     return ()=>page.evaluate(()=>{
-        const {timeline,order,texts,archived}=window.__historyOracle;
+        const {timeline,order,texts,archived,moreButton}=window.__historyOracle;moreButton.remove();
         order.forEach((lane,index)=>{lane.style.setProperty('--lane-offset',`${38+index*47}px`);timeline.append(lane);});
         for(const [span,text] of texts)span.textContent=text;
         archived.remove();delete window.__historyOracle;
