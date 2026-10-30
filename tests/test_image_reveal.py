@@ -171,7 +171,10 @@ class TestRevealInFileManager(unittest.TestCase):
         self.path.parent.mkdir(parents=True)
         self.path.write_bytes(b"png")
         self.popen = patch.object(subprocess, "Popen").start()
+        self.popen.return_value.wait.return_value = 0
         self.reaped = patch.object(file_reveal, "_reap").start()
+        # A desktop session unless a test says otherwise; CI has no display.
+        patch.dict(os.environ, {"DISPLAY": ":0"}).start()
         self.addCleanup(patch.stopall)
 
     def reveal(self, path=None):
@@ -262,8 +265,72 @@ class TestRevealInFileManager(unittest.TestCase):
             self.reveal()
         self.assertEqual(self.argv(), ["/usr/bin/open", "-R", str(self.path)])
         self.assert_detached()
-        self.popen.return_value.wait.assert_not_called()
-        self.reaped.assert_called_once_with(self.popen.return_value)
+        self.popen.return_value.wait.assert_called_once_with(
+            timeout=file_reveal.OPENER_WAIT
+        )
+        self.reaped.assert_not_called()
+
+    def test_a_failing_opener_is_reported_on_macos_and_linux(self):
+        cases = {
+            "darwin": patch.object(
+                file_reveal, "_macos_open", return_value="/usr/bin/open"
+            ),
+            "linux": self.which({"xdg-open": "/usr/bin/xdg-open"}),
+        }
+        for platform, opener in cases.items():
+            with self.subTest(platform):
+                self.popen.return_value.wait.return_value = 4
+                with (
+                    patch.object(file_reveal.sys, "platform", platform),
+                    opener,
+                    self.assertRaises(file_reveal.OpenerFailed),
+                ):
+                    self.reveal()
+                self.reaped.assert_not_called()
+
+    def test_an_opener_still_running_counts_as_started_and_is_reaped(self):
+        cases = {
+            "darwin": patch.object(
+                file_reveal, "_macos_open", return_value="/usr/bin/open"
+            ),
+            "linux": self.which({"xdg-open": "/usr/bin/xdg-open"}),
+        }
+        for platform, opener in cases.items():
+            with self.subTest(platform):
+                self.reaped.reset_mock()
+                process = self.popen.return_value
+                process.wait.side_effect = subprocess.TimeoutExpired("opener", 1)
+                with patch.object(file_reveal.sys, "platform", platform), opener:
+                    self.reveal()
+                self.reaped.assert_called_once_with(process)
+
+    def test_linux_without_a_display_or_a_service_is_unavailable(self):
+        with (
+            patch.object(file_reveal.sys, "platform", "linux"),
+            patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}),
+            self.which({"xdg-open": "/usr/bin/xdg-open"}),
+            self.assertRaises(OpenerUnavailable),
+        ):
+            self.reveal()
+        self.popen.assert_not_called()
+
+    def test_linux_on_wayland_alone_still_runs_xdg_open(self):
+        with (
+            patch.object(file_reveal.sys, "platform", "linux"),
+            patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": "wayland-0"}),
+            self.which({"xdg-open": "/usr/bin/xdg-open"}),
+        ):
+            self.reveal()
+        self.assertEqual(self.argv(), ["/usr/bin/xdg-open", str(self.path.parent)])
+
+    def test_the_service_answers_without_needing_a_display(self):
+        with (
+            patch.object(file_reveal.sys, "platform", "linux"),
+            patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}),
+            self.which({"dbus-send": "/usr/bin/dbus-send"}),
+        ):
+            self.reveal()
+        self.assertEqual(self.popen.call_count, 1)
 
     def test_macos_open_is_the_fixed_system_path(self):
         self.assertEqual(file_reveal.MACOS_OPEN, "/usr/bin/open")
@@ -324,6 +391,12 @@ class TestRevealInFileManager(unittest.TestCase):
             "XDG_SESSION_DESKTOP": "KDE",
             "XDG_CONFIG_HOME": "/home/u/.config",
             "XDG_DATA_DIRS": "/usr/share",
+            # What xdg-open reads to choose an opener (kde-open6 on Plasma 6).
+            "KDE_FULL_SESSION": "true",
+            "KDE_SESSION_VERSION": "6",
+            "GNOME_DESKTOP_SESSION_ID": "this-is-deprecated",
+            "MATE_DESKTOP_SESSION_ID": "this-is-mate",
+            "LXQT_SESSION_CONFIG": "session",
         }
         with patch.dict(os.environ, inherited, clear=True):
             env = file_reveal._child_env()
@@ -343,6 +416,11 @@ class TestRevealInFileManager(unittest.TestCase):
                 "XDG_SESSION_DESKTOP": "KDE",
                 "XDG_CONFIG_HOME": "/home/u/.config",
                 "XDG_DATA_DIRS": "/usr/share",
+                "KDE_FULL_SESSION": "true",
+                "KDE_SESSION_VERSION": "6",
+                "GNOME_DESKTOP_SESSION_ID": "this-is-deprecated",
+                "MATE_DESKTOP_SESSION_ID": "this-is-mate",
+                "LXQT_SESSION_CONFIG": "session",
             },
         )
         self.assertNotIn("/venv", file_reveal.SYSTEM_PATH)
@@ -387,15 +465,19 @@ class TestRevealInFileManager(unittest.TestCase):
         for name, (available, outcome) in cases.items():
             with self.subTest(name):
                 self.popen.reset_mock(side_effect=True, return_value=True)
-                self.reaped.reset_mock()
                 dbus = MagicMock()
+                opener = MagicMock()
+                opener.wait.return_value = 0
                 if isinstance(outcome, OSError):
-                    self.popen.side_effect = [outcome, MagicMock()]
+                    self.popen.side_effect = [outcome, opener]
                 elif isinstance(outcome, subprocess.TimeoutExpired):
                     dbus.wait.side_effect = [outcome, None]
-                    self.popen.side_effect = [dbus, MagicMock()]
+                    self.popen.side_effect = [dbus, opener]
+                elif outcome is None:
+                    self.popen.side_effect = [opener]
                 else:
-                    self.popen.return_value.wait.return_value = outcome
+                    dbus.wait.return_value = outcome
+                    self.popen.side_effect = [dbus, opener]
                 with (
                     patch.object(file_reveal.sys, "platform", "linux"),
                     self.which(available),
@@ -406,7 +488,7 @@ class TestRevealInFileManager(unittest.TestCase):
                     ["/usr/bin/xdg-open", str(self.path.parent)],
                 )
                 self.assert_detached(self.popen.call_count - 1)
-                self.reaped.assert_called_once()
+                opener.wait.assert_called_once_with(timeout=file_reveal.OPENER_WAIT)
                 if name == "hung":
                     dbus.kill.assert_called_once_with()
 

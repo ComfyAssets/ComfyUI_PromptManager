@@ -363,6 +363,10 @@ test('Show in folder asks the server to open the listed file and announces each 
     expect(Object.keys(body).sort()).toEqual(['path','root_index','root_scope']);
     expect(body).toMatchObject({root_index:0,path:'inspector/complete.png'});expect(body.root_scope).toMatch(/^[0-9a-f]{64}$/);
     await expect(toast).toHaveText('Opened the folder on this computer.');
+    // #533: the answer is really on screen and reachable above the modal viewer, not covered by it.
+    await expect(toast).toBeVisible();
+    expect(await toast.evaluate(node=>{const box=node.getBoundingClientRect();const top=document.elementFromPoint(box.x+box.width/2,box.y+box.height/2);return top===node;})).toBe(true);
+    await expect(page.locator('#viewer-dialog').getByRole('status').filter({hasText:'Opened the folder on this computer.'})).toHaveCount(1);
     const opened=async()=>(await (await request.get('/__test__/reveal')).json()).opened;
     expect(await opened()).toEqual(['output/inspector/complete.png']);
     for (const [outcome,message] of [['unavailable','No file manager is available on this computer.'],['fail','The folder could not be opened. Try again.']]) {
@@ -377,7 +381,11 @@ test('Show in folder asks the server to open the listed file and announces each 
     await expect(await request.post('/__test__/reveal',{data:{outcome:'opened'}})).toBeOK();
     await page.route('**/prompt_manager/images/reveal',route=>route.continue({headers:{...route.request().headers(),'x-forwarded-for':'203.0.113.7'}}));
     await show.click();await expect(toast).toHaveText('Show in folder works only in a browser on the computer running ComfyUI.');
+    await expect(toast).toBeVisible();
     expect(await opened()).toEqual(['output/inspector/complete.png']);
+    // #533: closing the viewer takes the toast back to the page, still showing the message.
+    await page.keyboard.press('Escape');await expect(page.locator('#viewer-dialog')).toHaveCount(0);
+    await expect(toast).toBeVisible();await expect(page.locator('body > #workspace-toast')).toHaveCount(1);
 });
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);

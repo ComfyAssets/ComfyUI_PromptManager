@@ -51,6 +51,9 @@ REVEAL_COOLDOWN = 1.0
 DBUS_REPLY_TIMEOUT_MS = 2000
 # The dbus-send process itself gets a little longer before it is killed.
 DBUS_WAIT = 3.0
+# An opener that fails says so at once; one still running after this long has
+# started a file manager (it may stay in the foreground).
+OPENER_WAIT = 1.0
 FILE_MANAGER_DEST = "org.freedesktop.FileManager1"
 # Openers are looked up here only, never on ComfyUI's (venv) PATH, and the
 # children get this as their PATH.
@@ -77,11 +80,21 @@ CHILD_ENV_NAMES = (
     "DBUS_SESSION_BUS_ADDRESS",
     "LANG",
     "LC_ALL",
+    # What xdg-open reads to choose an opener (kde-open6 on Plasma 6).
+    "KDE_FULL_SESSION",
+    "KDE_SESSION_VERSION",
+    "GNOME_DESKTOP_SESSION_ID",
+    "MATE_DESKTOP_SESSION_ID",
+    "LXQT_SESSION_CONFIG",
 )
 
 
 class OpenerUnavailable(Exception):
     """No file manager can be started on this computer."""
+
+
+class OpenerFailed(Exception):
+    """The file manager's opener ran and reported a failure."""
 
 
 class RevealTargetChanged(Exception):
@@ -393,6 +406,19 @@ def _launch(argv: list[str]) -> subprocess.Popen:
     return subprocess.Popen(argv, **options)  # nosec B603
 
 
+def _launch_opener(argv: list[str]) -> None:
+    """Start an opener and report its failure (OpenerFailed), never waiting on
+    a file manager it stays attached to: that one is left to the reaper."""
+    process = _launch(argv)
+    try:
+        status = process.wait(timeout=OPENER_WAIT)
+    except subprocess.TimeoutExpired:
+        _reap(process)
+        return
+    if status != 0:
+        raise OpenerFailed(f"exit status {status}")
+
+
 def _show_items(path: Path) -> bool:
     """Ask the freedesktop FileManager1 service to select *path*; True only
     when the service replied (``--print-reply`` makes the exit status real)."""
@@ -427,8 +453,9 @@ def reveal_in_file_manager(path: Path, root: Path) -> None:
     """Open the file manager at *path*, a regular file inside *root*.
 
     Re-checks that containment first (RevealTargetChanged). Raises
-    OpenerUnavailable when no opener exists and OSError when the one found
-    cannot start. Never waits on the file manager itself.
+    OpenerUnavailable when no opener exists or Linux has no graphical session,
+    OSError when the one found cannot start and OpenerFailed when it reports a
+    failure. Never waits on the file manager itself.
     """
     path = Path(path)
     if not path.is_absolute():
@@ -441,11 +468,12 @@ def reveal_in_file_manager(path: Path, root: Path) -> None:
         opener = _macos_open()
         if opener is None:
             raise OpenerUnavailable()
-        _reap(_launch([opener, "-R", str(path)]))
+        _launch_opener([opener, "-R", str(path)])
         return
     if _show_items(path):
         return
     opener = _executable("xdg-open")
-    if opener is None:
+    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if opener is None or not has_display:
         raise OpenerUnavailable()
-    _reap(_launch([opener, str(path.parent)]))
+    _launch_opener([opener, str(path.parent)])

@@ -1572,6 +1572,12 @@ Recorded deviations on this page (spec §8):
   | 429 `busy` | "The folder is already opening." |
   | Anything else (415, 404, 409, 500, offline) | "The folder could not be opened. Try again." |
 
+  **D176 (#533, beyond the concept):** the viewer is a modal, so `showWorkspaceToast`
+  moves `#workspace-toast` into the topmost open modal, keeping its fixed position,
+  and back when that modal closes. Otherwise every toast raised from a modal is
+  covered and inert while `toHaveText` still passes: assert `toBeVisible` and the
+  hit test as `full-inspector.spec.mjs` does.
+
   The route is local-only. It answers 403 `not-local` unless all of these hold: no
   forwarding-style header (`Forwarded`, `Via`, `X-Real-IP`, `CF-Connecting-IP`,
   `True-Client-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `Fastly-Client-IP`, and any
@@ -1596,13 +1602,18 @@ Recorded deviations on this page (spec §8):
   reach it), falling back to `os.startfile(folder, "explore")`. macOS runs
   `/usr/bin/open -R`; Linux asks FileManager1 `ShowItems` with `dbus-send
   --print-reply --reply-timeout=2000` (a real reply or a fallback) and else runs
-  `xdg-open` on the folder. Those openers are argv lists resolved only on a fixed
+  `xdg-open` on the folder, or answers 501 without `DISPLAY` and `WAYLAND_DISPLAY`.
+  `open` and `xdg-open` get `OPENER_WAIT` (1 s): a nonzero exit is the 500 above, and
+  one still running counts as started and goes to the reaper (#533). Those openers are argv lists resolved only on a fixed
   system PATH, with no shell, DEVNULL streams, `close_fds`, their own session, a
   minimal environment (no venv PATH, PYTHONPATH or API keys) and a daemon-thread
   reaper. `tests/test_image_reveal.py` mocks `Popen`, `sys.platform`, `shutil.which`,
   the shell API and `os.startfile`; the browser server's opener is a stub
   (`POST`/`GET /__test__/reveal`) with no cooldown. The inspector comparison reads
   closed disclosures as hidden, so the button needs no mapping there.
+
+  LoRA Manager's open-location route has no local-only gate, so it also opens the
+  server's file manager for a proxied or remote browser; ours says it cannot.
 
   Residual risk, accepted: a reverse proxy or tunnel that adds no forwarding header
   (a bare nginx `proxy_pass` to 127.0.0.1, `ssh -R`, `socat`) cannot be told apart
