@@ -16,6 +16,7 @@ import {mountToolbar} from './toolbar.mjs';
 import {libraryFilters,libraryViewState} from './saved-views.mjs';
 import {openRefineDialog,openContentDialog} from './workspace-dialogs.mjs';
 import {mountLibrarySelection} from './library-selection.mjs';
+import {scrollToPageTop} from './sticky-chrome.mjs';
 import {fallBackToOriginal,replaceOnError,showsThumbnail,thumbnailSource} from './thumbnail-support.mjs';
 import {COPY as DELETE_COPY,RESTORE_URL,archivedNoticeText,restoreOutcome,reviewPromptDelete} from './library-delete.mjs';
 import {createMoreMenu} from './more-menu.mjs';
@@ -190,10 +191,11 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const grid=el('div',undefined,'library-grid');grid.setAttribute('role','list');grid.setAttribute('aria-label','Positive prompts');
         // #437 D148: select prompts and set their category (the legacy admin's Set Category); a write reloads the shelf.
         let categoryNames=[];
-        const selection=mountLibrarySelection({scope,api,grid,getItems:()=>state?.items ?? [],getEpoch:()=>state?.epoch ?? null,
+        // #531: the bar's compensating scroll is not the reader moving, so a pending anchor keeps its offset.
+        const selection=mountLibrarySelection({scope,api,grid,onPlaceKept:shift=>{observedScrollY+=shift;},getItems:()=>state?.items ?? [],getEpoch:()=>state?.epoch ?? null,
             getCategories:()=>categoryNames,focusFallback:{focus:()=>focusHeading(main)},getShelf:()=>filters.shelf,
             nameOf:id=>{const item=state?.items.find(entry=>entry.id===id);return item?displayTitle(item):null;},
-            onCommitted:(kind,receipt)=>invalidateLibraryAfterWrite({kind:`bulk-${kind}`,receipt}),onReload:()=>{loadCategories();reset();}});
+            onCommitted:(kind,receipt)=>invalidateLibraryAfterWrite({kind:`bulk-${kind}`,receipt}),onReload:()=>{loadCategories();reset();scrollToPageTop();}});
         const message=el('p','','library-status');message.setAttribute('role','status');
         const continuation=el('div',undefined,'library-continuation');
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;

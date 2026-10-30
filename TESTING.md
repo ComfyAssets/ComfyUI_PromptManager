@@ -5705,6 +5705,23 @@ npm run --prefix tools/vendor test:workflows -- workspace-system-backups.spec.mj
   --project chromium --project touch --project firefox --project webkit
 ```
 
+## Sticky chrome (#531)
+
+Beyond the concept, from the maintainer's test of #528; the concept is unchanged. `workspace-sticky-chrome.spec.mjs` holds these.
+
+- **D186:** the selection bars (Images `#bulkbar`, Library `#library-bulkbar`; there are no others) are sticky: under the
+  top bar at the top of the page, and at the top of the window once that non-sticky top bar has scrolled away (one rule
+  in workspace.css). While the bar's flow place is above the window, its appearing, resizing or leaving does not move the cards
+  (`keepingPlace`). Focused card controls and the Images panel keep clear of it (`--selection-bar-block`). At 700px and below
+  the bar is one row that scrolls sideways. After a bulk action finishes the page scrolls to the top and refreshes the
+  list; Set category, Delete… and Return to library clear the selection as before, while tagging and collections keep
+  it (D85, D138). Export metadata changes nothing, so it stays put. Single-image actions from the inspector and viewer stay put.
+- **D187:** Back to top: one shell chip past 200px of scroll, above the toast's spot; it rises only for a toast taller than two lines. It never animates, because the
+  pages' height corrections would cancel a smooth scroll, and focus moves to `#workspace-main`. D42's band grows to 140px.
+- **D188:** the Needs review panel is sticky like the Images panel, with its own scroll on a window under 720px tall, and static at 700px and below.
+- **D189:** where a panel is one column (static): Info brings the panel into view. On
+  Images the panel follows the whole list, past infinite scroll, so loading waits for the reader's next move (wheel, touch or key) rather than pushing the panel away.
+
 ## Workspace data fields for the concept pages (#249)
 
 These fields are additive. The legacy `/prompt_manager/images/output` listing (no
