@@ -9,13 +9,15 @@ by the caller.
 import os
 import re
 
-from .images import _forbidden, _has_traversal
+from .images import _file_not_found, _forbidden, _has_traversal
 from .prompts import bad_request
 
 try:
     from ...utils.media_capture import CAPTURE_EXTENSIONS
+    from ...utils.media_folders import in_trash_folder
 except ImportError:
     from utils.media_capture import CAPTURE_EXTENSIONS
+    from utils.media_folders import in_trash_folder
 
 MAX_TARGET_PATH = 1024
 TARGET_FIELDS = frozenset({"root_index", "root_scope", "path"})
@@ -29,7 +31,9 @@ def media_target(data: object, *, media_message: str = TAGGING_MEDIA_MESSAGE):
     Only the listing identity is accepted: an int root index, the root's
     64-hex scope and a bounded root-relative POSIX media path, never an
     absolute, drive-qualified, backslash or ``..`` path (a 400 for a malformed
-    shape, a 403 for an unsafe or non-media path, carrying *media_message*).
+    shape, a 403 for an unsafe or non-media path, carrying *media_message*, a
+    404 for a path in a trash folder, #543). A link or a short-name spelling
+    is refused later by the capture store's alias check.
     """
     if not isinstance(data, dict) or set(data) != TARGET_FIELDS:
         return None, bad_request("target must name root_index, root_scope and path")
@@ -51,4 +55,6 @@ def media_target(data: object, *, media_message: str = TAGGING_MEDIA_MESSAGE):
         return None, _forbidden()
     if os.path.splitext(parts[-1])[1].lower() not in CAPTURE_EXTENSIONS:
         return None, _forbidden(media_message)
+    if in_trash_folder(relative):
+        return None, _file_not_found()
     return (index, scope, relative), None

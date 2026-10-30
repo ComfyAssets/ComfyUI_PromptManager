@@ -67,6 +67,7 @@ from aiohttp import web
 
 from . import thumbnail_settings
 from .images import (
+    in_trash_below_roots,
     MEDIA_EXTENSIONS,
     THUMBNAIL_CLEAR_TITLE,
     VIDEO_EXTENSIONS,
@@ -248,6 +249,8 @@ def _thumbnail_source(root, parts):
         found = _scan_folder(root.joinpath(*folder_parts), base, set(wanted))
         if found is None or not _is_within(found, root):
             return None
+    if in_trash_below_roots(found, [root]):
+        return None
     rel = Path(*folder_parts, found.name)
     dst = root / media_thumbnail_rel(rel)
     if dst != _current_preview(root, parts):
@@ -835,7 +838,7 @@ class AutoThumbnailMixin:
             if not folded.startswith(base) or not _is_within(path, root):
                 continue
             rel = Path(os.path.relpath(path, root))
-            if "thumbnails" in rel.parts[:-1]:
+            if "thumbnails" in rel.parts[:-1] or in_trash_below_roots(path, [root]):
                 return None
             dst = root / media_thumbnail_rel(rel)
             if not _is_within(root / "thumbnails", root) or not _is_within(

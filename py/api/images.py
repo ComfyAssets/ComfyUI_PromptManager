@@ -68,6 +68,7 @@ try:
     from ...utils.card_seed import card_seed, header_params, parsed_positive
     from ...utils.media_folders import (
         in_skipped_folder,
+        in_trash_below_roots,
         in_trash_folder,
         is_skipped_folder,
     )
@@ -98,6 +99,7 @@ except ImportError:
     from utils.card_seed import card_seed, header_params, parsed_positive
     from utils.media_folders import (
         in_skipped_folder,
+        in_trash_below_roots,
         in_trash_folder,
         is_skipped_folder,
     )
@@ -285,10 +287,20 @@ def _forbidden(message="Access denied"):
     return web.json_response({"success": False, "error": message}, status=403)
 
 
-def _media_access_error(path, allowed_dirs):
-    """Return a 403 response when *path* must not be served, else None.
+def _file_not_found():
+    return web.json_response(
+        {"success": False, "error": "Image file not found"},
+        status=404,
+        headers={"Cache-Control": "no-store"},
+    )
 
-    Fails closed: an empty *allowed_dirs* denies everything.
+
+def _media_access_error(path, allowed_dirs):
+    """The response refusing *path*, or None when it may be read.
+
+    Fails closed: an empty *allowed_dirs* denies everything (403). A file in a
+    trash folder below its root is thrown away, not an output: a 404, as if it
+    were not there (#543), also through a link or another spelling.
     """
     if Path(path).suffix.lower() not in SERVABLE_EXTENSIONS:
         return _forbidden("Only media files can be served")
@@ -296,22 +308,9 @@ def _media_access_error(path, allowed_dirs):
         return _forbidden("No allowed image directories configured")
     if not any(_is_within(path, root) for root in allowed_dirs):
         return _forbidden()
+    if in_trash_below_roots(path, allowed_dirs):
+        return _file_not_found()
     return None
-
-
-def _record_in_trash_folder(path, roots) -> bool:
-    """Whether a recorded *path* lies in a trash folder below every root holding it.
-
-    A source named like a trash folder is still a source, so a path it holds
-    without a trash folder below it stays servable (#543).
-    """
-    real = os.path.realpath(path)
-    below = []
-    for root in roots:
-        real_root = os.path.realpath(root)
-        if real.startswith(os.path.join(real_root, "")):
-            below.append(os.path.relpath(real, real_root))
-    return bool(below) and all(in_trash_folder(relative) for relative in below)
 
 
 # Media types the gallery scans and thumbnails (a superset is never served).
@@ -1002,6 +1001,8 @@ def _settled_entry(root, relative):
         return None
     if in_skipped_folder(folders) or len(folders) > MAX_SCAN_DEPTH:
         return None
+    if in_trash_below_roots(path, [root]):
+        return None  # a linked folder on the way leads into a trash folder
     folder = os.fspath(root)
     for part in ("", *folders):
         folder = os.path.join(folder, part) if part else folder
@@ -2663,10 +2664,7 @@ class ImageRoutesMixin:
             if denied is not None:
                 return denied
 
-            if (
-                _record_in_trash_folder(image_path, allowed_dirs)
-                or not image_path.is_file()
-            ):
+            if not image_path.is_file():
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
                 )
@@ -2788,12 +2786,8 @@ class ImageRoutesMixin:
                 return _forbidden()
             suffix = Path(filepath).suffix.lower()
             if in_trash_folder(filepath):
-                # Thrown away, not an output (#543): as if it were not there.
-                return web.json_response(
-                    {"success": False, "error": "Image file not found"},
-                    status=404,
-                    headers={"Cache-Control": "no-store"},
-                )
+                # Before any file access, so no preview is made for it (#543).
+                return _file_not_found()
             if suffix not in SERVABLE_EXTENSIONS and not (
                 # A JPEG XL preview is served from thumbnails/ only (#317).
                 suffix in thumbnail_settings.THUMBNAIL_EXTENSIONS
@@ -2817,6 +2811,8 @@ class ImageRoutesMixin:
                 # a fall-through to the next root.
                 if not _is_within(image_path, output_path):
                     return _forbidden()
+                if in_trash_below_roots(image_path, output_dirs):
+                    return _file_not_found()
                 if image_path.is_file():
                     return self._file_response(image_path)
 
@@ -2868,8 +2864,9 @@ class ImageRoutesMixin:
         if _is_thumbnail_cache_path(filepath):
             return _forbidden()
         image_path = root / filepath
-        if not _is_within(image_path, root):
-            return _forbidden()
+        denied = _media_access_error(image_path, [root])
+        if denied is not None:
+            return denied
         if not image_path.is_file():
             return web.json_response(
                 {"success": False, "error": "Image file not found"}, status=404
@@ -3626,9 +3623,7 @@ class ImageRoutesMixin:
             if denied is not None:
                 return denied
 
-            if _record_in_trash_folder(image_path, allowed_dirs) or not os.path.isfile(
-                image_path
-            ):
+            if not os.path.isfile(image_path):
                 return web.json_response(
                     {"success": False, "error": "Image file not found"}, status=404
                 )
@@ -3708,8 +3703,6 @@ class ImageRoutesMixin:
     @staticmethod
     def _reveal_path(relative: str, root: Path) -> Path | None:
         """The real path of a regular media file under *root*, else None."""
-        if in_trash_folder(relative):
-            return None
         resolved = ImageRoutesMixin._resolve_client_media_path(relative, [root])
         if resolved is None or _media_access_error(resolved, [root]) is not None:
             return None
@@ -3944,10 +3937,6 @@ class ImageRoutesMixin:
         if _is_thumbnail_cache_path(relative):
             # A preview is a placeholder: it carries no metadata (#317).
             return _forbidden("Previews are not inspected; inspect the original")
-        if in_trash_folder(relative):
-            return web.json_response(
-                {"success": False, "error": "Image file not found"}, status=404
-            )
         path = Path(roots[index]) / relative
         denied = _media_access_error(path, [roots[index]])
         if denied is None:
