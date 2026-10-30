@@ -200,7 +200,9 @@ test('viewer renders the concept shell and toolbar order', async () => {
         assert.equal(dialog.attributes['aria-label'],undefined,'the title names the dialog');
         const [header,layout] = dialog.children;
         assert.equal(header.className,'dialog-header');
-        const [heading,mode,close] = header.children, [title,subtitle] = heading.children;
+        const [heading,keys,mode,close] = header.children, [title,subtitle] = heading.children;
+        // #532 D170: ⌘ before the view switch opens the shortcuts.
+        assert.deepEqual([keys.tagName,keys.id,keys.className,keys.attributes['aria-label'],keys.title],['button','viewer-keys','icon-btn','Keyboard shortcuts','Keyboard shortcuts']);
         // #450 D156: the view switch before ✕ names the view it switches to (Centered is the stored default).
         assert.deepEqual([mode.tagName,mode.id,mode.className,mode.attributes['aria-label'],mode.title],['button','viewer-mode','icon-btn','Full screen view','Full screen view']);
         mode.fire('click');
@@ -231,6 +233,83 @@ test('viewer renders the concept shell and toolbar order', async () => {
         f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].fire('click');
         assert.equal(toolbar.children[9].textContent,'2 of 2 loaded: a.png');
     } finally { view.dispose(); parentScope.dispose(); f.restore(); }
+});
+
+test('⌘ opens the shortcuts on top of the viewer and closing them leaves it open (#532)', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')];
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
+    try {
+        view.open({items,selectedKey:'c'.repeat(64)});
+        const [dialog] = f.container.children, [keys] = f.walk(dialog,n => n.id === 'viewer-keys');
+        const position = () => f.walk(dialog,n => n.attributes.role === 'status')[0].textContent;
+        const overlays = () => f.walk(dialog,n => n.id === 'viewer-keys-dialog');
+        assert.equal(overlays().length,0,'built on demand');
+        assert.match(position(),/^1 of 2/);
+        f.doc.fire('keydown',{key:'ArrowRight',target:f.walk(dialog,n => n.id === 'viewer-close')[0]});
+        assert.match(position(),/^2 of 2/,'the arrows work with focus on ×');
+        keys.fire('click');
+        const [overlay] = overlays();
+        assert.equal(overlay.open,true);
+        assert.equal(overlay.attributes['aria-labelledby'],'viewer-keys-title');
+        assert.deepEqual(f.walk(overlay,n => n.tagName === 'kbd').map(n => n.textContent),['←','→','Space','+','-','0','R','H','F','I','?','Esc','D']);
+        f.doc.fire('keydown',{key:'ArrowLeft',target:keys});
+        assert.match(position(),/^2 of 2/,'the arrows wait for the overlay');
+        f.walk(overlay,n => n.attributes['aria-label'] === 'Close keyboard shortcuts')[0].fire('click');
+        assert.equal(overlays().length,0);
+        assert.equal(dialog.open,true,'the viewer stays open');
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); }
+});
+
+test('hotkeys click the toolbar\'s own controls, so an unavailable control does nothing (#532)', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')], deletes = [];
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}},onDelete:(entry,button) => deletes.push([entry,button])});
+    try {
+        view.open({items,selectedKey:'c'.repeat(64)});
+        const [dialog] = f.container.children, by = (test) => f.walk(dialog,test)[0];
+        const stage = by(n => n.id === 'viewer-stage'), mode = by(n => n.id === 'viewer-mode'), remove = by(n => n.textContent === 'Delete…');
+        const press = (key,init = {}) => { let prevented = false; f.doc.fire('keydown',{key,target:stage,preventDefault(){prevented = true;},...init});return prevented; };
+        // No media is ready: every transform is aria-disabled, so its key is swallowed by the same check as a click.
+        for (const key of ['+','=','-','0','r','H']) assert.equal(press(key),true,key);
+        // Modifiers, repeats and composition leave every key alone; Shift does not.
+        for (const init of [{ctrlKey:true},{metaKey:true},{altKey:true},{repeat:true},{isComposing:true}]) assert.equal(press('f',init),false);
+        assert.equal(press('+',{repeat:true}),true,'zoom may repeat');
+        assert.equal(press('Unbound'),false);
+        // F clicks the switch, and does nothing while the switch is hidden.
+        assert.equal(mode.attributes['aria-label'],'Full screen view');
+        press('F',{shiftKey:true});assert.equal(mode.attributes['aria-label'],'Centered view');
+        mode.layoutHidden = true;assert.equal(press('f'),false);assert.equal(mode.attributes['aria-label'],'Centered view');mode.layoutHidden = false;
+        // I needs the toggle: it is there in full screen and gone when Centered.
+        const details = by(n => n.id === 'viewer-details');
+        press('i');assert.equal(details.hidden,true);press('i');assert.equal(details.hidden,false);
+        press('f');assert.equal(press('i'),false,'no toggle when Centered');
+        // Delete only opens the page's review, for this file.
+        press('Delete');assert.equal(deletes.length,1);assert.equal(deletes[0][1],remove);
+        press('Delete',{repeat:true});assert.equal(deletes.length,1);
+        // D goes through the link's own check while the file cannot be downloaded.
+        controller.publish({loading:false,error:false,record:null,refreshRequired:true,message:'Refresh required.'});
+        const download = by(n => n.attributes['aria-label'] === 'Download original');
+        let blocked = false;download.fire('click',{preventDefault(){blocked = true;}});assert.equal(blocked,true);
+        assert.equal(press('d'),true);
+        // Space and ? on the stage; a target that keeps its keys leaves them alone.
+        assert.equal(press(' '),true);
+        assert.equal(press('?'),true);
+        const overlay = by(n => n.id === 'viewer-keys-dialog');assert.equal(overlay.open,true);
+        assert.equal(press('r'),false,'off under the overlay');
+        overlay.close();
+        assert.equal(press('r',{target:new f.Node('body')}),false,'a target outside the viewer that is not the page');
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); }
+    const g = mountedDom(), scope = createScope();
+    const plain = module.createMediaViewer({container:g.container,parentScope:scope,inspectionController:borrowedController(),adapter,sender:{open(){}}});
+    try {
+        plain.open({items,selectedKey:'c'.repeat(64)});
+        const stage = g.walk(g.container,n => n.id === 'viewer-stage')[0];
+        let prevented = false;g.doc.fire('keydown',{key:'Delete',target:stage,preventDefault(){prevented = true;}});
+        assert.equal(prevented,false,'no Delete… in this viewer, so no Delete key');
+        g.doc.fire('keydown',{key:'?',target:stage});
+        assert.ok(!g.walk(g.container,n => n.tagName === 'kbd').some(n => n.textContent === 'Delete'),'and none listed');
+    } finally { plain.dispose(); scope.dispose(); g.restore(); }
 });
 
 test('viewer titles a linked card "<title> · <filename>" before any inspection arrives', async () => {

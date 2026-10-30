@@ -24,7 +24,9 @@ const paths = Object.freeze({
     "review": "M4 3h16v18H4zM8 7h8M8 12h8M8 17h5",
     // #450 (D156): the viewer's Full screen / Centered switch.
     "maximize": "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
-    "minimize": "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"
+    "minimize": "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
+    // #532 (D170): the viewer's keyboard shortcuts.
+    "command": "M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"
 });
 
 /** Create an approved decorative outline icon without injecting markup. */

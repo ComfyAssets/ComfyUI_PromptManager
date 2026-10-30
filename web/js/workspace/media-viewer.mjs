@@ -13,6 +13,13 @@ export function readViewerPreferences(getStorage = () => window.localStorage, no
     const {videoAutoplay,videoMute,videoLoop} = readPreferences(getStorage,normalize).values;
     return {videoAutoplay,videoMute,videoLoop};
 }
+// #532: where ← and → stay with what has focus (a video's seek, text carets, a disclosure, scrolling text).
+const KEEPS_ARROWS = 'video,input,textarea,select,pre,summary,[contenteditable]';
+const SHORTCUTS = [
+    ['Move',[['←','Previous file'],['→','Next file'],['Space','Play or pause the slideshow']]],
+    ['Image',[['+','Zoom in'],['-','Zoom out'],['0','Fit'],['R','Rotate'],['H','Flip']]],
+    ['View',[['F','Full screen or centered'],['I','Show or hide details'],['?','These shortcuts'],['Esc','Close the viewer']]],
+    ['File',[['D','Download the original'],['Delete','Delete…, which asks first']]]];
 function element(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -60,7 +67,10 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         // #450 (D156): the view switch before ✕ names the view it switches to; the stored default picks the first view.
         let fullscreen = displayPreferences()?.viewerOpenMode === 'fullscreen';
         const mode = createButton('','icon-btn');mode.id = 'viewer-mode';
-        header.append(heading,mode,close);
+        // #532 (D170): ⌘ before the view switch lists the viewer's shortcuts.
+        const keys = createButton('','icon-btn');keys.id = 'viewer-keys';keys.title = 'Keyboard shortcuts';
+        keys.setAttribute('aria-label','Keyboard shortcuts');keys.append(createWorkspaceIcon('command'));
+        header.append(heading,keys,mode,close);
         const body = element('div','viewer-layout'), left = element('div','viewer-left');
         const stage = element('div');stage.id = 'viewer-stage';stage.tabIndex = 0;
         stage.setAttribute('role','region');stage.setAttribute('aria-label','Media preview');
@@ -83,8 +93,9 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(download,'click',event => {session.stop();if (download.getAttribute('aria-disabled') === 'true') event.preventDefault();});
         controls.append(download);
         // #480: Delete… (the Images viewer only) pauses the media, then opens the delete review for this file.
+        let remove = null;
         if (onDelete) {
-            const remove = createButton('Delete…','danger');
+            remove = createButton('Delete…','danger');
             local.listen(remove,'click',() => {
                 session.stop();
                 for (const video of dialog.querySelectorAll('video')) video.pause();
@@ -123,6 +134,29 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         }
         local.listen(detailsToggle,'click',() => {details.hidden = !details.hidden;paintToggle();});
         local.listen(mode,'click',() => {fullscreen = !fullscreen;paintMode();syncToggle();});
+        /** A modal inside the viewer: Esc closes only the top dialog, `close` and `cancel` do not bubble, focus returns to ⌘. */
+        function openShortcuts() {
+            session.stop();
+            const overlay = element('dialog');overlay.id = 'viewer-keys-dialog';overlay.setAttribute('aria-labelledby','viewer-keys-title');
+            const top = element('div','dialog-header'), name = element('h2',undefined,'Keyboard shortcuts');name.id = 'viewer-keys-title';
+            const dismiss = createButton('×');dismiss.setAttribute('aria-label','Close keyboard shortcuts');dismiss.autofocus = true;
+            top.append(name,dismiss);
+            const groups = element('div','viewer-keys-groups');
+            for (const [group,rows] of SHORTCUTS) {
+                const section = element('section'), list = element('dl');
+                for (const [key,action] of rows) {
+                    if (key === 'Delete' && !remove) continue;
+                    const row = element('div'), term = element('dt'), kbd = element('kbd',undefined,key);
+                    term.append(kbd);row.append(term,element('dd',undefined,action));list.append(row);
+                }
+                section.append(element('h3','small muted',group),list);groups.append(section);
+            }
+            overlay.append(top,groups,element('p','muted small','A video player or text with focus keeps its keys. A key does nothing when its button is unavailable for this file.'));
+            local.listen(dismiss,'click',() => overlay.close());
+            local.listen(overlay,'close',() => overlay.remove());
+            dialog.append(overlay);overlay.showModal();
+        }
+        local.listen(keys,'click',openShortcuts);
         paintMode();syncToggle();
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
@@ -154,12 +188,30 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(document,'visibilitychange',() => {if (document.hidden) session.stop();});
         local.listen(window,'pagehide',() => closeViewer(false));
         local.listen(retry,'click',() => {if (!inspectionState.refreshRequired) rebuild(entry);});
-        local.listen(dialog,'keydown',event => {
-            if (!['ArrowLeft','ArrowRight'].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-                (!stage.contains(event.target) && !controls.contains(event.target)) ||
-                event.target.closest('video,input,textarea,select,pre,summary,[contenteditable]') ||
-                !window.getSelection()?.isCollapsed || [...document.querySelectorAll('dialog[open]')].at(-1) !== dialog) return;
-            event.preventDefault();session.navigate(event.key === 'ArrowLeft' ? -1 : 1);
+        // #532: on the document, as the legacy gallery does: focus starts on ✕ and can fall to the page (a click on
+        // header text, a focused video replaced by navigating), where a key never reaches the dialog.
+        // A key clicks the toolbar's own control, whose handler checks `aria-disabled`, so the two cannot disagree; a
+        // control that is missing or hidden has no client rects. Only zoom repeats, so holding D downloads once.
+        const [zoomOut,zoomIn,fit,rotate,flip] = transforms;
+        const hotkeys = new Map([['+',zoomIn],['=',zoomIn],['-',zoomOut],['0',fit],['r',rotate],['h',flip],[' ',slideshow],
+            ['f',mode],['i',detailsToggle],['d',download],['Delete',remove]]);
+        const repeats = new Set(['+','=','-']);
+        const keysAreOurs = ({target,altKey,ctrlKey,metaKey,isComposing}) => !altKey && !ctrlKey && !metaKey && !isComposing &&
+            (dialog.contains(target) || target === document.body || target === document.documentElement) &&
+            !target.closest(KEEPS_ARROWS) && (!details.contains(target) || target.closest('button,a')) &&
+            window.getSelection()?.isCollapsed && [...document.querySelectorAll('dialog[open]')].at(-1) === dialog;
+        local.listen(document,'keydown',event => {
+            if (!keysAreOurs(event)) return;
+            const {key,target,repeat,shiftKey} = event;
+            if (key === 'ArrowLeft' || key === 'ArrowRight') {
+                if (shiftKey) return;
+                event.preventDefault();session.navigate(key === 'ArrowLeft' ? -1 : 1);return;
+            }
+            if (repeat && !repeats.has(key)) return;
+            if (key === '?') { event.preventDefault();openShortcuts();return; }
+            const control = hotkeys.get(key.length === 1 ? key.toLowerCase() : key);
+            if (!control?.getClientRects().length || (key === ' ' && target.closest('button,a'))) return;
+            event.preventDefault();control.click();
         });
         function rebuild(selected) {
             mediaScope?.dispose();mediaScope = createScope();viewer = null;
