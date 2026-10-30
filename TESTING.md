@@ -2928,6 +2928,28 @@ concept's danger "Archive…" maps to "Archive variant…" followed by a "Delete
 Tests: `tests/browser/workspace-library-delete.spec.mjs` (#481 cases), and `workspace-library-editor.spec.mjs` (the
 hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the renamed button. JS only: no restart.
 
+### Card tops, the Reusable tags window and System's width (#530)
+
+Found in the maintainer's test of the cutover branch; each departs from the concept, whose files are not edited. The
+comparisons add `CONCEPT_LAYOUT_DEVIATIONS` (`concept-inventory.mjs`, three rules: card margin, System limit, tag header
+background and line) to the opened concept page, so the boxes that follow from them are still compared. The new spec pins the
+real values and that the unmapped concept keeps its 18px offset.
+
+- **D182**: the second card of a `.two-col` starts level with the first. The concept's `.surface + .surface` 18px margin
+  also applies inside its grid, which put Categories and Workspace preferences 18px lower. Stacked cards are now one 18px
+  gap apart instead of 36px.
+- **D183**: Reusable tags scrolls in its own window inside the card (`max(280px, 100dvh - 500px)`), so a long vocabulary no
+  longer runs the page off screen. The column headers stick to the top of the window, with the surface background and a
+  drawn line. Load more stays below the window; the end of the list inside the window (`.vocabulary-end`, observed with
+  the window as root) appends the next page. A new search or sort returns the window to its top. Reaching Load more by
+  keyboard no longer appends on its own; Enter does. A rename or merge reloads page one, so the window returns to its top.
+- **D184**: `.settings-layout` has no 1000px limit, so every System section uses the full content width, as the section
+  nav and the other pages do.
+- **D185**: on touch and at 390px the same window stays shorter than the screen and overscroll chains to the page, so a
+  swipe outside the window, or past its top, moves the page.
+
+Measured in `workspace-layout-tags-system.spec.mjs`; the swipe case runs in the touch project.
+
 ### Prompt page heading on one row (#524)
 
 **D164** (beyond the concept, which never has four heading actions beside a long title): from 951px, the concept's

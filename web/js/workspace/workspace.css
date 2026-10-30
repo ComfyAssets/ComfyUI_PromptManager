@@ -107,6 +107,12 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .stat dd { font-size: 26px; }
 }
 
+/* D182 (#530, the concept has the offset): the second card of a `.two-col` starts level with the first. The grid gap
+   already spaces them; `.surface + .surface` is for surfaces stacked in plain flow. */
+.two-col > .surface + .surface { margin-top: 0; }
+/* D184 (#530, the concept stops System at 1000px): every System section uses the full content width, as other pages do. */
+.settings-layout { max-width: none; }
+
 /* Tags & categories (#245): real vocabulary has unbounded names and bounded lists, which the concept's short samples
    never show. Proven by the 390px layout and long-name cases in workspace-vocabulary.spec.mjs. */
 .vocabulary-main :where(.two-col, .surface, .table-wrap, .operation > div) { min-width: 0; }
@@ -118,6 +124,14 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .vocabulary-main .vocabulary-continuation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-block: 15px 0; overflow-anchor: none; }
 .vocabulary-main .vocabulary-continuation p { margin: 0; flex: 1 1 200px; font-size: 12px; color: var(--ca-muted); }
 .vocabulary-main .vocabulary-continuation .vocabulary-error { color: var(--ca-error-text); }
+/* D183 (#530, beyond the concept, whose sample list is short): Reusable tags scrolls in its own window and the page keeps
+   its height. The first term is the smallest usable window; the subtraction leaves the heading, the card's own rows and
+   Load more on screen. D185: on touch and at 390px the window stays shorter than the screen and overscroll chains to the
+   page (the default), so a swipe is never trapped in the list. A collapsed border does not stick, so the header draws its
+   line instead of its border. */
+.vocabulary-main .table-wrap { overflow: auto; max-block-size: max(280px, calc(100dvh - 500px)); scroll-padding-block-start: 44px; }
+.vocabulary-main .table-wrap thead th { position: sticky; inset-block-start: 0; z-index: 1; background: var(--ca-surface); border-bottom-color: transparent; box-shadow: inset 0 -1px 0 var(--line); }
+.vocabulary-main .vocabulary-end { block-size: 1px; overflow-anchor: none; }
 @media (max-width: 700px) {
     /* One column: the Tag column has no fixed minimum and Actions asks only for its stacked width (the concept's 390px
        rows stack Browse over Rename / merge), so a wider fallback font wraps the name instead of hiding an action. */
