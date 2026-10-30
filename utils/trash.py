@@ -14,8 +14,11 @@ same mount, else the file's mount's ``.Trash/$uid`` (only under a real, sticky
 ``.Trash``) or ``.Trash-$uid``. Names are reserved by creating the
 ``.trashinfo`` with ``O_EXCL`` and the file is moved with
 ``renameat2(RENAME_NOREPLACE)``; without that call the move is refused.
-Windows and macOS have no backend yet (:class:`UnavailableBackend`): their
-own PRs add one with a native proof.
+macOS uses :class:`utils.trash_macos.MacTrashBackend` (#499): NSFileManager's
+``trashItemAtURL`` through ctypes, after refusing what it cannot show to be
+recoverable. Windows never uses the Recycle Bin (#500: files over its capacity
+are deleted permanently, undetectably), so it answers ``windows-recycle``
+through :class:`UnavailableBackend`.
 
 ``BACKEND`` is the one replaceable seam; tests install a fake.
 """
@@ -36,7 +39,23 @@ TRASH_IN_ROOT = "trash-in-root"
 PATH_TOO_LONG = "path-too-long"
 LOCKED = "locked"
 FAILED = "failed"
-CODES = frozenset({NO_TRASH, NETWORK, TRASH_IN_ROOT, PATH_TOO_LONG, LOCKED, FAILED})
+NO_PERMISSION = "no-permission"
+CLOUD_SYNC = "cloud-sync"
+# Windows never uses the Recycle Bin (#500): it can delete permanently.
+WINDOWS_RECYCLE = "windows-recycle"
+CODES = frozenset(
+    {
+        NO_TRASH,
+        NETWORK,
+        TRASH_IN_ROOT,
+        PATH_TOO_LONG,
+        LOCKED,
+        FAILED,
+        NO_PERMISSION,
+        CLOUD_SYNC,
+        WINDOWS_RECYCLE,
+    }
+)
 
 HOME_TRASH_LABEL = "home trash"
 RENAME_NOREPLACE = 1
@@ -61,6 +80,19 @@ class TrashRefused(Exception):
     def __init__(self, code: str, detail: str = ""):
         super().__init__(detail or code)
         self.code = code
+        self.detail = detail
+
+
+class TrashUnconfirmed(Exception):
+    """The system reported the file moved, but not to a place shown to be a trash.
+
+    The file is no longer where it was, so this is not a refusal: the caller
+    keeps the file's records and stops (#499 design §7.4).
+    """
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
 
 
 def parse_mountinfo(text: str) -> list[str]:
@@ -177,13 +209,16 @@ def _owned_folder(path: str, uid: int, *, create: bool) -> bool:
 
 
 class UnavailableBackend:
-    """No trash on this system: every move is refused, nothing is touched."""
+    """No trash on this system: every move is refused with *code*, untouched."""
+
+    def __init__(self, code: str = NO_TRASH):
+        self.code = code
 
     def available(self, path: str, roots) -> str | None:
-        return NO_TRASH
+        return self.code
 
     def move(self, path: str, roots) -> str:
-        raise TrashRefused(NO_TRASH)
+        raise TrashRefused(self.code)
 
 
 class FreedesktopBackend:
@@ -345,9 +380,21 @@ class FreedesktopBackend:
 
 
 def default_backend(platform: str = sys.platform):
-    """The backend for *platform*; Windows and macOS have none yet (#480)."""
-    if platform in ("win32", "darwin") or platform.startswith("cygwin"):
-        return UnavailableBackend()
+    """The backend for *platform* (#480, #499, #500).
+
+    macOS gets :class:`utils.trash_macos.MacTrashBackend`, which loads its
+    Foundation bridge only on first use (#499). Windows never uses the Recycle
+    Bin (#500).
+    """
+    if platform == "darwin":
+        from . import trash_macos
+
+        return trash_macos.MacTrashBackend()
+    if platform == "win32" or platform.startswith("cygwin"):
+        # #500, ruling (a): Windows deletes files larger than the Recycle Bin's
+        # capacity permanently, and IFileOperation's PreDeleteItem guard cannot
+        # tell (native probe runs 40951037575, 40953347904).
+        return UnavailableBackend(WINDOWS_RECYCLE)
     return FreedesktopBackend()
 
 

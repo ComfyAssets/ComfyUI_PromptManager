@@ -20,6 +20,7 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from tests.browser.folder_trash import close_trash, replace_folder
+from tests.browser.malloc_tuning import pin_mmap_threshold
 from tests.browser.request_hold import register_request_holds
 from tests.browser import slow_reset_watch
 from tests.browser.fast_reset import SEED_ON_LIVE_ENV, ScratchSeeder
@@ -755,6 +756,8 @@ def main(argv: list[str] | None = None) -> None:
         help="shut down when stdin closes (the launcher's parent-death guard)",
     )
     args = parser.parse_args(argv)
+    # Before any thread allocates (#516): large frees then return to the OS.
+    pin_mmap_threshold()
     listener = bind_listener(args.port)
     # One machine-readable line tells the launcher which port this process holds.
     print(f"{PORT_ANNOUNCEMENT}{listener.getsockname()[1]}", flush=True)

@@ -490,16 +490,25 @@ class TestThumbnailJob(ThumbnailJobCase):
         real_write = images_module._write_image_thumbnail
         job_ids = []
         written = []
+        # #504: the worker can write its first preview before the response
+        # carrying the job id is read. The first write waits until the test
+        # has stored the id, so the cancel always lands after exactly one write.
+        first_written, id_stored = threading.Event(), threading.Event()
+        self.addCleanup(id_stored.set)
 
         def counting(src, dst, *args, **kwargs):
             real_write(src, dst, *args, **kwargs)
             written.append(dst)
             if len(written) == 1:
+                first_written.set()
+                id_stored.wait(10)
                 self.api._jobs.cancel(job_ids[0])
 
         with patch.object(images_module, "_write_image_thumbnail", counting):
             _, body = await self._start()
+            await self._wait(first_written)
             job_ids.append(body["job"]["id"])
+            id_stored.set()
             job = await self._finished(body["job"]["id"])
         self.assertEqual(job.state, "cancelled")
         self.assertEqual(job.status_line, "Cancelled · 1 preview written")

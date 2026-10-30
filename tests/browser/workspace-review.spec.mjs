@@ -221,6 +221,33 @@ test('tag image from review saves tags and the item remains pending', async ({ p
     await expect(dialog).toHaveCount(0);
 });
 
+test('#515: tags typed before the image observation answers are saved', async ({ page, request }) => {
+    await seed(request, 1);
+    await open(page);
+    // Hold the dialog's observation so the typing lands while it is pending (a slow host or WebKit in CI).
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const matcher = '**/prompt_manager/image-annotations/observe';
+    let reachedObserve;
+    const reached = new Promise(resolve => { reachedObserve = resolve; });
+    await page.route(matcher, async route => { reachedObserve(); await held; await route.continue(); });
+    await panel(page).getByRole('button', { name: 'Tag image', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Tag image', exact: true });
+    await reached;
+    const field = dialog.getByRole('textbox', { name: 'Image tags · edit manually', exact: true });
+    await field.fill('dunes');
+    const save = dialog.getByRole('button', { name: 'Save manual tags', exact: true });
+    await expect(save).toHaveAttribute('aria-disabled', 'true');
+    const answered = page.waitForResponse(item => item.url().endsWith('/image-annotations/observe'));
+    release();
+    await answered;
+    await expect(save).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(field).toHaveValue('dunes');
+    await save.click();
+    await expect(toast(page)).toHaveText('1 tags saved for review_0000.png. Prompt association still awaits review.');
+    await page.unroute(matcher);
+});
+
 test('an empty queue shows the empty notice only', async ({ page, request }) => {
     await seed(request, 0);
     await page.goto(review);
