@@ -1,4 +1,4 @@
-"""Show in folder (TESTING.md D38): the local-only reveal route and its openers.
+"""Show in folder (TESTING.md D38): the same-origin reveal route and its openers.
 
 No test launches a file manager: ``subprocess.Popen``, ``sys.platform`` and
 ``shutil.which`` are mocked, and route tests swap the API's opener.
@@ -29,28 +29,11 @@ except ImportError:
 import utils.file_reveal as file_reveal
 from utils.file_reveal import (
     OpenerUnavailable,
-    is_local_request,
+    is_same_origin_request,
     reveal_in_file_manager,
 )
 
 REVEAL = "/prompt_manager/images/reveal"
-PROXY_HEADERS = (
-    "Forwarded",
-    "Via",
-    "X-Forwarded-For",
-    "X-Forwarded-Host",
-    "X-Forwarded-Proto",
-    "X-Forwarded-Port",
-    "X-Forwarded-Server",
-    "X-Real-IP",
-    "X-Original-Forwarded-For",
-    "X-Original-Host",
-    "CF-Connecting-IP",
-    "True-Client-IP",
-    "X-Client-IP",
-    "X-Cluster-Client-IP",
-    "Fastly-Client-IP",
-)
 ORIGIN = "http://127.0.0.1:8188"
 
 
@@ -60,134 +43,126 @@ def headers(**values):
     return CIMultiDict({key: value for key, value in base.items() if value is not None})
 
 
-class TestIsLocalRequest(unittest.TestCase):
-    def test_same_origin_loopback_clients_by_loopback_name_are_local(self):
-        for remote, host, origin in (
-            ("127.0.0.1", "127.0.0.1:8188", ORIGIN),
-            ("127.8.9.10", "localhost:8188", "http://localhost:8188"),
-            ("::1", "[::1]:8188", "http://[::1]:8188"),
-            ("::ffff:127.0.0.1", "comfy.localhost", "http://comfy.localhost"),
-            ("127.0.0.1", "LOCALHOST:8188", "http://localhost:8188"),
-            ("127.0.0.1", "localhost", "http://localhost:80"),
+SITE = "comfy.sansfam.org"
+SITE_ORIGIN = f"https://{SITE}"
+# What Caddy's plain reverse_proxy sends: https at the edge, http to ComfyUI.
+CADDY = {
+    "Host": SITE,
+    "Origin": SITE_ORIGIN,
+    "X_Forwarded_For": "192.168.1.30",
+    "X_Forwarded_Host": SITE,
+    "X_Forwarded_Proto": "https",
+    "Sec_Fetch_Site": "same-origin",
+}
+
+
+class TestIsSameOriginRequest(unittest.TestCase):
+    def test_direct_browsers_on_any_address_are_same_origin(self):
+        for host, origin in (
+            ("127.0.0.1:8188", ORIGIN),
+            ("localhost:8188", "http://localhost:8188"),
+            ("[::1]:8188", "http://[::1]:8188"),
+            ("LOCALHOST:8188", "http://localhost:8188"),
+            ("localhost", "http://localhost:80"),
+            ("10.0.140.30:8188", "http://10.0.140.30:8188"),
+            ("vito-cachyos:8188", "http://vito-cachyos:8188"),
         ):
-            with self.subTest(remote=remote, host=host):
+            with self.subTest(host=host):
                 self.assertTrue(
-                    is_local_request(remote, headers(Host=host, Origin=origin))
+                    is_same_origin_request(headers(Host=host, Origin=origin))
                 )
         self.assertTrue(
-            is_local_request(
-                "127.0.0.1",
-                headers(Host="localhost", Origin="https://localhost:443"),
-                "https",
+            is_same_origin_request(
+                headers(Host="localhost", Origin="https://localhost:443"), "https"
             )
         )
 
-    def test_non_loopback_or_unknown_remote_is_not_local(self):
-        for remote in ("192.168.1.5", "10.0.0.1", "::2", "fe80::1%eth0", "", None):
-            with self.subTest(remote=remote):
-                self.assertFalse(is_local_request(remote, headers()))
+    def test_the_proxied_request_shape_is_same_origin(self):
+        self.assertTrue(is_same_origin_request(headers(**CADDY), "http"))
+        shapes = {
+            "no forwarded headers, https at the edge": {
+                "Host": SITE,
+                "Origin": SITE_ORIGIN,
+            },
+            "proxy rewrites Host, sends X-Forwarded-Host": {
+                **CADDY,
+                "Host": "10.0.140.30:8188",
+            },
+            "a chain of proxies lists the client's first": {
+                **CADDY,
+                "X_Forwarded_Host": f"{SITE}, inner.lan",
+                "X_Forwarded_Proto": "HTTPS, http",
+            },
+            "explicit default port on Host": {**CADDY, "Host": f"{SITE}:443"},
+            "a non-default edge port": {
+                **CADDY,
+                "Host": f"{SITE}:8443",
+                "X_Forwarded_Host": f"{SITE}:8443",
+                "Origin": f"{SITE_ORIGIN}:8443",
+            },
+        }
+        for name, shape in shapes.items():
+            with self.subTest(name):
+                self.assertTrue(is_same_origin_request(headers(**shape), "http"))
 
-    def test_any_forwarding_header_makes_loopback_remote(self):
-        for name in (*PROXY_HEADERS, "X-Forwarded-Anything", "X-Original-URI"):
-            for spelling in (name, name.lower()):
-                with self.subTest(header=spelling):
-                    request_headers = headers()
-                    request_headers[spelling] = "127.0.0.1"
-                    self.assertFalse(is_local_request("127.0.0.1", request_headers))
+    def test_a_proxy_that_rewrites_host_and_says_nothing_is_refused(self):
+        self.assertFalse(
+            is_same_origin_request(
+                headers(Host="10.0.140.30:8188", Origin=SITE_ORIGIN), "http"
+            )
+        )
 
-    def test_origin_is_required_and_must_be_the_request_origin(self):
-        # A header-less proxy or curl leaves Origin out; a page on another
-        # loopback port or scheme sends its own (security review M1, L2).
-        self.assertFalse(is_local_request("127.0.0.1", headers(Origin=None)))
+    def test_cross_site_and_spoofed_requests_are_refused(self):
+        evil = "https://evil.example"
+        cases = {
+            "cross-site Origin through the proxy": {**CADDY, "Origin": evil},
+            "cross-site Origin, direct": {"Origin": evil},
+            "another port": {"Origin": "http://127.0.0.1:3000"},
+            "another scheme than the proxy says": {
+                **CADDY,
+                "Origin": f"http://{SITE}",
+            },
+            "forwarded host naming the attacker": {
+                **CADDY,
+                "X_Forwarded_Host": "evil.example",
+            },
+            "Host naming the attacker": {"Host": "evil.example", "Origin": ORIGIN},
+            "lookalike suffix": {**CADDY, "Origin": f"https://{SITE}.evil.example"},
+            "cross-site fetch metadata with a forged Origin": {
+                **CADDY,
+                "Sec_Fetch_Site": "cross-site",
+            },
+            "same-site fetch metadata": {**CADDY, "Sec_Fetch_Site": "same-site"},
+        }
+        for name, shape in cases.items():
+            with self.subTest(name):
+                self.assertFalse(is_same_origin_request(headers(**shape), "http"))
+
+    def test_a_missing_or_malformed_origin_is_refused(self):
         for origin in (
+            None,
             "",
             "null",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1",
-            "https://127.0.0.1:8188",
-            "http://localhost:8188",
-            "http://foo.localhost:8188",
-            "http://evil.example:8188",
             "http://[bad",
             "http://127.0.0.1:8188/path",
             "http://user@127.0.0.1:8188",
             "file://127.0.0.1:8188",
         ):
             with self.subTest(origin=origin):
-                self.assertFalse(is_local_request("127.0.0.1", headers(Origin=origin)))
-        self.assertFalse(is_local_request("127.0.0.1", headers(Origin=ORIGIN), "https"))
+                self.assertFalse(is_same_origin_request(headers(Origin=origin)))
 
-    def test_a_browser_behind_a_reverse_proxy_is_never_local(self):
-        # The maintainer's setup (#533): a Mac reaching the Linux box through
-        # a Docker proxy at comfy.sansfam.org. Every line must fail safe.
-        site = "comfy.sansfam.org"
-        origin = f"https://{site}"
-        forwarded = {"X_Forwarded_For": "192.168.1.30", "X_Forwarded_Proto": "https"}
-        cases = {
-            "docker bridge peer, forwarded headers": (
-                "172.18.0.2",
-                headers(Host=site, Origin=origin, **forwarded),
-            ),
-            "docker bridge peer, bare proxy": (
-                "172.18.0.2",
-                headers(Host=site, Origin=origin),
-            ),
-            "loopback peer, forwarded headers": (
-                "127.0.0.1",
-                headers(Host=site, Origin=origin, **forwarded),
-            ),
-            "loopback peer, Host kept, no forwarded headers": (
-                "127.0.0.1",
-                headers(Host=site, Origin=origin),
-            ),
-            "loopback peer, Host rewritten, Origin kept": (
-                "127.0.0.1",
-                headers(Origin=origin),
-            ),
-            "loopback peer, everything rewritten but a forwarded header": (
-                "127.0.0.1",
-                headers(X_Real_IP="192.168.1.30"),
-            ),
-            "spoofed local Host from another computer": (
-                "192.168.1.30",
-                headers(),
-            ),
-            "spoofed local forwarded value": (
-                "127.0.0.1",
-                headers(X_Forwarded_For="127.0.0.1"),
-            ),
-        }
-        for name, (remote, request_headers) in cases.items():
-            with self.subTest(name):
-                self.assertFalse(is_local_request(remote, request_headers, "https"))
-                self.assertFalse(is_local_request(remote, request_headers, "http"))
+    def test_a_downgraded_direct_origin_is_refused(self):
+        # http at the socket allows an https page (TLS ended before us), but a
+        # TLS socket never takes an http page.
+        self.assertFalse(is_same_origin_request(headers(), "https"))
 
-    def test_what_cannot_be_told_apart_from_a_local_browser(self):
-        # Known limit, in TESTING.md: an ssh -L tunnel, or a proxy that rewrites
-        # Host and Origin and adds no header, looks exactly like this.
-        self.assertTrue(is_local_request("127.0.0.1", headers()))
-
-    def test_sec_fetch_site_must_be_same_origin_when_sent(self):
-        self.assertTrue(
-            is_local_request("127.0.0.1", headers(Sec_Fetch_Site="same-origin"))
-        )
-        for site in ("same-site", "cross-site", "none", ""):
-            with self.subTest(site=site):
-                self.assertFalse(
-                    is_local_request("127.0.0.1", headers(Sec_Fetch_Site=site))
-                )
-
-    def test_foreign_host_is_not_local(self):
-        # A DNS-rebinding page reaches 127.0.0.1 under its own name.
-        for host in ("evil.example:8188", "", "[bad", "127.0.0.1:bad"):
+    def test_a_missing_or_malformed_host_is_refused(self):
+        for host in ("", "[bad", "127.0.0.1:bad"):
             with self.subTest(host=host):
                 self.assertFalse(
-                    is_local_request(
-                        "127.0.0.1", headers(Host=host, Origin=f"http://{host}")
-                    )
+                    is_same_origin_request(headers(Host=host, Origin=f"http://{host}"))
                 )
-        self.assertFalse(is_local_request("127.0.0.1", CIMultiDict({"Origin": ORIGIN})))
+        self.assertFalse(is_same_origin_request(CIMultiDict({"Origin": ORIGIN})))
 
 
 class TestRevealGate(unittest.TestCase):
@@ -820,7 +795,7 @@ class TestRevealRoute(ImageAPITestCase):
     def body(self, path="sub/a.png", **changes):
         return {"root_index": 0, "root_scope": self.scope(), "path": path, **changes}
 
-    async def test_loopback_request_opens_the_resolved_file(self):
+    async def test_same_origin_request_opens_the_resolved_file(self):
         target = make_png(self.output_dir / "sub" / "a.png")
         status, data = await self.post(self.body())
         self.assertEqual((status, data), (200, {"success": True}))
@@ -870,52 +845,47 @@ class TestRevealRoute(ImageAPITestCase):
         self.assertEqual(status, 404)
         self.assertEqual(data, {"success": False, "error": "Image file not found"})
 
-    async def test_non_loopback_remote_is_not_local(self):
+    async def test_a_proxied_click_opens_the_folder_on_this_computer(self):
         make_png(self.output_dir / "sub" / "a.png")
         with patch.object(
             web.BaseRequest, "remote", new_callable=PropertyMock
         ) as remote:
-            remote.return_value = "192.168.1.20"
-            status, data = await self.post(self.body())
-        self.assertEqual(status, 403)
-        self.assertEqual(data["code"], "not-local")
-        self.assertIs(data["success"], False)
-        self.assertEqual(self.opened, [])
+            remote.return_value = "172.18.0.2"
+            status, _ = await self.post(
+                self.body(),
+                Host=SITE,
+                Origin=SITE_ORIGIN,
+                **{
+                    "X-Forwarded-For": "192.168.1.30",
+                    "X-Forwarded-Host": SITE,
+                    "X-Forwarded-Proto": "https",
+                    "Sec-Fetch-Site": "same-origin",
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(self.opened), 1)
 
-    async def test_loopback_with_a_proxy_header_is_not_local(self):
-        make_png(self.output_dir / "sub" / "a.png")
-        for name in PROXY_HEADERS:
-            with self.subTest(header=name):
-                status, data = await self.post(self.body(), **{name: "127.0.0.1"})
-                self.assertEqual((status, data["code"]), (403, "not-local"))
-        status, data = await self.post(self.body(), Host="evil.example:8188")
-        self.assertEqual((status, data["code"]), (403, "not-local"))
-        self.assertEqual(self.opened, [])
-
-    async def test_a_proxied_browser_gets_the_message_and_opens_nothing(self):
-        make_png(self.output_dir / "sub" / "a.png")
-        status, data = await self.post(
-            self.body(),
-            Host="comfy.sansfam.org",
-            Origin="https://comfy.sansfam.org",
-            **{"X-Forwarded-For": "192.168.1.30"},
-        )
-        self.assertEqual((status, data["code"]), (403, "not-local"))
-        self.assertIn("only on the computer running ComfyUI", data["error"])
-        self.assertEqual(self.opened, [])
-
-    async def test_missing_or_foreign_origin_is_not_local(self):
+    async def test_a_cross_site_request_opens_nothing(self):
         make_png(self.output_dir / "sub" / "a.png")
         port = self.client.make_url("/").port
         for origin in (None, f"http://127.0.0.1:{port + 1}", "null"):
             with self.subTest(origin=origin):
                 status, data = await self.post(self.body(), Origin=origin)
-                self.assertEqual((status, data["code"]), (403, "not-local"))
+                self.assertEqual((status, data["code"]), (403, "not-same-origin"))
+                self.assertIs(data["success"], False)
         status, data = await self.post(self.body(), **{"Sec-Fetch-Site": "same-site"})
-        self.assertEqual((status, data["code"]), (403, "not-local"))
-        status, _ = await self.post(self.body(), **{"Sec-Fetch-Site": "same-origin"})
-        self.assertEqual(status, 200)
-        self.assertEqual(len(self.opened), 1)
+        self.assertEqual((status, data["code"]), (403, "not-same-origin"))
+        self.assertEqual(self.opened, [])
+
+    async def test_the_path_check_still_applies_to_a_proxied_click(self):
+        make_png(self.output_dir / "sub" / "a.png")
+        shape = {"Host": SITE, "Origin": SITE_ORIGIN, "X-Forwarded-Proto": "https"}
+        for path in ("../secret.png", "/etc/passwd.png", "C:/x.png"):
+            with self.subTest(path=path):
+                body = {**self.body(), "path": path}
+                status, _ = await self.post(body, **shape)
+                self.assertEqual(status, 400)
+        self.assertEqual(self.opened, [])
 
     async def test_only_json_bodies_are_accepted(self):
         # text/plain would be a CORS "simple" request with no preflight (L2).

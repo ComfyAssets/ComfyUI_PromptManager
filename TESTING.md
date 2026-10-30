@@ -763,7 +763,7 @@ filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
 "Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
 scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
 content without the cover, then "File & provenance" (the honest file facts, the
-`Prompt evidence` line, Download original and, for a listed file, D38's local-only
+`Prompt evidence` line, Download original and, for a listed file, D38's
 "Show in folder" after the Path) and "Workflow & raw metadata" (raw records and their
 two downloads), then the pair send and Prompt history buttons. D22 words an empty
 positive explicitly and makes confirmed prompt text focusable.
@@ -1566,9 +1566,9 @@ Recorded deviations on this page (spec §8):
 
   | Result | Toast |
   |---|---|
-  | Success | "Opened the folder on this computer." |
-  | 403 `not-local` | "Show in folder works only in a browser on the computer running ComfyUI." |
-  | 501 `unavailable` | "No file manager is available on this computer." |
+  | Success | "Opened the folder on the computer running ComfyUI." |
+  | 403 `not-same-origin` | "The folder was not opened: this page's address does not match the server's." |
+  | 501 `unavailable` | "No file manager is available on the computer running ComfyUI." |
   | 429 `busy` | "The folder is already opening." |
   | Anything else (415, 404, 409, 500, offline) | "The folder could not be opened. Try again." |
 
@@ -1579,14 +1579,14 @@ Recorded deviations on this page (spec §8):
   covered and inert while `toHaveText` still passes: assert `toBeVisible` and the
   hit test as `full-inspector.spec.mjs` does.
 
-  The route is local-only. It answers 403 `not-local` unless all of these hold: no
-  forwarding-style header (`Forwarded`, `Via`, `X-Real-IP`, `CF-Connecting-IP`,
-  `True-Client-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `Fastly-Client-IP`, and any
-  `X-Forwarded-*`, `X-Original-*` or `*-Client-IP`); a loopback `request.remote`; a
-  loopback `Host` (`localhost`, `*.localhost` or a loopback address, against DNS
-  rebinding); an `Origin` equal to the request's own scheme, host and port (absent,
-  `null`, another port or another scheme is refused; browsers send `Origin` on every
-  fetch POST); and, when sent, `Sec-Fetch-Site: same-origin`. A body that is not
+  The route opens the folder on the computer running ComfyUI wherever the browser is,
+  through a proxy too (maintainer decision, #533, amending the original local-only
+  rule; accepted risk: anyone who can reach the server can open file windows on it).
+  It answers 403 `not-same-origin` unless `Origin` is present and matches: its host
+  and port against `X-Forwarded-Host` when sent, else `Host`, with the scheme's default
+  port filled in; its scheme against `X-Forwarded-Proto` when sent, else the socket's
+  (an https page on an http socket passes, TLS having ended at a proxy); and, when
+  sent, `Sec-Fetch-Site: same-origin`. A body that is not
   `application/json` is 415 `unsupported-media-type`, so any cross-origin request
   needs a CORS preflight. The body is strict (an int root, a 64-hex scope, a bounded
   relative path; absolute, drive and `..` paths are 400), the scope goes through
@@ -1613,19 +1613,10 @@ Recorded deviations on this page (spec §8):
   (`POST`/`GET /__test__/reveal`) with no cooldown. The inspector comparison reads
   closed disclosures as hidden, so the button needs no mapping there.
 
-  LoRA Manager's open-location route has no local-only gate, so it also opens the
-  server's file manager for a proxied or remote browser; ours says it cannot.
-
-  A browser behind a proxy that keeps its `Host` or `Origin`, or adds a forwarding
-  header, or connects from another address (a Docker bridge) is always `not-local`.
-
-  Residual risk, accepted: a tunnel or proxy that adds no forwarding header and
-  rewrites `Host` and `Origin` to loopback (`ssh -L` or `-R`, `socat`, a bare
-  `proxy_pass` to 127.0.0.1 with both set), and a non-browser client behind a bare
-  proxy that forges them, cannot be told apart from a local client: the folder opens
-  on the host's screen and the toast says it opened. Such a client can open a folder of a listed file on the host's
-  screen, at most once a second, and learn whether that file exists (which the
-  listing routes already tell it). Operators who expose ComfyUI that way accept this.
+  Limits of that check: a proxy that rewrites `Host` and sends no `X-Forwarded-Host` is
+  refused with that toast until it sends one. A non-browser client can forge every
+  header. A DNS-rebinding page has a matching `Host` and `Origin`, so it can open a
+  folder of a listed file, at most once a second; the path check still confines it.
 - **D39** (ruled 2026-10-21: fallback): a recipe-linked image shows its recipe's own
   category when set, otherwise the linked positive prompt's, and its recipe's own tags
   when it has any, otherwise the positive's; each field falls back on its own and the

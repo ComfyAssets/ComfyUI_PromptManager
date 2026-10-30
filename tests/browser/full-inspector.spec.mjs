@@ -362,14 +362,14 @@ test('Show in folder asks the server to open the listed file and announces each 
     const body=sent.postDataJSON();
     expect(Object.keys(body).sort()).toEqual(['path','root_index','root_scope']);
     expect(body).toMatchObject({root_index:0,path:'inspector/complete.png'});expect(body.root_scope).toMatch(/^[0-9a-f]{64}$/);
-    await expect(toast).toHaveText('Opened the folder on this computer.');
+    await expect(toast).toHaveText('Opened the folder on the computer running ComfyUI.');
     // #533: the answer is really on screen and reachable above the modal viewer, not covered by it.
     await expect(toast).toBeVisible();
     expect(await toast.evaluate(node=>{const box=node.getBoundingClientRect();const top=document.elementFromPoint(box.x+box.width/2,box.y+box.height/2);return top===node;})).toBe(true);
-    await expect(page.locator('#viewer-dialog').getByRole('status').filter({hasText:'Opened the folder on this computer.'})).toHaveCount(1);
+    await expect(page.locator('#viewer-dialog').getByRole('status').filter({hasText:'Opened the folder on the computer running ComfyUI.'})).toHaveCount(1);
     const opened=async()=>(await (await request.get('/__test__/reveal')).json()).opened;
     expect(await opened()).toEqual(['output/inspector/complete.png']);
-    for (const [outcome,message] of [['unavailable','No file manager is available on this computer.'],['fail','The folder could not be opened. Try again.']]) {
+    for (const [outcome,message] of [['unavailable','No file manager is available on the computer running ComfyUI.'],['fail','The folder could not be opened. Try again.']]) {
         await expect(await request.post('/__test__/reveal',{data:{outcome}})).toBeOK();
         await show.click();await expect(toast).toHaveText(message);
     }
@@ -377,12 +377,20 @@ test('Show in folder asks the server to open the listed file and announces each 
     await page.route('**/prompt_manager/images/reveal',route=>route.fulfill({status:429,contentType:'application/json',body:JSON.stringify({success:false,code:'busy',error:'The folder is already opening.'})}));
     await show.click();await expect(toast).toHaveText('The folder is already opening.');
     await page.unroute('**/prompt_manager/images/reveal');
-    // A proxied request counts as remote, so the real route answers 403 not-local.
+    // A proxied click opens the folder: the proxy's headers, not the browser's address, name the page (#533).
     await expect(await request.post('/__test__/reveal',{data:{outcome:'opened'}})).toBeOK();
     await page.route('**/prompt_manager/images/reveal',route=>route.continue({headers:{...route.request().headers(),'x-forwarded-for':'203.0.113.7'}}));
-    await show.click();await expect(toast).toHaveText('Show in folder works only in a browser on the computer running ComfyUI.');
+    await show.click();await expect(toast).toHaveText('Opened the folder on the computer running ComfyUI.');
+    expect(await opened()).toHaveLength(2);
+    await page.unroute('**/prompt_manager/images/reveal');
+    // A third-party page is refused, and says so.
+    // Chromium keeps its own Origin on a routed fetch, so the real route is asked directly and the toast gets its answer.
+    const refused=await request.post('/prompt_manager/images/reveal',{data:body,headers:{origin:'https://evil.example'}});
+    expect(refused.status()).toBe(403);expect((await refused.json()).code).toBe('not-same-origin');
+    await page.route('**/prompt_manager/images/reveal',route=>route.fulfill({status:403,contentType:'application/json',body:JSON.stringify({success:false,code:'not-same-origin',error:"This page's address does not match the server's."})}));
+    await show.click();await expect(toast).toHaveText("The folder was not opened: this page's address does not match the server's.");
     await expect(toast).toBeVisible();
-    expect(await opened()).toEqual(['output/inspector/complete.png']);
+    expect(await opened()).toHaveLength(2);
     // #533: closing the viewer takes the toast back to the page, still showing the message.
     await page.keyboard.press('Escape');await expect(page.locator('#viewer-dialog')).toHaveCount(0);
     await expect(toast).toBeVisible();await expect(page.locator('body > #workspace-toast')).toHaveCount(1);

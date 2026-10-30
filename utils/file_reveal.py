@@ -1,15 +1,16 @@
 """Show one gallery file in this computer's file manager (TESTING.md D38).
 
-The route that calls this is local-only (``is_local_request``) and
-single-flight (``RevealGate``), and hands in a path it has already resolved
-inside a gallery root, which is re-checked just before launching. Windows
+The route that calls this takes a same-origin browser request from anywhere,
+directly or through a proxy (``is_same_origin_request``), and the folder opens on
+the computer running ComfyUI (maintainer decision, #533). It is single-flight
+(``RevealGate``) and hands in a path it has already resolved inside a gallery
+root, which is re-checked just before launching. Windows
 goes through the shell API (no command line exists to parse); macOS and Linux
 openers run as an argument list with an absolute executable from a fixed
 system PATH, no shell, no inherited streams and a minimal environment, so
 neither a file name nor ``PATH`` can change what runs or what it parses.
 """
 
-import ipaddress
 import os
 import posixpath
 import shutil
@@ -26,23 +27,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-# A local reverse proxy makes every client look like loopback, so a request
-# that carries any forwarding-style header counts as remote: these names, and
-# every X-Forwarded-*, X-Original-* and *-Client-IP header.
-FORWARDING_HEADERS = frozenset(
-    (
-        "forwarded",
-        "via",
-        "x-real-ip",
-        "cf-connecting-ip",
-        "true-client-ip",
-        "x-client-ip",
-        "x-cluster-client-ip",
-        "fastly-client-ip",
-    )
-)
-FORWARDING_PREFIXES = ("x-forwarded-", "x-original-")
-FORWARDING_SUFFIXES = ("-client-ip",)
 DEFAULT_PORTS = {"http": 80, "https": 443}
 # One reveal at a time per process, then a pause before the next.
 REVEAL_COOLDOWN = 1.0
@@ -91,7 +75,7 @@ CHILD_ENV_NAMES = (
 
 
 class OpenerUnavailable(Exception):
-    """No file manager can be started on this computer."""
+    """No file manager can be started on the computer running ComfyUI."""
 
 
 class OpenerFailed(Exception):
@@ -118,29 +102,6 @@ def reveal_executor() -> ThreadPoolExecutor:
         return _executor
 
 
-def _loopback_address(value: str | None) -> bool:
-    if not value:
-        return False
-    try:
-        address = ipaddress.ip_address(value)
-    except ValueError:
-        return False
-    mapped = getattr(address, "ipv4_mapped", None)
-    return (mapped or address).is_loopback
-
-
-def _loopback_host(host: str) -> bool:
-    """True for a Host name naming this computer.
-
-    Rejects every other name, so a DNS-rebinding page whose name now resolves
-    to 127.0.0.1 still reads as remote.
-    """
-    host = host.rstrip(".").lower()
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    return _loopback_address(host.strip("[]"))
-
-
 def _authority(authority: str) -> tuple[str, int | None] | None:
     """``(host, port)`` of a Host value, or None when it does not parse."""
     try:
@@ -151,30 +112,29 @@ def _authority(authority: str) -> tuple[str, int | None] | None:
     return (host, port) if host else None
 
 
-def _forwarded(headers: Mapping) -> bool:
-    for name in headers.keys():
-        name = name.lower()
-        if (
-            name in FORWARDING_HEADERS
-            or name.startswith(FORWARDING_PREFIXES)
-            or name.endswith(FORWARDING_SUFFIXES)
-        ):
-            return True
-    return False
+def _first_value(headers: Mapping, name: str) -> str | None:
+    """The client-side entry of a comma-separated forwarding header, if any."""
+    value = headers.get(name)
+    return (value.split(",")[0].strip() or None) if value else None
 
 
-def _same_origin(origin: str, scheme: str, host: tuple[str, int | None]) -> bool:
-    """True when *origin* is exactly this request's scheme://host:port."""
-    default = DEFAULT_PORTS.get(scheme)
-    if default is None:
-        return False
+def _same_origin(
+    origin: str, proto: str | None, scheme: str, host: tuple[str, int | None]
+) -> bool:
+    """True when *origin* names the page at *host*.
+
+    The port is compared after filling in the Origin scheme's default. The
+    scheme must be the one the proxy reports, else this socket's; an https page
+    on an http socket with no report passes, as a proxy ended TLS before us.
+    """
     try:
         parts = urlsplit(origin)
         origin_host, origin_port = parts.hostname, parts.port
     except ValueError:
         return False
+    default = DEFAULT_PORTS.get(parts.scheme)
     if (
-        parts.scheme != scheme
+        default is None
         or not origin_host
         or parts.username is not None
         or parts.password is not None
@@ -183,33 +143,43 @@ def _same_origin(origin: str, scheme: str, host: tuple[str, int | None]) -> bool
         or parts.fragment
     ):
         return False
+    if proto is not None:
+        scheme_matches = parts.scheme == proto
+    else:
+        scheme_matches = parts.scheme == scheme or (
+            scheme == "http" and parts.scheme == "https"
+        )
     host_name, host_port = host
-    return (origin_host.rstrip("."), origin_port or default) == (
+    return scheme_matches and (origin_host.rstrip("."), origin_port or default) == (
         host_name.rstrip("."),
         host_port or default,
     )
 
 
-def is_local_request(remote: str | None, headers: Mapping, scheme="http") -> bool:
-    """True only for a same-origin browser request from this computer.
+def is_same_origin_request(headers: Mapping, scheme="http") -> bool:
+    """True only for a request whose page is this server, as the browser sees it.
 
-    That is: no forwarding-style header, a loopback client, a loopback name
-    in Host, an ``Origin`` that is exactly this request's scheme://host:port
-    (browsers send it on every fetch POST, so a missing one is refused), and
-    ``Sec-Fetch-Site: same-origin`` whenever that header is sent.
+    Compares ``Origin`` (browsers send it on every fetch POST, so a missing one
+    is refused) with ``X-Forwarded-Host`` when present, else ``Host``, and with
+    ``X-Forwarded-Proto`` when present, else *scheme*. ``Sec-Fetch-Site`` must
+    be ``same-origin`` whenever it is sent. A third-party page in a browser cannot
+    pass under its own address: it cannot change its ``Origin`` or
+    ``Sec-Fetch-Site``, and a custom forwarding header needs a preflight that
+    ComfyUI's CORS option does not allow. The exception is a page whose own name
+    was rebound to this server (TESTING.md D38, accepted).
     """
-    if _forwarded(headers):
-        return False
-    if not _loopback_address(remote):
-        return False
-    host = _authority(headers.get("Host", ""))
-    if host is None or not _loopback_host(host[0]):
-        return False
     origin = headers.get("Origin")
-    if not origin or not _same_origin(origin, scheme, host):
+    if not origin:
         return False
     site = headers.get("Sec-Fetch-Site")
-    return site is None or site == "same-origin"
+    if site is not None and site != "same-origin":
+        return False
+    authority = _first_value(headers, "X-Forwarded-Host") or headers.get("Host", "")
+    host = _authority(authority)
+    if host is None:
+        return False
+    proto = _first_value(headers, "X-Forwarded-Proto")
+    return _same_origin(origin, proto.lower() if proto else None, scheme, host)
 
 
 class RevealGate:

@@ -80,7 +80,7 @@ try:
         OpenerUnavailable,
         RevealGate,
         RevealTargetChanged,
-        is_local_request,
+        is_same_origin_request,
         reveal_executor,
         reveal_in_file_manager,
     )
@@ -106,7 +106,7 @@ except ImportError:
         OpenerUnavailable,
         RevealGate,
         RevealTargetChanged,
-        is_local_request,
+        is_same_origin_request,
         reveal_executor,
         reveal_in_file_manager,
     )
@@ -795,12 +795,12 @@ def _reveal_not_found():
     )
 
 
-def _not_local():
+def _not_same_origin():
     return web.json_response(
         {
             "success": False,
-            "code": "not-local",
-            "error": "Show in folder works only on the computer running ComfyUI.",
+            "code": "not-same-origin",
+            "error": "This page's address does not match the server's.",
         },
         status=403,
     )
@@ -1514,7 +1514,7 @@ class ImageRoutesMixin:
         async def clear_image_favorite_route(request):
             return await self.update_image_favorite(request, favorite=False)
 
-        # POST, local-only: opens this computer's file manager (D38).
+        # POST, same-origin: opens the server computer's file manager (D38).
         @routes.post("/prompt_manager/images/reveal")
         async def reveal_image_route(request):
             return await self.reveal_image(request)
@@ -3682,12 +3682,12 @@ class ImageRoutesMixin:
     async def reveal_image(self, request):
         """POST ``{root_index, root_scope, path}``: show the file in its folder.
 
-        Local-only (a same-origin browser request from a loopback client, no
-        forwarding header) and JSON-only: the browser must run on the
-        computer whose file manager opens. One reveal at a time (429 busy).
+        Same-origin and JSON-only, directly or through a proxy: the folder
+        opens on the computer running ComfyUI, wherever the browser is
+        (maintainer decision, #533). One reveal at a time (429 busy).
         """
-        if not is_local_request(request.remote, request.headers, request.scheme):
-            return _not_local()
+        if not is_same_origin_request(request.headers, request.scheme):
+            return _not_same_origin()
         if request.content_type != "application/json":
             # A non-JSON POST is a CORS "simple" request with no preflight.
             return web.json_response(
@@ -3765,7 +3765,9 @@ class ImageRoutesMixin:
                 {
                     "success": False,
                     "code": "unavailable",
-                    "error": "No file manager is available on this computer.",
+                    "error": (
+                        "No file manager is available on the computer running ComfyUI."
+                    ),
                 },
                 status=501,
             )
