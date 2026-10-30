@@ -212,6 +212,31 @@ class HistoryOutputAPITests(ImageAPITestCase):
                 self.assertNotIn("root=", candidate["media"][field])
                 self.assertNotIn(str(self.comfy_dir), candidate["media"][field])
 
+    async def test_an_output_in_a_trash_folder_is_read_by_no_kind(self):
+        # #543: inspection, media, thumbnail and the listing share one check.
+        path = make_png(self.output_dir / "image.png")
+        start = self.capture([self.ref()])
+        media = await self.media(start)
+        trashed = self.output_dir / ".Trash-1000" / "files"
+        trashed.mkdir(parents=True)
+        os.rename(path, trashed / "image.png")
+        try:
+            os.symlink(trashed / "image.png", path)
+        except OSError:
+            if os.environ.get("GITHUB_ACTIONS"):
+                raise
+            self.skipTest("this machine cannot make symlinks")
+        for field in ("inspection_url", "url", "thumbnail_url"):
+            with self.subTest(field=field):
+                response = await self.current(media[field])
+                self.assertIn(response.status, (404, 409, 410))
+                await response.read()
+        response, page = await self.outputs(start)
+        self.assertEqual(response.status, 200, page)
+        candidate = page["items"][0]["current_candidate"]
+        self.assertEqual(candidate["status"], "unavailable")
+        self.assertEqual(candidate["reason"], "missing")
+
     async def test_complete_zero_incomplete_unavailable_and_not_captured_are_distinct(
         self,
     ):

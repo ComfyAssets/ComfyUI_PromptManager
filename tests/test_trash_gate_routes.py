@@ -14,14 +14,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 try:
+    from tests.trash_route_audit import (
+        FILE_READER_CALLS,
+        KNOWN_FILE_READERS,
+        ROUTE_AUDIT,
+    )
     from tests.test_api_admin import _write_png
     from tests.test_image_delete_routes import ImageDeleteTestCase
 except ImportError:  # discovered with tests/ as the top-level directory
+    from trash_route_audit import FILE_READER_CALLS, KNOWN_FILE_READERS, ROUTE_AUDIT
     from test_api_admin import _write_png
     from test_image_delete_routes import ImageDeleteTestCase
 
 from py.api.images import media_thumbnail_rel
-from py.api.history_current import CurrentLocationUnavailable, _open_current_target
 from py.api.thumbnail_auto import OVER, _quick_source, _thumbnail_source
 from utils.media_folders import in_trash_below_roots, in_trash_folder, is_trash_folder
 
@@ -221,12 +226,13 @@ class TestTheGate(_GateCase):
             )
         )
 
-    async def test_a_history_output_in_a_trash_folder_does_not_open(self):
+    async def test_the_legacy_duplicate_delete_never_unlinks_from_a_trash(self):
         self.links()
-        target = self.root / ".Trash-1000" / "files" / "x.png"
-        with self.assertRaises(CurrentLocationUnavailable) as caught:
-            _open_current_target(Path(os.path.realpath(target)), self.root, None)
-        self.assertEqual(caught.exception.reason, "missing")
+        for relative in (*NAMED, *LINKED):
+            with self.subTest(relative=relative):
+                reason = self.api._delete_one_duplicate(relative, self.root)
+                self.assertEqual(reason, "it is in a trash folder")
+                self.assertTrue((self.root / relative).exists())
 
     async def test_a_source_named_like_a_trash_folder_still_reads(self):
         source = self.root / ".Trash-77"
@@ -290,3 +296,31 @@ class TestWindowsSpellings(_GateCase):
         self.assertTrue(in_trash_below_roots(inside, [str(self.root).upper()]))
         kept = self.root / "kept.png"
         self.assertFalse(in_trash_below_roots(kept, [str(self.root).upper()]))
+
+
+class TestEveryRouteIsClassified(_GateCase):
+    async def test_a_new_route_must_say_how_it_treats_media_files(self):
+        registered = {
+            f"{route.method} {route.resource.canonical}"
+            for route in self.app.router.routes()
+            if route.method != "HEAD"
+            and route.resource is not None
+            and route.resource.canonical.startswith("/prompt_manager")
+        }
+        audited = {route for routes in ROUTE_AUDIT.values() for route in routes}
+        self.assertEqual(
+            registered ^ audited,
+            set(),
+            "add the route to tests/trash_route_audit.py with its media check",
+        )
+
+    def test_a_file_reader_in_the_api_layer_is_a_known_one(self):
+        # A new way to open a media file must be looked at for the same gate.
+        api = Path(__file__).resolve().parent.parent / "py" / "api"
+        found = set()
+        for module in api.glob("*.py"):
+            text = module.read_text(encoding="utf-8")
+            found.update(
+                f"{module.name}:{call}" for call in FILE_READER_CALLS if call in text
+            )
+        self.assertEqual(found ^ KNOWN_FILE_READERS, set())

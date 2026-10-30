@@ -36,10 +36,10 @@ except ImportError:
 
 try:
     from ...utils import exit_signal
-    from ...utils.media_folders import is_skipped_folder
+    from ...utils.media_folders import in_trash_below_roots, is_skipped_folder
 except ImportError:
     from utils import exit_signal
-    from utils.media_folders import is_skipped_folder
+    from utils.media_folders import in_trash_below_roots, is_skipped_folder
 
 try:
     from ...database.image_removal import mark_hides
@@ -1106,6 +1106,8 @@ class AdminRoutesMixin:
             return "not a media file"
         if "thumbnails" in rel_path.parts:
             return "thumbnails are managed by the gallery"
+        if in_trash_below_roots(file_path, [output_path]):
+            return "it is in a trash folder"  # never unlinked from a trash (#543)
 
         if not file_path.is_file():
             return "file not found"
