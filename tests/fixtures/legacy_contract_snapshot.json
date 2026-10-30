@@ -154,6 +154,7 @@
     "POST /prompt_manager/restore/apply",
     "POST /prompt_manager/restore/preview",
     "POST /prompt_manager/review/items/{item_id}/decision",
+    "POST /prompt_manager/review/items/{item_id}/link",
     "POST /prompt_manager/save",
     "POST /prompt_manager/saved-views",
     "POST /prompt_manager/scan",
