@@ -235,6 +235,33 @@ test('viewer renders the concept shell and toolbar order', async () => {
     } finally { view.dispose(); parentScope.dispose(); f.restore(); }
 });
 
+test('⌘ opens the shortcuts on top of the viewer and closing them leaves it open (#532)', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c'),occurrenceMedia('2',0,'d')];
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
+    try {
+        view.open({items,selectedKey:'c'.repeat(64)});
+        const [dialog] = f.container.children, [keys] = f.walk(dialog,n => n.id === 'viewer-keys');
+        const position = () => f.walk(dialog,n => n.attributes.role === 'status')[0].textContent;
+        const overlays = () => f.walk(dialog,n => n.id === 'viewer-keys-dialog');
+        assert.equal(overlays().length,0,'built on demand');
+        assert.match(position(),/^1 of 2/);
+        f.doc.fire('keydown',{key:'ArrowRight',target:f.walk(dialog,n => n.id === 'viewer-close')[0]});
+        assert.match(position(),/^2 of 2/,'the arrows work with focus on ×');
+        keys.fire('click');
+        const [overlay] = overlays();
+        assert.equal(overlay.open,true);
+        assert.equal(overlay.attributes['aria-labelledby'],'viewer-keys-title');
+        assert.deepEqual(f.walk(overlay,n => n.tagName === 'kbd').map(n => n.textContent),['←','→','Esc']);
+        assert.deepEqual(f.walk(overlay,n => n.tagName === 'dd').map(n => n.textContent),['Previous file','Next file','Close the viewer']);
+        f.doc.fire('keydown',{key:'ArrowLeft',target:keys});
+        assert.match(position(),/^2 of 2/,'the arrows wait for the overlay');
+        f.walk(overlay,n => n.attributes['aria-label'] === 'Close keyboard shortcuts')[0].fire('click');
+        assert.equal(overlays().length,0);
+        assert.equal(dialog.open,true,'the viewer stays open');
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); }
+});
+
 test('viewer titles a linked card "<title> · <filename>" before any inspection arrives', async () => {
     const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
     const f = mountedDom(), parentScope = createScope(), controller = borrowedController();
