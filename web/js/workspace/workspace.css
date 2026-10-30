@@ -512,13 +512,13 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
    column the bar is one row that scrolls sideways, so it does not take a fifth of a phone screen. */
 #bulkbar, #library-bulkbar { position: sticky; inset-block-start: 8px; z-index: 5; }
 :is(#image-grid, .library-grid) :is(article, a, button, input, select, textarea, [tabindex]) { scroll-margin-block-start: var(--selection-bar-block, 0px); }
-.detail-panel { inset-block-start: max(20px, var(--selection-bar-block, 0px)); max-block-size: calc(100dvh - 20px - max(20px, var(--selection-bar-block, 0px))); }
+.detail-panel { inset-block-start: max(20px, var(--selection-bar-block, 0px)); max-block-size: calc(100dvh - 20px - max(20px, var(--selection-bar-block, 0px))); /* D186 */ }
 @media (max-width: 700px) {
-    .detail-panel { max-block-size: none; }
-    .bulkbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
-    .bulkbar > * { flex: none; }
+    .detail-panel { max-block-size: none; /* D186 */ }
+    .bulkbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; /* D186 */ }
+    .bulkbar > * { flex: none; /* D186 */ }
 }
-@container images-page (inline-size < 600px) { .detail-panel { max-block-size: none; } }
+@container images-page (inline-size < 600px) { .detail-panel { max-block-size: none; /* D186 */ } }
 
 /* D187 (#531, beyond the concept): Back to top, in the toast's column. It rests above a two-line toast, so the usual
    toast does not move it under a finger, and rises only for a taller one. */

@@ -69,8 +69,12 @@ function fakeDOM() {
         createElement: tag => new Element(tag),
         createTextNode: text => Object.assign(new Element('#text'), { _text: String(text) }),
         getElementById: id => (id === 'workspace-toast' ? toast : null),
+        documentElement: { style: { setProperty() {}, removeProperty() {} } },
     };
-    return { Element, body, toast, restore() { globalThis.document = previous; } };
+    // The bar publishes its height for the sticky chrome (D186); nothing in this DOM ever resizes.
+    const previousObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+    return { Element, body, toast, restore() { globalThis.document = previous; globalThis.ResizeObserver = previousObserver; } };
 }
 
 /** The bar over `items` with `checked` keys; `options` adds the collection props. */
