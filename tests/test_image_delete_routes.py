@@ -320,19 +320,86 @@ class TestFileCheck(ImageDeleteTestCase):
             self.assertIn(code, image_delete.REASONS)
 
 
+class TestMacOSOutcomes(ImageDeleteTestCase):
+    """The codes and the unconfirmed outcome the macOS backend adds (#499)."""
+
+    async def test_permission_and_cloud_refusals_show_their_sentences(self):
+        self.write("a.png", b"aaa")
+        self.write("b.png", b"bbb")
+        self.fake.refuse[str(self.output_dir / "a.png")] = "no-permission"
+        self.fake.refuse[str(self.output_dir / "b.png")] = "cloud-sync"
+        plan = await self.review(["a.png", "b.png"])
+        self.assertEqual(plan["trash"], {"count": 0})
+        self.assertEqual(
+            plan["trash_refused"]["counts"], {"no-permission": 1, "cloud-sync": 1}
+        )
+        details = {row["detail"] for row in plan["trash_refused"]["rows"]}
+        self.assertEqual(
+            details,
+            {image_delete.REASONS["no-permission"], image_delete.REASONS["cloud-sync"]},
+        )
+
+    async def test_an_unconfirmed_move_keeps_records_and_stops_the_job(self):
+        from utils import trash
+
+        self.write("a.png", b"aaa", mtime=1_000_000)
+        self.write("b.png", b"bbb", mtime=2_000_000)
+        self.link("a.png")
+        original = self.fake.move
+
+        def move(path, roots):
+            if path.endswith("a.png"):
+                original(path, roots)  # the file did leave its folder
+                raise trash.TrashUnconfirmed("resultingItemURL=None")
+            return original(path, roots)
+
+        self.fake.move = move
+        _plan, job = await self.delete(["a.png", "b.png"], "trash")
+        self.assertEqual(job.state, "failed")
+        self.assertEqual(job.scope.get("failure"), "records-failed")
+        self.assertEqual(
+            self.details(job, "errors"), [image_delete.REASONS["trash-unconfirmed"]]
+        )
+        self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 1)
+        self.assertEqual(
+            self.details(job, "not_changed"), [image_delete.REASONS["not-attempted"]]
+        )
+        self.assertTrue((self.output_dir / "b.png").exists())
+
+    async def test_a_refusal_detail_is_logged(self):
+        from utils import trash
+
+        self.write("a.png", b"aaa")
+
+        def move(path, roots):
+            raise trash.TrashRefused("no-permission", "NSCocoaErrorDomain 513")
+
+        self.fake.move = move
+        with self.assertLogs("prompt_manager.api", level="INFO") as logs:
+            _plan, job = await self.delete(["a.png"], "trash")
+        self.assertEqual(
+            self.details(job, "not_changed"), [image_delete.REASONS["no-permission"]]
+        )
+        self.assertTrue(any("NSCocoaErrorDomain 513" in line for line in logs.output))
+        self.assertTrue((self.output_dir / "a.png").exists())
+
+
 class TestNativeBackend(ImageDeleteTestCase):
-    """The real backend of this OS: Windows and macOS have no trash yet (#480)."""
+    """The real backend of this OS: Windows has no trash yet (#500).
+
+    Only library mode is applied, so even on macOS and Linux no file reaches
+    a real trash.
+    """
 
     async def test_library_only_works_and_the_trash_is_unavailable_here(self):
         fake_trash.uninstall()
         self.write("a.png", b"aaa")
         self.link("a.png")
         plan = await self.review(["a.png"])
-        native_trash = sys.platform not in ("win32", "darwin")
+        native_trash = sys.platform != "win32"
         if not native_trash:
             self.assertEqual(plan["trash"], {"count": 0})
-            code = "windows-recycle" if sys.platform == "win32" else "no-trash"
-            self.assertEqual(plan["trash_refused"]["counts"], {code: 1})
+            self.assertEqual(plan["trash_refused"]["counts"], {"windows-recycle": 1})
         body = await self.post(APPLY, {"token": plan["token"], "mode": "library"}, 202)
         job = self.api._jobs.get(body["job"]["id"])
         await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)

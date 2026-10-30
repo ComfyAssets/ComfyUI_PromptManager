@@ -65,6 +65,9 @@ TITLES = {
     "trash": "Delete images (move to the trash)",
 }
 MAX_DETAIL_ROWS = 50
+# The system moved the file but its place in a trash could not be shown (#499).
+TRASH_UNCONFIRMED = "trash-unconfirmed"
+RECORDS_FAILED_CODE = "records-failed"
 
 # Reason codes (design §4.4) and the sentence each shows.
 REASONS = {
@@ -83,6 +86,17 @@ REASONS = {
     trash.TRASH_IN_ROOT: "This drive's trash is inside an output folder.",
     trash.LOCKED: "The file is open in another program. Close it and try again.",
     trash.FAILED: "The file could not be moved to the trash.",
+    trash.NO_PERMISSION: (
+        "PromptManager isn't allowed to move this file (no permission, or it is "
+        "locked in Finder)."
+    ),
+    trash.CLOUD_SYNC: (
+        "Files in iCloud Drive or a cloud-synced folder can't be moved to the "
+        "trash here."
+    ),
+    TRASH_UNCONFIRMED: (
+        "Moved by macOS, but its place in the trash could not be confirmed."
+    ),
     trash.WINDOWS_RECYCLE: (
         "Moving files to the Recycle Bin isn't available on Windows: files larger "
         "than the bin's capacity would be deleted permanently."
@@ -327,7 +341,7 @@ class ImageDeleteMixin:
         job.update(total=len(targets), status_line=TITLES[mode])
         roots = [str(root) for root in self._get_all_output_dirs()]
         done_group = "trashed" if mode == "trash" else "removed"
-        changed, failed = 0, False
+        changed, failed = 0, None
         for done, target in enumerate(targets, start=1):
             if failed:
                 self._record_delete(job, "not_changed", target, "not-attempted")
@@ -336,7 +350,8 @@ class ImageDeleteMixin:
                 self._delete_one_image, db, target, mode, roots
             )
             if group == "errors":
-                failed = True
+                failed = code or RECORDS_FAILED_CODE
+                text = REASONS[code] if code else RECORDS_FAILED
                 job.record(
                     "errors",
                     {
@@ -344,9 +359,9 @@ class ImageDeleteMixin:
                         "root": target["root_label"],
                         "root_index": target["root_index"],
                         "root_scope": target["root_scope"],
-                        "detail": RECORDS_FAILED,
+                        "detail": text,
                     },
-                    f"! {target['root_label']}/{target['rel']} · {RECORDS_FAILED}",
+                    f"! {target['root_label']}/{target['rel']} · {text}",
                 )
             elif group == done_group:
                 changed += 1
@@ -365,8 +380,10 @@ class ImageDeleteMixin:
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
         if failed:
-            job.scope["failure"] = "records-failed"
-            job.publish({"type": "error", "code": "records-failed", "message": line})
+            # "records-failed" names every stop at an errors row (the page's
+            # "Stopped after N of M" toast); the row says which error it was.
+            job.scope["failure"] = RECORDS_FAILED_CODE
+            job.publish({"type": "error", "code": failed, "message": line})
             job.finish("failed")
 
     @staticmethod
@@ -405,7 +422,19 @@ class ImageDeleteMixin:
                 label = trash.move_to_trash(target["abs"], roots)
             except trash.TrashRefused as refused:
                 code = refused.code if refused.code in REASONS else trash.FAILED
+                self.logger.info(
+                    "Not moved to the trash (%s): %s %s",
+                    code,
+                    target["rel"],
+                    refused.detail,
+                )
                 return "not_changed", code, None
+            except trash.TrashUnconfirmed as unconfirmed:
+                # The file left its folder: keep its records, stop the job.
+                self.logger.warning(
+                    "Trash move not confirmed: %s %s", target["rel"], unconfirmed.detail
+                )
+                return "errors", TRASH_UNCONFIRMED, None
             mark = None
         else:
             mark = (target["size"], target["mtime_ns"])
