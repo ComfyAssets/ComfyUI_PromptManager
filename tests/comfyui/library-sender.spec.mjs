@@ -117,10 +117,9 @@ test('native editor preview sends exact saved roles across renderer transitions'
         try {
             await send.click();
             const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
-            const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({index:1});
-            await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({index:1});
-            await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
-            await expect(sender.getByRole('alert')).toContainText(/connected/i);
+            // #535: the linked node is not offered, and the status line says why.
+            await expect(sender).toContainText(/has its negative prompt linked to another node/);
+            await expect(sender.getByRole('button',{name:'Preview changes',exact:true})).toBeDisabled();
             await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeDisabled();
             const rejected=await page.evaluate(async id=>{
                 const {app}=await import('/scripts/app.js');const node=app.graph.getNodeById(id);const serialized=node.serialize();

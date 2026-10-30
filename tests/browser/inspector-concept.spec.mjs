@@ -259,7 +259,7 @@ async function productionSendOf(page,context) {
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});await expect(sender).toBeVisible();
         const windows=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(windows.locator('option')).toContainText(['Test ComfyUI']);await windows.selectOption({label:'Test ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'My prompt pair'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair-1 My prompt pair'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();
         await expect(sender).toContainText('Sent to ComfyUI.');

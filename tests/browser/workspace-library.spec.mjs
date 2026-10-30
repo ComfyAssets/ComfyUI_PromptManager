@@ -364,7 +364,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({label:'Library ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Library destination'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair-1 Library destination'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await expect(sender).toContainText(chosenNegative||'(empty)');
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.libraryApplied)).toEqual([{positive:'Cat portrait',negative:chosenNegative}]);
@@ -716,7 +716,7 @@ test('long prompt is clamped to two lines while copy sends the full text',async(
         await card.locator('.card-footer .row-actions > button.send').click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Card ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Card destination'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#positive-1 Card destination'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.cardApplied)).toEqual([{positive:longPrompt}]);

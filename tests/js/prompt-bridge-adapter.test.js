@@ -151,3 +151,22 @@ test('callback failure preserves serialization normalized between preview and ap
     node.widgets_values=node.widgets.map(item=>item.value); widget('text').callback=()=>{throw new Error('callback failed');};
     assert.throws(()=>adapter.apply(snapshot),/failed/); assert.equal(node.widgets_values[0],'old'); assert.equal(widget('text').value,'old');
 });
+
+test('listTargets reports which roles are linked to an upstream node',async()=>{
+    const {createPromptAdapter}=await import('../../web/js/prompt-bridge-adapter.js');
+    const widgets=[{name:'text',value:''},{name:'negative_text',value:''}];
+    const app={graph:{_nodes:[{id:1,type:'PromptManagerPair',widgets,inputs:[{name:'text',link:null},{name:'negative_text',link:4}]},{id:2,type:'PromptManager',widgets,inputs:[]}]}};
+    const [pair,plain]=createPromptAdapter(app,{runtime:{}}).listTargets();
+    assert.deepEqual(pair.linkedRoles,['negative']);assert.deepEqual(plain.linkedRoles,[]);
+});
+
+test('the revision moves when the graph is edited and when a load replaces the node, even at the same version',async()=>{
+    const {createPromptAdapter}=await import('../../web/js/prompt-bridge-adapter.js');
+    const node=()=>({id:1,type:'PromptManager',widgets:[{name:'text',value:''}],inputs:[]});
+    const app={graph:{_version:9,_nodes:[node()]}};
+    const adapter=createPromptAdapter(app,{runtime:{}});
+    const first=adapter.listTargets()[0].revision;
+    assert.equal(adapter.preview('1',{positive:'x'}).preview.revision,first);
+    app.graph._version=10;const edited=adapter.listTargets()[0].revision;assert.notEqual(edited,first);
+    app.graph={_version:10,_nodes:[node()]};assert.notEqual(adapter.listTargets()[0].revision,edited);
+});

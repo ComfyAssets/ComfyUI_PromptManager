@@ -975,7 +975,7 @@ async function sendPair(page) {
     await rail(page).getByRole('button', { name: /^Send prompt pair to ComfyUI: / }).click();
     const sender = page.getByRole('dialog', { name: 'Send to ComfyUI', exact: true });
     await sender.getByRole('combobox', { name: 'ComfyUI window', exact: true }).selectOption({ label: 'Inspect ComfyUI' });
-    await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ label: 'Inspect destination' });
+    await sender.getByRole('combobox', { name: 'Destination node', exact: true }).selectOption({ label: '#pair-1 Inspect destination' });
     await sender.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await sender.getByRole('button', { name: 'Apply to ComfyUI', exact: true }).click();
     await expect(sender).toContainText('Sent to ComfyUI.');
