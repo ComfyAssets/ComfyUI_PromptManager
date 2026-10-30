@@ -9,9 +9,15 @@ let releaseWait = null;
 let toastElement = null;
 let toastHome = null;
 
-/** The open modal the user is in: the last in the page, as a nested dialog is opened after its parent. */
+/**
+ * The open modal the user is in. With several, the top layer decides, not page order (a viewer can sit earlier in the
+ * page than the dialog it opened from): only the top one can be hit, the rest being inert.
+ */
 function topModal() {
-    return [...document.querySelectorAll('dialog')].filter(dialog => dialog.matches(':modal')).at(-1) ?? null;
+    const modals = [...document.querySelectorAll('dialog')].filter(dialog => dialog.matches(':modal'));
+    if (modals.length < 2) return modals[0] ?? null;
+    const hit = document.elementFromPoint?.(window.innerWidth / 2, window.innerHeight / 2)?.closest('dialog');
+    return modals.includes(hit) ? hit : modals.at(-1);
 }
 
 /**

@@ -440,6 +440,7 @@ class TestRevealInFileManager(unittest.TestCase):
             "DESKTOP_SESSION": "plasma",
             "XDG_SESSION_DESKTOP": "KDE",
             "XDG_CONFIG_HOME": "/home/u/.config",
+            "XDG_DATA_HOME": "/home/u/.local/share",
             "XDG_DATA_DIRS": "/usr/share",
             # What xdg-open reads to choose an opener (kde-open6 on Plasma 6).
             "KDE_FULL_SESSION": "true",
@@ -465,6 +466,7 @@ class TestRevealInFileManager(unittest.TestCase):
                 "DESKTOP_SESSION": "plasma",
                 "XDG_SESSION_DESKTOP": "KDE",
                 "XDG_CONFIG_HOME": "/home/u/.config",
+                "XDG_DATA_HOME": "/home/u/.local/share",
                 "XDG_DATA_DIRS": "/usr/share",
                 "KDE_FULL_SESSION": "true",
                 "KDE_SESSION_VERSION": "6",

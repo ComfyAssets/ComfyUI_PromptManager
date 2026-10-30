@@ -1573,8 +1573,9 @@ Recorded deviations on this page (spec §8):
   | Anything else (415, 404, 409, 500, offline) | "The folder could not be opened. Try again." |
 
   **D176 (#533, beyond the concept):** the viewer is a modal, so `showWorkspaceToast`
-  moves `#workspace-toast` into the topmost open modal, keeping its fixed position,
-  and back when that modal closes. Otherwise every toast raised from a modal is
+  moves `#workspace-toast` into the topmost open modal (by hit test when several are
+  open), keeping its fixed position, and back when that modal closes. A modal opened
+  after a toast covers it until the next toast. Otherwise every toast raised from a modal is
   covered and inert while `toHaveText` still passes: assert `toBeVisible` and the
   hit test as `full-inspector.spec.mjs` does.
 

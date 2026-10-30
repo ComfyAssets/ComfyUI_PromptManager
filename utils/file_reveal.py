@@ -75,6 +75,7 @@ CHILD_ENV_NAMES = (
     "XDG_DATA_DIRS",
     "XDG_CONFIG_DIRS",
     "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
     # The X11 cookie: a non-default path under GDM or SDDM.
     "XAUTHORITY",
     "DBUS_SESSION_BUS_ADDRESS",

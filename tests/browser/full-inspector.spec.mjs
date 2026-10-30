@@ -387,6 +387,39 @@ test('Show in folder asks the server to open the listed file and announces each 
     await page.keyboard.press('Escape');await expect(page.locator('#viewer-dialog')).toHaveCount(0);
     await expect(toast).toBeVisible();await expect(page.locator('body > #workspace-toast')).toHaveCount(1);
 });
+// #533 D176: real modals in the real top layer, with the page's own toast module.
+test('a toast stays on screen across nested, switched and closing modals',async({page,request})=>{
+    await fullFixture(page,request);
+    await page.evaluate(async()=>{
+        const url=performance.getEntriesByType('resource').map(entry=>entry.name).find(name=>name.includes('/toast.mjs'));
+        const {showWorkspaceToast}=await import(url);
+        window.say=showWorkspaceToast;
+        window.modal=(id,first=false)=>{const dialog=document.createElement('dialog');dialog.id=id;dialog.textContent=id;document.body[first?'prepend':'append'](dialog);dialog.showModal();return dialog;};
+        window.onTop=()=>{const node=document.getElementById('workspace-toast');const box=node.getBoundingClientRect();return box.width>0&&document.elementFromPoint(box.x+box.width/2,box.y+box.height/2)===node;};
+    });
+    const parent=()=>page.evaluate(()=>{const host=document.getElementById('workspace-toast')?.parentElement;return host?host.id||host.localName:null;});
+    const onTop=()=>page.evaluate(()=>window.onTop());
+    await page.evaluate(()=>{window.modal('a');say('one');});
+    expect(await parent()).toBe('a');expect(await onTop()).toBe(true);
+    // Nested: the top one holds it, even earlier in the page than the one under it.
+    await page.evaluate(()=>{window.modal('b',true);say('two');});
+    expect(await parent()).toBe('b');expect(await onTop()).toBe(true);
+    // The top one closes while the toast shows: the message stays, in the modal now on top.
+    await page.evaluate(()=>document.getElementById('b').close());
+    await expect.poll(parent).toBe('a');expect(await onTop()).toBe(true);
+    await expect(page.locator('#workspace-toast')).toHaveText('two');
+    // Switched: the next modal takes the next toast.
+    await page.evaluate(()=>{document.getElementById('a').close();window.modal('c');say('three');});
+    expect(await parent()).toBe('c');expect(await onTop()).toBe(true);
+    // Closed and removed at once, as the workspace's dialogs do: home, still showing.
+    await page.evaluate(()=>{const c=document.getElementById('c');c.close();c.remove();});
+    await expect.poll(parent).toBe('body');expect(await onTop()).toBe(true);
+    await expect(page.locator('#workspace-toast')).toHaveText('three');
+    // Removed while open, with no close event: the next message still shows.
+    await page.evaluate(()=>{window.modal('d');say('four');document.getElementById('d').remove();say('five');});
+    expect(await parent()).toBe('body');expect(await onTop()).toBe(true);
+    await expect(page.locator('#workspace-toast')).toHaveText('five');
+});
 test('full inspector shows six facts and scoped provenance',async({page,request},testInfo)=>{
     await page.setViewportSize({width:1600,height:1100});await fullFixture(page,request);const panel=inspector(page);
     await expect(panel.getByRole('heading',{name:POSITIVE_TITLE,exact:true})).toBeVisible();await expect(panel.locator('.panel-heading .chip')).toHaveText('PNG');await expect(panel.locator('.detail-inner > p.small')).toHaveText('complete.png');
