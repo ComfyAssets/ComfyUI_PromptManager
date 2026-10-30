@@ -11,18 +11,18 @@ function setup(createSendSession, overrides = {}, roles = {positive:'new'}) {
 }
 test('sender requires explicit compatible host and target, preview, then acknowledged apply', async () => {
     const {createSendSession} = await source; const s=setup(createSendSession);
-    await s.session.discover(); assert.equal(s.session.state.hostId,'');assert.equal(s.session.state.targetId,'');
+    await s.session.discover(); assert.equal(s.session.state.hostId,'host');assert.equal(s.session.state.targetId,'');
     await s.session.preview(); assert.equal(s.calls.length,0);
-    s.session.selectHost('host');assert.equal(s.session.state.targetId,''); s.session.selectTarget('one');
+    s.session.selectTarget('one');
     await s.session.apply();assert.equal(s.calls.length,0);
     await s.session.preview();assert.equal(s.session.state.phase,'ready');assert.equal(s.session.state.preview.composition.after,'prefix new');
     await s.session.apply();assert.equal(s.session.state.phase,'success');assert.equal(s.calls.filter(call=>call[0]==='apply').length,1);
     await s.session.apply();assert.equal(s.calls.filter(call=>call[0]==='apply').length,1); s.session.dispose();
 });
-test('pair roles filter incompatible nodes and do not silently choose the sole destination', async()=>{
+test('pair roles filter incompatible nodes and select the sole destination', async()=>{
     const {createSendSession}=await source;const s=setup(createSendSession,{}, {positive:'',negative:'bad'});
     await s.session.discover();assert.deepEqual(s.session.state.hosts[0].targets.map(target=>target.id),['pair']);
-    s.session.selectHost('host');s.session.selectTarget('one');assert.equal(s.session.state.targetId,'');
+    assert.equal(s.session.state.targetId,'pair');s.session.selectTarget('one');assert.equal(s.session.state.targetId,'');
     s.session.selectTarget('pair');assert.equal(s.session.state.targetId,'pair');s.session.dispose();
 });
 test('late previews are ignored after target changes; aborted and disposed work cannot update state',async()=>{
@@ -44,19 +44,74 @@ test('only matching explicit acknowledgements count as success',async()=>{
     }
 });
 test('discovery, empty results and stale preview errors remain actionable',async()=>{
-    const {createSendSession}=await source;const s=setup(createSendSession,{discover:async()=>[]});await s.session.discover();assert.match(s.session.state.message,/No compatible/i);s.session.dispose();
+    const {createSendSession}=await source;const s=setup(createSendSession,{discover:async()=>[]});await s.session.discover();assert.match(s.session.state.message,/No ComfyUI window answered/i);s.session.dispose();
     const failed=setup(createSendSession,{discover:async()=>{throw Error('unavailable');}});await failed.session.discover();assert.match(failed.session.state.message,/unavailable/);failed.session.dispose();
     const stale=setup(createSendSession,{preview:async()=>{throw Error('Workflow changed. Preview again.');}});await stale.session.discover();stale.session.selectHost('host');stale.session.selectTarget('one');await stale.session.preview();assert.match(stale.session.state.message,/Workflow changed/);stale.session.dispose();
 });
 test('rediscovery invalidates selections and old discovery cannot replace new results',async()=>{
     const {createSendSession}=await source;let resolve;let count=0;const s=setup(createSendSession,{discover:()=>++count===1?new Promise(done=>resolve=done):Promise.resolve(hosts)});
     const first=s.session.discover();await s.session.discover();resolve([]);await first;assert.equal(s.session.state.hosts.length,1);
-    s.session.selectHost('host');s.session.selectTarget('one');await s.session.preview();await s.session.discover();assert.equal(s.session.state.hostId,'');assert.equal(s.session.state.preview,null);s.session.dispose();
+    s.session.selectHost('host');s.session.selectTarget('one');await s.session.preview();await s.session.discover();assert.equal(s.session.state.hostId,'host');assert.equal(s.session.state.targetId,'');assert.equal(s.session.state.preview,null);s.session.dispose();
 });
 test('pending apply explains closing cannot undo the sent update',async()=>{
     const {createSendSession}=await source;let done;const s=setup(createSendSession,{apply:()=>new Promise(resolve=>done=resolve)});
     await s.session.discover();s.session.selectHost('host');s.session.selectTarget('one');await s.session.preview();const pending=s.session.apply();
     assert.match(s.session.state.message,/Closing this dialog does not undo/i);s.session.dispose();done({targetId:'one',values:{positive:'new'}});await pending;
+});
+const window1=(targets,label='Flow - ComfyUI',hostId='a')=>({hostId,label,targets});
+const pm=(id,roles=['positive'],extra={})=>({id,label:`Node ${id}`,roles,...extra});
+async function discovered(createSendSession,found,roles={positive:'new'}) {
+    const s=setup(createSendSession,{discover:async()=>found},roles);await s.session.discover();return s;
+}
+test('one window with one eligible node is selected so Preview is available at once',async()=>{
+    const {createSendSession}=await source;const s=await discovered(createSendSession,[window1([pm('1')])]);
+    assert.equal(s.session.state.hostId,'a');assert.equal(s.session.state.targetId,'1');
+    assert.match(s.session.state.message,/Node 1 in Flow - ComfyUI.*Preview changes/);
+    await s.session.preview();assert.equal(s.session.state.phase,'ready');s.session.dispose();
+});
+test('several windows are left to choose, and choosing one with a single node selects that node',async()=>{
+    const {createSendSession}=await source;const s=await discovered(createSendSession,[window1([pm('1')],'A','a'),window1([pm('2'),pm('3')],'B','b')]);
+    assert.equal(s.session.state.hostId,'');assert.equal(s.session.state.targetId,'');assert.match(s.session.state.message,/Choose a ComfyUI window/);
+    s.session.selectHost('a');assert.equal(s.session.state.targetId,'1');
+    s.session.selectHost('b');assert.equal(s.session.state.targetId,'');assert.match(s.session.state.message,/Choose a destination node in B/);
+    s.session.selectHost('');assert.match(s.session.state.message,/Choose a ComfyUI window/);
+    s.session.selectHost('b');s.session.selectTarget('2');s.session.selectTarget('');assert.match(s.session.state.message,/Choose a destination node/);s.session.dispose();
+});
+test('a window that cannot receive says why, naming the window and the node',async()=>{
+    const {createSendSession}=await source;
+    let s=await discovered(createSendSession,[window1([])]);
+    assert.match(s.session.state.message,/Flow - ComfyUI has no Prompt Manager node/);assert.equal(s.session.state.hosts.length,0);s.session.dispose();
+    s=await discovered(createSendSession,[window1([]),window1([],'Other','b')]);
+    assert.match(s.session.state.message,/None of the 2 ComfyUI windows has a Prompt Manager node/);s.session.dispose();
+    s=await discovered(createSendSession,[window1([pm('1',['positive'],{linkedRoles:['positive']})])]);
+    assert.match(s.session.state.message,/Node 1 in Flow - ComfyUI has its positive prompt linked/);assert.equal(s.session.state.hosts.length,0);s.session.dispose();
+    s=await discovered(createSendSession,[window1([pm('1')])],{positive:'p',negative:'n'});
+    assert.match(s.session.state.message,/Flow - ComfyUI has no Prompt Manager node that accepts a positive and negative prompt.*\(\+\/-\)/);s.session.dispose();
+});
+test('a linked node is not offered beside an eligible one, and an unlinked role still is',async()=>{
+    const {createSendSession}=await source;
+    let s=await discovered(createSendSession,[window1([pm('1',['positive'],{linkedRoles:['positive']}),pm('2')])]);
+    assert.deepEqual(s.session.state.hosts[0].targets.map(target=>target.id),['2']);assert.equal(s.session.state.targetId,'2');s.session.dispose();
+    s=await discovered(createSendSession,[window1([pm('1',['positive','negative'],{linkedRoles:['negative']})])]);
+    assert.equal(s.session.state.targetId,'1');s.session.dispose();
+});
+test('an auto-selected destination says how many other nodes cannot receive, and the review names the destination',async()=>{
+    const {createSendSession}=await source;
+    const s=await discovered(createSendSession,[window1([pm('2')],'A','a'),window1([pm('1',['positive'],{linkedRoles:['positive']})],'B','b')]);
+    assert.equal(s.session.state.targetId,'2');assert.match(s.session.state.message,/1 other Prompt Manager node cannot receive/);
+    await s.session.preview();s.session.dispose();
+    const named=setup(createSendSession,{discover:async()=>[window1([pm('one')])],preview:async(_,id)=>({ticket:'t',target:{id,label:'Live title'},fields:[{role:'positive',before:'',after:'new'}]})});
+    await named.session.discover();await named.session.preview();assert.match(named.session.state.message,/Sending to Live title in Flow - ComfyUI/);named.session.dispose();
+});
+test('window order and numbering do not depend on which tab answered first',async()=>{
+    const {createSendSession}=await source;const s=await discovered(createSendSession,[window1([pm('1')],'T','b'),window1([pm('2')],'T','a')]);
+    assert.deepEqual(s.session.state.hosts.map(host=>[host.hostId,host.label]),[['a','T'],['b','T (window 2)']]);s.session.dispose();
+});
+test('same-named windows and nodes stay distinguishable',async()=>{
+    const {createSendSession}=await source;const twin=id=>({id,label:'Same',roles:['positive']});
+    const s=await discovered(createSendSession,[window1([twin('7'),twin('8')],'T','a'),window1([pm('1')],'T','b')]);
+    assert.deepEqual(s.session.state.hosts.map(host=>host.label),['T','T (window 2)']);
+    assert.deepEqual(s.session.state.hosts[0].targets.map(target=>target.label),['Same #7','Same #8']);s.session.dispose();
 });
 function fakeDOM() {
     class Node extends EventTarget {
@@ -89,7 +144,7 @@ test('native sender dialog uses prefixed namespace, full safe text, explicit cho
         assert.deepEqual(options,{namespace:'/prefix/',origin:'https://example.test'});
         const dialog=dom.body.children.at(-1);assert.equal(dialog.open,true);assert.equal(dialog.attributes['aria-label'],'Send to ComfyUI');
         const host=dom.find(dialog,node=>node.id==='prompt-sender-host');const target=dom.find(dialog,node=>node.id==='prompt-sender-target');
-        assert.equal(host.value,'');assert.equal(target.value,'');host.value='host';host.dispatchEvent(new Event('change'));target.value='one';target.dispatchEvent(new Event('change'));
+        assert.equal(host.value,'host');assert.equal(target.value,'');target.value='one';target.dispatchEvent(new Event('change'));
         dom.find(dialog,node=>node.textContent==='Preview changes').dispatchEvent(new Event('click'));await tick();
         assert.ok(dom.find(dialog,node=>node.tagName==='code' && node.textContent==='(empty)'));assert.ok(dom.find(dialog,node=>node.tagName==='code' && node.textContent==='<unsafe>new</unsafe>'));
         const apply=dom.find(dialog,node=>node.textContent==='Apply to ComfyUI');assert.equal(apply.className,'ca-primary');assert.equal(apply.disabled,false);apply.dispatchEvent(new Event('click'));await tick();

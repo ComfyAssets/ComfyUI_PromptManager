@@ -2,7 +2,7 @@
  * System › Integrations (#249 System S10 Task 27): the concept's `renderSystem` "integrations" body (app.js 682–684).
  *
  * - "ComfyUI": Default send destination, Host compatibility and Return to canvas after send. D106 (Q8): the send
- *   bridge always asks for the window and node, and the nodes always follow ComfyUI's own renderer, so only "Ask each
+ *   bridge asks for the window and node when there is a choice, and the nodes always follow ComfyUI's own renderer, so only "Ask each
  *   time" and "Follow host renderer" can be chosen; the other options and the return toggle are disabled, with the
  *   reason under the row, and nothing is stored for them. Host compatibility also says which renderer the open
  *   ComfyUI windows use, as the send bridge reports it (`renderer` on each Prompt Manager node it lists).
@@ -42,7 +42,7 @@ export const LORA_KEYS = Object.freeze(['lora_enabled', 'lora_trigger_words_enab
 
 /** D106: why the options the bridge cannot honour are disabled. */
 export const REASONS = Object.freeze({
-    send: 'Sending always asks for the ComfyUI window and node, so “Ask each time” is the only option.',
+    send: 'Sending asks when there is more than one ComfyUI window or node and always previews, so “Ask each time” is the only option.',
     renderer: 'Prompt Manager nodes always follow ComfyUI’s own renderer setting.',
     returnCanvas: 'Not available: sending applies the text in ComfyUI and keeps this page open.',
 });

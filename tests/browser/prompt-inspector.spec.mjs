@@ -193,7 +193,7 @@ test('empty negative send clears only the negative destination and preserves its
 test('no open ComfyUI window is actionable and rediscovery finds a newly opened host',async({page,context})=>{
     await page.goto(workspace);await select(page,'0:shared/same.png');
     await details(page).getByRole('button',{name:/^Send positive prompt to ComfyUI: /}).click();
-    const sender=dialog(page);await expect(sender).toContainText('No compatible ComfyUI windows found.');
+    const sender=dialog(page);await expect(sender).toContainText('No ComfyUI window answered in this browser');
     const host=await fakeHost(context,page);
     try {
         await sender.getByRole('button',{name:'Find ComfyUI windows',exact:true}).click();

@@ -4235,6 +4235,16 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   makes the page see a restore run and finish deterministically. A refused file toasts "This file can't be restored: <validator reason>.". A
   review value may wrap anywhere (`#modal-body > dl.meta-grid dd`, CSS under D105), so a
   long file name keeps the concept's two equal columns at phone width.
+- **D173** (#535, amends D106): "always asks" now means asks when there is a choice. One
+  eligible window is selected, and a selected window with one eligible node selects that
+  node; Preview and Apply stay explicit. A node whose requested field is linked is not
+  offered (`linkedRoles` on each destination), and the status line says which case applies:
+  linked, wrong roles, no node, or no window. Selected or not, it counts the other
+  nodes that cannot receive, and the review names the node and window.
+- **D174** (#535): the window option shows the tab's current title, read at each discovery
+  (a getter on the host options, which the Toolkit reads per discover), without the old
+  "PromptManager —" prefix. Same-named windows and nodes get " (window 2)", numbered by host id so the number
+  is stable while the tabs stay loaded, and " #<id>". Discovery waits 300 ms, as System does.
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
   and node, and the nodes always follow ComfyUI's own renderer, so "Default send
   destination" offers only "Ask each time" and "Host compatibility" only "Follow host

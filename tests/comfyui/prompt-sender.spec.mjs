@@ -68,8 +68,13 @@ test('native image inspector previews and sends a pair into real visible widgets
         const sender=workspace.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);
-        await hosts.selectOption({index:1});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({index:1});
+        // #535: the window is named by its tab, and one window with one node needs no choosing.
+        const tabTitle=await page.title();
+        await expect(hosts.locator('option').nth(1)).toHaveText(tabTitle);
+        expect(tabTitle).not.toContain('PromptManager');
+        await expect(hosts).not.toHaveValue('');
+        await expect(sender.getByRole('combobox',{name:'Destination node',exact:true})).not.toHaveValue('');
+        await expect(sender.getByRole('status')).toContainText(`in ${tabTitle}. Preview changes before applying.`);
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         for(const text of ['Before positive','Before negative',positive,negative,`LoRA trigger ${positive} fine detail`])await expect(sender).toContainText(text);
         await expect(nodeRoot.getByRole('textbox',{name:'Positive prompt',exact:true})).toHaveValue('Before positive');
@@ -86,5 +91,22 @@ test('native image inspector previews and sends a pair into real visible widgets
         for(const name of ['inputs','serialized'])expect(state[name]).toMatchObject({text:positive,negative_text:negative,prepend_text:'LoRA trigger',append_text:'fine detail'});
         expect(state.effects).toEqual({queue:0,load:0});expect(errors).toEqual([]);
         await workspace.screenshot({path:testInfo.outputPath('full-inspector-host-send.png')});
+        // #535: the status line says why a window cannot receive.
+        const find=sender.getByRole('button',{name:'Find ComfyUI windows',exact:true});
+        const preview=sender.getByRole('button',{name:'Preview changes',exact:true});
+        await page.evaluate(async id=>{
+            const {app}=await import('/scripts/app.js');const {convertToInput}=await import('/extensions/core/widgetInputs.js');
+            const node=app.graph.getNodeById(id);const widget=node.widgets.find(widget=>widget.name==='text');
+            if(!node.inputs.some(input=>input.name==='text'))convertToInput(node,widget);
+            const source=LiteGraph.createNode('PrimitiveString');app.graph.add(source);
+            source.connect(0,node,node.inputs.findIndex(input=>input.name==='text'));
+        },id);
+        await find.click();
+        await expect(sender).toContainText(/has its positive prompt linked to another node/);
+        await expect(preview).toBeDisabled();
+        await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');app.graph.clear();});
+        await find.click();
+        await expect(sender).toContainText('has no Prompt Manager node.');
+        await expect(preview).toBeDisabled();
     } finally {await workspace.close();}
 });

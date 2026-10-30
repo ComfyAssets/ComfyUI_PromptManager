@@ -12,6 +12,7 @@ const compositionNames = ['prepend_text','append_text'];
 function nodes(graph) { return graph?._nodes || []; }
 function target(node) { return {id:String(node.id),label:String(node.title || node.type),type:node.type}; }
 function connected(node,name) { return Boolean(node.inputs?.some(input => input.name === name && input.link != null)); }
+function linkedRoles(node) { return Object.entries(schemas.get(node.type)).filter(([,name]) => connected(node,name)).map(([role]) => role); }
 function links(node) { return JSON.stringify((node.inputs || []).map(input => [input.name,input.link ?? null])); }
 function capture(node,name) {
     const widget = node.widgets?.find(item => item.name === name);
@@ -59,7 +60,7 @@ export function createPromptAdapter(app, {runtime = globalThis} = {}) {
     const snapshots = new WeakMap();
     function listTargets() {
         const drawn = renderer(runtime);
-        return nodes(app.graph).filter(node => schemas.has(node.type)).map(node => ({...target(node),roles:Object.keys(schemas.get(node.type)),...drawn}));
+        return nodes(app.graph).filter(node => schemas.has(node.type)).map(node => ({...target(node),roles:Object.keys(schemas.get(node.type)),linkedRoles:linkedRoles(node),...drawn}));
     }
     function preview(targetId,rawRoles) {
         const roles = validateRoles(rawRoles);
