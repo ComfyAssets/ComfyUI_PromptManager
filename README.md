@@ -1,1193 +1,234 @@
 # ComfyUI Prompt Manager
 
+**Every prompt you run, every image it made, and every negative you tried, in one searchable library inside ComfyUI.**
+
+![The Prompt Manager workspace: a masonry gallery of generated images with the selected image's prompts, tags and settings beside it](assets/readme/hero.webp)
+
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-![ComfyUI](https://img.shields.io/badge/ComfyUI-compatible-green.svg)
 ![Tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Tests/badge.svg)
-![Code Quality](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Code%20Quality/badge.svg)
 
-A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, folder-based organization, LoRA Manager integration, and powerful ComfyUI workflow metadata analysis using SQLite.
+Prompt Manager saves your prompts as you generate, links each image back to the prompt that made it, and gives you one page to browse, tag, compare and reuse all of it. Your library is a local SQLite database on your own machine.
 
-## Overview
+## What's new: rebuilt from the ground up
 
-![Prompt Manager Interface](images/pm-01.png)
+- **A new UI.** One app, the workspace, replaces the separate dashboard, gallery and metadata pages. The old pages still work if you want them.
+- **Classic and Nodes 2.0.** The nodes work in both ComfyUI renderers. CI starts a real ComfyUI and checks both.
+- **Tested end to end.** Unit tests, browser tests in Chromium, Firefox, WebKit and touch emulation, and tests against a real ComfyUI.
+- **Mac, Linux and Windows.** The Python suite runs on all three, on Python 3.12, 3.13 and 3.14.
 
-ComfyUI Prompt Manager provides two powerful node types for comprehensive prompt management:
+## See it
 
-### **PromptManager** (CLIP Encoding Node)
+All images on this page were generated and recorded through Prompt Manager in a clean demo library.
 
-A drop-in replacement for ComfyUI's standard `CLIPTextEncode` node with database features:
+### Your whole output folder, finally browsable
 
-- **🔄 Drop-in Replacement**: Works exactly like the standard text encoder
-- **🤖 CLIP Encoding**: Outputs CONDITIONING for use with samplers and other CLIP-dependent nodes
+Masonry, grid or list, with search, categories, filters and saved views. Images and videos sit side by side, and selecting one shows its prompts and settings without leaving the page.
 
-![Prompt Manager Interface](images/pm-04.png)
+![Images page in grid layout](assets/readme/images-grid.webp)
 
-### **PromptManagerText** (Text-Only Node)
+### Open any image and see how it was made
 
-A text-focused variant that outputs raw STRING for maximum flexibility:
+The viewer shows the positive and negative prompts, tags, seed, steps, CFG, sampler and model next to the image. Move with the arrow keys, zoom, rotate, or copy the settings.
 
-- **📝 Pure Text Output**: Outputs STRING type for use with any text-accepting node
-- **🔗 Text Concatenation**: Built-in prepend/append functionality for dynamic text assembly
-- **⚡ Lightweight Processing**: No CLIP encoding overhead for text-only workflows
+![The viewer with an image on the left and its prompts and generation settings on the right](assets/readme/viewer.webp)
 
-### **PromptSearchList** (Batch Processing Node)
+### One positive prompt, many experiments
 
-A search node that outputs prompts as a list for batch processing workflows:
+The Prompt library groups everything by positive prompt, so repeat runs and negative variants stay together instead of filling your list with near-duplicates.
 
-- **🔍 Database Search**: Search prompts by text, category, tags, and rating
-- **📋 List Output**: Uses `OUTPUT_IS_LIST` for native batch processing support
-- **🔗 Batch Compatible**: Connect directly to batch processing nodes like String OutputList
-- **⚡ Read-Only**: Lightweight search operation without database writes
+![Prompt library cards showing each prompt's images, negative variants, runs and tags](assets/readme/library.webp)
 
-This node enables powerful batch workflows by allowing you to search your prompt database and process multiple prompts in a single execution.
+### Watch your negatives branch on a timeline
 
-### **Shared Features**
+Each prompt has its own page with a timeline of its negative variants. Click a red dot and the gallery filters to the images that negative made. Small dots mark repeat runs.
 
-Both nodes include the complete PromptManager feature set:
+![Clicking through negative variants on the timeline filters the gallery below](assets/readme/timeline.anim.webp)
 
-- **💾 Persistent Storage**: Automatically saves all prompts to a local SQLite database
-- **🔍 Advanced Search**: Query past prompts with text search, category filtering, and metadata
-- **📁 Folder Filter**: Browse and filter prompts by output subdirectory
-- **🖼️ Automatic Image Gallery**: Automatically links generated images to their prompts
-- **🏷️ Rich Metadata**: Add categories, tags, ratings, notes, and workflow names to prompts
-- **🚫 Duplicate Prevention**: Uses SHA256 hashing to detect and prevent duplicate storage
-- **🌐 Advanced Web Interface**: Comprehensive admin dashboard with metadata analysis
-- **📊 Analytics**: Track prompt usage patterns and effectiveness over time
-- **🔬 Workflow Analysis**: Extract and analyze ComfyUI workflow data from PNG images
-- **📋 Metadata Viewer**: Standalone tool for analyzing ComfyUI-generated images
-- **🛠️ System Management**: Built-in diagnostics, backup/restore, and maintenance tools in System
-- **🏷️ AI AutoTag**: Automatically tag your image collection using WD14 or JoyCaption vision models
-- **🔗 LoRA Manager Integration**: Import LoRA metadata and preview images from [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager)
+### Compare negatives term by term
 
-![Image Gallery](images/pm-02.png)
+Compare negatives shows two variants side by side and lists the terms one adds, so you can see what actually changed between runs.
 
-## Features
+![Two negative prompts side by side with the added terms highlighted](assets/readme/compare-negatives.webp)
 
-### Core Functionality
+### Auto-tag your images, and approve what sticks
 
-#### PromptManager (CLIP Encoding)
+Tag one image, a selection or your whole output with WD14 or JoyCaption. WD14 suggestions come with confidence scores, and you can review suggestions before anything is saved. Auto-tags belong to the image, so they never change your prompts.
 
-- **Text Encoding**: Standard CLIP text encoding for ComfyUI workflows
-- **Conditioning Output**: Produces CONDITIONING for samplers and generation nodes
-- **Full Compatibility**: Drop-in replacement for CLIPTextEncode nodes
+![Tag image dialog with WD14 suggestions and their confidence scores](assets/readme/autotag.webp)
 
-#### PromptManagerText (Text-Only)
+### Keep your vocabulary tidy
 
-- **String Output**: Produces STRING for use with any text-accepting node
-- **Text Concatenation**: Prepend and append fields for dynamic text assembly
-- **Lightweight**: No CLIP encoding overhead for pure text workflows
-- **Flexible Integration**: Works with custom nodes, text processors, and other STRING inputs
+Tags & categories lists every tag and category with how often it's used. Rename, merge and delete tags, and preview a category change before you apply it.
 
-#### Shared Features
+![Tags and categories page](assets/readme/tags.webp)
 
-- **Auto-Save**: Every prompt is automatically saved to the database
-- **Metadata Support**: Optional categories, tags, ratings (1-5), notes, and workflow names
-- **Hash-based Deduplication**: Prevents storing identical prompts multiple times
+### Group images your own way
 
-### 🖼️ Advanced Gallery with Full Media Support
+Collections are hand-picked sets of images, on top of favorites and saved views. Add from the selection bar and they appear in the sidebar.
 
-![Prompt Editor](images/pm-03.jpg)
+![A collection called Book cover ideas open in the workspace](assets/readme/collections.webp)
 
-The comprehensive gallery system provides complete management of all ComfyUI output with professional viewing capabilities:
+### Nothing gets guessed
 
-#### **📁 Output-Wide Gallery Mode**
+When a file's metadata has more than one possible prompt, Prompt Manager doesn't pick for you. The file waits in Needs review, where you can choose the sampler path, link it to any prompt in your library, or leave it unresolved.
 
-![Prompt Editor](images/pm-05.jpg)
+![Link to a prompt dialog searching the library from Needs review](assets/readme/needs-review.webp)
 
-- **Complete Output Monitoring**: Automatically scans and displays ALL content from your ComfyUI output directory
-- **Multi-Format Support**: Handles images (.png, .jpg, .jpeg, .webp, .gif) and videos (.mp4, .webm, .avi, .mov, .mkv, .m4v, .wmv)
-- **Intelligent Organization**: View all generated content regardless of which workflow created it
-- **Advanced Filtering**: Filter by media type, date range, file size, and generation parameters
-- **Performance Optimized**: Efficient scanning with thumbnail generation and lazy loading
+### Inspect any file, without importing it
 
-#### **🎬 Full Video Support**
+Pick an image or video from your computer to read its prompts, settings and workflow. The file is read in your browser. It isn't uploaded or added to your library.
 
-- **Native Video Playback**: HTML5 video player with custom controls for all supported formats
-- **Video Thumbnails**: Automatic thumbnail generation with OpenCV, ffmpeg, or placeholder fallback
-- **Playback Controls**: Autoplay, mute, loop settings with persistent preferences
-- **Video Navigation**: Seamless navigation between videos with keyboard shortcuts
-- **Video Metadata**: Display duration, resolution, aspect ratio, and file information
-- **Mixed Media Gallery**: Videos and images integrated seamlessly in the same interface
-
-#### **🔍 Professional Image Viewer (ViewerJS Integration)**
-
-- **Full-Featured Viewing**: Zoom, rotation, slideshow modes with professional controls
-- **Advanced Navigation**: Smooth transitions, thumbnail strip, and keyboard shortcuts
-- **Zoom Controls**: Mouse wheel zoom, drag to pan, and touch gesture support
-- **Toolbar Features**: Comprehensive toolbar with zoom, rotate, flip, reset, and fullscreen
-- **Dark Theme Integration**: Seamless styling that matches the admin interface
-
-#### **🔬 Advanced Metadata Analysis**
-
-![Prompt Editor](images/pm-06.jpg)
-
-- **Real-time PNG Parsing**: Extract ComfyUI workflow data from any generated image
-- **Integrated Metadata Panel**: Live workflow analysis with copy functionality
-- **Generation Parameters**: CFG scale, steps, sampler, seed, and model information
-- **One-click Copying**: Copy prompts, parameters, and workflow data directly
-- **File Path Integration**: Direct access to files in your output directory
-- **Cross-Platform Support**: Works on desktop, tablet, and mobile devices
-
-#### **⚡ Performance Features**
-
-- **Smart Thumbnail System**: Generates optimized thumbnails for faster loading
-- **Lazy Loading**: Load content as needed for smooth browsing of large galleries
-- **Grid & List Views**: Choose between compact grid or detailed list display
-- **Pagination**: Efficient browsing of thousands of generated files
-- **Search & Filter**: Real-time search across filenames and metadata
-
-_Powered by [ViewerJS](https://github.com/fengyuanchen/viewerjs) for professional image viewing capabilities._
-
-Viewer.js is vendored locally. See [Viewer.js maintenance](tools/vendor/README.md)
-for reproducible updates, verification, and automated update PRs.
-
-Prompt Manager appears as **Prompt Manager (Classic)** in the Add Node menu.
-It keeps the existing layout and behavior while using shared
-[ComfyAssets Toolkit](https://github.com/ComfyAssets/ComfyAssets-Toolkit) controls
-that follow ComfyUI's light/dark theme. Existing workflows keep the same internal
-node identifier and sockets. The reusable architecture is inspired by
-[Pixaroma](https://github.com/pixaroma/ComfyUI-Pixaroma); no implementation or assets
-were copied. See the [toolkit maintenance notes](tools/vendor/README.md#shared-comfyassets-browser-controls).
-
-**Prompt Manager (Focused)** adds an editor-first layout with collapsible
-composition and metadata fields. Open **Browse library** to search saved prompts,
-filter by saved category and comma-separated tags, preview a selection, then choose
-**Use prompt**; **Load metadata** controls whether
-category and tags come with it. Metadata fields suggest saved categories and tags;
-choose with the mouse or arrow keys and Enter. Tag selections append `, ` for the
-next tag; category remains a single value. New values can still be typed freely.
-Prepend and append STRING sockets remain visible
-when the fields are collapsed, so LoRA trigger outputs can connect directly.
-Encoding, storage, and CONDITIONING/text outputs match Classic. Both layouts
-support ComfyUI Classic and Nodes 2.0.
-
-**Prompt Manager (Split)** keeps the same editor and library visible together.
-Wide nodes place the library beside the editor; narrow nodes stack the panels.
-It shares Focused's category/tag autocomplete, search filters, preview-before-use,
-workflow persistence, and connectable prepend/append inputs. Encoding and storage
-match Classic and Focused.
-
-### 🔬 ComfyUI Workflow Analysis
-
-- **PNG Metadata Parsing**: Advanced PNG chunk analysis to extract embedded ComfyUI data
-- **Workflow Data Extraction**: Complete ComfyUI workflow JSON recovery from images
-- **Prompt Recovery**: Extract positive/negative prompts from any ComfyUI-generated image
-- **Generation Parameters**: Recover steps, CFG scale, sampler, seed, and model information
-- **Multi-Node Support**: Handles PromptManager, CLIPTextEncode, and other node types
-- **Copy & Export**: One-click copying of prompts and workflow JSON download
-- **Standalone Viewer**: Dedicated metadata analysis tool at `/prompt_manager/metadata.html`
-- **Drag & Drop Interface**: Easy analysis by dropping PNG files directly into the viewer
-- **Error Handling**: Robust parsing with NaN value cleaning and malformed JSON recovery
-
-### 📋 Standalone Metadata Viewer
-
-- **Independent Tool**: Access at `http://localhost:8188/prompt_manager/metadata.html`
-- **Real-time Analysis**: Instant PNG metadata extraction and display
-- **Comprehensive Display**: Shows all discoverable ComfyUI workflow information
-- **Export Capabilities**: Download workflow JSON files for reuse
-- **File Path Integration**: Click to reveal file locations in your system
-- **Visual Interface**: Clean, organized presentation of complex workflow data
-
-### Search & Retrieval
-
-- **Full-text search** across all stored prompts
-- **Category filtering** for organized prompt collections
-- **Tag-based search** with support for multiple tags, with autocomplete that narrows to tags seen together with the ones already typed
-- **Rating filters** to find your best prompts
-- **Date range filtering** for temporal searches
-- **Recent prompts** quick access
-- **Top-rated prompts** for quality discovery
-- **Image search** by file properties and metadata
-
-### 🌐 Advanced Web Interface
-
-- **Admin Dashboard**: Comprehensive browser-based management interface with modern dark theme
-- **Responsive Design**: Works on desktop, tablet, and mobile devices
-- **Real-time Search**: Instant search results as you type
-- **Bulk Operations**: Edit multiple prompts simultaneously with batch tools
-- **Settings and System tools live in System**: the dashboard's **Settings** opens System › Overview, **Maintenance** opens System › Maintenance, **Backup DB** and **Restore DB** open System › Backup & export, and **Diagnostics** and **View Logs** open System › Diagnostics & logs, each in a new tab. System reviews every destructive operation before it runs it as an Activity job.
-- **Page options**: the list header's **Page options** keeps the prompt list's Infinite Scrolling default
-- **Dashboard tools**:
-  - **🔍 Metadata Viewer**: Launch standalone PNG analysis tool
-  - **📸 Scan Images**: Bulk scan output directories for ComfyUI images (with a quick backup first)
-- **Export Tools**: Download prompts and metadata in various formats
-- **Progress Tracking**: Real-time progress indicators for long operations
-- **Error Handling**: Graceful error display with recovery suggestions
-
-### Database Management
-
-- **SQLite backend** for reliable local storage
-- **Automatic schema creation** and management
-- **Database optimization** with proper indexing and maintenance tools
-- **Export functionality** to JSON or CSV formats
-- **Backup and restore** capabilities
-- **Relationship tracking** between prompts and generated images
-- **Orphaned prompt cleanup** to remove prompts without linked images
-
-## Installation
-
-### For ComfyUI Users
-
-1. **Clone the repository** into your ComfyUI custom_nodes directory:
-
-   ```bash
-   cd ComfyUI/custom_nodes/
-   git clone https://github.com/ComfyAssets/ComfyUI_PromptManager
-   cd ComfyUI_PromptManager
-   ```
+![Inspecting a local file in the viewer](assets/readme/inspect.webp)
 
-2. **Install dependencies**:
+### Send a prompt back to your canvas
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+Pick an open ComfyUI window and a node, then review the exact before and after. Nothing changes until you apply it.
 
-3. **Restart ComfyUI** to load the new node
+![Send to ComfyUI dialog showing the before and after of a prompt](assets/readme/send.webp)
 
-4. **Add the nodes** to your workflow:
+### Deletes you can review
 
-   - **PromptManager**: Look for "Prompt Manager" in the conditioning category - use exactly like "CLIP Text Encode"
-   - **PromptManagerText**: Look for "Prompt Manager Text" in the PromptManager/Text category - outputs STRING for any text node
+Choose what happens to the files before anything is removed. A safety backup of the database is on by default, and removed images can be brought back.
 
-5. **Access the web interface**:
-   - **Admin Dashboard**: `http://localhost:8188/prompt_manager/admin` - Full management interface
-   - **Metadata Viewer**: `http://localhost:8188/prompt_manager/metadata.html` - Standalone PNG analysis tool
-   - **Simple Interface**: `http://localhost:8188/prompt_manager/` - Basic prompt browser
+![Delete dialog offering to remove from the library only or move files to the trash](assets/readme/delete-review.webp)
 
-### Prerequisites
+### Maintenance in one place
 
-- ComfyUI installation
-- Python 3.8 or higher
-- SQLite3 (included with Python)
-- `watchdog` library for automatic image monitoring
-
-## Usage
+System holds settings, image sources, auto-tag models, integrations, maintenance, backups and logs. Risky operations show a review first, and long ones run as jobs you can follow in Activity.
 
-### Basic Usage
+![System Maintenance section](assets/readme/system.webp)
 
-#### Using PromptManager (CLIP Encoding)
+![Activity page listing finished scans and tagging jobs](assets/readme/activity.webp)
 
-Replace any `CLIPTextEncode` node with `PromptManager`:
-
-1. **Add the PromptManager node** to your workflow
-2. **Connect CLIP model** (same as standard text encoder)
-3. **Enter your prompt** in the text field
-4. **Connect the CONDITIONING output** to your sampler node
+### Works on your phone too
 
-#### Using PromptManagerText (Text-Only)
+The workspace adapts to narrow screens, and touch is part of the browser test suite.
 
-For text-only workflows or when you need STRING output:
+![Images page and viewer at phone width](assets/readme/phone.webp)
 
-1. **Add the PromptManagerText node** to your workflow
-2. **Enter your prompt** in the text field
-3. **Optionally use prepend/append** for dynamic text assembly:
-   - **Prepend Text**: Text added before your main prompt
-   - **Append Text**: Text added after your main prompt
-4. **Connect the STRING output** to any node that accepts text input
-
-#### Using PromptSearchList (Batch Processing)
+## The nodes
 
-For batch processing workflows that need multiple prompts:
+Six nodes, under **ComfyAssets > Prompts** in the Add Node menu. Pick the one that suits your workflow; they all share one library. Every screenshot below is a small real workflow that ran.
 
-1. **Add the PromptSearchList node** to your workflow
-2. **Configure search filters**:
-   - **text**: Search for prompts containing this text
-   - **category**: Filter by specific category
-   - **tags**: Comma-separated tags to filter by (e.g., "anime, detailed")
-   - **min_rating**: Minimum rating (0-5) to include
-   - **limit**: Maximum number of results (1-1000, default 50)
-3. **Connect the prompts output** to batch-compatible nodes like String OutputList
-4. **Each matching prompt** will be processed as a separate batch item
-
-#### Shared Metadata Options
-
-Both nodes support the same metadata fields:
+### Prompt Manager (Classic)
 
-- **Category**: "portraits", "landscapes", "abstract", etc.
-- **Tags**: "detailed, anime, masterpiece" (comma-separated)
-- **Rating**: 1-5 stars for prompt quality (web interface only)
-- **Notes**: Any additional information (web interface only)
-- **Workflow Name**: Name of your workflow for organization (web interface only)
+The drop-in replacement for CLIP Text Encode: same CLIP input, same CONDITIONING output, with the prompt saved as it runs. It also outputs the text as a STRING.
 
-Both nodes will automatically save prompts to the database and link any generated images to the prompt.
+![Prompt Manager Classic node in a workflow, Classic renderer](assets/readme/node-classic.webp)
 
-- **Save to library** (`save_to_library`, on by default; "Save to library" in the Focused, Split and Pair editors):
-  turn it off while iterating and PromptManager ignores that node's runs. The prompt is not saved, the run is not
-  counted and its images are not linked (a scan skips them too), while the node's output is unchanged. Workflows
-  saved before this switch existed load with it on. If any PromptManager node feeding a sampler's positive input
-  has it off, none of that run's images are linked, because the image cannot show which sampler produced it.
+The same workflow in Nodes 2.0:
 
-### 🖼️ Using the Output-Wide Gallery
+![Prompt Manager Classic node in a workflow, Nodes 2.0 renderer](assets/readme/node-classic-nodes2.webp)
 
-The comprehensive gallery system provides complete access to all your ComfyUI output:
+### Prompt Manager (Focused)
 
-#### **📁 Accessing the Gallery**
+An editor-first layout. Composition and metadata fold away, and **Browse library** lets you search, preview and use a saved prompt right on the node.
 
-1. **Open the admin interface** at `http://localhost:8188/prompt_manager/admin`
-2. **Click the "🖼️ Gallery" button** to open the output-wide gallery
-3. **Browse all content** from your ComfyUI output directory
+![Prompt Manager Focused node in a workflow](assets/readme/node-focused.webp)
 
-#### **🎬 Video & Image Support**
+### Prompt Manager (Split)
 
-- **Mixed Media Viewing**: Images and videos appear together in the same gallery
-- **Video Thumbnails**: Videos show with play button overlays and 🎬 icons
-- **Smart Filtering**: Filter by media type (All, Images, Videos) using the dropdown
-
-#### **⚙️ Gallery Settings**
+The same editor with the library always visible. Wide nodes put them side by side; narrow nodes stack them.
 
-The gallery's **Settings** opens System › Appearance in a new tab: image quality, details on cards, collapsed viewer details, video autoplay/mute/loop, metadata loading and file paths are set there and apply to this page too.
+![Prompt Manager Split node in a workflow](assets/readme/node-split.webp)
 
-The gallery's **Page options** keep the page's own settings: the thumbnail check at startup, lazy loading, items per page, grid columns, infinite scrolling, debug mode and API timeout. Reset puts back only these.
+### Prompt Manager (+/-)
 
-Thumbnail generation, the server thumbnail and browser cache clears, refreshing the file listing and finding duplicate images are in System › Sources & scans and System › Maintenance (Page options links both); each runs as an Activity job you can follow after closing the page.
-
-#### **🖼️ Image Viewing Experience**
+Positive and negative in one node, saved as a pair. This is the node that feeds the negative-variant timeline. It outputs CONDITIONING and STRING for both sides.
 
-1. **Click any image** to open the professional viewer with:
-   - **Full-screen viewing** with zoom, rotation, and slideshow controls
-   - **Integrated metadata panel** showing workflow data and generation parameters
-   - **Navigation arrows** and keyboard shortcuts (←/→ arrow keys)
-   - **Copy functionality** for prompts, parameters, and workflow data
-2. **Use keyboard shortcuts**:
-   - **Arrow keys** (←/→) for navigation
-   - **ESC** to close viewer
-   - **Space** for slideshow mode
+![Prompt Manager plus/minus node in a workflow](assets/readme/node-pair.webp)
 
-#### **🎬 Video Viewing Experience**
+The same workflow in Nodes 2.0:
 
-1. **Click any video** to open the video player with:
-   - **HTML5 video controls** with play, pause, seek, and fullscreen
-   - **Custom control buttons** for mute/unmute and loop toggle
-   - **Video information panel** showing duration, resolution, and file details
-   - **Navigation between videos** using arrow keys or buttons
-2. **Playback settings** are remembered across sessions
+![Prompt Manager plus/minus node in a workflow, Nodes 2.0 renderer](assets/readme/node-pair-nodes2.webp)
 
-#### **🔍 Advanced Features**
+### Prompt Manager Text
 
-- **Real-time Search**: Search across filenames and metadata
-- **View Modes**: Switch between grid and list views
-- **Sorting Options**: Sort by date, size, or filename
-- **Pagination**: Efficiently browse thousands of files
-- **Thumbnail Generation**: Create optimized thumbnails for better performance
+Saves the prompt and outputs a STRING instead of CONDITIONING, for workflows that send text to another node. Prepend and append inputs let you build the final text.
 
-### 🔬 Analyzing ComfyUI Images
+![Prompt Manager Text node feeding a CLIP Text Encode node](assets/readme/node-text.webp)
 
-Use the standalone metadata viewer to analyze any ComfyUI-generated PNG:
+### Prompt Search List
 
-1. **Open the metadata viewer** at `http://localhost:8188/prompt_manager/metadata.html`
-2. **Drag and drop** any PNG file with ComfyUI workflow data
-3. **View extracted information**:
-   - **Prompts**: Copy positive/negative prompts with one click
-   - **Parameters**: See all generation settings used
-   - **Model Info**: Identify checkpoint and settings
-   - **Workflow**: Download complete workflow JSON
-4. **Copy data** using the built-in copy buttons
-5. **Export workflow** as JSON file for reuse in ComfyUI
+Searches your library by text, category, tags and minimum rating, then outputs the matches as a list so ComfyUI runs each one. This workflow found three prompts tagged `mushroom` and made three images.
 
-### 📸 Bulk Image Scanning
+![Prompt Search List node producing three images](assets/readme/node-search.webp)
 
-Import existing ComfyUI images into your database:
+## Install
 
-1. **Open admin dashboard** and click **"📸 Scan Images"**
-2. **Start scan** to analyze every configured output directory
-3. **Monitor progress** with real-time status updates. The scan runs on the server: closing the window only minimizes it to a progress pill, and reloading the page re-attaches to a running scan
-4. **Review results** showing:
-   - Images found and processed
-   - Prompts extracted and linked
-   - Any errors or issues encountered
-5. **Access imported data** through the normal gallery interface
+**Requirements:** ComfyUI and Python 3.12 or newer. `watchdog` and `Pillow` are the only dependencies of their own; the rest comes with ComfyUI.
 
-The scan reads PNG text chunks and A1111-style parameters, and, when `ffprobe` is installed, the prompt ComfyUI's video savers embed in MP4/MOV/WebM files. Files are read on the number of **worker threads** set in System › Sources & scans (default: half your cores), which makes a large library several times faster.
-
-### 🏷️ AI AutoTag
-
-Automatically tag your entire image collection using AI vision models:
-
-#### **Model Options**
-
-- **WD14 SwinV2 / WD14 ViT**: Fast ONNX-based classifiers (~400MB) that output Danbooru tags with confidence scores — no prompt needed, adjustable confidence thresholds
-- **JoyCaption Beta One FP16**: Full precision model for highest quality tagging (requires more VRAM)
-- **JoyCaption Beta One GGUF (FP8)**: Quantized model for lower VRAM usage with minimal quality loss
-
-#### **Two Tagging Modes**
-
-1. **AutoTag (Batch Mode)**: Tag your entire collection automatically
-   - Click **"🏷️ AutoTag"** in the admin dashboard
-   - Choose your model type (FP16 or GGUF). A model that is not downloaded yet shows **Manage in System**: download (or unload) it in System › Auto-tagging, then reopen the dialog
-   - Select how to handle already-tagged images:
-     - **Skip images with existing tags**: Preserve your meticulous manual tagging work
-     - **Re-tag all images**: Overwrite existing tags with fresh AI analysis
-   - Customize the system prompt to match your collection style
-   - Monitor real-time progress as images are processed
-
-2. **Review Mode**: Tag images one-by-one with approval
-   - Review each image and its AI-generated tags before applying
-   - Edit, add, or remove tags before saving
-   - Skip images you don't want to tag
-   - Perfect for curating high-quality tag assignments
-
-#### **Handling Existing Tags**
-
-For users who have meticulously tagged their collections from the start:
-- AutoTag respects your existing work with the **"Skip tagged"** option
-- **"auto-scanned"** placeholder tags don't count as real tags
-- Choose to re-tag specific images while preserving others
-- Review mode asks before overwriting on each image
-
-#### **Customization**
-
-Adjust the system prompt to match your tagging style:
-- Focus on specific attributes (style, mood, composition, subjects)
-- Match your existing tag vocabulary
-- Optimize for your collection's theme (anime, photography, landscapes, etc.)
-
-#### **Requirements**
-
-- Sufficient VRAM for the chosen model (FP16 requires more, GGUF is lighter)
-- Models are downloaded in System › Auto-tagging
-- Feature requests and improvements are welcome!
-
-### 📁 Folder Filter
-
-![Folder Filter](images/pm-lora-import.png)
-
-Organize and filter your prompt library by output subdirectory. The dashboard search panel includes a **Folder** dropdown that lists all subdirectories where your images are stored.
-
-- **Automatic Detection**: Folders are extracted from your image paths — no configuration needed
-- **Multi-Directory Support**: Works across all configured gallery scan directories
-- **Quick Filtering**: Select a folder from the dropdown to instantly filter prompts to that subdirectory
-
-> **Note:** If you have an existing prompt library from before the folder feature was added, you will need to **rescan your image library** (click **Scan Images** in the admin dashboard) to populate folder data for your existing prompts.
-
-### 🔗 LoRA Manager Integration
-
-![LoRA Settings](images/pm-settings-integrations.png)
-
-If you use [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager), PromptManager can import your LoRA metadata, trigger words, and example images directly into your prompt database. This lets you search, tag, and browse your LoRA collection alongside your regular prompts.
-
-> **WIP:** LoRA Manager support is a work in progress — this was a highly requested feature. Please [open issues](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues) for any bugs or feature requests.
-
-#### **Enabling the Integration**
-
-1. Open System › Integrations (the admin dashboard's **Settings** opens System)
-2. PromptManager auto-detects whether LoRA Manager is installed
-
-![LoRA Enabled](images/pm-lora-enabled.png)
-
-3. Toggle the **LoraManager** switch to enable
-4. Optionally enable **Auto-inject trigger words** to automatically append LoRA trigger words when `<lora:name:weight>` is detected in your prompts
-5. Click **Save preferences** (requires a ComfyUI restart to take effect)
-
-#### **Importing LoRA Data**
-
-Click **Review import** in System › Integrations; Start runs the import as an Activity job:
-
-- Reads LoRA Manager's own settings the way LoRA Manager does: from the folder in `LORA_MANAGER_SETTINGS_DIR`, from the plugin's `settings.json` in portable mode, or from your user config folder, and only the keys that say where its files are
-- Finds each LoRA's metadata in both storage modes: beside the model (the default) or in the central sidecar folder, and imports only LoRAs whose model file still exists in a LoRA folder (the review says how many metadata files it skipped)
-- Links LoRA Manager's preview (including `.preview.webp` and video previews) and every downloaded example image and video where they are, without copying them
-- Downloads example images from CivitAI as 512px thumbnails only for LoRAs that have no local image
-- Creates a prompt entry for each LoRA with trigger words, example prompts, and preview images
-- All imported LoRAs are tagged with `lora-manager` category for easy filtering
-
-The System › Integrations review names the settings it read (source, storage mode and LoRA Manager library) and counts metadata files, LoRAs and LoRAs with local images. If LoRA Manager's settings cannot be used, it says why and nothing is changed.
-
-![LoRA Results](images/pm-lora-filtered.png)
-
-After import, filter by the `lora-manager` category to browse your LoRA collection.
-
-#### **CivitAI API Key (Optional)**
-
-A CivitAI API key is **required if your library contains NSFW LoRAs** — CivitAI blocks unauthenticated access to NSFW preview images. Without a key, only SFW preview images are downloaded.
-
-To add your key:
-1. Get your API key from [civitai.com/user/account](https://civitai.com/user/account)
-2. Paste it into the **CivitAI API key** field in System › Integrations
-3. Save and re-import to download any previously skipped images
-
-The key is sent only over HTTPS to CivitAI's own hosts. CivitAI serves images through a redirect to its storage host; PromptManager follows such a redirect only over HTTPS to a host on CivitAI's own `civitai.com`, `civitai.red` or `civitai.green` domains, at most three hops, and never sends the key with it. When downloads fail, the import's status line says how many; when none could be downloaded, it starts with a warning. The server log has one warning per failed image with the reason (HTTP status, refused redirect, size cap, unreadable image, timeout or network error).
-
-> **Note:** Re-importing is safe — PromptManager skips LoRAs that were already imported. To do a fresh import, the previous `lora-manager` data is cleared automatically before re-scanning.
-
-### 🌐 Web Interface Features
-
-The comprehensive web interface provides:
-
-- **Search Bar**: Real-time search across all prompts
-- **Filter Options**: Filter by category, tags, rating, and date
-- **Bulk Operations**: Select multiple prompts for batch editing
-- **Export Tools**: Download your prompt collection
-- **Settings**: System (new tab) for settings, maintenance, backups and diagnostics; **Page options** for the page's own display settings
-
-### 🔧 Database Maintenance
-
-Keep your database optimized in System › Maintenance (the admin dashboard's **Maintenance** opens it in a new tab):
-
-- **Duplicate prompt text**: merge duplicate prompts while preserving images
-- **Optimize database**: reclaim unused SQLite space
-- **Missing-file links**: remove image records for missing files
-- **Unused prompt components**: remove prompts nothing uses
-- **Run health checks**: verify database integrity and relationships (the Health report)
-- **Database size and prompt counts**: System › Diagnostics & logs (Database) and the Overview's Statistics
-
-Each operation opens a review that shows what it will change and the safety backup it takes, then runs as an Activity job.
-
-### Database Location
-
-By default, the database is saved as `prompts.db` in the extension directory. It contains your prompt library and image links. See the [database path compatibility note](#database-path-compatibility-211) before upgrading a deployment with a custom path.
-
-### Searching Prompts
-
-Use the web interface for intuitive searching, or access the database directly:
-
-```python
-from database.operations import PromptDatabase
-
-db = PromptDatabase()
-
-# Search for landscape prompts
-results = db.search_prompts(text="landscape", limit=10)
-
-# Find highly rated prompts
-results = db.search_prompts(rating_min=4)
-
-# Search by category and tags
-results = db.search_prompts(
-    category="portraits",
-    tags=["anime", "detailed"]
-)
-
-# Get recent prompts
-recent = db.get_recent_prompts(limit=20)
-
-# Get images for a prompt
-images = db.get_prompt_images(prompt_id="123")
-```
-
-## Examples
-
-### PromptManager (CLIP Encoding) Examples
-
-#### Example 1: Basic Prompt Storage
-
-```
-Input: "A beautiful sunset over a mountain lake"
-Category: "landscapes"
-Tags: "nature, sunset, mountains, water"
-→ Outputs: CONDITIONING for sampler nodes
-```
-
-#### Example 2: Character Prompt
-
-```
-Input: "Portrait of a cyberpunk hacker with neon implants"
-Category: "characters"
-Tags: "cyberpunk, portrait, sci-fi, neon"
-→ Outputs: CONDITIONING for sampler nodes
-```
-
-### PromptManagerText (Text-Only) Examples
-
-#### Example 3: Dynamic Text Assembly
-
-```
-Main Text: "beautiful landscape"
-Prepend Text: "masterpiece, ultra detailed,"
-Append Text: ", 8k resolution, trending on artstation"
-→ Final Output: "masterpiece, ultra detailed, beautiful landscape, 8k resolution, trending on artstation"
-```
-
-#### Example 4: Text Processing Pipeline
-
-```
-Input: "A serene mountain lake at sunset"
-Category: "landscapes"
-Tags: "nature, peaceful, golden hour"
-→ Outputs: STRING for use with text processors, style nodes, or other custom nodes
-```
-
-#### Example 5: Multi-Node Text Workflow
-
-```
-PromptManagerText → Text Processor → Style Applicator → Final Text Node
-"cyberpunk city" → style processing → "neon-lit cyberpunk metropolis at night"
-```
-
-### PromptSearchList (Batch Processing) Examples
-
-#### Example 6: Batch Processing with Tags
-
-```
-Tags: "anime, detailed"
-Limit: 10
-→ Outputs: List of up to 10 prompts with both "anime" and "detailed" tags
-→ Each prompt is processed as a separate batch item
-```
-
-#### Example 7: Category-Based Batch
-
-```
-Category: "portraits"
-Min Rating: 4
-Limit: 20
-→ Outputs: List of up to 20 highly-rated portrait prompts for batch generation
-```
-
-### Traditional Examples
-
-#### Example 8: Abstract Art
-
-```
-Input: "Swirling colors in an abstract geometric pattern"
-Category: "abstract"
-Tags: "geometric, colorful, pattern, modern"
-Rating: 3 (set via web interface)
-Notes: "Good for experimental art" (set via web interface)
-```
-
-## Database Schema
-
-```sql
--- Prompts table
-CREATE TABLE prompts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    workflow_name TEXT,
-    category TEXT,
-    tags TEXT,  -- JSON array of tags
-    rating INTEGER CHECK(rating >= 1 AND rating <= 5),
-    notes TEXT,
-    hash TEXT UNIQUE  -- SHA256 hash for deduplication
-);
-
--- Generated images table
-CREATE TABLE generated_images (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    prompt_id TEXT NOT NULL,
-    image_path TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    generation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    file_size INTEGER,
-    width INTEGER,
-    height INTEGER,
-    format TEXT,
-    workflow_data TEXT,  -- JSON workflow metadata
-    prompt_metadata TEXT,  -- JSON prompt parameters
-    parameters TEXT,  -- JSON generation parameters
-    FOREIGN KEY (prompt_id) REFERENCES prompts(id)
-);
-```
-
-## Architecture
-
-### Core Components
-
-- **`prompt_manager.py`** - Main ComfyUI node implementation (CLIP encoding)
-- **`prompt_manager_text.py`** - Text-only node implementation (STRING output)
-- **`prompt_search_list.py`** - Batch search node implementation (LIST output)
-- **`database/models.py`** - Database schema and connection management
-- **`database/operations.py`** - CRUD operations and search functionality
-- **`py/api/`** - Web API route modules (prompts, images, tags, lora integration, etc.)
-- **`py/config.py`** - Configuration management
-- **`py/lora_utils.py`** - LoRA Manager integration utilities
-- **`utils/hashing.py`** - SHA256 hashing for deduplication
-- **`utils/validators.py`** - Input validation and sanitization
-- **`utils/image_monitor.py`** - Automatic image detection system
-- **`utils/prompt_tracker.py`** - Prompt execution tracking
-- **`utils/metadata_extractor.py`** - PNG metadata analysis engine
-- **`utils/logging_config.py`** - Comprehensive logging system
-- **`utils/diagnostics.py`** - System diagnostics and health checks
-- **`web/admin.html`** - Advanced admin dashboard with metadata panel
-- **`web/index.html`** - Simple web interface
-- **`web/comfy/prompt_manager.js`** - ComfyUI canvas extension (the only file ComfyUI loads)
-- **`web/js/admin.js`**, **`web/js/gallery.js`** - Dashboard and gallery JavaScript
-- **`web/js/tags-page.js`** - Tag management JavaScript
-- **`web/metadata.html`** - Standalone PNG metadata viewer
-
-### File Structure
-
-```
-ComfyUI_PromptManager/
-├── __init__.py                    # Node registration
-├── prompt_manager.py             # Main node implementation (CLIP encoding)
-├── prompt_manager_text.py        # Text-only node implementation (STRING output)
-├── prompt_search_list.py         # Batch search node implementation (LIST output)
-├── database/
-│   ├── __init__.py
-│   ├── models.py                 # Database schema
-│   └── operations.py             # Database operations
-├── py/
-│   ├── __init__.py
-│   ├── api/                      # Web API route modules
-│   ├── config.py                 # Configuration
-│   └── lora_utils.py             # LoRA Manager integration
-├── utils/
-│   ├── __init__.py
-│   ├── hashing.py               # Hashing utilities
-│   ├── validators.py            # Input validation
-│   ├── image_monitor.py         # Automatic image detection
-│   ├── prompt_tracker.py        # Prompt execution tracking
-│   ├── metadata_extractor.py    # PNG metadata analysis
-│   ├── logging_config.py        # Logging system
-│   └── diagnostics.py           # System diagnostics
-├── web/
-│   ├── admin.html               # Advanced admin dashboard
-│   ├── gallery.html             # Image gallery
-│   ├── index.html               # Simple web interface
-│   ├── metadata.html            # Standalone metadata viewer
-│   ├── comfy/
-│   │   └── prompt_manager.js    # ComfyUI canvas extension (WEB_DIRECTORY)
-│   └── js/
-│       ├── admin.js             # Dashboard JavaScript
-│       ├── gallery.js           # Gallery JavaScript
-│       └── tags-page.js         # Tag management JavaScript
-├── tests/
-│   ├── __init__.py
-│   └── test_basic.py            # Test suite
-├── requirements.txt             # Dependencies
-├── example_usage.py            # Standalone examples
-├── example_prompts.db          # Example database
-└── README.md                   # This file
-```
-
-## Configuration
-
-### Where your library lives
-
-New installs keep the library (`prompts.db`, `config.json` with the CivitAI key, the
-database backups and the logs) in ComfyUI's system user folder
-`ComfyUI/user/__promptmanager/`. An update, a reinstall or ComfyUI-Manager replacing
-the node folder no longer touches it, and ComfyUI's `/userdata` web API does not
-serve `__` system folders. Thumbnails stay in `output/thumbnails`.
-
-- **Upgrading from an earlier version:** your library stays where it is, in the node
-  folder, until you move it; nothing is moved on its own. The workspace shows a notice
-  above every page and System › Overview a "Library location" row. **Move library**
-  copies the database with SQLite's backup API, verifies the copy (integrity check, every
-  workflow document, the same rows in every table), copies `config.json` and the backups,
-  switches to the new folder without a restart and only then renames the old files
-  `prompts.db.moved-to-__promptmanager` and `config.json.moved-to-__promptmanager` (never
-  deleted; the old backups stay too). If anything fails, the library stays in the node
-  folder, unchanged. **Keep it here** stops the notice; the Overview row stays. Take a
-  backup first (System › Backup & export or the dashboard's Backup) as with any change.
-- **Your own folder:** set `PROMPT_MANAGER_DATA_DIR` to an absolute folder outside
-  ComfyUI's output, input and temp folders and your image sources. If it is empty and a
-  node-folder library exists, that library stays in use until you move it there.
-- **An explicit `database.default_path`** in `config.json` and `PROMPT_MANAGER_CONFIG_PATH`
-  keep working as before (described below); such a library is not offered a move.
-
-### Thumbnails
-
-Previews in `output/thumbnails` are written as **WebP, quality 80, 512 px** by default
-(System › Appearance › Thumbnails sets the format, quality and size limit for every
-preview). Previews from older versions keep their old format (usually PNG) until you
-run **Convert outdated** (System › Overview or Appearance): it rewrites each one from
-its original and then removes the old file. Nothing converts on its own.
-
-**JPEG XL** (smaller still) can be chosen once the server has an encoder. Install one
-of these, then restart ComfyUI:
-
-- `pip install pillow-jxl-plugin` in ComfyUI's Python environment (simplest), or
-- an `ffmpeg` on PATH built with `libjxl`, or
-- `cjxl` from [libjxl](https://github.com/libjxl/libjxl) on PATH.
-
-Browsers that cannot show JPEG XL see the original images in the grid instead.
-
-### Database Settings
-
-You can customize the database path by creating a `config.json` file in the library's
-folder (the node folder for a library that was not moved):
-
-```json
-{
-  "database": {
-    "default_path": "/path/to/your/prompts.db"
-  }
-}
-```
-
-Relative paths are resolved against the extension directory. Absolute paths are used as-is, which is recommended for Docker deployments where the working directory may not persist:
-
-```json
-{
-  "database": {
-    "default_path": "/data/custom_nodes/ComfyUI_PromptManager/prompts.db"
-  }
-}
-```
-
-### Database Path Compatibility (#211)
-
-PromptManager now honors the `database.default_path` setting in `config.json`
-when loaded as a ComfyUI custom node. Relative paths resolve against the extension
-directory, not ComfyUI's working directory; absolute paths are used as-is. Earlier
-versions could ignore this setting and use `<extension>/prompts.db` instead.
-Honoring a different configured path can therefore show an empty or different
-library. PromptManager does not automatically move or merge database files.
-
-Before upgrading or changing this setting:
-
-1. Identify the database your current installation actually uses and confirm its
-   library contents. Check both the configured path and the prior fallback
-   `<extension>/prompts.db`; keep track of which existing file you intend to use.
-2. Preserve a consistent backup of the active database with
-   System › Backup & export's Back up or SQLite's online backup API. Do not copy only
-   the main file of a live SQLite database: committed data may still be in its
-   `-wal` file. For a filesystem copy, stop ComfyUI cleanly first and preserve any
-   remaining `-wal` file together with the main database.
-3. Set `database.default_path` to the existing intended database file. An absolute
-   path makes the selection explicit; do not move or overwrite either database
-   while choosing the path.
-4. Restart ComfyUI, then verify that the expected library appears and the active
-   database path resolves to the file you selected. Keep the backup until both
-   checks succeed.
-
-### Gallery & Monitoring Settings
-
-Configure the automatic image detection and gallery system:
-
-```python
-# Gallery monitoring configuration (GalleryConfig class)
-MONITORING_ENABLED = True
-MONITORING_DIRECTORIES = []  # Auto-detect ComfyUI output if empty
-SUPPORTED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif']
-PROCESSING_DELAY = 2.0  # Delay before processing new images
-PROMPT_TIMEOUT = 120  # Seconds to keep prompt context active
-CLEANUP_INTERVAL = 300  # Seconds between cleanup of expired prompts
-
-# Performance settings
-MAX_CONCURRENT_PROCESSING = 3
-METADATA_EXTRACTION_TIMEOUT = 10  # Seconds for PNG analysis
-IMAGES_PER_PAGE = 20
-THUMBNAIL_SIZE = 256
-```
-
-### Web Interface Settings
-
-Configure the web interface behavior:
-
-```python
-# Web UI settings (PromptManagerConfig class)
-RESULT_TIMEOUT = 5  # Seconds to auto-hide results in ComfyUI node
-WEBUI_DISPLAY_MODE = 'newtab'  # 'popup' or 'newtab' for Web UI button
-INFINITE_SCROLL = False  # Dashboard list loads the next page on scroll by default
-SHOW_TEST_BUTTON = False  # Show API test button in node UI
-```
-
-All of these are editable in the dashboard Settings modal and saved to `config.json` (which is private to the installation and holds the CivitAI key, so it is never committed).
-
-### Performance Tuning
-
-- **Worker threads** (Settings → Performance): threads used by the image rescan, thumbnail generation and duplicate detection. Default is half the detected cores, maximum is the core count. Pillow releases the GIL while decoding, so the scan and thumbnails scale almost linearly; keep a few cores free while ComfyUI is generating.
-- The database automatically creates indexes for optimal search performance
-- Regular `VACUUM` operations keep the database optimized
-- Consider backing up the database periodically
-
-## Advanced Features
-
-### Export Your Prompts
-
-```python
-from database.operations import PromptDatabase
-
-db = PromptDatabase()
-
-# Export to JSON
-db.export_prompts("my_prompts.json", format="json")
-
-# Export to CSV
-db.export_prompts("my_prompts.csv", format="csv")
-```
-
-### Database Statistics
-
-```python
-info = db.model.get_database_info()
-print(f"Total prompts: {info['total_prompts']}")
-print(f"Average rating: {info['average_rating']}")
-```
-
-### Backup and Restore
-
-```python
-# Create backup
-db.model.backup_database("backup_prompts.db")
-
-# The online backup includes committed data still in the WAL.
-```
-
-## Development
-
-### Running Tests
+Install from the Comfy Registry or ComfyUI-Manager (search for Prompt Manager), or by hand:
 
 ```bash
-cd ComfyUI_PromptManager
-pip install -r requirements-dev.txt
-python -m tests.run_suite                      # Python (what CI runs: unittest discovery plus a hang watchdog)
-node --test tests/js/*.test.js                 # frontend pure modules
-python -m coverage run -m tests.run_suite && python -m coverage combine && python -m coverage report
+cd ComfyUI/custom_nodes/
+git clone https://github.com/ComfyAssets/ComfyUI_PromptManager
+pip install -r ComfyUI_PromptManager/requirements.txt
 ```
 
-CI runs the suite on Linux, Windows and macOS for Python 3.12 to 3.14 with an 85% coverage gate. `python -m unittest discover -s tests` still works; see `TESTING.md` ("Time limits and hangs") for the watchdog. Tests that delete a database file first check that nothing in the process still holds it open (`tests/open_handles.py`), so a connection leak fails on Linux the way it would on Windows.
+Restart ComfyUI. Click **PM** in the top bar, or **Web UI** on a node, or open `http://localhost:8188/prompt_manager/workspace`.
 
-### Code Style
+**Optional extras.** Nothing here is installed for you:
 
-The project follows PEP 8 guidelines with:
+| To use | You need |
+| --- | --- |
+| WD14 auto-tagging (about 400 MB per model) | `onnxruntime`, or `onnxruntime-gpu` for CUDA |
+| GGUF JoyCaption (about 4.5 GB) | `llama-cpp-python` |
+| HuggingFace JoyCaption (about 16 GB) | `transformers`, `accelerate`, `bitsandbytes` |
+| Prompts embedded in videos | `ffprobe` on PATH |
+| [LoRA Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) import | LoRA Manager installed; turn it on in System > Integrations |
 
-- Black formatter (88 character line limit)
-- Type hints for all functions
-- Comprehensive docstrings
-- Proper error handling
+Download or unload tagging models in System > Auto-tagging.
 
-### Contributing
+## Where your data lives
 
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
+| What | Where |
+| --- | --- |
+| Library (`prompts.db`), `config.json`, database backups, logs | `ComfyUI/user/__promptmanager/` on new installs |
+| Thumbnails | `output/thumbnails` |
+| Your images | Left where they are. Prompt Manager reads your output folder and any sources you add. |
 
-## Troubleshooting
+Set `PROMPT_MANAGER_DATA_DIR` to an absolute folder to keep the library somewhere else. `config.json` can hold your CivitAI key, so treat it as private.
 
-### Common Issues
+## Upgrading from an earlier version
 
-**Database Permission Errors**
+- **Python 3.12 or newer is now required.**
+- **Your library stays where it is** until you choose. The workspace offers **Move library**, which makes a verified copy in `user/__promptmanager/` and renames the old files instead of deleting them, or **Keep it here**.
+- **Older images:** a one-time notice offers a metadata scan that links them to prompts and negatives. Scans don't count as new runs.
+- **Going back isn't supported.** Workflows are now stored once, and an older version shows new records without their workflow or prompt graph. Back up first in System > Backup & export. See [the old README's changelog](README-legacy.md#changelog) for the manual way back.
 
-- Ensure the ComfyUI process has write permissions to the node directory
-- Check that the database file isn't locked by another process
+## The old pages still work
 
-**Import Errors**
+They stay at their URLs, and System's Overview section links to them:
 
-- Verify ComfyUI is properly installed
-- Check that all required dependencies are available
+| Page | URL |
+| --- | --- |
+| Dashboard | `/prompt_manager/admin` |
+| Tags | `/prompt_manager/admin#/tags` |
+| Gallery | `/prompt_manager/gallery` |
+| Metadata viewer | `/prompt_manager/gallery.html` |
 
-**Performance Issues**
+The documentation for those pages is in [README-legacy.md](README-legacy.md).
 
-- Run `VACUUM` on the database occasionally
-- Consider archiving old prompts if the database becomes very large
+## Known limits
 
-### Debug Mode
+- **Windows has no Recycle Bin option.** The bin can delete large files permanently without warning, so on Windows you can only remove an image from the library. The file stays on disk.
+- **Show in folder** opens the file manager on the machine running ComfyUI, not necessarily the one with your browser.
+- **Returned images** get their prompt links back, but not their tags, categories, collections or favorites.
+- **Inspect a file** doesn't add the file to your library.
 
-For debugging, you can enable verbose logging in the node:
+## How it's tested
 
-```python
-# Add to prompt_manager.py
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
+| Layer | What runs |
+| --- | --- |
+| Python | Over 200 test files on Linux, Windows and macOS with Python 3.12 to 3.14, with an 85% coverage gate |
+| Frontend | About 100 unit test files, with coverage floors per file |
+| Browser | Over 60 Playwright spec files in Chromium, Firefox, WebKit and touch emulation |
+| Real ComfyUI | A pinned CPU ComfyUI, started in Classic and Nodes 2.0, running real workflows |
+
+Linux runs on every pull request and in the merge queue. Windows and macOS run on every push to main and nightly. To run the tests yourself, see [TESTING.md](TESTING.md).
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Support
-
-- **Issues**: Report bugs and request features via GitHub Issues
-- **Documentation**: See the Wiki for detailed guides
-- **Community**: Join the discussion in ComfyUI Discord
-
-## Roadmap
-
-### Recently Completed
-
-- **✅ Security & Reliability Hardening (3.3.0)**: validated gallery roots, contained file serving, safe backups and restores, background scans, 85%+ test coverage on all three operating systems
-- **✅ Worker Threads**: scan, thumbnails and duplicate detection run on a configurable thread pool
-- **✅ Tag Autocomplete & Infinite Scrolling**: faster browsing in the dashboard and gallery
-- **✅ Queue-Time Run Counting (3.2.4)**: run counts and image linking follow the ComfyUI queue
-- **✅ LoRA Manager Integration**: Import LoRA metadata, trigger words, and preview images
-- **✅ Folder Filter**: Browse and filter prompts by output subdirectory
-- **✅ Multi-Directory Gallery**: Scan multiple output directories simultaneously
-- **✅ WD14 Tagger**: Fast ONNX-based auto-tagging with Danbooru tags
-- **✅ Tailwind v4 Migration**: ComfyUI theme token system for consistent styling
-- **✅ Tag Management Page**: Dedicated page for tag search, rename, merge, and delete
-- **✅ Junction Table Tags**: Normalized tag storage with proper foreign keys
-
-### Planned Features
-
-- **☁️ Cloud Sync**: Optional cloud backup and sync
-- **🤝 Collaboration**: Share prompt collections with other users
-- **🧠 AI Suggestions**: Recommend similar prompts based on metadata analysis
-- **📈 Advanced Analytics**: Detailed usage statistics and trends with workflow insights
-- **🔄 Workflow Templates**: Save and reuse common workflow patterns
-- **📊 Visual Analytics**: Charts and graphs for prompt effectiveness analysis
-
-## Changelog
-
-### Unreleased (Library location)
-
-- **📁 Library outside the node folder**: new installs keep `prompts.db`, `config.json`, the database backups and the logs in `ComfyUI/user/__promptmanager/`, where an update or reinstall of the node cannot delete them and ComfyUI's `/userdata` API does not reach. An existing library stays in the node folder until you press **Move library** (a verified copy, then a live switch; the old files are renamed `*.moved-to-__promptmanager`, never deleted) or **Keep it here**. `PROMPT_MANAGER_DATA_DIR` names your own folder. After moving, restart ComfyUI once so the logs follow. Going back to an older version after a move: an older version does not look in `user/__promptmanager`, so stop ComfyUI and copy `user/__promptmanager/prompts.db` (with its `-wal` file, if one is left) and `config.json` into the node folder; the `*.moved-to-__promptmanager` files are the library as it was at the move, without later changes.
-
-### Unreleased (Workflows stored once)
-
-- **🗜️ Smaller database**: each distinct workflow and prompt graph is stored once, compressed, instead of again for every image. Images recorded by this version use it from the first start; the maintenance job "Store each workflow once" rewrites the existing records and then reclaims the space. A 20,000-image test library went from 1.4 GB to 60 MB. The job always takes a verified backup first: the first time, `prompts.db.pre-workflow-storage_<date time>` beside the database, kept until you delete it; on later runs, a normal pooled safety backup. No image or video file is opened or changed.
-- **⚠️ Downgrading**: images recorded by this version (and, after the job, all images) are stored in the new form. An older Prompt Manager version still opens and even restores such a database, but shows those images without workflows or prompt graphs until you update again. To go back to an older version, stop ComfyUI, delete `prompts.db-wal` and `prompts.db-shm`, and copy the **earliest** `prompts.db.pre-workflow-storage_<date time>` over `prompts.db`, or, if the job never ran, a backup taken before this update (records added since that backup are lost). Otherwise stay on this version.
-
-### v3.3.1 (Proxy Routing Fix)
-
-- **🌐 Proxy support**: the dashboard, gallery, tag page and metadata viewer now work when ComfyUI is reached through a proxy mount such as SwarmUI's `/ComfyBackendDirect/`. Scripts, images, API calls, progress streams and gallery folder filters stay under the mount, and the canvas node's buttons use ComfyUI's `fileURL()`. Direct ComfyUI URLs are unchanged. Thanks to @ghosttigerllc-bit ([#164](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/164))
-- **📦 Dependencies**: the runtime minimums stay at `Pillow>=8.0.0` and `watchdog>=2.1.0`, so updating Prompt Manager never forces upgrades in the shared ComfyUI environment
-
-### v3.3.0 (Hardening, Background Jobs & Worker Threads)
-
-- **🔒 Security**: gallery roots restricted to ComfyUI directories and validated wherever they are read; media-only, fail-closed image serving; Windows path escape in static routes closed; quote-safe HTML escaping with inline handlers moved to data attributes; the CivitAI key is never returned and only sent to HTTPS CivitAI hosts; auto-tag paths contained; side-effect routes are POST-only; backups include the WAL and restores are size-capped, integrity-checked and applied through SQLite's online backup API
-- **🧵 Worker Threads**: a Settings slider (default half the cores) used by the image rescan, thumbnail generation and duplicate detection. Measured: a 1 GB sample scanned in 2.5 s instead of 18 s at 8 threads
-- **🔁 Background Jobs**: the image rescan and the duplicate scan run on the server, stream progress, survive a closed tab, minimize to a progress pill and re-attach after a reload
-- **🎬 Video Prompts**: the scan reads the prompt ComfyUI's video savers embed in MP4/MOV/WebM containers (needs `ffprobe`)
-- **🖼️ Thumbnails**: written atomically and served under versioned URLs so a regenerated thumbnail never shows a stale cached copy; the per-run cap applies only to thumbnails that still need generating and the gallery says how many remain
-- **🏷️ Tag Autocomplete**: the dashboard tag box suggests tags, narrowed to those that co-occur with the tags already typed
-- **♾️ Infinite Scrolling**: optional in the gallery and the dashboard list (saved default plus a session toggle)
-- **⚙️ Gallery Settings** now apply at load; grid columns, media info and the Rescan button work as labelled
-- **🐛 Correctness**: run counts increment when ComfyUI dequeues a prompt; negative prompts are never traced; per-thread SQLite connections and idempotent migrations (an old rebuild could delete every image row); `truncate_logs` no longer rolls the log over; the ComfyUI canvas loads only the canvas extension; Windows console banners are ASCII-safe; subfolders use `/` on every platform
-- **🧪 Tests & CI**: 1,460 Python and 142 JavaScript tests (from 510 and 26), coverage 96% with an 85% gate, CI on Linux, Windows and macOS for Python 3.10–3.12, flake8 clean
-- **⚠️ API changes**: image paths in responses are relative to the ComfyUI tree (use `url`); `autotag/download`, `autotag/start` and the thumbnail progress stream are POST-only; `lora/status` returns `has_civitai_api_key` instead of the key; `/search` is paginated
-
-### v3.2.4 (Recently Used Sorting & Queue-Time Run Counts)
-
-- **🕒 Recently Used Sort**: sort the dashboard by last use, most used or rating, server-side across pages
-- **🔢 Run Counts**: `run_count` and `last_used_at` are recorded through the ComfyUI queue hook, so cached nodes still count
-- **🔗 Positive-Prompt Image Linking**: generated images link to the positive prompt traced through the queued graph
-
-### v3.2.1 (LoRA Manager Integration)
-
-- **🔗 LoRA Manager Integration**: Import LoRA metadata, trigger words, and CivitAI example images from [ComfyUI-Lora-Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) into your prompt database
-- **💉 Auto-Inject Trigger Words**: Optionally append LoRA trigger words when `<lora:name:weight>` is detected in prompts during encoding
-- **🔑 CivitAI API Key Support**: Authenticate with CivitAI to download NSFW preview images
-- **📥 Import Progress Modal**: Real-time SSE streaming progress during LoRA import with per-model status
-
-> **Note:** LoRA Manager support is a WIP — this was a highly requested feature. Please [open issues](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues) for any bugs or feature requests.
-
-### v3.2.0 (Folder Filter & QoL Improvements)
-
-- **📁 Folder Filter**: New folder dropdown in the search panel to filter prompts by output subdirectory
-- **📂 Multi-Directory Gallery Scan**: Configure multiple output directories and browse them all in one gallery
-- **🖼️ Filmstrip Prompt Display**: Show prompt text and copy button in the filmstrip image viewer
-- **🖱️ Click-to-Close Viewer**: Click outside the image viewer to close it
-- **🐛 Bug Fixes**: Fixed database path config, UnboundLocalError in text inputs, node caching skip, diagnostics singleton lifecycle
-
-### v3.1.0 (WD14 Tagger, Tailwind v4 & Major Refactors)
-
-- **🏷️ WD14 Tagger Support**: Added WD14 SwinV2 and WD14 ViT as new auto-tag model options — fast ONNX-based classifiers (~400MB) that output Danbooru tags with confidence scores, no prompt needed
-- **🎚️ Threshold Controls**: Adjustable general tag (default 0.35) and character tag (default 0.85) confidence thresholds for WD14 models via UI sliders
-- **🎨 Tailwind v4 Migration**: Complete frontend redesign with ComfyUI theme token system (`--pm-*` design tokens) that adapts to ComfyUI's color palette
-- **🏗️ API Refactor**: Split monolithic `api.py` into domain-specific route modules for better maintainability
-- **🗃️ Junction Table Tags**: Migrated tag storage from JSON column to normalized junction tables with proper foreign keys
-- **📄 Tags Page**: Dedicated tag management page with search, rename, merge, and delete operations
-- **🔍 Load More Button**: Progressive prompt loading instead of traditional pagination
-- **🔒 Security Hardening**: Resolved 15 GitHub code scanning alerts, prevented stack trace exposure in SSE errors
-- **🧪 Test Coverage**: Added comprehensive unit tests for validators, hashing, metadata, config, and prompt tracker; API integration tests; database tests with CI pipeline
-- **⚙️ CI/CD Improvements**: Added code quality scanning, security scanning, Dependabot, and pre-commit hooks with Black formatting
-- **🐛 Bug Fixes**: Fixed custom image scan directory config (#108), gallery crash on thumbnail linking, broken imports after API refactor, widget value sync issues, and prepend/append metadata tag filtering in auto-tagger
-
-### v3.0.26 (Top Bar Button)
-
-- **🔘 Top Bar PM Button**: Added a "PM" button to the ComfyUI top bar for quick access to the admin dashboard
-- **🚀 No Node Required**: Open PromptManager without having to add the node to your workflow first
-- **🎨 Teal Button Design**: Distinctive teal-colored button positioned before the settings gear
-- **🔄 Frontend Compatibility**: Works with both new ComfyUI frontend (v1.3.1+) and legacy versions
-
-### v3.0.25 (Film Strip & QoL Improvements)
-
-- **🎞️ Film Strip Preview**: Backported from V2 - thumbnail strip under each prompt showing linked images
-- **🖼️ Quick Image Viewer**: Click any filmstrip thumbnail to open full-size image viewer
-- **📸 Smart Thumbnails**: Automatically uses generated thumbnails for faster loading, falls back to full images
-- **⬆️ Auto-Scroll on Pagination**: Page navigation now smoothly scrolls to top after loading
-
-### v3.0.24 (Manual Prompt Creation)
-
-- **➕ Add Prompt Button**: New "Add Prompt" button in the admin dashboard Bulk Actions bar
-- **📝 Direct Prompt Creation**: Create prompts directly from the UI without generating images
-- **🛡️ Protection from Pruning**: New prompts are automatically protected from orphan cleanup by default
-- **🏷️ Full Metadata Support**: Set category, tags, rating, and notes when creating prompts
-- **🔒 Orphan Protection Toggle**: Option to protect or unprotect prompts from maintenance cleanup
-
-### v3.0.23 (AI AutoTag Release)
-
-- **🏷️ AI AutoTag**: Automatically tag your entire image collection using JoyCaption vision models
-- **🤖 Dual Model Support**: Choose between JoyCaption Beta One FP16 (high quality) or GGUF FP8 (lower VRAM)
-- **📋 Two Tagging Modes**: Batch mode for bulk tagging, Review mode for one-by-one approval
-- **⚙️ Smart Tag Handling**: Skip already-tagged images or re-tag all - respects your existing work
-- **✏️ Customizable Prompts**: Adjust the system prompt to match your collection style and tag vocabulary
-- **🔄 Real-time Progress**: SSE-based streaming progress updates during batch operations
-- **📦 Tag Accordion UI**: Collapsible tag display shows first row with expandable section for large tag sets
-- **🎯 Review Confirmation**: Prompts before overwriting existing tags in review mode
-
-### v3.0.10 (Batch Processing Node)
-
-- **📋 PromptSearchList Node**: New node that searches the prompt database and outputs results as a list
-- **🔗 Batch Processing Support**: Uses `OUTPUT_IS_LIST` for native ComfyUI batch processing compatibility
-- **🔍 Full Search Capabilities**: Search by text, category, tags, minimum rating, and result limit
-- **⚡ Lightweight Operation**: Read-only search with no database writes
-- **🎯 Workflow Integration**: Connect directly to batch processing nodes like String OutputList
-
-### v3.0.9 (Output-Wide Gallery & Video Support)
-
-- **📁 Output-Wide Gallery Mode**: Complete gallery redesign to show ALL content from ComfyUI output directory
-- **🎬 Full Video Support**: Native video playback with HTML5 player for .mp4, .webm, .avi, .mov, .mkv, .m4v, .wmv formats
-- **🖼️ Video Thumbnail Generation**: Automatic video thumbnails using OpenCV, ffmpeg, or placeholder fallback
-- **⚙️ Video Settings Panel**: Configurable autoplay, mute, and loop settings with persistent preferences
-- **🎮 Video Navigation**: Seamless navigation between videos with keyboard shortcuts and custom controls
-- **📊 Video Metadata Display**: Show duration, resolution, aspect ratio, and detailed file information
-- **🔄 Mixed Media Integration**: Videos and images seamlessly integrated in the same gallery interface
-- **⚡ Enhanced Performance**: Optimized thumbnail generation for both images and videos
-- **🎛️ Advanced Gallery Settings**: Comprehensive settings panel with video controls and performance options
-- **🖱️ Improved Click Handling**: Fixed thumbnail failures to preserve click functionality
-- **📱 Mobile Compatibility**: Enhanced responsive design for video playback on all devices
-
-### v3.0.5 (Text-Only Node Release)
-
-- **📝 PromptManagerText Node**: New text-only variant that outputs STRING instead of CONDITIONING
-- **🔗 Text Concatenation**: Built-in prepend/append functionality for dynamic text assembly
-- **⚡ Lightweight Processing**: No CLIP encoding overhead for pure text workflows
-- **🔄 Dual Node Architecture**: Choose between CLIP encoding (PromptManager) or text-only (PromptManagerText)
-- **🏷️ Shared Metadata System**: Both nodes use the same database and metadata features
-- **🖼️ Unified Gallery**: Images from both node types appear in the same gallery system
-- **📊 Enhanced Tracking**: Improved prompt tracking with prepend/append context preservation
-- **📊 Enhanced Tracking**: Improved prompt tracking with prepend/append context preservation
-
-### v3.0.3 (ViewerJS Integration & Enhanced Gallery)
-
-- **🖼️ Professional Image Viewer**: Complete gallery redesign with [ViewerJS](https://github.com/fengyuanchen/viewerjs) integration
-- **⚡ Advanced Image Navigation**: Zoom, rotation, slideshow, and professional viewing controls
-- **🎨 Dark Theme Integration**: Seamless ViewerJS styling that matches the admin interface
-- **🔬 Enhanced Metadata Parsing**: Improved ComfyUI workflow parameter extraction with targeted parsing
-- **📊 Real-time Parameter Display**: Live CFG, steps, sampler, and seed extraction from workflow nodes
-- **📋 Integrated Copy Functionality**: One-click copying of prompts and generation parameters
-- **🛠️ Robust Value Detection**: Smart parsing that targets specific node types and validates parameters
-- **⌨️ Keyboard Navigation**: Full keyboard support for gallery navigation and viewer controls
-- **📱 Responsive Design**: Enhanced mobile and tablet compatibility
-
-### v3.0.0 (Metadata Analysis Release)
-
-- **🔬 PNG Metadata Analysis**: Advanced ComfyUI workflow extraction from PNG images
-- **📋 Standalone Metadata Viewer**: Dedicated tool at `/web/metadata.html` for analyzing any ComfyUI image
-- **🖼️ Integrated Metadata Panel**: Real-time workflow analysis in the image viewer
-- **📸 Bulk Image Scanning**: Mass import and analysis of existing ComfyUI output directories
-- **🛠️ System Management Suite**: Complete backup, restore, maintenance, and diagnostic tools
-- **🚮 Orphaned Prompt Cleanup**: Remove prompts that have no linked images for database optimization
-- **📋 Advanced Logging**: Comprehensive logging system with web-based log viewer
-- **🎨 Enhanced Admin Dashboard**: Modern dark theme with improved UX and management tools
-- **🔧 Robust Error Handling**: Advanced PNG parsing with NaN value cleaning and error recovery
-- **📁 File Path Integration**: Direct file path display and system integration
-- **⚡ Performance Optimizations**: Improved metadata extraction and database operations
-
-### v2.0.0 (Gallery Release)
-
-- **🖼️ Automatic Image Gallery**: Complete image tracking and gallery system
-- **🌐 Advanced Web Interface**: Comprehensive admin dashboard with responsive design
-- **📱 Image Viewer**: Full-screen modal with navigation and keyboard shortcuts
-- **🔍 Enhanced Search**: Real-time search with advanced filtering options
-- **⚡ Performance Improvements**: Optimized database operations
-- **🛠️ Basic Diagnostics**: Initial system diagnostics and health monitoring
-- **📊 Bulk Operations**: Multi-select prompt editing and management
-
-### v1.0.0 (Initial Release)
-
-- Core text encoding with database storage
-- Search and filtering functionality
-- Metadata support (categories, tags, ratings, notes)
-- Hash-based deduplication
-- SQLite backend with optimized schema
-- Basic web interface
-- Export functionality
+MIT. See [LICENSE](LICENSE).
