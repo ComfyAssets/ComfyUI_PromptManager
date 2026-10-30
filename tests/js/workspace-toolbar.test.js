@@ -859,6 +859,42 @@ test('backupNotice is the concept .notice with its copy and one Back up now acti
     }
 });
 
+test('openReviewDialog replaces its rows and its primary in place (#482)', async () => {
+    const { openReviewDialog, closeWorkspaceDialog } = await dialogsModule;
+    const { createScope } = await coreModule;
+    const dom = fakeDOM();
+    const scope = createScope();
+    try {
+        const started = [];
+        const review = openReviewDialog({ scope, title: 'Delete or archive', grid: [['Archive', '2 prompts']],
+            cancelLabel: 'Cancel', primary: { label: 'Archive 2 prompts', danger: true }, onStart: () => started.push('start') });
+        review.setRows([['Delete permanently', '2 prompts'], ['Saved pairs removed', '3 saved pairs']]);
+        const grid = byId(dom, 'modal-body').children[0];
+        assert.deepEqual(grid.children.map(entry => [entry.children[0].textContent, entry.children[1].textContent]),
+            [['Delete permanently', '2 prompts'], ['Saved pairs removed', '3 saved pairs']]);
+        // setValue reaches the new rows only.
+        review.setValue('Saved pairs removed', '4 saved pairs');
+        review.setValue('Archive', 'x');
+        assert.equal(grid.children[1].children[1].textContent, '4 saved pairs');
+        const start = button(byId(dom, 'modal-body'), 'Archive 2 prompts');
+        review.setPrimary({ label: 'Delete 2 prompts', disabled: true });
+        assert.equal(start.textContent, 'Delete 2 prompts');
+        assert.equal(start.getAttribute('aria-disabled'), 'true');
+        start.click();
+        assert.deepEqual(started, []);
+        assert.equal(modal(dom).open, true);
+        review.setPrimary({ label: 'Delete 2 prompts', disabled: false });
+        assert.equal(start.getAttribute('aria-disabled'), 'false');
+        start.click();
+        assert.deepEqual(started, ['start']);
+        assert.throws(() => review.setRows([['only a term']]), TypeError);
+    } finally {
+        scope.dispose();
+        closeWorkspaceDialog();
+        dom.restore();
+    }
+});
+
 test('openReviewDialog lays out heading, grid, options, sentence, backup box and actions', async () => {
     const { openReviewDialog, closeWorkspaceDialog } = await dialogsModule;
     const { createScope } = await coreModule;

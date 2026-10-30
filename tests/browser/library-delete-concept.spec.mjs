@@ -88,7 +88,8 @@ function mapDeleteConcept({ danger, review }) {
     return {
         ...review,
         title: 'Delete or archive selected prompts',
-        tree: ['dl.meta-grid', 'p.small', 'p.small', 'div.dialog-actions'],
+        // #482: the paired prompt is deletable, so the review asks Archive or Delete permanently (a D90 radio row).
+        tree: ['dl.meta-grid', 'div.field', 'p.small', 'p.small', 'div.dialog-actions'],
         grid: { ...review.grid, rows: [['Delete permanently', '1 prompt not in a saved pair'],
             ['Archive', '1 prompt in a saved pair: hidden, restorable'],
             ['Image links removed', '0 images will no longer show these prompts (files stay on disk)'],

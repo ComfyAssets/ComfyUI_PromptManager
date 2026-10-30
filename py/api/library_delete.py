@@ -47,6 +47,8 @@ RESTORE_URL = "/prompt_manager/library/restore"
 DELETE_TITLE = "Delete prompts (Library)"
 _SELECTION_KEYS = frozenset({"prompt_ids", "expected_epoch"})
 _DELETE_KEYS = frozenset({"archive_ids", "delete_ids", "expected_epoch", "backup"})
+# #482: Delete permanently, with its digests; both or neither (a #443 body).
+_PAIRED_KEYS = frozenset({"delete_paired_ids", "paired_digests"})
 STORAGE_CHANGED = "Prompt storage was restored; refresh the library"
 
 
@@ -64,17 +66,37 @@ def _storage_changed(exc):
     return _failure(409, exc.code, STORAGE_CHANGED, library_epoch=exc.epoch)
 
 
-async def _body(request, keys):
-    """The JSON object with exactly ``keys``, or raise ValueError."""
+async def _body(request, keys, optional=frozenset()):
+    """The JSON object with exactly ``keys`` (plus all or none of ``optional``)."""
     try:
         data = await request.json()
     except ValueError:
         raise ValueError("Expected a JSON object") from None
     if not isinstance(data, dict):
         raise ValueError("Expected a JSON object")
-    if set(data) != keys:
+    extra = set(data) - keys
+    if not keys <= set(data) or (extra and extra != optional):
         raise ValueError("Request must contain exactly " + ", ".join(sorted(keys)))
     return data
+
+
+def _paired_delete(data, archive_ids):
+    """#482: the reviewed archive ids to delete with their pairs -> digest."""
+    if "delete_paired_ids" not in data:
+        return {}
+    ids = _reviewed_ids(data["delete_paired_ids"], "delete_paired_ids")
+    digests = data["paired_digests"]
+    if not isinstance(digests, dict):
+        raise ValueError("paired_digests must map prompt ids to digests")
+    if not set(ids) <= set(archive_ids):
+        raise ValueError("delete_paired_ids must be reviewed archive ids")
+    chosen = {}
+    for pid in ids:
+        digest = digests.get(str(pid))
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ValueError("Every delete_paired_ids entry needs its review digest")
+        chosen[pid] = digest
+    return chosen
 
 
 def _reviewed_ids(value, name):
@@ -111,7 +133,7 @@ class LibraryDeleteRoutesMixin:
                     expected_epoch=data["expected_epoch"],
                 )
                 disk = None
-                if review["delete"] and policy == "on":
+                if (review["delete"] or review["deletable"]) and policy == "on":
                     public, short, _size = await self._run_in_executor(
                         _maintenance.disk_plan,
                         db.model.db_path,
@@ -145,6 +167,13 @@ class LibraryDeleteRoutesMixin:
                 "already_archived": len(review["already_archived"]),
                 "not_found": len(review["not_found"]),
                 "image_links": review["image_links"],
+                # #482: the archive ids Delete permanently may delete with pairs.
+                "deletable": review["deletable"],
+                "review_digests": {
+                    str(pid): digest for pid, digest in review["review_digests"].items()
+                },
+                "paired_counts": review["paired_counts"],
+                "paired_image_links": review["paired_image_links"],
                 "backup": policy,
                 "disk": disk,
             }
@@ -152,7 +181,7 @@ class LibraryDeleteRoutesMixin:
 
     async def delete_library_prompts(self, request):
         try:
-            data = await _body(request, _DELETE_KEYS)
+            data = await _body(request, _DELETE_KEYS, _PAIRED_KEYS)
             archive_ids = _reviewed_ids(data["archive_ids"], "archive_ids")
             delete_ids = _reviewed_ids(data["delete_ids"], "delete_ids")
             if not archive_ids and not delete_ids:
@@ -163,6 +192,7 @@ class LibraryDeleteRoutesMixin:
                 raise ValueError("A prompt cannot be both archived and deleted")
             if data["backup"] not in ("on", "off"):
                 raise ValueError("backup must be on or off")
+            paired = _paired_delete(data, archive_ids)
         except ValueError as exc:
             return _invalid(str(exc))
         busy = self._jobs.blocker(PROMPT_DELETE_JOB_KIND, admission="records")
@@ -173,7 +203,7 @@ class LibraryDeleteRoutesMixin:
                 PROMPT_DELETE_JOB_KIND, DELETE_TITLE, admission="records"
             ) as job:
                 response = await self._held_library_delete(
-                    self.db, data, archive_ids, delete_ids
+                    self.db, data, archive_ids, delete_ids, paired
                 )
                 if response.status >= 400:
                     job.finish("failed")
@@ -181,18 +211,21 @@ class LibraryDeleteRoutesMixin:
         except JobBusy as busy:
             return busy_response(busy)
 
-    async def _held_library_delete(self, db, data, archive_ids, delete_ids):
+    async def _held_library_delete(self, db, data, archive_ids, delete_ids, paired):
         epoch = data["expected_epoch"]
         promised = data["backup"] == "on" or self._safety_backup_policy() == "on"
         backup = None
         try:
             candidates = None
-            if delete_ids:
+            if delete_ids or paired:
                 review = await self._run_in_executor(
-                    db.classify_library_delete, delete_ids, expected_epoch=epoch
+                    db.classify_library_delete,
+                    [*delete_ids, *paired],
+                    expected_epoch=epoch,
                 )
                 candidates = review["fingerprints"]
-                if candidates and promised:
+                # #482: a permanent delete of a prompt in a saved pair is backed up too.
+                if (candidates or review["deletable"]) and promised:
                     _disk, short, _size = await self._run_in_executor(
                         _maintenance.disk_plan,
                         db.model.db_path,
@@ -214,6 +247,7 @@ class LibraryDeleteRoutesMixin:
                 delete_ids,
                 expected_epoch=epoch,
                 candidates=candidates if candidates is not None else {},
+                delete_paired=paired,
             )
         except LibraryCommandError as exc:
             return _storage_changed(exc)

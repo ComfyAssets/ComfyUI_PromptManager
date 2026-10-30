@@ -194,12 +194,15 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
         const more=createButton('Load more prompts');const retry=createButton('Retry prompt library');retry.hidden=true;
         const actions=headingActions(main,section);
         const exportButton=createButton('Export');exportButton.setAttribute('aria-label','Export full Library JSON');
-        // #443 D152: the shelf's counterpart of Negative variants' Show archived (#235); N follows the filters.
-        const showArchived=createButton('Show archived prompts');showArchived.setAttribute('aria-pressed',String(filters.shelf==='archived'));
+        // #443 D152: the shelf's counterpart of Negative variants' Show archived (#235); N follows the filters. #482: on
+        // the archived shelf it reads the concept's own way back ("← Prompt library", app.js 594); a plain button whose
+        // label names where it goes, so it carries no pressed state its changing label would contradict.
+        const BACK_TO_LIBRARY='← Prompt library';
+        const showArchived=createButton(filters.shelf==='archived'?BACK_TO_LIBRARY:'Show archived prompts');
         const newPrompt=createButton('+ New prompt','ca-primary');actions.append(showArchived,exportButton,newPrompt);
         scope.listen(showArchived,'click',()=>{
             if(selection.writing()) return;
-            filters.shelf=filters.shelf==='archived'?'active':'archived';showArchived.setAttribute('aria-pressed',String(filters.shelf==='archived'));
+            filters.shelf=filters.shelf==='archived'?'active':'archived';
             reset();selection.shelfChanged();
         });
         const exportStatus=el('p','','library-options-status');exportStatus.hidden=true;exportStatus.setAttribute('role','alert');
@@ -408,7 +411,8 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,on
                     :`${countOf(next.total,'positive prompt')} · ${countOf(next.variantTotal,'negative variant')}`;
                 if(captionCount.textContent!==count) captionCount.textContent=count;caption.hidden=false;
             }
-            const archivedLabel=next.archivedTotal===null?'Show archived prompts':`Show archived prompts (${next.archivedTotal.toLocaleString('en-US')})`;
+            const archivedLabel=filters.shelf==='archived'?BACK_TO_LIBRARY
+                :next.archivedTotal===null?'Show archived prompts':`Show archived prompts (${next.archivedTotal.toLocaleString('en-US')})`;
             if(showArchived.textContent!==archivedLabel) showArchived.textContent=archivedLabel;
             const filtered=Boolean(filters.text || filters.category || filters.tags.length || filters.folder || filters.tagMode!=='all');
             const empty=filters.shelf==='archived'?(filtered?'No archived prompts match.':'No archived prompts.'):'No matching prompts. Try changing the filters.';

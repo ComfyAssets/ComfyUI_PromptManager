@@ -91,10 +91,10 @@ test('a delete outcome counts each part, singular and plural, and names the back
         toast: 'Deleted 2 prompts. Archived 3 prompts. 1 protected prompt was kept. Safety backup saved: prompts.db.backup_x (System › Backup & export).'});
     assert.equal(deleteOutcome({success: true, deleted: 1, archived: 0, already_archived: 1, not_found: 1, changed: 1,
         backup: null}, null, reviewOf(preview())).toast,
-    'Deleted 1 prompt. 1 was already archived. 1 no longer exists. 1 changed since the review and was kept.');
+    'Deleted 1 prompt. 1 was already archived. 1 no longer exists. 1 changed since the review and was not deleted.');
     assert.equal(deleteOutcome({success: true, deleted: 0, archived: 0, already_archived: 2, not_found: 3, changed: 2,
         backup: null}, null, reviewOf(preview({protected: [1, 2]}))).toast,
-    'Nothing was deleted or archived. 2 were already archived. 3 no longer exist. 2 changed since the review and were kept. 2 protected prompts were kept. The Library was reloaded.');
+    'Nothing was deleted or archived. 2 were already archived. 3 no longer exist. 2 changed since the review and were not deleted. 2 protected prompts were kept. The Library was reloaded.');
     assert.equal(deleteOutcome({success: true, deleted: 0, archived: 0}, null, reviewOf(preview())).committed, false);
 });
 
@@ -134,7 +134,8 @@ test('reviewOf keeps only well-formed ids and counts from an answer', async () =
     const review = reviewOf({library_epoch: 3, delete: [1, 'x', -2, 2], archive: null, protected: [1.5], already_archived: -1,
         not_found: 'x', image_links: 2, backup: 'maybe'});
     assert.deepEqual(review, {epoch: null, delete: [1, 2], archive: [], protected: [], alreadyArchived: 0, notFound: 0,
-        imageLinks: 2, backup: 'on', disk: null});
+        imageLinks: 2, backup: 'on', disk: null, deletable: [], digests: {},
+        pairedCounts: {pairs: 0, archivedPairs: 0, variants: 0, keptNegatives: 0}, pairedImageLinks: 0, choice: 'archive'});
 });
 
 test('the archived notice says why (the saved pair) and names negative variants only when there are any', async () => {
@@ -147,4 +148,84 @@ test('the archived notice says why (the saved pair) and names negative variants 
         'are hidden from the Prompt library; nothing was removed.');
     // An unknown count (an older server) never claims variants.
     assert.equal(archivedNoticeText(undefined), archivedNoticeText(0));
+});
+
+// #482 (D160): prompts in a saved pair can be deleted permanently, with their own saved pairs.
+const D1 = 'a'.repeat(64), D2 = 'b'.repeat(64);
+const paired = (patch = {}) => preview({archive: [3, 4, 5], deletable: [3, 4], review_digests: {3: D1, 4: D2},
+    paired_counts: {pairs: 3, archived_pairs: 1, variants: 2, kept_negatives: 2}, paired_image_links: 4, ...patch});
+
+test('reviewOf reads the deletable ids, their digests and the pair counts; the choice starts at Archive', async () => {
+    const {reviewOf, hasPairedChoice} = await source;
+    const review = reviewOf(paired({deletable: [3, 4, 99], review_digests: {3: D1, 4: 'short', 99: D1}}));
+    // Only reviewed archive ids with a well-formed digest can be deleted permanently.
+    assert.deepEqual(review.deletable, [3]);
+    assert.deepEqual(review.digests, {3: D1});
+    assert.deepEqual(review.pairedCounts, {pairs: 3, archivedPairs: 1, variants: 2, keptNegatives: 2});
+    assert.equal(review.pairedImageLinks, 4);
+    assert.equal(review.choice, 'archive');
+    assert.equal(hasPairedChoice(review), true);
+    assert.equal(hasPairedChoice(reviewOf(preview({archive: [5]}))), false);
+});
+
+test('Archive chosen keeps the #443 review; Delete permanently names the pairs, the kept negatives and archive-only', async () => {
+    const {reviewOf, withChoice, reviewGrid, reviewTitle, primaryLabel, deleteBody} = await source;
+    const review = reviewOf(paired({delete: [1], image_links: 2}));
+    assert.deepEqual(reviewGrid(review).map(([term]) => term), ['Delete permanently', 'Archive', 'Image links removed', 'Backup']);
+    assert.equal(primaryLabel(review), 'Delete 1 and archive 3 prompts');
+    assert.deepEqual(deleteBody(review), {archive_ids: [3, 4, 5], delete_ids: [1], expected_epoch: 'e', backup: 'on'});
+    const permanent = withChoice(review, 'delete');
+    assert.notEqual(permanent, review);
+    assert.equal(review.choice, 'archive');
+    assert.deepEqual(reviewGrid(permanent), [
+        ['Delete permanently', '3 prompts: 1 not in a saved pair, 2 in a saved pair'],
+        ['Saved pairs removed', '3 saved pairs (2 with a negative prompt, 1 archived)'],
+        ['Negatives kept', '2 negative prompts are kept'],
+        ['Archive', '1 prompt used as another prompt\'s negative: hidden, restorable'],
+        ['Image links removed', '6 images will no longer show these prompts (files stay on disk)'],
+        ['Backup', 'Create and verify before deleting'],
+    ]);
+    assert.equal(reviewTitle(permanent), 'Delete or archive selected prompts');
+    assert.equal(primaryLabel(permanent), 'Delete 3 and archive 1 prompt');
+    assert.deepEqual(deleteBody(permanent), {archive_ids: [3, 4, 5], delete_ids: [1], expected_epoch: 'e', backup: 'on',
+        delete_paired_ids: [3, 4], paired_digests: {3: D1, 4: D2}});
+});
+
+test('edge counts: one prompt, no negative, nothing archive-only', async () => {
+    const {reviewOf, withChoice, reviewGrid, reviewTitle, primaryLabel} = await source;
+    // Live prompt 7896: one pair with an explicitly empty negative.
+    const one = withChoice(reviewOf(preview({archive: [7], deletable: [7], review_digests: {7: D1},
+        paired_counts: {pairs: 1, archived_pairs: 0, variants: 0, kept_negatives: 0}, paired_image_links: 0})), 'delete');
+    assert.deepEqual(reviewGrid(one), [
+        ['Delete permanently', '1 prompt in a saved pair'],
+        ['Saved pairs removed', '1 saved pair'],
+        ['Image links removed', '0 images will no longer show these prompts (files stay on disk)'],
+        ['Backup', 'Create and verify before deleting'],
+    ]);
+    assert.equal(reviewTitle(one), 'Delete selected prompts');
+    assert.equal(primaryLabel(one), 'Delete 1 prompt');
+});
+
+test('Delete permanently sentences: what goes with the pairs, what stays, and how it comes back', async () => {
+    const {reviewOf, withChoice, reviewSentences} = await source;
+    const [pairs, remove, archive] = reviewSentences(withChoice(reviewOf(paired()), 'delete'));
+    assert.equal(pairs, 'Deleting a prompt in a saved pair also removes its saved pairs, with their titles, categories, ' +
+        'ratings, notes, tags, run counts and image links. Their negative prompts are kept. Recorded runs stay in History ' +
+        'and Activity, listed by their text.');
+    assert.match(remove, /the only way back is to restore the safety backup/);
+    assert.match(remove, /A pair node run with the same text saves a new pair\.$/);
+    assert.equal(archive, 'Prompts used as another prompt\'s negative are archived instead of deleted, so that ' +
+        'prompt\'s variant stays.');
+    const [, off] = reviewSentences(withChoice(reviewOf(paired({backup: 'off'})), 'delete'));
+    assert.match(off, /Deleted prompts cannot be brought back\./);
+});
+
+test('a short disk blocks only the permanent delete; the outcome names removed pairs', async () => {
+    const {reviewOf, withChoice, blockedReason, deleteOutcome} = await source;
+    const short = reviewOf(paired({disk: {sufficient: false, message: 'Not enough space. Nothing was changed.'}}));
+    assert.equal(blockedReason(short), null);
+    assert.equal(blockedReason(withChoice(short, 'delete')), 'Not enough space. Nothing was changed.');
+    const {toast} = deleteOutcome({success: true, deleted: 2, archived: 1, pairs_removed: 3, changed: 1}, null, short);
+    assert.equal(toast, 'Deleted 2 prompts. Removed 3 saved pairs. Archived 1 prompt. 1 changed since the review and ' +
+        'was not deleted.');
 });

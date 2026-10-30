@@ -491,13 +491,17 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
     if (heading) nodes.push(el('h3', heading));
     const list = el('dl', undefined, 'meta-grid');
     const values = new Map();
-    for (const [term, value] of grid) {
-        const entry = el('div');
-        const dd = el('dd', value);
-        values.set(term, dd);
-        entry.append(el('dt', term), dd);
-        list.append(entry);
-    }
+    const fill = rows => {
+        values.clear();
+        list.replaceChildren(...rows.map(([term, value]) => {
+            const entry = el('div');
+            const dd = el('dd', value);
+            values.set(term, dd);
+            entry.append(el('dt', term), dd);
+            return entry;
+        }));
+    };
+    fill(grid);
     nodes.push(list, ...options);
     if (sentence) nodes.push(el('p', sentence, 'small'));
     if (backup) nodes.push(backupNotice(backup));
@@ -506,6 +510,7 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
     let started = false;
     cancel.addEventListener('click', () => finish());
     start.addEventListener('click', () => {
+        if (start.getAttribute('aria-disabled') === 'true') return;
         started = true;
         finish();
         onStart();
@@ -523,6 +528,17 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
         setTitle(term, text) {
             const dd = values.get(term);
             if (dd) dd.title = text;
+        },
+        /** #482: the rows a choice in the review changes (`[term, value]` pairs, as `grid`). */
+        setRows(rows) {
+            requireGrid(rows);
+            fill(rows);
+        },
+        /** #482: the primary's label, and whether it can start (an unavailable start stays in place, aria-disabled). */
+        setPrimary({ label, disabled = false }) {
+            if (typeof label !== 'string' || !label) throw new TypeError('The review needs its label');
+            start.textContent = label;
+            start.setAttribute('aria-disabled', String(Boolean(disabled)));
         },
     };
 }

@@ -13,6 +13,9 @@ and delete lists, and deletes only reviewed deletes the route backed up
 (``candidates``) whose fingerprint is unchanged since that backup.
 """
 
+import hashlib
+import json
+import re
 import sqlite3
 from typing import Iterable
 
@@ -39,8 +42,15 @@ _PAIRED = (
     "EXISTS(SELECT 1 FROM prompt_pairs pp "
     "WHERE pp.positive_prompt_id=p.id OR pp.negative_prompt_id=p.id)"
 )
+# #482: used as the negative of another positive's pair (archived or not):
+# never deleted, so that positive's variant stays (archive only).
+_NEGATIVE_OF_OTHER = (
+    "EXISTS(SELECT 1 FROM prompt_pairs op "
+    "WHERE op.negative_prompt_id=p.id AND op.positive_prompt_id!=p.id)"
+)
 # Classes in the order a prompt is tested; the first that holds wins.
 CLASSES = ("not_found", "protected", "already_archived", "archive", "delete")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _batches(ids: list) -> Iterable[list]:
@@ -78,24 +88,31 @@ class LibraryArchiveOperations:
     def _classify_library_delete(
         self, conn: sqlite3.Connection, prompt_ids: list[int]
     ) -> dict:
-        found = {}
+        found, deletable = {}, set()
         for chunk in _batches(prompt_ids):
             marks = ",".join("?" for _ in chunk)
             for row in conn.execute(
-                f"SELECT p.id,{_PROTECTED},{_ARCHIVED},{_PAIRED} "  # nosec B608
+                f"SELECT p.id,{_PROTECTED},{_ARCHIVED},{_PAIRED},"  # nosec B608
+                f"{_NEGATIVE_OF_OTHER} "
                 f"FROM prompts p WHERE p.id IN ({marks}) AND {_ELIGIBLE}",
                 chunk,
             ):
-                protected, archived, paired = row[1], row[2], row[3]
+                protected, archived, paired, negative_of_other = row[1:5]
                 if protected:
                     found[row[0]] = "protected"
                 elif archived:
                     found[row[0]] = "already_archived"
+                elif paired:
+                    found[row[0]] = "archive"
+                    if not negative_of_other:
+                        deletable.add(row[0])
                 else:
-                    found[row[0]] = "archive" if paired else "delete"
+                    found[row[0]] = "delete"
         classes = {name: [] for name in CLASSES}
         for pid in prompt_ids:
             classes[found.get(pid, "not_found")].append(pid)
+        # #482: the archive ids Delete permanently may delete with their pairs.
+        classes["deletable"] = [pid for pid in classes["archive"] if pid in deletable]
         return classes
 
     @staticmethod
@@ -138,6 +155,82 @@ class LibraryArchiveOperations:
         return prints
 
     @staticmethod
+    def _distinct_images(conn: sqlite3.Connection, prompt_ids: list[int]) -> int:
+        """Image rows of ``prompt_ids`` (each image once; #482 deletes them)."""
+        return LibraryArchiveOperations._image_links(conn, prompt_ids)
+
+    @staticmethod
+    def _pair_prints(conn: sqlite3.Connection, prompt_ids: list[int]) -> dict:
+        """#482: each prompt's own saved pairs, as the review saw them.
+
+        Per pair (by id): its negative, archived flag, metadata, usage, ordered
+        tag ids and its image-pair links (count and newest id).
+        """
+        prints = {pid: [] for pid in prompt_ids}
+        for chunk in _batches(prompt_ids):
+            marks = ",".join("?" for _ in chunk)
+            for row in conn.execute(
+                "SELECT pp.positive_prompt_id,pp.id,pp.negative_prompt_id,"  # nosec
+                "pp.archived,pp.title,pp.category,pp.rating,pp.notes,pp.run_count,"
+                "pp.last_used_at,pp.updated_at,"
+                "(SELECT group_concat(tag_id) FROM (SELECT tag_id FROM "
+                "prompt_pair_tags WHERE pair_id=pp.id ORDER BY tag_id)),"
+                "(SELECT COUNT(*) FROM image_prompt_pairs WHERE pair_id=pp.id),"
+                "(SELECT MAX(id) FROM image_prompt_pairs WHERE pair_id=pp.id) "
+                f"FROM prompt_pairs pp WHERE pp.positive_prompt_id IN ({marks}) "
+                "ORDER BY pp.id",
+                chunk,
+            ):
+                prints[row[0]].append(
+                    [
+                        v if isinstance(v, (int, str, type(None))) else repr(v)
+                        for v in tuple(row)[1:]
+                    ]
+                )
+        return prints
+
+    @classmethod
+    def _review_digests(cls, conn: sqlite3.Connection, prompt_ids: list[int]) -> dict:
+        """#482: one digest per deletable prompt of its row and its pairs."""
+        prompts = cls._fingerprints(conn, prompt_ids)
+        pairs = cls._pair_prints(conn, prompt_ids)
+        return {
+            pid: hashlib.sha256(
+                json.dumps(
+                    [prompts.get(pid), pairs[pid]], separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            for pid in prompt_ids
+        }
+
+    @staticmethod
+    def _paired_counts(
+        conn: sqlite3.Connection, prompt_ids: list[int], selected: list[int]
+    ) -> dict:
+        """#482: what Delete permanently would remove with ``prompt_ids``."""
+        pairs = archived = variants = 0
+        negatives = set()
+        for chunk in _batches(prompt_ids):
+            marks = ",".join("?" for _ in chunk)
+            for archived_flag, negative, positive in conn.execute(
+                "SELECT archived,negative_prompt_id,positive_prompt_id "  # nosec
+                f"FROM prompt_pairs WHERE positive_prompt_id IN ({marks})",
+                chunk,
+            ):
+                pairs += 1
+                archived += 1 if archived_flag else 0
+                if negative is not None:
+                    variants += 1
+                    if negative != positive:
+                        negatives.add(negative)
+        return {
+            "pairs": pairs,
+            "archived_pairs": archived,
+            "variants": variants,
+            "kept_negatives": len(negatives - set(selected)),
+        }
+
+    @staticmethod
     def _checked_ids(prompt_ids: list[int], expected_epoch: str) -> list[int]:
         _validate_epoch(expected_epoch)
         _validate_bulk_ids(prompt_ids)
@@ -156,11 +249,16 @@ class LibraryArchiveOperations:
         with self.library_snapshot() as (conn, _epoch, _ceiling):
             epoch = self._library_epoch(conn, expected_epoch)
             classes = self._classify_library_delete(conn, prompt_ids)
+            deletable = classes["deletable"]
             return {
                 "library_epoch": epoch,
                 **classes,
                 "image_links": self._image_links(conn, classes["delete"]),
                 "fingerprints": self._fingerprints(conn, classes["delete"]),
+                # #482: Delete permanently, with the deletable prompts' pairs.
+                "review_digests": self._review_digests(conn, deletable),
+                "paired_counts": self._paired_counts(conn, deletable, prompt_ids),
+                "paired_image_links": self._distinct_images(conn, deletable),
             }
 
     @staticmethod
@@ -191,6 +289,7 @@ class LibraryArchiveOperations:
         *,
         expected_epoch: str,
         candidates: dict | None,
+        delete_paired: dict | None = None,
     ) -> dict:
         """Archive and delete what the user reviewed, all or nothing.
 
@@ -201,6 +300,11 @@ class LibraryArchiveOperations:
         still classifies ``delete`` and its fingerprint is unchanged; one that
         is now paired, and a reviewed archive now unpaired, are archived (the
         restorable direction); anything else is kept and counted.
+
+        ``delete_paired`` (#482) maps reviewed archive ids the user chose to
+        Delete permanently to their review digest. Each is deleted with its
+        own saved pairs only while it is still deletable and its digest is
+        unchanged; otherwise it is archived and counted ``changed``.
         """
         _validate_epoch(expected_epoch)
         for ids in (archive_ids, delete_ids):
@@ -209,6 +313,16 @@ class LibraryArchiveOperations:
             ):
                 raise ValueError("prompt ids must be lists of positive integers")
         reviewed_delete = set(delete_ids)
+        delete_paired = {} if delete_paired is None else delete_paired
+        if not isinstance(delete_paired, dict) or any(
+            type(pid) is not int
+            or not isinstance(digest, str)
+            or not _DIGEST.match(digest)
+            for pid, digest in delete_paired.items()
+        ):
+            raise ValueError("delete_paired must map prompt ids to review digests")
+        if not set(delete_paired) <= set(archive_ids):
+            raise ValueError("A permanent delete must be a reviewed archive id")
         if not archive_ids and not delete_ids:
             raise ValueError("Nothing to delete or archive")
         if reviewed_delete & set(archive_ids):
@@ -218,16 +332,31 @@ class LibraryArchiveOperations:
             epoch = self._library_epoch(conn, expected_epoch)
             classes = self._classify_library_delete(conn, prompt_ids)
             now_prints = self._fingerprints(conn, classes["delete"])
-            deletes, archives, changed = [], list(classes["archive"]), 0
+            deletes, archives, changed = [], [], 0
+            paired_now = set(classes["deletable"])
+            chosen = [pid for pid in classes["archive"] if pid in delete_paired]
+            digests = self._review_digests(
+                conn, [pid for pid in chosen if pid in paired_now]
+            )
+            paired_deletes = []
+            for pid in classes["archive"]:
+                if pid not in delete_paired:
+                    archives.append(pid)
+                elif digests.get(pid) == delete_paired[pid]:
+                    paired_deletes.append(pid)
+                else:
+                    archives.append(pid)  # changed since the review: restorable
+                    changed += 1
             for pid in classes["delete"]:
                 if pid not in reviewed_delete:
                     archives.append(pid)  # reviewed as archive, now unpaired
+                    changed += 1 if pid in delete_paired else 0
                 elif candidates is None or candidates.get(pid) == now_prints[pid]:
                     deletes.append(pid)
                 else:
                     changed += 1
             changed += len(classes["protected"])
-            image_links = self._image_links(conn, deletes)
+            image_links = self._image_links(conn, [*deletes, *paired_deletes])
             now = utc_now_iso()
             for pid in archives:
                 self._repair_hash(conn, pid)
@@ -240,7 +369,25 @@ class LibraryArchiveOperations:
                 "UPDATE prompts SET updated_at=? WHERE id=?",
                 [(now, pid) for pid in archives],
             )
-            deleted = delete_prompt_rows(conn, deletes)
+            # #482: the image-pair links (RESTRICT) go first, then the pairs
+            # (pair tags CASCADE, review decisions SET NULL), then the prompts.
+            pairs_removed = 0
+            for chunk in _batches(paired_deletes):
+                marks = ",".join("?" for _ in chunk)
+                pairs_of = (
+                    "SELECT id FROM prompt_pairs "  # nosec B608
+                    f"WHERE positive_prompt_id IN ({marks})"
+                )
+                conn.execute(
+                    f"DELETE FROM image_prompt_pairs WHERE pair_id IN ({pairs_of})",
+                    chunk,
+                )
+                pairs_removed += conn.execute(
+                    "DELETE FROM prompt_pairs "  # nosec B608
+                    f"WHERE positive_prompt_id IN ({marks})",
+                    chunk,
+                ).rowcount
+            deleted = delete_prompt_rows(conn, [*deletes, *paired_deletes])
             return {
                 "library_epoch": epoch,
                 "deleted": deleted,
@@ -249,6 +396,7 @@ class LibraryArchiveOperations:
                 "not_found": len(classes["not_found"]),
                 "changed": changed,
                 "image_links": image_links,
+                "pairs_removed": pairs_removed,
             }
 
     def restore_library_prompts(
