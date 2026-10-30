@@ -29,9 +29,21 @@ Masonry, grid or list, with search, categories, filters and saved views. Images 
 
 ### Open any image and see how it was made
 
-The viewer shows the positive and negative prompts, tags, seed, steps, CFG, sampler and model next to the image. Move with the arrow keys, zoom, rotate, or copy the settings.
+The viewer shows the positive and negative prompts, tags, seed, steps, CFG, sampler and model next to the image.
 
 ![The viewer with an image on the left and its prompts and generation settings on the right](assets/readme/viewer.webp)
+
+### Keep your hands on the keyboard
+
+The viewer has shortcuts for moving between files, the slideshow, zoom, rotate, flip, full screen, details, download and delete. Press `?` to see them all.
+
+![The viewer's keyboard shortcuts overlay](assets/readme/viewer-shortcuts.webp)
+
+### Long libraries stay easy to work in
+
+The selection bar stays pinned while you scroll, so you can keep picking images and act on them from anywhere. Back to top appears once you've scrolled down the page.
+
+![Images page scrolled down, with the selection bar pinned at the top and a Back to top button](assets/readme/pinned-bar.webp)
 
 ### One positive prompt, many experiments
 
@@ -89,7 +101,7 @@ Pick an open ComfyUI window and a node, then review the exact before and after. 
 
 ### Deletes you can review
 
-Choose what happens to the files before anything is removed. A safety backup of the database is on by default, and removed images can be brought back.
+Choose what happens to the files before anything is removed: remove the image from the library and leave the file on disk, or on Linux and macOS also move it to the system trash. On Windows, images can only be removed from the library. A safety backup of the database is on by default, and removed images can be brought back.
 
 ![Delete dialog offering to remove from the library only or move files to the trash](assets/readme/delete-review.webp)
 
@@ -213,10 +225,12 @@ The documentation for those pages is in [README-legacy.md](README-legacy.md).
 
 ## Known limits
 
-- **Windows has no Recycle Bin option.** The bin can delete large files permanently without warning, so on Windows you can only remove an image from the library. The file stays on disk.
+- **Trash is Linux and macOS only.** Windows has no Recycle Bin option, because the bin can delete large files permanently without warning. On Windows you can only remove an image from the library, and the file stays on disk. Where a move to the trash isn't possible on Linux or macOS, the dialog lists why for each file.
 - **Show in folder** opens the file manager on the machine running ComfyUI, not necessarily the one with your browser.
 - **Returned images** get their prompt links back, but not their tags, categories, collections or favorites.
 - **Inspect a file** doesn't add the file to your library.
+- **Leave unresolved is permanent.** A file you leave unresolved in Needs review isn't offered again unless its bytes change.
+- **Pair prompts saved by earlier versions** stay Uncategorized. You can set the category with Edit metadata.
 
 ## How it's tested
 
