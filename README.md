@@ -252,7 +252,7 @@ match Classic and Focused.
 
 5. **Access the web interface**:
    - **Workspace**: click **PM** in ComfyUI's top bar or **Web UI** on a node, or open `http://localhost:8188/prompt_manager/workspace`
-   - **Legacy pages** still work at their URLs, and the workspace doesn't link to them:
+   - **Legacy pages** still work at their URLs, and System's Overview section links to them:
      `/prompt_manager/admin` (dashboard), `/prompt_manager/admin#/tags` (tags), `/prompt_manager/gallery` (gallery), `/prompt_manager/gallery.html` (metadata viewer)
 
 ### Prerequisites

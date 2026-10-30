@@ -130,6 +130,71 @@ test('/prompt_manager/web lands on the workspace Library and Back does not bounc
     await expect(main.getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible();
 });
 
+// D165 (#525, maintainer ruling): a discreet line under System is the workspace's only visible way to the legacy pages.
+test('System Overview links the legacy pages discreetly, and each one loads (#525)', async ({ page, context }) => {
+    await page.goto(`${workspace}#/system/overview`);
+    const line = page.locator('#workspace-main .legacy-pages');
+    await expect(line).toBeVisible();
+    await expect(line).toContainText('Legacy pages');
+    const links = line.getByRole('link');
+    await expect(links).toHaveCount(4);
+    for (const [name, url, ready] of [
+        ['Dashboard', '/prompt_manager/admin', '#addPromptBtn'],
+        ['Tags', '/prompt_manager/admin#/tags', '#addPromptBtn'],
+        ['Gallery', '/prompt_manager/gallery', 'body'],
+        ['Metadata viewer', '/prompt_manager/gallery.html', 'body'],
+    ]) {
+        const opened = context.waitForEvent('page');
+        await line.getByRole('link', { name, exact: true }).click();
+        const tab = await opened;
+        await tab.waitForLoadState('domcontentloaded');
+        const target = new URL(tab.url());
+        expect(target.pathname + target.hash).toBe(url);
+        await expect(tab.locator(ready).first()).toBeAttached();
+        await tab.close();
+    }
+    // Only on System's Overview section, and gone with the page.
+    await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Appearance', exact: true }).click();
+    await expect(line).toBeHidden();
+    await page.goto(`${workspace}#/library`);
+    await expect(page.locator('#workspace-main .legacy-pages')).toHaveCount(0);
+});
+
+const bootFailure = page => page.locator('#workspace-boot-failure');
+
+test('a healthy workspace never shows the load failure message (#525)', async ({ page }) => {
+    await page.goto(`${workspace}#/library`);
+    await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
+    await page.waitForFunction(() => document.readyState === 'complete');
+    await expect(bootFailure(page)).toBeHidden();
+});
+
+for (const [label, pattern] of [['the entry module', '**/js/workspace/index.mjs*'], ['a dependency', '**/js/workspace/state.mjs*']]) {
+    test(`when ${label} fails to load the page still offers the legacy pages (#525)`, async ({ page }) => {
+        const pageErrors = [];
+        page.on('pageerror', error => pageErrors.push(error.message));
+        await page.route(pattern, route => route.abort());
+        await page.goto(`${workspace}#/library`);
+        const failure = bootFailure(page);
+        await expect(failure).toBeVisible();
+        await expect(failure).toHaveAttribute('role', 'alert');
+        const dashboard = failure.getByRole('link', { name: 'Dashboard', exact: true });
+        await expect(dashboard).toBeVisible();
+        await expect(failure.getByRole('link')).toHaveCount(4);
+        await dashboard.click();
+        await expect(page).toHaveURL(/\/prompt_manager\/admin$/);
+        expect(pageErrors).toEqual([]);
+    });
+}
+
+test('when a module throws while starting the page still offers the legacy pages (#525)', async ({ page }) => {
+    await page.route('**/js/workspace/state.mjs*', route => route.fulfill({ contentType: 'text/javascript', body: "throw new Error('boot failure');" }));
+    await page.goto(`${workspace}#/library`);
+    await expect(bootFailure(page).getByRole('link', { name: 'Dashboard', exact: true })).toBeVisible();
+    // The broken module's own error is this test's premise, not a failure of the page.
+    page.workspaceErrors.length = 0;
+});
+
 test('keyboard navigation, browser history and unknown routes remain usable', async ({ page }) => {
     await page.goto(`${workspace}#/overview`);
     const navigation = page.getByRole('navigation', { name: 'Workspace', exact: true });
@@ -459,7 +524,7 @@ test('System is native: the concept shell, section navigation, sections and the 
     // D92: no "Sample configuration" chip.
     await expect(main.locator('.heading .chip')).toHaveCount(0);
     expect(await main.evaluate(node => [...node.children].map(child => `${child.localName}.${child.className}`)))
-        .toEqual(['div.heading', 'div.section-nav', 'div.settings-layout']);
+        .toEqual(['div.heading', 'div.section-nav', 'div.settings-layout', 'p.small legacy-pages']);
     const nav = main.getByRole('group', { name: 'System sections', exact: true });
     await expect(nav.getByRole('button')).toHaveText(SYSTEM_SECTION_LABELS);
     await expect(nav.getByRole('button', { name: 'Overview', exact: true })).toHaveAttribute('aria-pressed', 'true');

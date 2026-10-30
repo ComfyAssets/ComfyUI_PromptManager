@@ -25,6 +25,14 @@ export const routes = [
         description: 'Configuration, maintenance and recovery—with browsing kept in the workspace.', action: 'Open System' },
 ];
 
+/** D165 (#525): the legacy pages, which stay at their URLs; System's Overview section links them discreetly. */
+export const LEGACY_PAGES = Object.freeze([
+    { label: 'Dashboard', href: '/prompt_manager/admin' },
+    { label: 'Tags', href: '/prompt_manager/admin#/tags' },
+    { label: 'Gallery', href: '/prompt_manager/gallery' },
+    { label: 'Metadata viewer', href: '/prompt_manager/gallery.html' },
+].map(page => Object.freeze(page)));
+
 const NATIVE_ROUTES = new Set(['images', 'library', 'tags', 'inspect', 'overview', 'saved', 'favorites', 'activity', 'review', 'system',
     'collection']);
 

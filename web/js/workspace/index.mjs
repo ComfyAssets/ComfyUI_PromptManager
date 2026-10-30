@@ -528,6 +528,8 @@ function mountWorkspace() {
 }
 
 mountWorkspace();
+// #525: web/workspace.html shows its legacy-page fallback at `load` unless the shell got this far.
+document.documentElement.dataset.workspaceBooted = 'true';
 window.addEventListener('pageshow', event => {
     if (event.persisted) mountWorkspace();
 });

@@ -93,6 +93,13 @@ test('every Overview card opens its own native page, never a legacy one (#525)',
     }
 });
 
+test('the legacy pages System links are the four that stay at their URLs (#525 D165)', async () => {
+    const { LEGACY_PAGES } = await source;
+    assert.deepEqual(LEGACY_PAGES.map(page => page.href), ['/prompt_manager/admin', '/prompt_manager/admin#/tags',
+        '/prompt_manager/gallery', '/prompt_manager/gallery.html']);
+    for (const page of LEGACY_PAGES) assert.ok(page.label);
+});
+
 test('a job of the Activity page is its own deep link', async () => {
     const { resolveRoute, routeTitle, isHandoff } = await source;
     const id = '0123456789abcdef'.repeat(2);
