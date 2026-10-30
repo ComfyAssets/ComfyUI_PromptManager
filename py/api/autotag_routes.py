@@ -24,9 +24,9 @@ from . import thumbnail_settings
 from .. import model_gate
 
 try:
-    from ...utils.media_folders import is_skipped_folder
+    from ...utils.media_folders import in_trash_below_roots, is_skipped_folder
 except ImportError:
-    from utils.media_folders import is_skipped_folder
+    from utils.media_folders import in_trash_below_roots, is_skipped_folder
 
 from aiohttp import web
 
@@ -849,9 +849,12 @@ class AutotagRoutesMixin:
         """Return the real path when it is a media file inside an output directory."""
         if Path(str(raw_path)).suffix.lower() not in _MEDIA_EXTENSIONS:
             return None
-        for output_dir in self._get_all_output_dirs():
+        roots = list(self._get_all_output_dirs())
+        for output_dir in roots:
             if path_is_within(raw_path, output_dir):
                 real = os.path.realpath(raw_path)
+                if in_trash_below_roots(real, roots):
+                    return None  # thrown away, not an output (#543)
                 return real if os.path.isfile(real) else None
         return None
 

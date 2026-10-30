@@ -2497,7 +2497,25 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   (`_collect_media_files`), the legacy auto-tag listing (`_collect_scan_files`) and the
   delete review (`trash-folder`), and the image monitor, which tests the folders below the
   watched folder holding the new file (a source named like a trash folder is still watched). Tests: `tests/test_media_folders.py`,
-  `tests/test_image_removal_gaps.py`.
+  `tests/test_image_removal_gaps.py`. Media routes answer not found for a path in such a
+  folder, resolved first so a link or another spelling cannot pass (#543):
+  `_media_access_error` is the one gate (by-id, inspect, reveal, link, rescope as
+  `file-missing`, a prompt's media listing); `/images/serve` and the autotag target ask
+  `in_trash_below_roots` too, `media_target` refuses by name (annotations, collections,
+  whose capture store denies links and aliases), and previews are neither made nor served, the fallback past the preview gate's cap
+  included (`_quick_source`). A History output in one answers `missing`, checked at the
+  candidate and again at the open (a preview can be a link). The legacy duplicate delete
+  removes exactly the folder's real path plus the name (a link itself, never its target)
+  and refuses if either spelling is in a trash folder; `file_problem` refuses too. The delete
+  and Return flows never use this gate. Windows spellings (trailing dots and spaces, case,
+  8.3) run for real on the Windows job in `tests/test_trash_gate_routes.py`.
+- **An output folder that is a mount point** (#543): the mount's own `.Trash-$uid` and
+  `.Trash/$uid` are allowed only for a root that is exactly that mount, with the spec's
+  checks intact. A root above the mount, a mount nested under the root, a source that is or
+  sits in the trash folder, and a link in place of the trash folder stay refused. Tests:
+  `tests/test_trash_mount_root.py`, on a fake mount table in the suite and, with
+  `PM_TRASH_MOUNT=<real mount>`, in portability.yml's `native-trash-linux` job (loop-mounted
+  ext4). Locally, without root: `unshare -Urm` over a tmpfs.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with

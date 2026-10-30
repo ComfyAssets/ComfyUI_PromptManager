@@ -17,6 +17,7 @@ from aiohttp import web
 
 from . import thumbnail_settings
 from .images import _canonical, _public_path, SERVABLE_EXTENSIONS, VIDEO_EXTENSIONS
+from .images import in_trash_below_roots
 from .images import existing_media_thumbnail, media_thumbnail_rel
 
 try:
@@ -198,6 +199,9 @@ def resolve_current_candidate(
         if namespace is None or not namespace.is_dir():
             return _unavailable("root_unavailable")
         target = _canonical(lexical)
+        if in_trash_below_roots(target, [namespace]):
+            # Every kind and the outputs listing come through here (#543).
+            return _unavailable("missing")
         if not _authorized(target, namespace, scope):
             return _unavailable("not_authorized")
         if target.suffix.lower() not in SERVABLE_EXTENSIONS:
@@ -248,6 +252,10 @@ def _open_current_target(
     A *preview* (a file under ``thumbnails/``) may also be JPEG XL (#317)."""
     if _canonical(target) != target:
         raise CurrentLocationUnavailable("not_authorized", stale=True)
+    if in_trash_below_roots(target, [namespace]):
+        # Also at the open: the cover chooses its preview after the candidate
+        # check, and a preview can be a link into a trash folder (#543).
+        raise CurrentLocationUnavailable("missing")
     if not _authorized(target, namespace, scope):
         raise CurrentLocationUnavailable("not_authorized")
     suffix = target.suffix.lower()

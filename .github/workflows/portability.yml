@@ -29,6 +29,9 @@ env:
 #   native-trash (#499) has no green main runs yet: its probe, run 40949370943 (2026-10-29), took
 #     about 1 minute per macOS leg, so ceil(1.5 x 2) + 3 gives it 6 minutes (step 4). Recalibrate
 #     after three green runs.
+#   native-trash-linux (#543) has no green main runs yet: it installs the dev requirements and runs
+#     one test module, about 1 minute by the same estimate, so ceil(1.5 x 2) + 3 gives it 6 minutes.
+#     Recalibrate after three green runs.
 jobs:
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
@@ -104,3 +107,39 @@ jobs:
         env:
           PM_NATIVE_TRASH: macos
         run: python -m unittest tests.test_trash_macos_native tests.test_trash_macos -v
+
+  # The same tests as the fake mount table, on a real ext4 mount used as the output root (#543). A
+  # runner can mount with sudo; the tests run as the normal user, so owner and mode checks are real.
+  native-trash-linux:
+    name: native trash on a real mount
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Mount an ext4 image
+        run: |
+          truncate -s 64M "$RUNNER_TEMP/drive.img"
+          mkfs.ext4 -q "$RUNNER_TEMP/drive.img"
+          mkdir "$RUNNER_TEMP/drive"
+          sudo mount -o loop "$RUNNER_TEMP/drive.img" "$RUNNER_TEMP/drive"
+          sudo rmdir "$RUNNER_TEMP/drive/lost+found"
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/drive"
+          findmnt "$RUNNER_TEMP/drive"
+
+      - name: Native trash proof
+        timeout-minutes: 4
+        run: PM_TRASH_MOUNT="$RUNNER_TEMP/drive" python -m unittest tests.test_trash_mount_root -v
