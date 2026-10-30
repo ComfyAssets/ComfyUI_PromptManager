@@ -145,6 +145,8 @@ test('long vocabularies append and Load more is keyboard reachable',async({page,
     await expect(loadMore(page)).toHaveCount(0);
     await expect(rows(page).nth(200).getByRole('button',{name:'Browse',exact:true})).toBeFocused();
     await expect(rows(page).locator('td:nth-child(1)')).toHaveText(manifest.tags);
+    // Reload with the window at its top: Firefox restores a scrolled window, whose end then appends a page before the check.
+    await main(page).locator('.two-col .table-wrap').evaluate(node=>new Promise(resolve=>{node.scrollTop=0;requestAnimationFrame(()=>requestAnimationFrame(resolve));}));
     await page.reload();
     await expect(rows(page)).toHaveCount(100);
     // D183: the end of the list arrives inside the tag window.

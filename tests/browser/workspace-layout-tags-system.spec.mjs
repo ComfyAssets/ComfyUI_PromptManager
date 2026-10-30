@@ -120,6 +120,10 @@ test('a long tag list scrolls in its own window and the page does not grow (D183
     await tagWindow(page).evaluate(node=>{node.scrollTop=node.scrollHeight;});
     await expect(rows(page)).toHaveCount(200);
     expect(await page.evaluate(()=>window.scrollY)).toBe(0);
+    // One arrival is one page: the appended rows push the end away, so pages do not chain while more remain.
+    await nextFrame(page);await nextFrame(page);
+    await expect(rows(page)).toHaveCount(200);
+    await expect(loadMore(page)).toBeVisible();
 
     // Load more works from below the window, with the window not at its end.
     await tagWindow(page).evaluate(node=>{node.scrollTop=0;});await nextFrame(page);
