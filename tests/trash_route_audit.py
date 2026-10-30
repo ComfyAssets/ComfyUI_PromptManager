@@ -53,6 +53,8 @@ ROUTE_AUDIT = {
         "GET /prompt_manager/collections/membership",
         "PUT /prompt_manager/images/category",
         "DELETE /prompt_manager/images/category",
+        "POST /prompt_manager/review/items/{item_id}/decision",
+        "POST /prompt_manager/review/items/{item_id}/link",
     ),
     "walker: utils/media_folders (listed files only)": (
         "GET /prompt_manager/images/output",
@@ -94,7 +96,6 @@ ROUTE_AUDIT = {
         "GET /prompt_manager/history/runs/{run_id}",
         "GET /prompt_manager/review/items",
         "GET /prompt_manager/review/items/{item_id}",
-        "POST /prompt_manager/review/items/{item_id}/decision",
         "POST /prompt_manager/maintenance/preview",
         "POST /prompt_manager/maintenance/apply",
     ),
