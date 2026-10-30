@@ -718,5 +718,11 @@
     "branches": 95,
     "functions": 98,
     "statements": 97
+  },
+  "workspace/sticky-chrome.mjs": {
+    "lines": 80,
+    "branches": 60,
+    "functions": 80,
+    "statements": 80
   }
 }

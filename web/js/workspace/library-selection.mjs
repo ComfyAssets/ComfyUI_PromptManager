@@ -1,3 +1,4 @@
+import { keepingPlace, publishBarHeight } from './sticky-chrome.mjs';
 import { createButton } from '../shared/toolkit/core.js';
 import { selectionLabel, toggleSelection } from './images-state.mjs';
 import { applyKeys, rangeKeys } from './images-multiselect.mjs';
@@ -129,10 +130,11 @@ export function categoryProblem(value) {
  * to `focusFallback` when it was on the bar the reload hides.
  */
 export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, getCategories, focusFallback, onCommitted,
-    onReload, getShelf = () => 'active', nameOf = () => null }) {
+    onReload, getShelf = () => 'active', nameOf = () => null, onPlaceKept = () => {} }) {
     let checked = Object.freeze(new Set()), anchor = null, shiftBox = null, writing = false;
     const element = el('div');
     element.id = 'library-bulkbar';
+    publishBarHeight(scope, element);
     const bulk = el('div', undefined, 'bulkbar'), count = el('strong');
     const addTags = createButton('Add tags');
     const setCategory = createButton('Set category');
@@ -164,6 +166,10 @@ export function mountLibrarySelection({ scope, api, grid, getItems, getEpoch, ge
 
     const ids = () => getItems().map(item => item.id);
     function render() {
+        const shift = keepingPlace(element, paintBar);
+        if (shift) onPlaceKept(shift);
+    }
+    function paintBar() {
         if (!checked.size) { bulk.remove(); return; }
         const shelf = getShelf() === 'archived' ? 'archived' : 'active';
         if (shelf !== shownShelf) {

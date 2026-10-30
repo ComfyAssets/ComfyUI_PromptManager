@@ -5,6 +5,7 @@ import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './imag
 import { mountFileInspector } from './file-inspector.mjs';
 import { createInspectionController } from './inspection-state.mjs';
 import { mountSelectionBar } from './images-selection.mjs';
+import { scrollToPageTop } from './sticky-chrome.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { promptRoles } from './prompt-blocks.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
@@ -301,6 +302,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     collection.append(continuation);
     // After a Load more or Retry press, the index of the first image that batch appends (concept: focus it).
     let focusAfterLoad = null;
+    let panelHold = false;
     // The concept's side panel (app.js a426, D20); the Library-embedded gallery has its own page around it.
     const details = el('aside', undefined, 'detail-panel');
     if (!embedded) details.id = 'image-inspector';
@@ -310,11 +312,13 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     // The checked cards and the concept's selection bar (#249 D8), between the filter row and the gallery layout. The
     // selection is kept across appended batches and cleared with the collection; the Library-embedded gallery has none.
     const bar = embedded ? null : mountSelectionBar({scope, api, grid, getItems:() => state?.items ?? [], focusFallback,
-        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); }, activity, onTagged:keys => refreshTagged(keys),
-        onDeleted:deleted,
+        checked:visit?.checked, onCategorySet:() => { loadCategories(); reset(); scrollToPageTop(); }, activity,
+        // #531: a finished bulk action shows its result from the top. Tagging and collections keep the selection (D85, D138).
+        onTagged:keys => { refreshTagged(keys); bulkRefreshed(); },
+        onDeleted:() => { deleted(); scrollToPageTop(); },
         // #498: the removed view's bar holds only Return to library and Clear.
         removedView:() => filters.removed,
-        onReturn:(images, extra, trigger) => returnSome({images, ...extra, trigger}),
+        onReturn:(images, extra, trigger) => returnSome({images, ...extra, trigger, onDone:scrollToPageTop}),
         // The Set category field suggests the toolbar's categories (#332 MC13).
         getCategories:() => categoryNames,
         // #392 "Select all N matching": the listing's total and its filter, as the server lists them.
@@ -325,7 +329,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
             return filter.root !== undefined && typeof scope === 'string' ? {...filter, root_scope:scope} : filter;
         },
         // #331 D138: Add to collection, and Remove from collection on an open collection, which then lists it again.
-        collections, collection:filters.collection || null, onCollectionsChanged:collectionChanged,
+        collections, collection:filters.collection || null, onCollectionsChanged:() => { collectionChanged(); scrollToPageTop(); }, onCollectionAdded:bulkRefreshed,
         onSourceChanged:refreshInspectionCollection});
     if (bar) main.append(bar.element);
     main.append(body);
@@ -402,7 +406,10 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         if (event.target.closest('.star-button')) toggleFavorite(api, image);
         else if (event.target.closest('.image-open')) previewImage(image);
         else if (action && !openCardTagging({api, scope, image, action, embedded, onSourceChanged:recovery.recover,
-            onRefresh:refreshInspectionCollection})) inspect(image);
+            onRefresh:refreshInspectionCollection})) {
+            inspect(image);
+            bringPanelIntoView();
+        }
     });
 
     function renderVisible() {
@@ -637,7 +644,19 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     scope.listen(more, 'click', pressLoad);
     scope.listen(retry, 'click', () => (state?.error?.code === 'cursor-stale' ? refreshInspectionCollection() : pressLoad()));
+    /**
+     * D189: at one column the panel follows the whole list, so Info goes to it. That passes the continuation, so loading
+     * waits for the reader's next move: a batch appended now would push the panel away.
+     */
+    function bringPanelIntoView() {
+        if (getComputedStyle(details).position !== 'static') return;
+        panelHold = true;
+        details.scrollIntoView({ block: 'start' });
+    }
+    const releasePanel = () => { if (panelHold) { panelHold = false; scheduleLoad(); } };
+    for (const name of ['wheel', 'touchmove', 'keydown']) scope.listen(window, name, releasePanel, { passive: true });
     function maybeLoad() {
+        if (panelHold) return;
         if (!observer || recovering || scope.signal.aborted || !state?.hasMore || state.loading || state.error || main.querySelector('#viewer-dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + 250 && bounds.bottom >= 0) stream.loadMore();
@@ -702,8 +721,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         else if (!showRemoved.isConnected) heading.actions.prepend(showRemoved);
     }
     /** #498: Return to library for the checked images, "all N matching" (`filter`) or the inspector's one. */
-    function returnSome({images = [], filter = null, count = images.length, trigger = null}) {
-        return returnImages({api, scope, store:activity, images, filter, count, trigger, onReturned:() => { if (!scope.signal.aborted) reset(); }});
+    function returnSome({images = [], filter = null, count = images.length, trigger = null, onDone = null}) {
+        return returnImages({api, scope, store:activity, images, filter, count, trigger, onReturned:() => { if (!scope.signal.aborted) { reset(); onDone?.(); } }});
     }
     /** #480: Delete… for one file, from the inspector or the viewer (`after` closes the viewer first). */
     function deleteOne(target, trigger, after = null) {
@@ -819,6 +838,12 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
      * is read again in place, keeping the scroll and the checked files still listed. A failed re-read lists the page
      * again from its start, whose failure shows the usual Retry (or the deleted-collection page).
      */
+    /** #531: after a bulk action that keeps the selection: the listing re-read, shown from the top. */
+    function bulkRefreshed() {
+        if (scope.signal.aborted) return;
+        scrollToPageTop();
+        if (!recovering) stream.refresh().catch(() => { if (!scope.signal.aborted) reset(); });
+    }
     async function collectionChanged() {
         if (scope.signal.aborted || !filters.collection || recovering) return;
         try {
