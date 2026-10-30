@@ -764,6 +764,11 @@ test('Collections… in the viewer keeps the viewer until it closes (CUJ 7)', as
     await page.getByRole('button', { name: 'Open landscape_01.png', exact: true }).click();
     const viewer = page.locator('#viewer-dialog[open]');
     await expect(viewer.locator('#viewer-title')).toContainText('landscape_01.png');
+    // #532: the arrows move through the collection from the first moment.
+    await page.keyboard.press('ArrowRight');
+    await expect(viewer.locator('#viewer-title')).toContainText('landscape_02.png');
+    await page.keyboard.press('ArrowLeft');
+    await expect(viewer.locator('#viewer-title')).toContainText('landscape_01.png');
     // Review L7: no listing request while the viewer is open.
     let listings = 0;
     const countListing = request => { if (new URL(request.url()).pathname === '/prompt_manager/images/output') listings++; };

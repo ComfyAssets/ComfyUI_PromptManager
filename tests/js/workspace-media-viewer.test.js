@@ -200,7 +200,9 @@ test('viewer renders the concept shell and toolbar order', async () => {
         assert.equal(dialog.attributes['aria-label'],undefined,'the title names the dialog');
         const [header,layout] = dialog.children;
         assert.equal(header.className,'dialog-header');
-        const [heading,mode,close] = header.children, [title,subtitle] = heading.children;
+        const [heading,keys,mode,close] = header.children, [title,subtitle] = heading.children;
+        // #532 D170: ⌘ before the view switch opens the shortcuts.
+        assert.deepEqual([keys.tagName,keys.id,keys.className,keys.attributes['aria-label'],keys.title],['button','viewer-keys','icon-btn','Keyboard shortcuts','Keyboard shortcuts']);
         // #450 D156: the view switch before ✕ names the view it switches to (Centered is the stored default).
         assert.deepEqual([mode.tagName,mode.id,mode.className,mode.attributes['aria-label'],mode.title],['button','viewer-mode','icon-btn','Full screen view','Full screen view']);
         mode.fire('click');

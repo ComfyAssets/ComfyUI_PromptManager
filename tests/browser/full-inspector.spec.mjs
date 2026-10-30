@@ -627,6 +627,10 @@ test('viewer matches the concept shell and toolbar order',async({page,request})=
         expect(modePaths.map(path=>path.split(' > ').slice(2).join(' > '))).toEqual(['button#viewer-mode.icon-btn','button#viewer-mode.icon-btn > svg.icon','button#viewer-mode.icon-btn > svg.icon > path']);
         expect(production.paths[production.paths.indexOf(modePaths[2])+1]).toBe('dialog#viewer-dialog > div.dialog-header > button#viewer-close');
         production.paths=production.paths.filter(path=>!modePaths.includes(path));
+        // #532 D170: production's shortcuts button sits right before the view switch; the concept has none.
+        const keysPaths=production.paths.filter(path=>path.includes('button#viewer-keys'));
+        expect(keysPaths.map(path=>path.split(' > ').slice(2).join(' > '))).toEqual(['button#viewer-keys.icon-btn','button#viewer-keys.icon-btn > svg.icon','button#viewer-keys.icon-btn > svg.icon > path']);
+        production.paths=production.paths.filter(path=>!keysPaths.includes(path));
         // #480 D159: the Images viewer's Delete… (`danger`) follows Download; the concept has none.
         expect(production.toolbar[8].text).toBe('Delete…');
         production.toolbar.splice(8,1);

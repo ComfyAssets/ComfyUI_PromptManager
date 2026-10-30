@@ -13,6 +13,9 @@ export function readViewerPreferences(getStorage = () => window.localStorage, no
     const {videoAutoplay,videoMute,videoLoop} = readPreferences(getStorage,normalize).values;
     return {videoAutoplay,videoMute,videoLoop};
 }
+// #532: where ← and → stay with what has focus (a video's seek, text carets, a disclosure, scrolling text).
+const KEEPS_ARROWS = 'video,input,textarea,select,pre,summary,[contenteditable]';
+const SHORTCUTS = [['←','Previous file'],['→','Next file'],['Esc','Close the viewer']];
 function element(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -60,7 +63,10 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         // #450 (D156): the view switch before ✕ names the view it switches to; the stored default picks the first view.
         let fullscreen = displayPreferences()?.viewerOpenMode === 'fullscreen';
         const mode = createButton('','icon-btn');mode.id = 'viewer-mode';
-        header.append(heading,mode,close);
+        // #532 (D170): ⌘ before the view switch lists the viewer's shortcuts.
+        const keys = createButton('','icon-btn');keys.id = 'viewer-keys';keys.title = 'Keyboard shortcuts';
+        keys.setAttribute('aria-label','Keyboard shortcuts');keys.append(createWorkspaceIcon('command'));
+        header.append(heading,keys,mode,close);
         const body = element('div','viewer-layout'), left = element('div','viewer-left');
         const stage = element('div');stage.id = 'viewer-stage';stage.tabIndex = 0;
         stage.setAttribute('role','region');stage.setAttribute('aria-label','Media preview');
@@ -123,6 +129,24 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         }
         local.listen(detailsToggle,'click',() => {details.hidden = !details.hidden;paintToggle();});
         local.listen(mode,'click',() => {fullscreen = !fullscreen;paintMode();syncToggle();});
+        /** A modal inside the viewer: Esc closes only the top dialog, `close` and `cancel` do not bubble, focus returns to ⌘. */
+        function openShortcuts() {
+            session.stop();
+            const overlay = element('dialog');overlay.id = 'viewer-keys-dialog';overlay.setAttribute('aria-labelledby','viewer-keys-title');
+            const top = element('div','dialog-header'), name = element('h2',undefined,'Keyboard shortcuts');name.id = 'viewer-keys-title';
+            const dismiss = createButton('×');dismiss.setAttribute('aria-label','Close keyboard shortcuts');dismiss.autofocus = true;
+            top.append(name,dismiss);
+            const list = element('dl');
+            for (const [key,action] of SHORTCUTS) {
+                const row = element('div'), term = element('dt'), kbd = element('kbd',undefined,key);
+                term.append(kbd);row.append(term,element('dd',undefined,action));list.append(row);
+            }
+            overlay.append(top,list,element('p','muted small','A video player or text with focus keeps ← and →.'));
+            local.listen(dismiss,'click',() => overlay.close());
+            local.listen(overlay,'close',() => overlay.remove());
+            dialog.append(overlay);overlay.showModal();
+        }
+        local.listen(keys,'click',openShortcuts);
         paintMode();syncToggle();
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
@@ -154,10 +178,11 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         local.listen(document,'visibilitychange',() => {if (document.hidden) session.stop();});
         local.listen(window,'pagehide',() => closeViewer(false));
         local.listen(retry,'click',() => {if (!inspectionState.refreshRequired) rebuild(entry);});
-        local.listen(dialog,'keydown',event => {
+        // #532: on the document, as the legacy gallery does: focus starts on ✕ and can fall to the page (a click on
+        // header text, a focused video replaced by navigating), where a key never reaches the dialog.
+        local.listen(document,'keydown',event => {
             if (!['ArrowLeft','ArrowRight'].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-                (!stage.contains(event.target) && !controls.contains(event.target)) ||
-                event.target.closest('video,input,textarea,select,pre,summary,[contenteditable]') ||
+                event.target.closest(KEEPS_ARROWS) || (details.contains(event.target) && !event.target.closest('button,a')) ||
                 !window.getSelection()?.isCollapsed || [...document.querySelectorAll('dialog[open]')].at(-1) !== dialog) return;
             event.preventDefault();session.navigate(event.key === 'ArrowLeft' ? -1 : 1);
         });

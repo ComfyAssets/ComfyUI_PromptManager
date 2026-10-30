@@ -3992,6 +3992,17 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D170** (#532, maintainer request 2026-10-30, beyond the concept): every viewer has
+  `button#viewer-keys.icon-btn` right before the D156 view switch (accessible name and
+  `title` "Keyboard shortcuts", a `command` outline icon, hidden at ≤700px with the
+  switch). It opens `dialog#viewer-keys-dialog`, a modal built on demand inside the
+  viewer, so a closed overlay adds nothing to the concept comparisons but the button:
+  `.dialog-header` with × and a list of ← Previous file, → Next file, Esc Close the
+  viewer. Esc or × closes only the overlay and focus returns to the button; opening it
+  stops the slideshow. ← and → navigate from anywhere in the viewer, on `document` as the
+  legacy gallery does, unless a modifier is held, text is selected, another dialog is on
+  top, or focus is in a video, form field, `pre`, `summary`, or anything in the details
+  but a button or link. `workspace-viewer-keys.spec.mjs` pins this.
 - **D156** (#450, maintainer request 2026-10-28, beyond the concept): every viewer (the
   shared `dialog#viewer-dialog` of Images, Library, History, collections and Inspect) has
   `button#viewer-mode.icon-btn` in `.dialog-header`, right before ✕ (a direct child, so

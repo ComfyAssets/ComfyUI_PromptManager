@@ -231,6 +231,8 @@ test('every ordered receipt remains selected through distinct current locations,
     const loadedReads=outputReads;const view=receipts.nth(1).getByRole('button',{name:'View current file',exact:true});await view.click();
     const viewer=page.locator('dialog#viewer-dialog');await expect(viewer).toBeVisible();
     await expect(viewer).toContainText('1 of 2 loaded');await expect(viewer.getByRole('region',{name:'Negative prompt',exact:true})).not.toContainText('same visible negative');
+    // #532: the arrows work over the recorded run from the first moment.
+    await page.keyboard.press('ArrowRight');await expect(viewer).toContainText('2 of 2 loaded');await page.keyboard.press('ArrowLeft');await expect(viewer).toContainText('1 of 2 loaded');
     await viewer.getByRole('button',{name:'Next media',exact:true}).click();await expect(viewer).toContainText('2 of 2 loaded');
     await page.keyboard.press('Escape');await expect(viewer).toHaveCount(0);await expect(dialog(page)).toBeVisible();
     await expect(receipts.nth(2)).toHaveAttribute('aria-current','true');await expect(receipts.nth(2).getByRole('button',{name:'View current file',exact:true})).toBeFocused();

@@ -190,10 +190,21 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #450 D156: the view switch sits before ✕ (8px apart; the header's gap is the concept's 18px), and Full screen fills the
    browser window edge to edge (no outer margin), beating the concept's box, D34's max-height and the ≤700px height.
    At ≤700px the viewer is already full-bleed, so the switch hides there. */
-#viewer-dialog .dialog-header > #viewer-mode { margin-inline-start: auto; margin-inline-end: -10px; }
+#viewer-dialog .dialog-header > #viewer-mode { margin-inline-end: -10px; }
+/* #532 D170: ⌘ sits before the view switch, 8px apart, and takes the header's free space. */
+#viewer-dialog .dialog-header > #viewer-keys { margin-inline-start: auto; margin-inline-end: -10px; }
 .ca-tools #viewer-dialog.viewer-fullscreen[open] { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
 /* `!important` only to beat the concept's `.icon-btn { display: inline-grid !important }`. */
-@media (max-width: 700px) { #viewer-dialog .dialog-header > #viewer-mode { display: none !important; } }
+@media (max-width: 700px) { #viewer-dialog .dialog-header > :is(#viewer-mode, #viewer-keys) { display: none !important; } }
+/* #532 D170: the shortcuts overlay, a small dialog over the viewer. */
+.ca-tools #viewer-keys-dialog { width: min(420px, calc(100vw - 32px)); height: fit-content; max-height: 90dvh; }
+#viewer-keys-dialog .dialog-header > button { margin-inline-start: auto; }
+#viewer-keys-dialog dl { display: grid; gap: 10px; margin: 0 0 14px; }
+#viewer-keys-dialog dl > div { display: flex; align-items: center; gap: 12px; }
+#viewer-keys-dialog dt { min-width: 48px; }
+#viewer-keys-dialog dd { margin: 0; }
+#viewer-keys-dialog kbd { display: inline-block; min-width: 28px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; text-align: center; }
+#viewer-keys-dialog > p { margin: 0; }
 #viewer-title { overflow-wrap: anywhere; /* D34 */ }
 #viewer-dialog, #viewer-dialog::backdrop { overscroll-behavior: contain; }
 #viewer-details { overscroll-behavior: contain; /* D34 */ }

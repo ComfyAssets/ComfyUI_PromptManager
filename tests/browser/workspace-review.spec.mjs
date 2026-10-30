@@ -90,6 +90,11 @@ test('queue shows persisted items and the nav count', async ({ page, request }) 
     // The card's image opens the shared viewer.
     await cards(page).nth(1).getByRole('button', { name: 'Open review_0001.png', exact: true }).click();
     await expect(page.locator('#viewer-dialog')).toBeVisible();
+    // #532: the arrows move through the queue from the first moment, with focus still on ✕.
+    await expect(page.locator('#viewer-close')).toBeFocused();
+    const before = await page.locator('#viewer-dialog .media-position').textContent();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('#viewer-dialog .media-position')).not.toHaveText(before);
     await page.keyboard.press('Escape');
     await expect(page.locator('#viewer-dialog')).toHaveCount(0);
     // Open activity.
