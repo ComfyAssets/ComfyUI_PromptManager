@@ -111,9 +111,23 @@ async function selectTheme(page,theme) {
 }
 
 /** The concept at `#<route>` with its own Theme select. */
+/**
+ * The recorded layout deviations (#530), applied to the opened concept page and never to its files, so every box that
+ * follows from them (wider columns, wrapped text, row heights) is compared rather than excused path by path.
+ * Every other measurement still differs if production moves. workspace-layout-tags-system.spec.mjs pins the real values
+ * and that the concept itself still has the old ones.
+ * D182: the second `.two-col` card starts level, and a surface after a row is 18px below it. D184: no 1000px limit on System. D183: the sticky tag header's background and drawn line.
+ */
+export const CONCEPT_LAYOUT_DEVIATIONS=`.two-col > .surface + .surface { margin-top: 0; }
+.two-col + .surface { margin-top: 18px; }
+.settings-layout { max-width: none; }
+.two-col > .surface > .table-wrap thead th { background: var(--ca-surface); border-bottom-color: transparent; }`;
+export const mapConceptLayout=page=>page.addStyleTag({content:CONCEPT_LAYOUT_DEVIATIONS});
+
 export async function openConcept(page,route,theme,motion='no-preference') {
     await page.emulateMedia({reducedMotion:motion});
     await page.goto('about:blank');await page.goto(`${CONCEPT_URL}#${route}`);
+    await mapConceptLayout(page);
     await selectTheme(page,theme);
     await expect(page.locator('#main #page-title')).toBeVisible();
 }

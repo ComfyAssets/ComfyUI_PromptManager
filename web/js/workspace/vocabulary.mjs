@@ -79,12 +79,12 @@ function categoryRow(category) {
 
 /**
  * One bounded list: rows append as pages arrive, the end of the list loads the
- * next page each time it scrolls into view, and `Load more` stays available while
- * more remain. Only a new intersection appends: when scroll anchoring keeps the end
+ * next page each time it scrolls into view (of `scroller` when the list has its own window, D183), and `Load more`
+ * stays available while more remain. Only a new intersection appends: when scroll anchoring keeps the end
  * in view (stacked layout below 700px), pages do not chain on their own. Before any row arrives (loading, failed) the list shows no rows, so a
  * failed read never looks like zero counts.
  */
-function mountList(scope, api, kind, {content, rowsHost, renderRow, after, query}) {
+function mountList(scope, api, kind, {content, rowsHost, renderRow, after, query, scroller = null}) {
     const copy = COPY[kind];
     const empty = el('p', copy.empty, 'empty');
     const continuation = el('div', undefined, 'vocabulary-continuation');
@@ -96,6 +96,9 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after, query
     const more = createButton(copy.more);
     continuation.append(status, alert, retry, more);
     after.after(empty, continuation);
+    // D183: a list with its own window (`scroller`) ends inside that window; Load more stays reachable below it.
+    const end = scroller ? el('div', undefined, 'vocabulary-end') : continuation;
+    if (scroller) scroller.append(end);
     const items = new WeakMap();
     const listeners = new Set();
     let rendered = 0, first = null;
@@ -103,14 +106,16 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after, query
     function maybeLoad() {
         const {state} = stream;
         if (scope.signal.aborted || !state.hasMore || state.loading || state.error || state.resetRequired) return;
-        const bounds = continuation.getBoundingClientRect();
-        if (bounds.top <= window.innerHeight + LOAD_MARGIN && bounds.bottom >= -LOAD_MARGIN) stream.loadMore();
+        const bounds = end.getBoundingClientRect();
+        const area = scroller?.getBoundingClientRect() ?? {top: 0, bottom: window.innerHeight};
+        if (bounds.top <= area.bottom + LOAD_MARGIN && bounds.bottom >= area.top - LOAD_MARGIN) stream.loadMore();
     }
     function render(state) {
         // A reset starts again from page one; otherwise pages only append.
         if (state.items.length < rendered || (rendered && state.items[0] !== first)) {
             rowsHost.replaceChildren();
             rendered = 0;
+            if (scroller) scroller.scrollTop = 0;
         }
         const appended = [];
         for (const item of state.items.slice(rendered)) {
@@ -146,8 +151,8 @@ function mountList(scope, api, kind, {content, rowsHost, renderRow, after, query
     if (typeof IntersectionObserver === 'function') {
         observer = new IntersectionObserver(entries => {
             if (entries.some(entry => entry.isIntersecting)) maybeLoad();
-        }, {rootMargin: `${LOAD_MARGIN}px`});
-        observer.observe(continuation);
+        }, {root: scroller, rootMargin: `${LOAD_MARGIN}px`});
+        observer.observe(end);
     }
     scope.cleanup(() => {
         stream.dispose();
@@ -245,7 +250,7 @@ export function mountVocabulary(main, api, scope) {
     grid.append(tagSurface, categorySurface);
     main.append(grid);
 
-    const tags = mountList(scope, api, 'tags', {content: wrap, rowsHost: body, renderRow: tagRow, after: wrap, query: tools.read()});
+    const tags = mountList(scope, api, 'tags', {content: wrap, rowsHost: body, renderRow: tagRow, after: wrap, query: tools.read(), scroller: wrap});
     let announcing = false;
     tags.subscribe(state => {
         if (state.untaggedCount !== null) untagged.row.querySelector('p').textContent = countOf(state.untaggedCount, 'positive prompt');
