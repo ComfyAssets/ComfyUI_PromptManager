@@ -5,6 +5,7 @@ import { test, expect } from './fixtures.mjs';
 // page `#/collection/<id>` with its Edit (D137, concept render a1186–1189) and saved views on a collection (D140).
 const workspace = '/prompt_manager/workspace';
 const API = '/prompt_manager/collections';
+const RESTORE_APPLY_URL = '/prompt_manager/restore/apply';
 const main = page => page.locator('#workspace-main');
 const heading = page => main(page).getByRole('heading', { level: 1 });
 const breadcrumb = page => page.locator('#workspace-breadcrumb');
@@ -305,7 +306,12 @@ test('a finished restore reads the collections again', async ({ page, request })
         const chooser = page.waitForEvent('filechooser');
         await page.getByRole('button', { name: 'Review restore…', exact: true }).click();
         await (await chooser).setFiles({ name: 'prompts_backup_20261027_093000.db', mimeType: 'application/octet-stream', buffer: bytes });
+        // Wait for the restore job itself, as workspace-system-backups.spec.mjs does: under load a restore outlasts the
+        // 5 s expect default, and a restore still running after this test replaces the next tests' database (#520).
+        const applied = page.waitForResponse(response => response.url().endsWith(RESTORE_APPLY_URL));
         await page.locator('dialog#modal[open]').getByRole('button', { name: 'Restore', exact: true }).click();
+        const { job } = await (await applied).json();
+        await expect(await request.get(`/prompt_manager/jobs/${job.id}/events`)).toBeOK();
         await expect(toast(page)).toHaveText(/^Database restore finished · /);
         // The list was read again without a reload.
         await expect(rows(page)).toHaveCount(2);
@@ -480,7 +486,7 @@ test('a rename that settles after its dialog closed leaves the next dialog open 
 });
 
 test('a page that says a collection or view could not be opened takes focus after a route change (review L3)', async ({ page, request }) => {
-    await seed(request);
+    const manifest = await seed(request);
     await page.goto(`${workspace}#/images`);
     await expect(heading(page)).toHaveText('Images');
     await page.evaluate(() => { window.location.hash = '#/collection/999999'; });
@@ -499,7 +505,8 @@ test('a page that says a collection or view could not be opened takes focus afte
     await page.route('**/prompt_manager/saved-views', route => route.request().method() === 'GET'
         ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false,"error":"x"}' })
         : route.fallback());
-    await page.evaluate(() => { window.location.hash = '#/saved/5'; });
+    // An id the seed never made (its one view is manifest.saved_view), whatever ids earlier tests used (#520).
+    await page.evaluate(id => { window.location.hash = `#/saved/${id}`; }, manifest.saved_view.id + 1000);
     await expect(description(page)).toHaveText('Saved views could not be loaded. Your saved data has not changed.');
     await expect(heading(page)).toBeFocused();
 });
