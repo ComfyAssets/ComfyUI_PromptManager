@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from .logging_config import get_logger
+from .media_folders import in_skipped_folder
 
 try:
     from ..database.workflow_documents import DocumentReader, resolve_image_row
@@ -298,7 +299,13 @@ class GalleryDiagnostics:
                 try:
                     image_files = []
                     for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                        image_files.extend(Path(abs_path).rglob(f"*{ext}"))
+                        image_files.extend(
+                            found
+                            for found in Path(abs_path).rglob(f"*{ext}")
+                            if not in_skipped_folder(
+                                found.relative_to(abs_path).parts[:-1]
+                            )
+                        )
                     self.logger.info(f"      [IMG]  Images found: {len(image_files)}")
                 except Exception as e:
                     self.logger.error(f"      [FAIL] Error scanning: {e}")

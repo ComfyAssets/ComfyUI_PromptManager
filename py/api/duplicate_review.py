@@ -16,6 +16,11 @@ from pathlib import Path
 from .admin import DELETABLE_MEDIA_EXTENSIONS
 from .maintenance import DUPLICATE_FILES
 
+try:
+    from ...utils.media_folders import in_trash_below_roots, is_trash_folder
+except ImportError:
+    from utils.media_folders import in_trash_below_roots, is_trash_folder
+
 # Keep entries one review takes; with paths of a few hundred characters the
 # list stays inside the preview body cap (DUPLICATE_PREVIEW_BODY_MAX, 1 MiB).
 MAX_KEEP = 2000
@@ -197,6 +202,8 @@ def file_problem(
     parts = Path(os.path.relpath(lexical, base)).parts
     if "thumbnails" in parts or ".." in parts:
         return OUTSIDE_SOURCE
+    if any(is_trash_folder(part) for part in parts[:-1]):
+        return OUTSIDE_SOURCE  # never removed from a trash folder (#543)
     if os.path.splitext(lexical)[1].lower() not in DELETABLE_MEDIA_EXTENSIONS:
         return OUTSIDE_SOURCE
     try:
@@ -212,6 +219,8 @@ def file_problem(
     try:
         if not _lexically_inside(_canonical_path(path), [_canonical_path(root)]):
             return OUTSIDE_SOURCE  # a linked folder on the way
+        if in_trash_below_roots(path, [root]):
+            return OUTSIDE_SOURCE  # a linked folder into a trash folder
         if keeper is not None:
             same = keeper_problem(path, root, info, keeper, keeper_root)
             if same:
