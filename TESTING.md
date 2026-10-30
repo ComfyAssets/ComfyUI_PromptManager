@@ -2516,6 +2516,9 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   `tests/test_trash_mount_root.py`, on a fake mount table in the suite and, with
   `PM_TRASH_MOUNT=<real mount>`, in portability.yml's `native-trash-linux` job (loop-mounted
   ext4). Locally, without root: `unshare -Urm` over a tmpfs.
+- **D190** (#543, beyond the concept): a trash review where nothing can move shows a primary
+  that clearly cannot act: `aria-disabled`, no danger colors (also on hover), and a press does
+  nothing. Tests: `tests/browser/workspace-images-delete.spec.mjs`.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with
