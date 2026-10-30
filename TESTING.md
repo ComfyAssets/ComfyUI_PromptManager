@@ -53,6 +53,14 @@ stdin open and the server (`--exit-on-stdin-eof`) shuts down cleanly, removing i
 temp root, when that pipe closes, so a worker killed without teardown leaves no
 server behind. A test that fails gets the stderr its server wrote during the test
 attached to the report as `server-stderr` (an aiohttp traceback behind a 500).
+Each worker also records its browser's own log (#513, `tools/vendor/browser-logs.mjs`):
+Playwright's `pw:browser` channel, kept as a 300-line tail without printing it
+unless `DEBUG` asks for it. A browser that exits abnormally writes one
+`pm-browser-exit| browser pid=<n> exited: exitCode=<c>, signal=<s>` line to the job
+log, and a test that fails on a closed or crashed target ("Target page, context or
+browser has been closed") gets the tail attached as `browser-stderr.txt`, which the
+uploaded test-results carry. `tests/browser/browser-logs.spec.mjs` kills a browser of
+its own on purpose, so each browser job logs that line once for it.
 A `/__test__/.../reset` still running after 2 s writes a report to the job log,
 passing test or not: every thread's stack taken while it waits, the default
 executor's threads and queue, the open connections and WAL size, then the total
