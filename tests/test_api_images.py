@@ -3713,7 +3713,7 @@ class TestSharedListing(ImageAPITestCase):
 
     async def test_a_root_read_again_after_the_roots_change_listens_again(self):
         make_png(self.output_dir / "a.png")
-        record = await self._listed()
+        await self._listed()
         self.api.reset_gallery_roots_cache()
         record = await self._listed()  # still configured: read and walked
         self._interval(0)
