@@ -17,7 +17,7 @@ class Hostile:
         raise AssertionError("host scalar coercion")
 
     def __bool__(self):
-        raise AssertionError("host truth test")
+        raise TypeError("host truth test")
 
     def __eq__(self, other):
         raise AssertionError("host equality")

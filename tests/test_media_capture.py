@@ -347,7 +347,7 @@ class CaptureStoreTestCase(unittest.TestCase):
         with patch.object(CaptureStore, "_read", rewriting):
             try:
                 cap = store.capture(self.root, "a.png", epoch=EPOCH, scope=SCOPE)
-            except CaptureChanged:
+            except capture_module.CaptureChanged:
                 detected = True
             else:
                 detected = False
