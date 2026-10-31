@@ -96,6 +96,65 @@ WORKER_JOIN_SECONDS = 5.0
 OBSERVER_JOIN_SECONDS = 5.0
 
 
+def _start_daemon_observer(observer) -> None:
+    """``observer.start()`` on a short-lived daemon thread (#561).
+
+    A thread is a daemon when the thread that creates it is one. watchdog
+    7 on Windows starts a plain ``threading.Thread`` per watch inside
+    ``start()``; created from ComfyUI's main thread it is not a daemon, and
+    the interpreter waits for every such thread before it runs any
+    ``atexit`` callback, so the teardown that would stop it never runs.
+    Started from here, every thread the observer creates is a daemon.
+    Waits for the start without a limit (start-up, not exit); re-raises
+    what ``start()`` raised.
+    """
+    raised: List[BaseException] = []
+
+    def start() -> None:
+        try:
+            observer.start()
+        except BaseException as e:  # re-raised on the caller's thread
+            raised.append(e)
+
+    starter = threading.Thread(
+        target=start, name="PromptManagerObserverStart", daemon=True
+    )
+    starter.start()
+    starter.join()
+    if raised:
+        raise raised[0]
+
+
+class _ObserverStop:
+    """One ``observer.stop()`` running on a daemon thread (#561).
+
+    watchdog's ``stop()`` joins its emitters (and, in 7.x on Windows, their
+    reader threads) without a limit. Run here, a stop that never returns
+    holds neither the caller past its deadline nor the interpreter's exit.
+    """
+
+    def __init__(self, observer) -> None:
+        self.error: Optional[Exception] = None
+        self._thread = threading.Thread(
+            target=self._run,
+            args=(observer,),
+            name="PromptManagerObserverStop",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self, observer) -> None:
+        try:
+            observer.stop()
+        except Exception as e:  # reported by the stop that waits for it
+            self.error = e
+
+    def wait(self, timeout: float) -> bool:
+        """True once ``stop()`` has returned or raised."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+
 class ImageGenerationHandler(FileSystemEventHandler):
     """Filesystem event handler for detecting new image generation.
 
@@ -1170,6 +1229,9 @@ class ImageMonitor:
         # (observer, handler) pairs a stop left running: the next stop waits
         # for them again instead of reporting True.
         self._unfinished: List[Tuple[Any, Any]] = []
+        # Observer stops still running on their thread, by observer: a later
+        # stop waits for the same call instead of starting another (#561).
+        self._observer_stops: Dict[Any, _ObserverStop] = {}
         self.logger = get_logger("prompt_manager.image_monitor")
         self.review_recorder: Optional[Callable[[str], str]] = None
         self.thumbnail_queue: Optional[Callable[[str], str]] = None
@@ -1273,7 +1335,7 @@ class ImageMonitor:
             self.logger.warning("No directory could be watched")
             return
         try:
-            observer.start()
+            _start_daemon_observer(observer)
         except Exception as e:
             self.logger.error(f"Image monitoring could not start: {e}")
             return
@@ -1303,12 +1365,12 @@ class ImageMonitor:
 
         Closes the handler first (its worker is joined and its dispatch
         returns at once), then stops the watchdog observer and joins it. The
-        worker and the observer share the one deadline: the observer's join
-        gets what the worker left, possibly 0 s.
-        watchdog's ``observer.stop()`` joins its emitters without a limit;
-        it counts against the deadline but is not bounded here. A part an
-        earlier call left running is waited for again. Safe to call when
-        monitoring never started and more than once.
+        worker and the observer share the one deadline: the observer's stop
+        and join get what the worker left, possibly 0 s. watchdog's
+        ``observer.stop()`` joins its emitters without a limit, so it runs on
+        a daemon thread and is waited for only until the deadline (#561). A
+        part an earlier call left running is waited for again. Safe to call
+        when monitoring never started and more than once.
 
         Returns:
             True when every worker and observer it stopped has ended.
@@ -1349,13 +1411,27 @@ class ImageMonitor:
             return False
 
     def _stop_observer(self, observer, timeout: float) -> bool:
-        """``observer.stop()`` (safe to repeat), then a join of ``timeout``
-        seconds; a join that times out is logged with the time it got."""
+        """``observer.stop()`` on its own daemon thread, then a join, both
+        within ``timeout`` seconds; a stop or join still running then is
+        logged with the time it got. A stop still running from an earlier
+        call is waited for, never started again."""
         if observer is None:
             return True
+        deadline = time.monotonic() + timeout
+        stop = self._observer_stops.get(observer)
+        if stop is None:
+            stop = self._observer_stops[observer] = _ObserverStop(observer)
+        if not stop.wait(timeout):
+            self.logger.warning(
+                f"watchdog observer still running after {timeout:.1f} s"
+            )
+            return False
+        del self._observer_stops[observer]
+        if stop.error is not None:
+            self.logger.warning(f"Error while stopping image monitoring: {stop.error}")
+            return False
         try:
-            observer.stop()
-            observer.join(timeout)
+            observer.join(max(0.0, deadline - time.monotonic()))
         except Exception as e:
             self.logger.warning(f"Error while stopping image monitoring: {e}")
             return False

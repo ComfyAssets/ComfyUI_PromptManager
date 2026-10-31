@@ -596,13 +596,16 @@ PACKAGE_THREAD_NAMES = ("PromptManagerPromptCleanup", "PromptManagerImageWorker"
 
 def package_threads():
     """Live threads this design owns: the tracker, the image worker, and the
-    watchdog observer and emitters (which have no name of their own)."""
+    watchdog observer and emitters (which have no name of their own).
+    watchdog 7's InotifyFD, one daemon reader per process that no observer
+    stop ends, is not the package's."""
     from watchdog.utils import BaseThread
 
     return {
         thread
         for thread in threading.enumerate()
-        if thread.name in PACKAGE_THREAD_NAMES or isinstance(thread, BaseThread)
+        if thread.name in PACKAGE_THREAD_NAMES
+        or (isinstance(thread, BaseThread) and type(thread).__name__ != "InotifyFD")
     }
 
 
