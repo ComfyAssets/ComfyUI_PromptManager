@@ -34,7 +34,7 @@ from .history_reads import HistoryReadOperations
 from .health import HealthOperations, iter_consistency_issues
 from .duplicate_copies import DuplicateCopyOperations
 from .workflow_storage import WorkflowStorageOperations
-from .category_import import CategoryImportOperations, EmptyReplacement  # noqa: F401
+from .category_import import CategoryImportOperations
 from .image_categories import ImageCategoryOperations
 from .workflow_documents import (
     DocumentReader,

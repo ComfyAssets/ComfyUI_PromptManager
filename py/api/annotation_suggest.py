@@ -13,7 +13,6 @@ import math
 from ..tagging_defaults import (  # noqa: F401 - re-exported for the route
     LLM_MODEL_TYPES as LLM_MODELS,
     MAX_INSTRUCTION_BYTES,
-    MAX_INSTRUCTION_CHARS,
     MODEL_TYPES,
     WD14_MODEL_TYPES as WD14_MODELS,
     validate_template,
