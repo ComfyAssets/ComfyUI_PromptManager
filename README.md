@@ -167,6 +167,8 @@ Searches your library by text, category, tags and minimum rating, then outputs t
 
 ![Prompt Search List node producing three images](assets/readme/node-search.webp)
 
+To get the images of a Search List batch linked to their prompts, wire the Search List output into a Prompt Manager Text node, not straight into CLIP Text Encode. Wired straight in, the images stay unlinked: the search text is never saved as a prompt.
+
 ## Install
 
 **Requirements:** ComfyUI and Python 3.12 or newer. `watchdog` and `Pillow` are the only dependencies of their own; the rest comes with ComfyUI.

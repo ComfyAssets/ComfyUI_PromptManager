@@ -230,6 +230,9 @@ def _undecided_graph(found: _File) -> Decision:
     if switched is not None:
         # The legacy answer is a switched-off node's own text (#90)
         return Decision(switched, canonical=found.canonical)
+    if text is not None and _search_text(found.canonical["prompt"], text):
+        # The query of a Search List batch is a search, never a prompt (#548)
+        return _never(found, _unlinked(found), try_recorded_run=True)
     if text is not None and _joined_text(found.canonical["prompt"], text):
         # The legacy parser joins prepend + text + append: the text a
         # PromptManager node stores cannot be told from it (#343).
@@ -311,6 +314,8 @@ _NOT_TEXT_INPUTS = frozenset(
     }
 )
 _MAX_SWITCH_VISITS = 5000
+# The batch node whose ``text`` input is a library search query (#548).
+SEARCH_LIST_TYPE = "PromptSearchList"
 
 
 def _negative_name(key: Any) -> bool:
@@ -328,10 +333,28 @@ def _switched_off_upstream(graph: Any) -> Optional[str]:
     """
     if not isinstance(graph, dict):
         return None
-    roots = _positive_roots(graph)
-    if not roots:
+    upstream = _positive_upstream(graph)
+    if upstream is None:
         ids = _prompt_manager_ids(graph)
         return _switch_kind(save_setting(graph, node_id) for node_id in ids)
+    found = [
+        node_id
+        for node_id in upstream
+        if graph[node_id].get("class_type") in PROMPT_MANAGER_TYPES
+    ]
+    return _switch_kind(save_setting(graph, node_id) for node_id in found)
+
+
+def _positive_upstream(graph: dict) -> Optional[set]:
+    """The ids of the nodes upstream of a sampler's positive, or None when
+    the graph has no recognisable sampler.
+
+    Follows every input except negative and non-text ones (#90's walk follows
+    only prompt-like names).
+    """
+    roots = _positive_roots(graph)
+    if not roots:
+        return None
     seen, found = set(), set()
     stack = [str(link[0]) for link in roots]
     while stack and len(seen) < _MAX_SWITCH_VISITS:
@@ -342,8 +365,7 @@ def _switched_off_upstream(graph: Any) -> Optional[str]:
         node = graph.get(node_id)
         if not isinstance(node, dict):
             continue
-        if node.get("class_type") in PROMPT_MANAGER_TYPES:
-            found.add(node_id)
+        found.add(node_id)
         inputs = node.get("inputs")
         for key, value in (inputs.items() if isinstance(inputs, dict) else ()):
             if key in _NOT_TEXT_INPUTS or _negative_name(key):
@@ -351,7 +373,28 @@ def _switched_off_upstream(graph: Any) -> Optional[str]:
             if isinstance(value, (list, tuple)) and len(value) == 2:
                 if isinstance(value[0], (str, int)) and isinstance(value[1], int):
                     stack.append(str(value[0]))
-    return _switch_kind(save_setting(graph, node_id) for node_id in found)
+    return found
+
+
+def _search_text(graph: Any, text: str) -> bool:
+    """Whether ``text`` is the search query of a PromptSearchList node that
+    feeds a positive (any such node when no sampler is recognised).
+
+    The legacy parser traces a positive wired from a Search List to the
+    node's ``text`` input, which is the database search, never the prompt
+    the batch ran (#548). Each item is counted by the node at run time.
+    """
+    if not isinstance(graph, dict):
+        return False
+    upstream = _positive_upstream(graph)
+    ids = graph if upstream is None else upstream
+    wanted = text.strip()
+    return any(
+        isinstance(graph[node_id], dict)
+        and graph[node_id].get("class_type") == SEARCH_LIST_TYPE
+        and resolve_text(graph, node_id) == wanted
+        for node_id in ids
+    )
 
 
 def _off_text(graph: Any, text: str) -> Optional[str]:
