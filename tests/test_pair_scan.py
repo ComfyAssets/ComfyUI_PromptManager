@@ -90,6 +90,18 @@ class TestPairScan(AdminAPITestCase):
         self.assertEqual(self.api.db.list_prompt_pairs()["total"], 0)
         self.assertEqual(self._texts(), [])
 
+    def test_a_prompt_search_list_query_is_never_stored_as_a_prompt(self):
+        # #548: the search text was stored and every batch image linked to it.
+        g = sampled_graph()
+        g["10"] = {
+            "class_type": "PromptSearchList",
+            "inputs": {"text": "fox", "category": "", "tags": "", "limit": 50},
+        }
+        g["1"]["inputs"]["text"] = ["10", 0]
+        self.assertEqual(self._scanned("search.png", g), "unresolved")
+        self.assertEqual(self._texts(), [])
+        self.assertEqual(self.api.db.list_prompt_pairs()["total"], 0)
+
     def test_numeric_widgets_are_never_stored_as_a_prompt(self):
         # The pre-redesign scan stored "2048" from a resolution widget here.
         g = {

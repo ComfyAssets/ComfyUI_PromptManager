@@ -392,7 +392,10 @@ class TestStartStop(unittest.TestCase):
             self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs,
         ):
             self.assertFalse(self.monitor.stop_monitoring(timeout=5.0))
-        self.assertEqual(fake.calls[-1], ("join", 0.0))
+        # The stop runs on its own thread and gets 0 s too: it may not have
+        # returned yet, and then nothing is joined at all.
+        joins = [call for call in fake.calls if call[0] == "join"]
+        self.assertTrue(all(call == ("join", 0.0) for call in joins), fake.calls)
         self.assertIn(
             "watchdog observer still running after 0.0 s", "\n".join(logs.output)
         )
@@ -400,6 +403,80 @@ class TestStartStop(unittest.TestCase):
 
     def test_stop_monitoring_without_an_observer_returns_true(self):
         self.assertTrue(self.monitor.stop_monitoring())
+
+    def test_threads_the_observer_starts_are_daemons(self):
+        # watchdog 7 on Windows starts a plain threading.Thread per watch in
+        # observer.start(); a non-daemon one holds the interpreter's exit
+        # before any atexit callback runs (#561).
+        fake = ReaderObserver()
+        self.addCleanup(fake.release.set)
+        self._start_with(fake)
+        self.assertIsNotNone(fake.reader)
+        self.assertTrue(fake.reader.daemon)
+        self.assertFalse(threading.current_thread().daemon)
+
+    def test_an_observer_that_fails_to_start_on_its_thread_is_reported(self):
+        fake = FakeObserver()
+        fake.start = MagicMock(side_effect=OSError("handle refused"))
+        with self.assertLogs("prompt_manager.image_monitor", "ERROR") as logs:
+            with patch.object(im_mod, "Observer", return_value=fake):
+                self.monitor.start_monitoring([self.tmp.name])
+        self.assertIn("handle refused", "\n".join(logs.output))
+        self.assertFalse(self.monitor.is_monitoring)
+
+    def test_an_observer_stop_that_never_returns_is_bounded(self):
+        # watchdog's observer.stop() joins its emitters (and, in 7.x on
+        # Windows, their reader threads) without a limit (#561).
+        fake = StuckStopObserver()
+        self.addCleanup(fake.release.set)
+        self._start_with(fake)
+        with self.assertLogs("prompt_manager.image_monitor", "WARNING") as logs:
+            self.assertFalse(self.monitor.stop_monitoring(timeout=0.05))
+        self.assertIn("watchdog observer still running", "\n".join(logs.output))
+        self.assertTrue(fake.entered.wait(30))
+        self.assertFalse(self.monitor.is_monitoring)
+        # A second stop waits for the stop already running; it never calls
+        # observer.stop() a second time.
+        fake.release.set()
+        self.assertTrue(self.monitor.stop_monitoring())
+        self.assertEqual(fake.stop_calls, 1)
+        self.assertFalse(self.monitor._unfinished)
+
+
+class ReaderObserver(FakeObserver):
+    """A FakeObserver whose start() starts a plain thread, as watchdog 7's
+    Windows emitter does for its ReadDirectoryChangesW reader."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = threading.Event()
+        self.reader = None
+
+    def start(self):
+        self.reader = threading.Thread(target=self.release.wait)
+        self.reader.start()
+        super().start()
+
+    def stop(self):
+        self.release.set()
+        self.reader.join(30)
+        super().stop()
+
+
+class StuckStopObserver(FakeObserver):
+    """A FakeObserver whose stop() does not return until ``release``."""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
+        self.entered.set()
+        self.release.wait(30)
+        super().stop()
 
 
 class FakeEvent:

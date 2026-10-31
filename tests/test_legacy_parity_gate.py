@@ -108,6 +108,15 @@ LEGACY_WRONG = {
         "a cozy library with tall shelves",
         "legacy shows branch 1; the file name names branch 4's saver",
     ),
+    # #548, the one shape where nothing is read on purpose: legacy shows a
+    # PromptSearchList's search text ("fox") as the positive, but that is the
+    # library query, not the prompt the batch ran. The scan and the monitor
+    # never store or link it either (utils.file_prompt._search_text).
+    ("inspection_parity", "f22"): (
+        None,
+        "legacy shows the PromptSearchList search text; each item is decided "
+        "at run time, so no positive is read (#548)",
+    ),
 }
 
 
@@ -148,6 +157,24 @@ class LegacyParityGateTest(unittest.TestCase):
                     text = None
                 self.assertEqual(text, expected)
                 self.assertNotEqual(text, legacy)
+
+    def test_the_search_list_query_is_never_stored_either(self):
+        """#548: the scan and the monitor depart from legacy for f22 too."""
+        from utils.file_prompt import Policy, decide_file_prompt
+
+        graph, workflow = corpora()["inspection_parity"]["f22"]
+        self.assertEqual(legacy_positive(graph, workflow), "fox")
+        for policy in Policy:
+            with self.subTest(policy=policy):
+                decision = decide_file_prompt(
+                    {"prompt": graph, "workflow": workflow},
+                    file_name="f22.png",
+                    file_size=None,
+                    in_output=True,
+                    lookup=lambda: None,
+                    policy=policy,
+                )
+                self.assertEqual((decision.kind, decision.text), ("never", None))
 
     def test_no_graph_leaves_the_legacy_agreement(self):
         recorded = json.loads(AGREEMENT_PATH.read_text(encoding="utf-8"))
