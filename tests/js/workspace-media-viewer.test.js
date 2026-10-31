@@ -157,6 +157,27 @@ test('Viewer.js is built only on a loaded image and an unbuilt viewer is release
     } finally { view.dispose(); parentScope.dispose(); f.restore(); Object.assign(globalThis, globals); }
 });
 
+test('a pending Viewer whose element left the stage is still destroyed, without an error', async () => {
+    const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
+    const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c')];
+    const instances = [];
+    // Viewer.js's destroy() ends with `this.viewer.parentNode.removeChild(this.viewer)`, and moving on empties the stage.
+    f.win.Viewer = class { constructor(node,options) { this.node = node; this.options = options; this.destroyed = 0; this.ready = true; this.viewer = document.createElement('div'); instances.push(this); }
+        destroy() { if (!this.viewer.parent) throw new TypeError('null is not an object'); this.destroyed++; } resize() {} };
+    const globals = {ResizeObserver:globalThis.ResizeObserver, requestAnimationFrame:globalThis.requestAnimationFrame, cancelAnimationFrame:globalThis.cancelAnimationFrame};
+    Object.assign(globalThis, {ResizeObserver:class { observe() {} disconnect() {} }, requestAnimationFrame:() => 1, cancelAnimationFrame() {}});
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:controller,adapter,sender:{open(){}}});
+    try {
+        view.open({items,selectedKey:'c'.repeat(64)});f.walk(f.container,n => n.tagName === 'img')[0].fire('load');
+        const [loading] = instances, removed = [];
+        loading.node.removeAttribute = key => removed.push(key);
+        f.walk(f.container,n => n.attributes['aria-label'] === 'Close image viewer')[0].fire('click');
+        loading.options.viewed.call(loading);
+        assert.equal(loading.destroyed, 1, 'destroyed once its pending view settles');
+        assert.deepEqual(removed, ['src'], 'and its image is released');
+    } finally { view.dispose(); parentScope.dispose(); f.restore(); Object.assign(globalThis, globals); }
+});
+
 test('an inline Viewer still loading its image is destroyed only after it has viewed it', async () => {
     const {reportedLocationAdapter:adapter} = await import('../../web/js/workspace/history-media.mjs');
     const f = mountedDom(), parentScope = createScope(), controller = borrowedController(), items = [occurrenceMedia('1',1,'c')];

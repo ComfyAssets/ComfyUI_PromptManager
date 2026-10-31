@@ -267,7 +267,10 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
                 let fitFrame = 0, fitWidth, fitHeight, viewSettled = false, released = false, fallback = 0;
                 const release = () => {
                     if (released) return;
-                    released = true;clearTimeout(fallback);instance.destroy();node.removeAttribute('src');
+                    released = true;clearTimeout(fallback);
+                    // Moving on empties the stage, and destroy() removes the built viewer from its parent.
+                    if (instance.viewer && !instance.viewer.parentNode) document.createElement('div').append(instance.viewer);
+                    instance.destroy();node.removeAttribute('src');
                 };
                 const scheduleFit = () => {
                     if (!current() || fitFrame) return;
