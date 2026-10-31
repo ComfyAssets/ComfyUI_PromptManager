@@ -74,14 +74,14 @@ V8 files it writes under `coverage/js/raw`:
 
 ```sh
 PM_TEST_WORKERS=8 npm run --prefix tools/vendor test:coverage            # whole run, one report
-npm run --prefix tools/vendor test:coverage:shard -- 1/3                 # node units, viewer suite, workflows 1/3
-npm run --prefix tools/vendor test:coverage:shard -- 2/3                 # workflows 2/3 (likewise 3/3)
+npm run --prefix tools/vendor test:coverage:shard -- 1/4                 # node units, viewer suite, workflows 1/4
+npm run --prefix tools/vendor test:coverage:shard -- 2/4                 # workflows 2/4 (likewise 3/4, 4/4)
 npm run --prefix tools/vendor coverage:merge                             # report and baseline check of every raw file
 npm run --prefix tools/vendor test:workflows -- --project webkit --shard 2/2
 ```
 
 `coverage:merge` refuses an empty raw directory; it does not count shards, so run
-every shard first (CI's merge job checks all three arrived). Measured on a 32-CPU
+every shard first (CI's merge job checks all four arrived). Measured on a 32-CPU
 machine in the pinned image (2026-10-21): `test:coverage` takes about 5 minutes
 with 8 workers and 24 minutes with 1; all four projects, 8 workers, each test 3
 times (6132 tests), 24 minutes. A CI-sized run (`docker run --cpus=4`,
@@ -189,14 +189,14 @@ check, so run it before pushing a new or deleted frontend file instead of
 waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job. It requires the three `frontend coverage (shard N/3)` jobs and
+aggregate job. It requires the four `frontend coverage (shard N/4)` jobs and
 `frontend coverage (merge)` to succeed on every event. The four
 `page workflows (firefox|webkit, shard N/2)` jobs run only in the merge queue,
 on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
 `viewerjs` requires them to be skipped on a pull request and to succeed
 everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
-runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/3`
-(shard 1 also runs the node units and the viewer suite, shard 3 the vendor pins
+runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/4`
+(shard 1 also runs the node units and the viewer suite, shard 4 the vendor pins
 and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
 days). The merge job downloads them, fails unless all three arrived with raw
 files and without clashing names, then runs `coverage:merge` (report plus
@@ -664,7 +664,7 @@ what runs:
 | `py3.13 on ubuntu-latest`, `py3.14 on ubuntu-latest` | not created | run |
 | `real ComfyUI compatibility` | skipped | runs |
 | `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
-| `frontend coverage (shard N/3)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 3) | run | run |
+| `frontend coverage (shard N/4)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 4) | run | run |
 | `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
 | `all tests`, `viewerjs` (gates) | run | run |
 | `perf budget` | skipped | push and dispatch only (not in the queue) |

@@ -41,9 +41,13 @@ concurrency:
 # 7.3m-12.2m), because --shard splits by test count and the slow concept specs sort into shard 1. The page
 # workflows now run in three shards per browser with the limits unchanged; the per-shard times are
 # re-measured after three green main runs.
+# #563: coverage shards reached their 18-minute step limit three times on 2026-10-31 with no failing
+# test (PR #560 shard 2/3: 814 passed in 17.9m; queue run 41206495451 shard 1/3: 827 passed; PR #564
+# shard 2/3 twice), against recent green shards of 11m-17m. Coverage now runs in four shards with the
+# limits unchanged; the per-shard times are re-measured after three green main runs.
 jobs:
   frontend-coverage:
-    name: frontend coverage (shard ${{ matrix.shard }}/3)
+    name: frontend coverage (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
     # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
@@ -59,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
@@ -88,13 +92,13 @@ jobs:
       - run: npm ci --prefix tools/vendor --ignore-scripts
       # Shard 1 also runs the node units and the viewer suite, so the vendor pins and the tooling tests
       # run on the lightest shard instead.
-      - if: matrix.shard == 3
+      - if: matrix.shard == 4
         run: npm run --prefix tools/vendor check
-      - if: matrix.shard == 3
+      - if: matrix.shard == 4
         run: npm run --prefix tools/vendor test
-      - name: Page workflows with coverage, shard ${{ matrix.shard }}/3
+      - name: Page workflows with coverage, shard ${{ matrix.shard }}/4
         timeout-minutes: 18
-        run: npm run --prefix tools/vendor test:coverage:shard -- ${{ matrix.shard }}/3
+        run: npm run --prefix tools/vendor test:coverage:shard -- ${{ matrix.shard }}/4
       - name: Upload raw coverage
         uses: actions/upload-artifact@v7
         with:
@@ -136,13 +140,13 @@ jobs:
         with:
           pattern: coverage-raw-*
           path: ${{ runner.temp }}/coverage-raw
-      # coverage:merge only checks that raw files exist; merging two of three shards would report
+      # coverage:merge only checks that raw files exist; merging three of four shards would report
       # partial coverage, so a missing or empty shard artifact fails here.
       - name: Verify every shard's raw coverage arrived
         shell: bash
         env:
           STAGED_RAW: ${{ runner.temp }}/coverage-raw
-          EXPECTED_SHARDS: 3
+          EXPECTED_SHARDS: 4
         run: |
           found=0
           for shard in $(seq 1 "$EXPECTED_SHARDS"); do

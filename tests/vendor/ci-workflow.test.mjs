@@ -129,11 +129,11 @@ test('Firefox/WebKit page workflows run only outside pull requests; coverage run
     }
 });
 
-test('coverage runs as three shards that each upload their raw coverage', () => {
+test('coverage runs as four shards that each upload their raw coverage', () => {
     const coverage = allJobs.get('frontend-coverage');
-    assert.deepEqual(matrixList(coverage, 'shard'), ['1', '2', '3']);
-    assert.match(coverage, /^ {4}name: frontend coverage \(shard \$\{\{ matrix\.shard \}\}\/3\)$/m);
-    assert.match(coverage, /npm run --prefix tools\/vendor test:coverage:shard -- \$\{\{ matrix\.shard \}\}\/3/);
+    assert.deepEqual(matrixList(coverage, 'shard'), ['1', '2', '3', '4']);
+    assert.match(coverage, /^ {4}name: frontend coverage \(shard \$\{\{ matrix\.shard \}\}\/4\)$/m);
+    assert.match(coverage, /npm run --prefix tools\/vendor test:coverage:shard -- \$\{\{ matrix\.shard \}\}\/4/);
     const upload = steps(coverage).find(step => /name: coverage-raw-\$\{\{ matrix\.shard \}\}/.test(step));
     assert.ok(upload, 'each shard uploads coverage-raw-N');
     assert.match(upload, /^ {10}path: coverage\/js\/raw\/?$/m);
