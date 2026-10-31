@@ -216,6 +216,18 @@ test('D192: Pair category and tags reviews old Pair prompts, keeps an edited one
         const main = page.locator('#workspace-main');
         await expect(main.locator('h1')).toHaveText('Pair category and tags');
         await expect(main.getByRole('button', { name: 'Download report', exact: true })).toBeVisible();
+        // #550 live test: the Changed group lists the path-less record rows as plain text, never an open action.
+        const results = main.getByRole('region', { name: 'Results', exact: true });
+        await results.locator('.outcome-list > button').filter({ hasText: 'Changed' }).click();
+        const records = results.locator('.outcome-files > .file-row');
+        await expect(records).toHaveCount(1);
+        await expect(records.first()).toHaveText(/^Prompt \d+: category “night”; tags s550-glow, s550-warm$/);
+        expect(await records.first().evaluate(node => node.localName)).toBe('div');
+        await expect(results.locator('.outcome-files button')).toHaveCount(0);
+        await expect(results.getByRole('searchbox', { name: 'Filter results' })).toHaveAttribute('placeholder', 'Filter records…');
+        // Protected is counted, not listed: it says records, not files.
+        await results.locator('.outcome-list > button').filter({ hasText: 'Protected' }).click();
+        await expect(results.locator('.outcome-files > p.empty-state')).toHaveText('No records in this group.');
         const library = await serverJson(request, '/prompt_manager/library');
         const lantern = library.items.find(item => item.text === 'S550 lantern');
         const harbor = library.items.find(item => item.text === 'S550 harbor');

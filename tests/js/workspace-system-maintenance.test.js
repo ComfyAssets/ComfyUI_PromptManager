@@ -225,3 +225,40 @@ test('a rotated-log cleanup the log overtook offers Review again (S12)', async (
     assert.deepEqual(reviewAgainOf({ kind: 'maintenance', state: 'failed', scope: { operation: 'rotated_logs', failure: 'plan-changed' } }),
         { operation: 'rotated_logs' });
 });
+
+// #550 live test: a records operation's rows have no path, only a detail ("Prompt 12: category …").
+const RECORD_JOB = Object.freeze({
+    id: 'a'.repeat(32), kind: 'maintenance', title: 'Pair category and tags', state: 'finished',
+    admission: 'records', cancellable: false, progress: 100, processed: 0, total: 0, status_line: 'Filled 2 prompts',
+    scope: { operation: 'pair_metadata' }, counters: { changed: 2, protected: 0, errors: 0 },
+    started_at: 1, finished_at: 2,
+});
+
+test('#550: path-less record rows are kept with their detail; file rows are unchanged', async () => {
+    const { parseDetail, filterRows } = await jobView;
+    const parsed = parseDetail({ ...RECORD_JOB, outcomes: { changed: [
+        { path: '', root: '', root_index: null, detail: 'Prompt 2325: category “asian”; tags asian' },
+        { path: '', root: '', root_index: null, detail: '' },
+        { path: 'a/b.png', root: 'output', root_index: 0, detail: 'Link removed' },
+    ] }, log: [] });
+    assert.deepEqual(parsed.outcomes.changed, [
+        { path: '', root: '', root_index: null, detail: 'Prompt 2325: category “asian”; tags asian', record: true },
+        { path: 'a/b.png', root: 'output', root_index: 0, detail: 'Link removed', record: false },
+    ]);
+    // The filter reads a record's detail and a file's path.
+    assert.deepEqual(filterRows(parsed.outcomes.changed, 'asian').map(row => row.detail),
+        ['Prompt 2325: category “asian”; tags asian']);
+    assert.deepEqual(filterRows(parsed.outcomes.changed, 'a/b').map(row => row.path), ['a/b.png']);
+});
+
+test('#550: a records operation says records, not files, for an empty group and a filter', async () => {
+    const { groupCopy, EMPTY_GROUP, NO_MATCH } = await jobView;
+    assert.deepEqual(groupCopy(RECORD_JOB), { empty: 'No records in this group.', noMatch: 'No listed record matches this filter.',
+        placeholder: 'Filter records…' });
+    for (const operation of ['duplicate_prompts', 'unused_components']) {
+        assert.equal(groupCopy({ ...RECORD_JOB, scope: { operation } }).empty, 'No records in this group.');
+    }
+    const files = { empty: EMPTY_GROUP, noMatch: NO_MATCH, placeholder: 'Filter by file path…' };
+    assert.deepEqual(groupCopy({ ...RECORD_JOB, scope: { operation: 'missing_links' } }), files);
+    assert.deepEqual(groupCopy({ ...RECORD_JOB, kind: 'scan', scope: {} }), files);
+});
