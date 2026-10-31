@@ -41,6 +41,11 @@ read. These per-server hooks only change what a System test needs on top:
 - ``POST /__test__/system/duplicate-prompts`` (S7) adds two prompts whose
   text differs only in case and spacing (a duplicate prompt text group);
   ``{"again": true}`` adds a third, so a reviewed plan no longer matches;
+- ``POST /__test__/system/pair-metadata`` (#550) saves two saved pairs the
+  way the Pair node did before #546 (the pair holds the category and tags,
+  its new positive prompt none): ``S550 lantern`` (category ``night``, tags
+  ``s550-glow``, ``s550-warm``) fills; ``S550 harbor`` was edited after it was
+  saved, so the plan keeps it;
 - ``POST /__test__/system/duplicate-files`` (S7) writes one PNG's bytes three
   times: ``output/s7-dupes/same.png``, ``input/s7-dupes/same.png`` (the same
   relative path in the other source) and ``output/s7-dupes/copy.png``;
@@ -342,6 +347,25 @@ def register_system_commands(app, routes, api, root: Path):
                 "INSERT INTO prompts(text, created_at) VALUES(?, ?)", texts
             )
             conn.commit()
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/pair-metadata")
+    async def pair_metadata(request):
+        def seed():
+            api.db.save_prompt_pair(
+                "S550 lantern",
+                "S550 blurry",
+                category="night",
+                tags=["s550-glow", "s550-warm"],
+            )
+            api.db.save_prompt_pair("S550 harbor", category="night")
+            with api.db.model.get_connection() as conn:
+                conn.execute(
+                    "UPDATE prompts SET updated_at='2099-01-01T00:00:00+00:00' "
+                    "WHERE text='S550 harbor'"
+                )
+
+        await api._run_in_executor(seed)
         return web.json_response({"success": True})
 
     @routes.post("/__test__/system/duplicate-files")

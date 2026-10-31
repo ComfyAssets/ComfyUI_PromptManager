@@ -64,7 +64,9 @@ test('the section shows the concept rows; Metadata cache follows Q5 (D102)', asy
             item.querySelector('.row-actions > button').textContent, item.querySelector('.row-actions > button').className]),
     ]))).toEqual([
         ['Database', [['Integrity & relationship checks', 'Check', ''], ['Duplicate prompt text', 'Review plan', ''],
-            ['Optimize database', 'Review plan', ''], ['Unused prompt components', 'Review plan', 'danger']]],
+            ['Optimize database', 'Review plan', ''], ['Unused prompt components', 'Review plan', 'danger'],
+            // D192 (#550): beyond the concept.
+            ['Pair category and tags', 'Review plan', '']]],
         ['Images & cache', [['Missing-file links', 'Review plan', 'danger'], ['Duplicate image files', 'Find duplicates', ''],
             ['Thumbnail cache', 'Review options', ''], ['Metadata cache', 'Review plan', '']]],
     ]);
@@ -175,6 +177,53 @@ test("plan dialog shows the server's scope, protected, backup policy and media l
             await expect(dialog(page)).toHaveCount(0);
         }
         expect(await serverJson(request, '/__test__/system/digest')).toEqual(before);
+    });
+
+test('D192: Pair category and tags reviews old Pair prompts, keeps an edited one and fills the other (#550)',
+    async ({ page, request }) => {
+        await expect(await request.post('/__test__/system/pair-metadata')).toBeOK();
+        const answers = [];
+        page.on('response', response => { if (response.url().endsWith(PREVIEW_URL)) answers.push(response.json()); });
+        await openMaintenance(page);
+        const pairRow = row(page, 'Pair category and tags');
+        await expect(pairRow.locator('p')).toHaveText('Fill an empty category or tags on prompts older Pair node runs saved, ' +
+            'from their saved pairs. Only empty fields of never-edited prompts.');
+        await pairRow.getByRole('button', { name: 'Review plan', exact: true }).click();
+        const plan = dialog(page);
+        await expect(plan.locator('#modal-body > h3')).toHaveText('Pair category and tags');
+        const answer = await answers[0];
+        expect(answer.operation).toBe('pair_metadata');
+        expect(await gridOf(page)).toEqual([
+            ['Scope', '1 prompt to fill: 1 category, 1 tag set'],
+            ['Protected', '1 edited after it was saved'],
+            ['Backup', `Create and verify before changes (${answer.backup.destination_label})`],
+            ['Media on disk', 'No image file or saved pair is changed.'],
+        ]);
+        await expect(plan.locator('details > summary')).toHaveText('Listed records (3)');
+        await plan.locator('details > summary').click();
+        // Protected rows come first, the Record row last.
+        const lines = (await plan.locator('details > pre').textContent()).split('\n');
+        expect(lines).toHaveLength(3);
+        expect(lines[0]).toBe('S550 harbor · Kept: edited after it was saved; its empty category or tags may be intentional');
+        expect(lines[1]).toMatch(/^S550 lantern · Fills category “night” and 2 tags: s550-glow, s550-warm \(pair \d+\)$/);
+        expect(lines[2]).toMatch(/^Record · The job's report lists every filled field\. Download it to keep it/);
+        await plan.getByRole('button', { name: 'Apply reviewed operation', exact: true }).click();
+        await expect(dialog(page)).toHaveCount(0);
+        await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+        const job = await ended(request, page.url().split('/').pop());
+        expect([job.title, job.state, job.counters.changed, job.counters.protected])
+            .toEqual(['Pair category and tags', 'finished', 1, 1]);
+        const main = page.locator('#workspace-main');
+        await expect(main.locator('h1')).toHaveText('Pair category and tags');
+        await expect(main.getByRole('button', { name: 'Download report', exact: true })).toBeVisible();
+        const library = await serverJson(request, '/prompt_manager/library');
+        const lantern = library.items.find(item => item.text === 'S550 lantern');
+        const harbor = library.items.find(item => item.text === 'S550 harbor');
+        const filled = (await serverJson(request, `/prompt_manager/library/${lantern.id}?archive=all`)).positive;
+        expect([filled.category, [...filled.tags].sort()]).toEqual(['night', ['s550-glow', 's550-warm']]);
+        expect((await serverJson(request, `/prompt_manager/library/${harbor.id}?archive=all`)).positive.category).toBeFalsy();
+        await page.goto(`${workspace}#/library`);
+        await expect(page.locator(`article[data-prompt-id="${lantern.id}"] .card-title > .chip`)).toHaveText('night');
     });
 
 test('a plan with nothing to do shows only Close, never Apply', async ({ page, request }) => {

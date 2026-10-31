@@ -204,6 +204,8 @@ class Job:
         self.total = 0
         self.counters = dict.fromkeys(groups, 0)
         self.outcomes = {group: [] for group in groups}
+        # Groups whose report lists every row, beyond MAX_OUTCOME_ROWS (#550).
+        self.complete = {}
         self.log = []
         self._cancel_requested = False
         self.last_event = None
@@ -297,31 +299,36 @@ class Job:
             )
         self.log_line(log_line)
 
-    def record_counted(self, group, count, rows=()):
+    def record_counted(self, group, count, rows=(), *, complete=False):
         """Count ``count`` outcomes in ``group`` at once, listing ``rows``.
 
         For outcomes that need no log line each (a thumbnail job's already
         fresh previews): the counter is exact, ``rows`` (``record``'s row
         shape) are listed up to MAX_OUTCOME_ROWS, and nothing is logged.
+        ``complete`` also keeps every row for the report (#550: a record of
+        each change that must not be cut short; the caller bounds it).
         """
         if group not in self.counters:
             raise ValueError(f"Unknown outcome group {group!r} for {self.kind}")
         self.counters[group] += max(0, int(count))
         listed = self.outcomes[group]
+        kept = self.complete.setdefault(group, []) if complete else None
         for row in rows:
-            if len(listed) >= MAX_OUTCOME_ROWS:
+            if kept is None and len(listed) >= MAX_OUTCOME_ROWS:
                 break
             index = row.get("root_index")
             if isinstance(index, bool) or not isinstance(index, int) or index < 0:
                 index = None
-            listed.append(
-                {
-                    "path": _relative_path(row.get("path")),
-                    "root": str(row.get("root") or ""),
-                    "root_index": index,
-                    "detail": str(row.get("detail") or ""),
-                }
-            )
+            shaped = {
+                "path": _relative_path(row.get("path")),
+                "root": str(row.get("root") or ""),
+                "root_index": index,
+                "detail": str(row.get("detail") or ""),
+            }
+            if kept is not None:
+                kept.append(shaped)
+            if len(listed) < MAX_OUTCOME_ROWS:
+                listed.append(dict(shaped))
 
     def finish(self, state="finished"):
         """End the job in ``state`` and release every subscriber.
@@ -406,8 +413,9 @@ class Job:
         """The downloadable report: the summary, every outcome group and the log.
 
         Each group carries its exact count, its listed rows (at most
-        MAX_OUTCOME_ROWS) and whether the list is cut short. Rows and log lines
-        already hold root-relative paths only.
+        MAX_OUTCOME_ROWS, or every row of a ``complete`` group) and whether
+        the list is cut short. Rows and log lines already hold root-relative
+        paths only.
         """
         summary = self.summary()
         summary.pop("listed", None)
@@ -417,14 +425,19 @@ class Job:
             "generated_at": self._clock(),
             "job": summary,
             "outcomes": {
-                group: {
-                    "count": self.counters.get(group, len(rows)),
-                    "rows": [dict(row) for row in rows],
-                    "truncated": self.counters.get(group, len(rows)) > len(rows),
-                }
+                group: self._report_group(group, rows)
                 for group, rows in self.outcomes.items()
             },
             "log": list(self.log),
+        }
+
+    def _report_group(self, group, listed):
+        rows = self.complete.get(group, listed)
+        count = self.counters.get(group, len(rows))
+        return {
+            "count": count,
+            "rows": [dict(row) for row in rows],
+            "truncated": count > len(rows),
         }
 
     def report_filename(self):

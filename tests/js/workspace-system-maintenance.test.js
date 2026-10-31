@@ -21,8 +21,23 @@ test('the section lists the concept rows in its order, labels and danger marks',
     assert.deepEqual(MAINTENANCE_SURFACES.map(([heading]) => heading), surfaces.map(text => text.replace('&amp;', '&')));
     const production = MAINTENANCE_SURFACES.flatMap(([, rows]) => rows.map(([title, description, label, , danger = false]) =>
         [title, description, label, danger]));
-    assert.deepEqual(production, concept.map(([title, ...rest]) => [title.replace('&amp;', '&'), ...rest]));
-    assert.equal(production.length, 8);
+    // D192 (#550, beyond the concept): "Pair category and tags" follows "Unused prompt components" in Database.
+    const expected = concept.map(([title, ...rest]) => [title.replace('&amp;', '&'), ...rest]);
+    expected.splice(expected.findIndex(([title]) => title === 'Unused prompt components') + 1, 0, PAIR_ROW);
+    assert.deepEqual(production, expected);
+    assert.equal(production.length, 9);
+});
+
+const PAIR_ROW = Object.freeze(['Pair category and tags', 'Fill an empty category or tags on prompts older Pair node runs ' +
+    'saved, from their saved pairs. Only empty fields of never-edited prompts.', 'Review plan', false]);
+
+test('D192: the Pair category and tags row reviews the pair_metadata plan under its title (#550)', async () => {
+    const { MAINTENANCE_SURFACES } = await maintenance;
+    const { OPERATION_TITLES } = await review;
+    const [, database] = MAINTENANCE_SURFACES[0];
+    const row = database.find(([title]) => title === PAIR_ROW[0]);
+    assert.deepEqual(row, [PAIR_ROW[0], PAIR_ROW[1], PAIR_ROW[2], 'pair_metadata']);
+    assert.equal(OPERATION_TITLES.pair_metadata, 'Pair category and tags');
 });
 
 const PLAN = Object.freeze({

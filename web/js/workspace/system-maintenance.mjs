@@ -2,10 +2,12 @@
  * System › Maintenance (#249 System S7 Task 19): the concept's `renderSystem` "maintenance" body (app.js 688–690).
  *
  * - The notice "Check first. Review changes. Then apply." with "Run health checks" (D123), then the surfaces
- *   "Database" and "Images & cache" with the concept's eight operations, in its order, labels and danger marks.
+ *   "Database" and "Images & cache" with the concept's eight operations, in its order, labels and danger marks, plus
+ *   D192 (#550, beyond the concept): "Pair category and tags" after "Unused prompt components".
  * - Integrity & relationship checks → Check runs the same read-only health check and opens the Health report (D95);
  *   its "Review missing links" reviews a fresh Missing-file links plan, never a cleanup.
- * - Duplicate prompt text, Optimize database, Unused prompt components and Missing-file links → Review plan open the
+ * - Duplicate prompt text, Optimize database, Unused prompt components, Pair category and tags (`pair_metadata`: fill
+ *   old Pair prompts' empty category and tags from their saved pairs) and Missing-file links → Review plan open the
  *   D100 plan review (maintenance-review.mjs), which applies only what it showed, as an Activity job.
  * - Duplicate image files → Find duplicates starts the duplicate search as an Activity job and opens it; its view
  *   offers Review groups (D101) once it found some.
@@ -39,6 +41,9 @@ export const MAINTENANCE_SURFACES = Object.freeze([
         ['Optimize database', 'Reclaim unused SQLite space. This does not delete prompts or media.', 'Review plan', 'optimize'],
         ['Unused prompt components', 'Preview unreferenced components. Pair references and history remain protected.', 'Review plan',
             'unused_components', true],
+        // D192 (#550): beyond the concept. Fills only empty fields, deletes nothing (no danger mark).
+        ['Pair category and tags', 'Fill an empty category or tags on prompts older Pair node runs saved, from their saved ' +
+            'pairs. Only empty fields of never-edited prompts.', 'Review plan', 'pair_metadata'],
     ]],
     ['Images & cache', [
         ['Missing-file links', 'Remove stale database links only. Files on disk are never deleted by this operation.', 'Review plan',

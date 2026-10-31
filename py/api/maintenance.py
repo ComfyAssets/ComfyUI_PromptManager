@@ -1,8 +1,9 @@
 """Maintenance routes: reviewed, read-only plans (#249 System S6).
 
 ``POST /prompt_manager/maintenance/preview {operation, options:{}}`` reviews
-one operation (``duplicate_prompts``, ``optimize``, ``unused_components`` or
-``missing_links``; ``database/maintenance.py``; ``duplicate_files``,
+one operation (``duplicate_prompts``, ``optimize``, ``unused_components``,
+``missing_links`` or ``pair_metadata``, #550; ``database/maintenance.py``;
+``duplicate_files``,
 ``py/api/duplicate_files.py``; ``rotated_logs``, the rotated log copies,
 ``py/api/log_cleanup.py``, which has its own apply job) off the event loop and
 answers a ``Plan``: ``{success, token, operation, expires_at, scope:{count,
@@ -97,7 +98,11 @@ MAINTENANCE_TITLES = {
     "unused_components": "Unused prompt components",
     "missing_links": "Missing-file links",
     "workflow_storage": "Store each workflow once",
+    # #550, beyond the concept: fills old Pair prompts' empty category and tags.
+    "pair_metadata": "Pair category and tags",
 }
+# Operations whose job keeps every changed row for its report (#550).
+COMPLETE_RECORD = frozenset({"pair_metadata"})
 _OPERATION_ERROR = "operation must be one of: " + ", ".join(PREVIEW_OPERATIONS)
 MAINTENANCE_GROUPS = ("changed", "protected", "errors")
 MAX_TOKEN_LENGTH = 128
@@ -281,9 +286,27 @@ def short_space_message(short):
     )
 
 
-def _changed_line(operation, count, marks=0):
+def _pair_metadata_line(result):
+    count = result["changed"]
+    noun = (
+        "prompt from its saved pairs"
+        if count == 1
+        else "prompts from their saved pairs"
+    )
+    categories = result.get("categories", 0)
+    tag_sets = result.get("tag_sets", 0)
+    return (
+        f"Filled {count:,} {noun} "
+        f"({categories:,} {'category' if categories == 1 else 'categories'}, "
+        f"{tag_sets:,} {'tag set' if tag_sets == 1 else 'tag sets'})"
+    )
+
+
+def _changed_line(operation, count, marks=0, result=None):
     if operation == "optimize":
         return "Optimized the database"
+    if operation == "pair_metadata":
+        return _pair_metadata_line(result or {"changed": count})
     if operation == "duplicate_prompts":
         noun = "duplicate prompt" if count == 1 else "duplicate prompts"
         return f"Merged {count:,} {noun}"
@@ -668,9 +691,16 @@ class MaintenanceRoutesMixin:
         rows = await self._run_in_executor(
             self._maintenance_rows, plan.operation, result["rows"]
         )
-        job.record_counted("changed", result["changed"], rows)
+        job.record_counted(
+            "changed",
+            result["changed"],
+            rows,
+            complete=plan.operation in COMPLETE_RECORD,
+        )
         job.record_counted("protected", payload["protected"])
-        line = _changed_line(plan.operation, result["changed"], result.get("marks", 0))
+        line = _changed_line(
+            plan.operation, result["changed"], result.get("marks", 0), result
+        )
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
         return None
@@ -691,6 +721,8 @@ class MaintenanceRoutesMixin:
                     }
                 )
             return rows
+        if operation == "pair_metadata":
+            return [{"path": "", "detail": _filled_detail(item)} for item in described]
         if operation == "duplicate_prompts":
             return [
                 {
@@ -706,6 +738,16 @@ class MaintenanceRoutesMixin:
             {"path": "", "detail": f"Removed: {item.get('text') or item['prompt_id']}"}
             for item in described
         ]
+
+
+def _filled_detail(item):
+    """``Prompt 12: category “portrait”; tags a, b``: one filled prompt (#550)."""
+    parts = []
+    if "category" in item:
+        parts.append(f"category “{item['category']}”")
+    if item.get("tags"):
+        parts.append("tags " + ", ".join(item["tags"]))
+    return f"Prompt {item['prompt_id']}: " + "; ".join(parts)
 
 
 def backup_note(backup):
