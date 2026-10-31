@@ -284,6 +284,22 @@ test('a restore seen finishing elsewhere closes an open restore review and disca
     expect((await serverJson(request, '/__test__/system/backups')).stages).toBe(0);
 });
 
+// #583: in WebKit, while a page.route is armed, a file part of a FormData body is read only when the request goes on;
+// a garbage collection in between dropped the form once nothing referenced it, and the server got an empty file
+// ("Uploaded file is empty"). The page keeps the form until its upload is answered. The route holds the upload
+// through a collection, so the loss is certain rather than left to when the collector happens to run.
+test('a review upload survives a garbage collection while it is in flight', async ({ page, request }) => {
+    const bytes = await backupBytes(request);
+    await page.route(`**${PREVIEW_URL}`, async route => {
+        await page.requestGC();
+        await route.continue();
+    });
+    await openBackups(page);
+    expect((await chooseBackup(page, bytes)).status()).toBe(200);
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Restore preview');
+    expect((await serverJson(request, '/__test__/system/backups')).stages).toBe(1);
+});
+
 test('invalid file shows the validator message; nothing is staged', async ({ page, request }) => {
     const before = await serverJson(request, '/__test__/system/digest');
     await openBackups(page);

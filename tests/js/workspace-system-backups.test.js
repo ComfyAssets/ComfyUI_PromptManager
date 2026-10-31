@@ -128,6 +128,24 @@ test('invalid file shows the validator message; a refusal names its job; a lost 
     assert.deepEqual(await uploadRestore(file, { ApiError, fetchUrl: async () => response(200, PREVIEW) }), PREVIEW);
 });
 
+// #583: WebKit reads a FormData's file part by reference, possibly after a garbage collection; the page holds the form
+// until the upload is answered, then lets it go, whether the server staged it, refused it or the request failed.
+test('a review upload keeps its form referenced until the upload is answered', async () => {
+    const { uploadRestore, uploadsInFlight } = await backups;
+    const file = new File(['bytes'], 'b.db');
+    for (const answer of [async () => response(200, PREVIEW), async () => response(400, { success: false, error: 'x' }),
+        async () => { throw new TypeError('offline'); }]) {
+        let held;
+        const upload = uploadRestore(file, { ApiError, fetchUrl: async (url, init) => {
+            held = uploadsInFlight.has(init.body) && init.body.get('database_file').size === file.size;
+            return answer();
+        } }).catch(() => {});
+        await upload;
+        assert.equal(held, true);
+        assert.equal(uploadsInFlight.size, 0);
+    }
+});
+
 test('Cancel discards the stage through the api client and never throws', async () => {
     const { discardRestore, PREVIEW_URL } = await backups;
     const calls = [];
