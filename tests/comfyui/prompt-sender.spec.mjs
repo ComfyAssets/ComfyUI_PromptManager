@@ -151,7 +151,7 @@ test('native image inspector previews and sends a pair into real visible widgets
         await expect(sender.getByRole('status')).toContainText('1 other Prompt Manager node cannot receive this prompt.');
         await targets.selectOption({label:'All 2 eligible nodes'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
-        await expect(sender.locator('section.prompt-sender-node > h3')).toHaveText([new RegExp(`^#${id} `),new RegExp(`^#${twinId} `)]);
+        await expect(sender.locator('section.prompt-sender-node > h4')).toHaveText([new RegExp(`^#${id} `),new RegExp(`^#${twinId} `)]);
         await apply.click();
         // The tab title gains ComfyUI's unsaved mark once the workflow changed, so the window is matched loosely.
         await expect(sender.getByRole('status')).toHaveText(/^Sent to 2 of 2 nodes in .*ComfyUI\.$/);

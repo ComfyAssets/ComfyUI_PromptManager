@@ -77,6 +77,8 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
     function checkAcknowledgement(acknowledgement,targetId) {
         if(acknowledgement?.targetId!==targetId || !acknowledgement.values || Object.keys(acknowledgement.values).length!==Object.keys(roles).length || Object.keys(roles).some(role=>!Object.hasOwn(acknowledgement.values,role) || acknowledgement.values[role]!==roles[role])) throw Error('ComfyUI returned an unexpected acknowledgement.');
     }
+    const reviewedText = change => JSON.stringify([change.fields.map(field=>[field.role,field.before]).sort(),change.composition ?? null]);
+    const sameChanges = (reviewed,fresh) => reviewedText(reviewed)===reviewedText(fresh);
     /** Q542-2 C: every node of "All" previews before anything is written; the first refusal names its node. */
     async function previewEach(request,hostId,targets) {
         const reviewed=[];
@@ -92,21 +94,25 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
         }
         return reviewed;
     }
-    /** Sends the reviewed nodes one after another (each host apply checks its own preview), best effort past refusals. */
-    async function applyEach(request,hostId,reviewed,where) {
-        const sent=[],refused=[];
+    /**
+     * Sends the reviewed nodes one after another, best effort past refusals. Only the first node of a pass taken in this
+     * click keeps its ticket: a held review may have expired at the host (30 s), and our own writes may make later
+     * tickets stale, so every other node takes a fresh ticket that must show exactly the reviewed text.
+     */
+    async function applyEach(request,hostId,reviewed,where,held) {
+        const sent=[],refused=[];let written=false;
         for (const [index,{target,preview}] of reviewed.entries()) {
             let posted=false;
             try {
                 let ticket=preview.ticket;
-                if (index>0) {
-                    // A ticket taken before our earlier writes may be stale, so take a fresh one, but only for the text reviewed.
-                    const fresh=await fetchPreview(request,hostId,target,false);
+                if (index>0 || held) {
+                    // Until something was posted the revision is still the discovered one; after that our own write may move it.
+                    const fresh=await fetchPreview(request,hostId,target,!written);
                     if (!fresh) return;
-                    if (fresh.fields.some(field=>preview.fields.find(item=>item.role===field.role)?.before!==field.before)) throw Error('Its prompt changed since the preview. Preview again.');
+                    if (!sameChanges(preview,fresh)) throw Error('Its prompt changed since the preview. Preview again.');
                     ticket=fresh.ticket;
                 }
-                posted=true;
+                posted=written=true;
                 const acknowledgement=await client.apply(hostId,ticket,{signal:request.signal});
                 if (!current(request)) return;
                 checkAcknowledgement(acknowledgement,target.id);
@@ -185,7 +191,7 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
                 let reviewed;
                 try { reviewed=held?.length ? held : await previewEach(request,hostId,targets); }
                 catch(error) { if(current(request)) emit({phase:'error',message:error.message}); return; }
-                if (reviewed) await applyEach(request,hostId,reviewed,windowLabel);
+                if (reviewed) await applyEach(request,hostId,reviewed,windowLabel,Boolean(held?.length));
                 return;
             }
             const [target]=targets;
@@ -250,7 +256,7 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
         inspect.disabled=true;apply.disabled=true;
         const actions=element('footer',undefined,'prompt-sender-actions');actions.append(find,inspect,apply);
         dialog.append(header,description,controls,status,preview,actions);document.body.append(dialog);
-        let session,closed=false;
+        let session,closed=false,headingIds=0;
         function dispose() {
             if(closed) return;closed=true;local.dispose();session?.dispose();
             if(dialog.open) dialog.close();dialog.remove();
@@ -268,7 +274,7 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
             select.replaceChildren(...[["",placeholder],...entries].map(([value,label])=>{const option=element('option',label);option.value=value;return option;}));select.value=value;
         }
         function textBlock(parent,label,value,level=4) {
-            parent.append(element(`h${level}`,label));const text=element('pre');text.tabIndex=0;text.append(element('code',value === '' ? '(empty)' : value));parent.append(text);
+            parent.append(element(`h${Math.min(level,6)}`,label));const text=element('pre');text.tabIndex=0;text.append(element('code',value === '' ? '(empty)' : value));parent.append(text);
         }
         function render(state) {
             if(closed) return;
@@ -291,10 +297,11 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
             }
             if(state.previews?.length) {
                 preview.append(element('h3','Review changes'));
-                // One section per node of "All", in the order they will be sent.
+                // One section per node of "All", in the order they will be sent, named by its heading.
                 for(const item of state.previews) {
-                    const node=element('section',undefined,'prompt-sender-node');node.setAttribute('aria-label',item.label);
-                    node.append(element('h3',item.label));changes(node,item.preview,4);preview.append(node);
+                    const node=element('section',undefined,'prompt-sender-node');const heading=element('h4',item.label);
+                    heading.id=`prompt-sender-node-${++headingIds}`;node.setAttribute('aria-labelledby',heading.id);
+                    node.append(heading);changes(node,item.preview,5);preview.append(node);
                 }
             }
         }

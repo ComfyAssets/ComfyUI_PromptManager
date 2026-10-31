@@ -345,7 +345,7 @@ test('All eligible nodes previews each node, sends in node id order and names a 
         await page.screenshot({path:testInfo.outputPath('send-all-option.png')});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         const reviews=sender.locator('section.prompt-sender-node');
-        await expect(reviews.locator('> h3')).toHaveText(['#3 Prompt Manager (+/-)','#7 Edited in ComfyUI','#12 Prompt Manager (+/-)']);
+        await expect(reviews.locator('> h4')).toHaveText(['#3 Prompt Manager (+/-)','#7 Edited in ComfyUI','#12 Prompt Manager (+/-)']);
         await expect(sender.getByRole('region',{name:'#12 Prompt Manager (+/-)',exact:true})).toContainText('Existing 12');
         expect(await host.evaluate(()=>window.applied)).toEqual([]);
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();

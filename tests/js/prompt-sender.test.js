@@ -315,7 +315,7 @@ test('a node whose text changed after the preview pass is refused, not overwritt
     assert.deepEqual(s.calls.filter(call=>call[0]==='apply').map(call=>call[1]),['2','9']);
     assert.match(s.session.state.message,/^Sent to 2 of 3 nodes in Flow - ComfyUI\. #10 Node 10: Its prompt changed since the preview\./);s.session.dispose();
 });
-test('Preview with All shows every node in order, and Apply sends the reviewed first ticket',async()=>{
+test('Preview with All shows every node in order, and Apply sends fresh tickets that match the review',async()=>{
     const {createSendSession,ALL_NODES}=await source;const s=await allSession(createSendSession);
     s.session.selectTarget(ALL_NODES);await s.session.preview();
     assert.equal(s.session.state.phase,'ready');assert.equal(s.session.state.preview,null);
@@ -323,8 +323,9 @@ test('Preview with All shows every node in order, and Apply sends the reviewed f
     assert.match(s.session.state.message,/Sending to all 3 eligible nodes in Flow - ComfyUI\. Review the complete changes, then apply\./);
     const first=s.session.state.previews[0].preview.ticket;
     await s.session.apply();
-    assert.deepEqual(order(s.calls),['preview 2','preview 9','preview 10','apply 2','preview 9','apply 9','preview 10','apply 10']);
-    assert.equal(s.calls.find(call=>call[0]==='apply')[2],first);
+    // A held review may have outlived the host's 30 s tickets, so even the first node takes a fresh one.
+    assert.deepEqual(order(s.calls),['preview 2','preview 9','preview 10','preview 2','apply 2','preview 9','apply 9','preview 10','apply 10']);
+    assert.notEqual(s.calls.find(call=>call[0]==='apply')[2],first);assert.equal(s.session.state.phase,'success');
     s.session.selectTarget('2');assert.deepEqual(s.session.state.previews,[]);s.session.dispose();
 });
 test('the dialog offers All for two or more nodes and reviews each node under its name',async()=>{
@@ -342,4 +343,23 @@ test('the dialog offers All for two or more nodes and reviews each node under it
         dom.find(dialog,node=>node.textContent==='Apply to ComfyUI').dispatchEvent(new Event('click'));for(let i=0;i<10;i++)await tick();
         assert.ok(dom.find(dialog,node=>node.textContent==='Sent to 2 of 2 nodes in Flow - ComfyUI.'));
     } finally {scope.dispose();dom.restore();}
+});
+test('an expired review still sends every node, and a held review checks the discovered revision first',async()=>{
+    const {createSendSession,ALL_NODES}=await source;let reviewing=true;
+    // The host refuses every ticket taken during the review, as after its 30 s expiry.
+    const s=await allSession(createSendSession,{preview:(id,calls)=>({ticket:`t-${id}-${reviewing?'old':calls.length}`,target:{id},fields:[{role:'positive',before:'old',after:'new'}]}),apply:id=>({targetId:id,values:{positive:'new'}})});
+    const realApply=s.client.apply;s.client.apply=async(host,ticket,options)=>{if(ticket.endsWith('-old'))throw Error('Preview expired or unavailable; preview again');return realApply(host,ticket,options);};
+    s.session.selectTarget(ALL_NODES);await s.session.preview();reviewing=false;await s.session.apply();
+    assert.equal(s.session.state.message,'Sent to 3 of 3 nodes in Flow - ComfyUI.');s.session.dispose();
+    const moved=await allSession(createSendSession,{revision:'1:4',preview:(id,calls)=>({ticket:`t-${id}`,revision:calls.length>3?'1:5':'1:4',target:{id},fields:[{role:'positive',before:'old',after:'new'}]})});
+    moved.session.selectTarget(ALL_NODES);await moved.session.preview();assert.equal(moved.session.state.phase,'ready');await moved.session.apply();
+    assert.match(moved.session.state.message,/^Sent to 0 of 3 nodes in Flow - ComfyUI\. #2 Node 2: The workflow changed since this window was found/);
+    assert.equal(moved.calls.filter(call=>call[0]==='apply').length,0);moved.session.dispose();
+});
+test('a changed prepend or append after the review refuses that node',async()=>{
+    const {createSendSession,ALL_NODES}=await source;let edited=false;
+    const s=await allSession(createSendSession,{preview:id=>({ticket:`t-${id}`,target:{id},fields:[{role:'positive',before:'old',after:'new'}],composition:{prepend:id==='9'&&edited?'typed':'trigger',append:'',before:'trigger old',after:'trigger new'}}),apply:id=>{edited=true;return{targetId:id,values:{positive:'new'}};}});
+    s.session.selectTarget(ALL_NODES);await s.session.apply();
+    assert.deepEqual(s.calls.filter(call=>call[0]==='apply').map(call=>call[1]),['2','10']);
+    assert.match(s.session.state.message,/^Sent to 2 of 3 nodes in Flow - ComfyUI\. #9 Node 9: Its prompt changed since the preview\./);s.session.dispose();
 });

@@ -4364,12 +4364,15 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   stay counted in the discovery sentence. One window only. Preview stays optional (D175): Preview changes
   shows one `section.prompt-sender-node` per node, headed "#<id> <title>", in send order (node id,
   numeric). Apply previews every node first and writes nothing if any refuses ("#<id> <title>: <reason>
-  Nothing was sent."). Then it sends one node after another: the first with its reviewed ticket, each later
-  node with a fresh ticket, because our own write may move the graph version; that fresh preview skips the
-  discovery revision check but is refused if the node's text differs from the reviewed "Before". Refusals
-  are best effort: "Sent to 2 of 3 nodes in <window>. #12 <title>: <host's refusal>." A lost reply stops
-  the run, names that node as unknown and lists the nodes not sent. Closing the dialog stops after the
-  current node. Unit tests in `tests/js/prompt-sender.test.js`, a fake three-node host in
+  Nothing was sent."). Then it sends one node after another. Only the first node of a pass taken in that
+  click keeps its ticket; every other node, and every node of a held Preview (host tickets expire after
+  30 s), takes a fresh ticket that is refused unless its Before texts and composition equal the reviewed
+  ones. That fresh preview checks the discovered revision until something has been posted, and not after,
+  since our own write may move the graph version. Refusals are best effort: "Sent to 2 of 3 nodes in
+  <window>. #12 <title>: <host's refusal>."; Apply stays available and a retry sends to every node again
+  (rewriting the same text). A lost reply stops the run, names that node as unknown and lists the nodes
+  not sent. Closing the dialog stops after the current node. The review sections are labelled by their
+  `h4` node heading. Unit tests in `tests/js/prompt-sender.test.js`, a fake three-node host in
   `tests/browser/prompt-inspector.spec.mjs`, real Classic and Nodes 2.0 widgets in
   `tests/comfyui/prompt-sender.spec.mjs`.
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window

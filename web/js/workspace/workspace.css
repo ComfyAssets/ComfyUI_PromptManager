@@ -418,7 +418,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 .prompt-sender-field :where(pre, textarea), .prompt-sender-composition { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.65; max-inline-size: 100%; /* D48 */ }
 /* D191 (#542): each node of "All eligible nodes" reviews under its own heading. */
 .prompt-sender-node { border-block-start: 1px solid var(--ca-line); padding-block-start: 14px; margin-block: 18px; min-inline-size: 0; /* D191 */ }
-.prompt-sender-node > h3 { font-size: 15px; /* D191 */ }
+.prompt-sender-node > h4 { font-size: 15px; /* D191 */ }
 .prompt-sender-field textarea { inline-size: 100%; min-block-size: 100px; resize: vertical; /* D48 */ }
 .prompt-sender-composition { padding: 12px; background: var(--ca-field); border-radius: 6px; /* D48 */ }
 .prompt-sender-actions { justify-content: flex-end; margin-block-start: 18px; /* D48 */ }
