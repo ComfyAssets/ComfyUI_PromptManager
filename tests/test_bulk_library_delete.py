@@ -385,8 +385,8 @@ class TestArchivedReaders(LibraryDeleteCase):
 
     def setUp(self):
         super().setUp()
-        self.kept, _kn, _kp = self.paired("Kept cat", "kept blur")
-        self.gone, _gn, _gp = self.paired("Gone cat", "gone blur")
+        self.kept, _, _ = self.paired("Kept cat", "kept blur")
+        self.gone, _, _ = self.paired("Gone cat", "gone blur")
         for pid, category, tag in ((self.kept, "keep", "k"), (self.gone, "gone", "g")):
             self.db.update_prompt_metadata(pid, category=category, tags=[tag])
         self.apply([self.gone])

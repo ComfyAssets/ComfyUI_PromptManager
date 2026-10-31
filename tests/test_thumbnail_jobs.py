@@ -894,7 +894,7 @@ class TestLegacyStreamOnTheJob(ThumbnailJobCase):
         self.assertEqual(resp.status, 200)
         await self._wait(first)
         job = self.api._jobs.active("thumbnails")
-        _subscribed, state["left"] = self._watch_subscribers(job)
+        _, state["left"] = self._watch_subscribers(job)
         resp.close()  # the gallery tab went away
         closed.set()
         await self._wait(state["left"])  # the server saw the client go

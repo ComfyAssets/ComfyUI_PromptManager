@@ -169,7 +169,7 @@ class TestInspectionItemsAnchor(InspectionTestCase):
         path = self._write("branch_1_00001_.png", graph=branch_graph(*PROMPTS))
         await self._scan()
 
-        _item, (status, data) = await self._apply("add a red hat")
+        _, (status, data) = await self._apply("add a red hat")
 
         self.assertEqual(status, 200, data)
         self.assertEqual(self._linked_text(path), "add a red hat")
@@ -316,7 +316,7 @@ class TestDefaultItemsAnchor(InspectionTestCase):
         with patch.object(review_capture, "_captured_inspection", return_value=None):
             await self._scan()
 
-        _item, (status, data) = await self._apply("cat")
+        _, (status, data) = await self._apply("cat")
 
         self.assertEqual(status, 200, data)
         self.assertEqual(self._linked_text(path), "cat")

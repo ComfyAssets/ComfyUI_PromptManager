@@ -337,7 +337,7 @@ class TestDefaultProfileStillDecides(InspectionTestCase):
                 side_effect=AssertionError("inspection choices were asked"),
             ),
         ):
-            _item, (status, data) = await self._apply("cat")
+            _, (status, data) = await self._apply("cat")
         self.assertEqual(status, 200, data)
         # The saver anchor check (#390): with the file's name, nothing matches.
         self.assertEqual([c[1] for c in calls], ["two.png"])
@@ -383,7 +383,7 @@ class TestApplyInspectionCandidate(InspectionTestCase):
             return real(metadata, file_name)
 
         with patch.object(review_capture, "resolve_inspection", side_effect=spy):
-            _item, (status, data) = await self._apply("make it night")
+            _, (status, data) = await self._apply("make it night")
 
         self.assertEqual(status, 200, data)
         self.assertEqual(len(calls), 1)
@@ -566,7 +566,7 @@ class TestVersionChanges(InspectionTestCase):
         self.assertNotEqual(item["resolver_version"], old["resolver_version"])
         self.assertEqual(job["scope"]["review_items"], 1)
         self.assertEqual(self._pending(), 1)
-        _item, (status, data) = await self._apply("make it night")
+        _, (status, data) = await self._apply("make it night")
         self.assertEqual(status, 200, data)
         self.assertEqual(self._linked_text(path), "make it night")
 
@@ -885,7 +885,7 @@ class TestInspectionResolverVersion(InspectionTestCase):
             await self._scan("all")
             (item,) = self._items()
             self.assertNotEqual(item["id"], old["id"])
-            _item, (status, data) = await self._apply("add a red hat")
+            _, (status, data) = await self._apply("add a red hat")
 
         self.assertEqual(status, 200, data)
         self.assertEqual(self._linked_text(path), "add a red hat")
