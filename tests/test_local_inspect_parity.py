@@ -1112,10 +1112,10 @@ class LocalProjectionParityTests(unittest.TestCase):
                 self.assertEqual(_canonical_bytes(local), _canonical_bytes(server))
                 seen.update(server["record_formats"].values())
                 seen.add(server["workflow_graph"]["status"])
-        self.assertTrue(
-            {"reserialized-json", "original-text", "invalid", "limited"} <= seen
+        self.assertLessEqual(
+            {"reserialized-json", "original-text", "invalid", "limited"}, seen
         )
-        self.assertTrue({"parsed", "malformed", "limited"} <= seen)
+        self.assertLessEqual({"parsed", "malformed", "limited"}, seen)
 
 
 def _server_evidence(records, file_name=None):
@@ -1287,7 +1287,7 @@ class LocalResolverParityTests(unittest.TestCase):
     def test_local_roles_match_selection_record_sets(self):
         answers = self._compare(selection_cases.selection_cases())
         reasons = {answer["resolution"]["reason"] for answer in answers.values()}
-        self.assertTrue(
+        self.assertLessEqual(
             {
                 "Every sampler branch uses the same prompt pair",
                 "Multiple sampler branches",
@@ -1301,8 +1301,8 @@ class LocalResolverParityTests(unittest.TestCase):
                 "Negative prompt delimiter is absent",
                 "Parameters exceed the length limit",
                 "No A1111 parameters",
-            }
-            <= reasons
+            },
+            reasons,
         )
         # A stage reaching only previews is dropped: one sampler is named.
         self.assertEqual(
@@ -1352,7 +1352,7 @@ class LocalResolverParityTests(unittest.TestCase):
     def test_local_roles_match_golden_record_sets(self):
         answers = self._compare(resolver_cases.golden_cases())
         codes = {answer["resolution"]["reason_code"] for answer in answers.values()}
-        self.assertTrue(
+        self.assertLessEqual(
             {
                 "malformed",
                 "unsupported-node",
@@ -1364,16 +1364,16 @@ class LocalResolverParityTests(unittest.TestCase):
                 "graph-ceiling",
                 "no-sampler",
                 None,
-            }
-            <= codes
+            },
+            codes,
         )
         sources = {
             side["source"]
             for answer in answers.values()
             for side in answer["prompts"].values()
         }
-        self.assertTrue(
-            {"execution", "graph-inferred", "zeroed-conditioning"} <= sources
+        self.assertLessEqual(
+            {"execution", "graph-inferred", "zeroed-conditioning"}, sources
         )
 
     def test_committed_resolver_vectors_are_current(self):

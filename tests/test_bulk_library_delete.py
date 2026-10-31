@@ -642,7 +642,7 @@ class TestPairedDelete(LibraryDeleteCase):
         # The negatives stay, and the image file stays on disk.
         self.assertTrue((self.root / "owl.png").exists())
         texts = [row[0] for row in rows(self.db, "SELECT text FROM prompts")]
-        self.assertTrue({"dark", "fog", "Bystander"} <= set(texts))
+        self.assertLessEqual({"dark", "fog", "Bystander"}, set(texts))
 
     def test_a_negative_used_by_another_positive_is_archived_never_deleted(self):
         shared = save(self.db, "Shared")
