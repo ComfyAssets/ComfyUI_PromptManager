@@ -1041,12 +1041,12 @@ class AutotagRoutesMixin:
                 return self._bad_request('existing must be "skip" or "merge"')
             try:
                 options = self._single_options(data, model_type)
+            except OptionError as error:
+                return self._bad_request(str(error))
             except (ValueError, TypeError):
                 return self._bad_request(
                     "general_threshold and character_threshold must be numeric"
                 )
-            except OptionError as error:
-                return self._bad_request(str(error))
             target, error = await self._select_autotag_target(data)
             if error is not None:
                 return error

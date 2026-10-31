@@ -154,6 +154,116 @@ class TestRetire(_Case):
 
 
 class TestCalls(_Case):
+    def test_iteration_and_fetches_share_one_position(self) -> None:
+        conn = self.connect()
+        conn.executemany("INSERT INTO t VALUES (?)", [(x,) for x in range(1, 260)])
+        cursor = conn.execute("SELECT x FROM t ORDER BY x")
+        self.assertIs(iter(cursor), cursor)
+        self.assertEqual(next(cursor), (0,))
+        self.assertEqual(cursor.fetchone(), (1,))
+        self.assertEqual(cursor.fetchmany(2), [(2,), (3,)])
+        self.assertEqual(next(iter(cursor)), (4,))
+        self.assertEqual(cursor.fetchall(), [(x,) for x in range(5, 260)])
+        self.assertEqual(list(cursor), [])
+
+    def test_a_partial_loop_can_resume_without_skipping_rows(self) -> None:
+        cursor = self.connect().execute(
+            "SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3"
+        )
+        for row in cursor:
+            self.assertEqual(row, (1,))
+            break
+        self.assertEqual(list(cursor), [(2,), (3,)])
+
+    def test_an_existing_iterator_refuses_reads_after_retire_or_close(self) -> None:
+        for retire in (False, True):
+            with self.subTest(retire=retire):
+                conn = self.connect()
+                cursor = conn.execute("SELECT 1 UNION ALL SELECT 2")
+                iterator = iter(cursor)
+                self.assertEqual(next(iterator), (1,))
+                if retire:
+                    conn.retire()
+                else:
+                    cursor.close()
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    next(iterator)
+
+    def test_buffered_fetchmany_matches_sqlite_sizes_and_validation(self) -> None:
+        conn = self.connect()
+        conn.executemany("INSERT INTO t VALUES (?)", [(x,) for x in range(1, 260)])
+        conn.commit()
+        with contextlib.closing(sqlite3.connect(self.path)) as plain:
+            for size in (None, 0, 1, 2, 127, 128, 130, 300, -1):
+                with self.subTest(size=size):
+                    cursors = [
+                        c.execute("SELECT x FROM t ORDER BY x") for c in (plain, conn)
+                    ]
+                    for cursor in cursors:
+                        cursor.arraysize = 2
+                        self.assertEqual(next(iter(cursor)), (0,))
+                    results = []
+                    for cursor in cursors:
+                        try:
+                            rows = (
+                                cursor.fetchmany()
+                                if size is None
+                                else cursor.fetchmany(size)
+                            )
+                        except ValueError as error:  # Negative sizes on Python 3.14+.
+                            rows = type(error)
+                        results.append((rows, cursor.fetchall()))
+                    self.assertEqual(*results)
+        for args, kwargs in ((("bad",), {}), ((1, 2), {}), ((), {"unknown": 1})):
+            cursor = conn.execute("SELECT 1 UNION ALL SELECT 2")
+            self.assertEqual(next(iter(cursor)), (1,))
+            with self.assertRaises(TypeError):
+                cursor.fetchmany(*args, **kwargs)
+            self.assertEqual(cursor.fetchone(), (2,))
+
+    def test_reexecuting_a_cursor_matches_sqlite_result_lifetime(self) -> None:
+        conn = self.connect()
+        conn.row_factory = sqlite3.Row
+        for method, args in (
+            ("execute", ("SELECT 9 AS x",)),
+            ("executemany", ("INSERT INTO t VALUES (?)", [(9,)])),
+            ("executescript", ("SELECT 9 AS x;",)),
+        ):
+            with self.subTest(method=method):
+                cursor = conn.execute("SELECT 1 AS x UNION ALL SELECT 2")
+                self.assertEqual(next(iter(cursor))["x"], 1)
+                self.assertIs(getattr(cursor, method)(*args), cursor)
+                if method == "execute":
+                    self.assertEqual(cursor.fetchone()["x"], 9)
+                elif method == "executescript":
+                    self.assertEqual(cursor.fetchone()["x"], 2)
+                self.assertEqual(list(cursor), [])
+
+    def test_failed_execution_matches_sqlite_result_lifetime(self) -> None:
+        conn = self.connect()
+        cases = (
+            ("execute", (None,)),
+            ("execute", ("invalid sql",)),
+            ("execute", ("SELECT ?", ())),
+            ("executemany", (None, [])),
+            ("executemany", ("SELECT 9", [])),
+            ("executescript", (None,)),
+            ("executescript", ("invalid sql;",)),
+        )
+        with contextlib.closing(sqlite3.connect(self.path)) as plain:
+            for method, args in cases:
+                with self.subTest(method=method, args=args):
+                    results = []
+                    for connection in (plain, conn):
+                        cursor = connection.execute("SELECT 1 UNION ALL SELECT 2")
+                        self.assertEqual(next(iter(cursor)), (1,))
+                        with self.assertRaises(
+                            sqlite3.Error if isinstance(args[0], str) else TypeError
+                        ):
+                            getattr(cursor, method)(*args)
+                        results.append(cursor.fetchall())
+                    self.assertEqual(*results)
+
     def test_every_cursor_call_works_and_is_refused_once_retired(self):
         conn = self.connect()
         conn.row_factory = sqlite3.Row
