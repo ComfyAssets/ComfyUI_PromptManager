@@ -1,9 +1,9 @@
-name: Windows and macOS
+name: Windows
 
 permissions:
   contents: read
 
-# Non-blocking portability runs (#420): never on pull requests or in the merge queue, and no context
+# Non-blocking Windows runs (#420; macOS dropped from CI in #571): never on pull requests or in the merge queue, and no context
 # here is a required check. A red run is fixed at its cause before the workspace cutover (#334).
 on:
   push:
@@ -25,10 +25,7 @@ env:
 # run counts (tests/vendor/ci-workflow.test.mjs recomputes it, #493).
 # Measured 2026-10-29 on main runs 40935337099 (dd247e3), 40938407252 (dd247e3), 40941240624 (dd247e3):
 #   slowest leg: 7m24s (py3.12 windows) / 7m31s (py3.13 windows) / 7m32s (py3.14 windows) -> 15 min
-#     (windows 4m56s-7m32s, macos 4m39s-6m14s)
-#   native-trash (#499) has no green main runs yet: its probe, run 40949370943 (2026-10-29), took
-#     about 1 minute per macOS leg, so ceil(1.5 x 2) + 3 gives it 6 minutes (step 4). Recalibrate
-#     after three green runs.
+#     (windows 4m56s-7m32s)
 #   native-trash-linux (#543) has no green main runs yet: it installs the dev requirements and runs
 #     one test module, about 1 minute by the same estimate, so ceil(1.5 x 2) + 3 gives it 6 minutes.
 #     Recalibrate after three green runs.
@@ -40,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest]
         python-version: ["3.12", "3.13", "3.14"]
 
     steps:
@@ -60,7 +57,7 @@ jobs:
 
       # The runner's TEMP is on C:, the OS disk, where a flush took about 6 ms
       # and a test database's create-to-delete about 111 ms; on the D: work
-      # disk the same took 0.5 ms and 23 ms (macOS: 19 ms). Tests write their
+      # disk the same took 0.5 ms and 23 ms. Tests write their
       # databases under TEMP, so it moves to a folder on D: (measured in #487,
       # run 40915866444). The runner's TEMP was an 8.3 short name
       # (C:\Users\RUNNER~1\...), so the new one is spelled by its short name too
@@ -82,31 +79,6 @@ jobs:
         env:
           PM_TEST_SLOWEST: "40"
         run: python -m tests.run_suite -v
-
-  # The real Trash on both macOS CPUs (#499 design §10.2). It runs apart from the suite, so a red
-  # suite never skips the native proof.
-  native-trash:
-    name: native trash on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 6
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, macos-15-intel]
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Native trash proof
-        timeout-minutes: 4
-        env:
-          PM_NATIVE_TRASH: macos
-        run: python -m unittest tests.test_trash_macos_native tests.test_trash_macos -v
 
   # The same tests as the fake mount table, on a real ext4 mount used as the output root (#543). A
   # runner can mount with sudo; the tests run as the normal user, so owner and mode checks are real.

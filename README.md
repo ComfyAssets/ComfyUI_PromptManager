@@ -236,12 +236,12 @@ The documentation for those pages is in [README-legacy.md](README-legacy.md).
 
 | Layer | What runs |
 | --- | --- |
-| Python | Over 200 test files on Linux, Windows and macOS with Python 3.12 to 3.14, with an 85% coverage gate |
+| Python | Over 200 test files on Linux and Windows with Python 3.12 to 3.14, with an 85% coverage gate |
 | Frontend | About 100 unit test files, with coverage floors per file |
 | Browser | Over 60 Playwright spec files in Chromium, Firefox, WebKit and touch emulation |
 | Real ComfyUI | A pinned CPU ComfyUI, started in Classic and Nodes 2.0, running real workflows |
 
-Linux runs on every pull request and in the merge queue. Windows and macOS run on every push to main and nightly. To run the tests yourself, see [TESTING.md](TESTING.md).
+Linux runs on every pull request and in the merge queue. Windows runs on every push to main and nightly. macOS is not tested; it should work, but support is best-effort. To run the tests yourself, see [TESTING.md](TESTING.md).
 
 ## License
 
