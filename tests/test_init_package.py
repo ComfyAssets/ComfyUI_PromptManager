@@ -136,6 +136,11 @@ def cleanup_package(package, require_stopped=True):
     if registration is not None:
         assert registration.dispose(3), "package history worker leaked"
     close_every_database()
+    # The package's exit actions outlive it otherwise: at interpreter exit
+    # they would import from a package no longer in sys.modules (#580).
+    exit_signal = getattr(package, "_exit_signal", None)
+    if exit_signal is not None:
+        exit_signal.reset()
     sys.modules.pop(package.__name__, None)
 
 
@@ -400,6 +405,29 @@ class TestConsoleBanner(unittest.TestCase):
             lines[0], r"\[ComfyUI-PromptManager\] Version:.* \S+ - \d+ tools loaded$"
         )
         self.assertNotIn("Loaded:", banner)
+
+
+class TestFixtureExitActions(unittest.TestCase):
+    """A disposed fixture package runs nothing at interpreter exit (#580)."""
+
+    def test_a_disposed_package_leaves_no_exit_action(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(close_every_database)
+        output_dir = os.path.join(tmp.name, "output")
+        os.makedirs(output_dir)
+        name = "prompt_manager_pkg_exit_actions"
+        self.addCleanup(sys.modules.pop, name, None)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            with load_package(name, os.path.join(tmp.name, "p.db"), output_dir) as (
+                package,
+                _,
+            ):
+                signal = package._exit_signal
+                self.assertTrue(signal._on_exit, "the package installs exit actions")
+
+        self.assertEqual(signal._on_exit, [])
 
 
 class PriorFileHandler(logging.FileHandler):
