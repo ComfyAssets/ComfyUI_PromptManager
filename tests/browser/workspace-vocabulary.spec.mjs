@@ -145,9 +145,10 @@ test('long vocabularies append and Load more is keyboard reachable',async({page,
     await expect(loadMore(page)).toHaveCount(0);
     await expect(rows(page).nth(200).getByRole('button',{name:'Browse',exact:true})).toBeFocused();
     await expect(rows(page).locator('td:nth-child(1)')).toHaveText(manifest.tags);
-    // Reload with the window at its top: Firefox restores a scrolled window, whose end then appends a page before the check.
-    await main(page).locator('.two-col .table-wrap').evaluate(node=>new Promise(resolve=>{node.scrollTop=0;requestAnimationFrame(()=>requestAnimationFrame(resolve));}));
-    await page.reload();
+    // Open the screen as a new history entry, not a reload: Firefox restores a reloaded page's scrolled tag window, and
+    // its end then appends a page before the check (#567). Scrolling the window to its top first does not always stick.
+    await page.goto('about:blank');
+    await page.goto(route);
     await expect(rows(page)).toHaveCount(100);
     // D183: the end of the list arrives inside the tag window.
     const scroll=top=>main(page).locator('.two-col .table-wrap').evaluate((node,y)=>new Promise(resolve=>{node.scrollTop=y ?? node.scrollHeight;requestAnimationFrame(()=>requestAnimationFrame(resolve));}),top);
