@@ -843,7 +843,10 @@ class HistoryRoutesMixin:
                 raise
 
         async def execute():
-            pending = asyncio.create_task(self._run_in_executor(project))
+            # An inspection reads the file's header and text: the
+            # interactive image pool (#523); media stays on the default.
+            run = self._run_image if kind == "inspection" else self._run_in_executor
+            pending = asyncio.create_task(run(project))
             try:
                 return await asyncio.shield(pending)
             except asyncio.CancelledError:

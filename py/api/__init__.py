@@ -85,6 +85,7 @@ try:
     from ...database.operations import PromptDatabase
     from ...utils.file_prompt import parse_comfyui_prompt
     from ...utils.logging_config import get_logger
+    from ...utils.native_memory import release_free_memory
     from ...utils.png_text import png_text
     from ...utils.video_metadata import is_video_path, read_video_metadata
 except ImportError:
@@ -96,6 +97,7 @@ except ImportError:
     from database.operations import PromptDatabase
     from utils.file_prompt import parse_comfyui_prompt
     from utils.logging_config import get_logger
+    from utils.native_memory import release_free_memory
     from utils.png_text import png_text
     from utils.video_metadata import is_video_path, read_video_metadata
 
@@ -527,6 +529,14 @@ class PromptManagerAPI(
             call = functools.partial(func, *args, **kwargs)
             return await loop.run_in_executor(None, call)
         return await loop.run_in_executor(None, func, *args)
+
+    async def _release_job_memory(self):
+        """After a scan or thumbnail job: glibc's free heap pages go back to
+        the OS once (``malloc_trim(0)``; nothing elsewhere, #523)."""
+        try:
+            await self._run_in_executor(release_free_memory)
+        except Exception:  # best effort: the job's result already stands
+            self.logger.debug("Releasing free memory failed", exc_info=True)
 
     def _root_listing(self, root) -> RootListing:
         """The shared listing record of one output root (created empty)."""

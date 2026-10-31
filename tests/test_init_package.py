@@ -768,6 +768,45 @@ class TestPackageTeardown(PackageTeardownCase):
         self.assertIsNone(seen["worker"])
         self.assertTrue(all(result.values()), result)
 
+    def test_teardown_stops_the_job_pool_once_a_job_used_it(self):
+        """#523: the long-lived job pool is a teardown part of its own."""
+        package = self.load()
+        parallel = sys.modules[package.__name__ + ".utils.parallel"]
+        self.assertEqual(parallel.map_parallel(lambda n: n * 2, [1, 2], 2), [2, 4])
+        # This package's own pool (the suite's top-level one may also run).
+        threads = list(parallel._pool[1]._threads)
+        self.assertTrue(threads)
+
+        result = package._stop_background_work()
+
+        self.assertEqual(list(result), ["monitor", "thumbnails", "workers", "tracker"])
+        self.assertTrue(all(result.values()), result)
+        self.assertFalse(parallel.job_pool_started())
+        self.assertFalse(any(t.is_alive() for t in threads))
+
+    def test_teardown_reports_a_job_thread_past_its_bound(self):
+        package = self.load(require_stopped=False)
+        parallel = sys.modules[package.__name__ + ".utils.parallel"]
+        entered, release = threading.Event(), threading.Event()
+
+        def hold(_):
+            entered.set()
+            release.wait(30)
+
+        caller = threading.Thread(target=parallel.map_parallel, args=(hold, [1], 1))
+        caller.start()
+        self.addCleanup(caller.join, 30)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(30))
+        with (
+            mock.patch.object(parallel, "JOB_POOL_JOIN_SECONDS", 0.05),
+            self.assertLogs("prompt_manager.init", "WARNING") as logs,
+        ):
+            result = package._stop_background_work()
+        self.assertFalse(result["workers"])
+        self.assertTrue(result["tracker"])
+        self.assertRegex("\n".join(logs.output), r"not stopped in time .*workers")
+
     def test_teardown_kills_ffmpeg_and_stops_the_preview_worker(self):
         package = self.load()
         held = self.hold_a_preview(package, advance=4.0, kill_releases=True)

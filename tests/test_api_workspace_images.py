@@ -908,20 +908,20 @@ class TestWorkspaceImages(ImageAPITestCase):
 
     async def test_one_cards_parse_error_spares_the_page(self):
         prompt = self._save_prompt("a fox")
-        for name, mtime in (("bad.png", 200), ("ok.png", 100)):
+        # Cards are read on the image pool (#523), in no fixed order: the
+        # parser fails on bad.png's own record (seed 6), not on a call count.
+        for name, mtime, seed in (("bad.png", 200, 6), ("ok.png", 100, 5)):
             path = records_png(
-                self.output_dir / name, seeded_records("a fox", 5), mtime
+                self.output_dir / name, seeded_records("a fox", seed), mtime
             )
             self.api.db.link_image_to_prompt(prompt, str(path))
         real_parse = header_params_of_images()
 
         def parsing(info):
-            if parsing.calls == 0:
-                parsing.calls += 1
+            if '"seed": 6' in info["prompt"]:
                 raise RuntimeError("unexpected parser bug")
             return real_parse(info)
 
-        parsing.calls = 0
         with (
             patch("py.api.images.header_params", side_effect=parsing),
             self.assertLogs(self.api.logger, "WARNING") as logged,

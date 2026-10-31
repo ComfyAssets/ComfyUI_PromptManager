@@ -347,9 +347,12 @@ and the time left. The steps, in order:
 2. `ImageMonitor.stop_monitoring` works against one 5 s deadline. Closing the
    image handler joins the image worker; watchdog's `observer.stop()` (not
    bounded here) and the observer join get what is left, which can be 0 s.
-3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s) and
-   kills ffmpeg.
-4. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
+3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s),
+   kills ffmpeg and shuts the interactive image pool down.
+4. `shutdown_job_pool` (`utils/parallel.py`) cancels the long-lived job pool's
+   queued items and joins its threads (5 s; part `workers`, only when a job
+   used the pool, #523).
+5. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
 
 A failing step, or a second Ctrl+C, is logged with its traceback and does not
 skip the later steps. A clean run logs one INFO line to PromptManager's log:
@@ -457,6 +460,23 @@ neither reader decodes pixels by patching `ImageFile.load`. The only reads that
 differ are files whose pixel data is undecodable or cut short: legacy found
 nothing, the walk keeps the text before the pixels. Animated PNGs still use
 `.text`.
+
+Image work runs on PromptManager's own threads (#523). glibc keeps each thread's
+malloc arena at its high-water mark, so image buffers spread over the default
+executor's threads stay resident. Interactive image work (view previews behind their
+gate, workspace card facts, both inspector routes) runs on the API's fixed
+`pm-image` pool (`IMAGE_POOL_SIZE` 3, `_run_image`, `_map_image`; card facts already
+cached answer without a trip). Jobs (scan metadata and file facts, thumbnail and
+convert jobs, the legacy gallery generation, capture previews) run through
+`map_parallel` on one long-lived `pm-worker` pool of Worker threads, reused between
+jobs; a new Worker threads value replaces it, and a call made from a job thread runs
+inline. After a scan, thumbnail or convert job, or the legacy gallery generation,
+`release_free_memory` (`utils/native_memory.py`) calls glibc's `malloc_trim(0)` once;
+it does nothing on Windows, macOS and musl and never raises. No allocator setting
+changes. `tests/test_image_pools.py` asserts the thread of each read and write and the
+trim; `tests/test_utils_parallel.py` the pool's reuse, resize, nesting and shutdown.
+`tools/perf/memory_drive.py` (manual, Linux, never in CI) measures RSS, heap, threads
+and arenas under the #523 load against the disposable browser test server.
 
 The `perf budget` job in `.github/workflows/test.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
@@ -3860,8 +3880,8 @@ workspace never asks; previews are a cache the server keeps:
 - `GET /images/serve/thumbnails/<rel>_thumb<ext>` for a missing preview is refused as
   text first (traversal, a backslash, a drive or stream colon, empty or dot segments, so
   `D:/x`, `\\server\share` and a leading `/` never reach a joined path), then admitted
-  on the event loop (`_PreviewGate`): 3 previews are written at once on the API's own
-  `pm-preview` pool (never the default executor), one flight runs per file (the history
+  on the event loop (`_PreviewGate`): 3 previews are written at once on the API's
+  interactive `pm-image` pool (never the default executor; #523), one flight runs per file (the history
   route shares the flight key and the admission), and at most 64 requests wait; one
   more gets its fallback at once without listing a folder. Inside the admission the
   preview maps back to its media file under the same root (exact names, then one folder
@@ -3894,7 +3914,7 @@ workspace never asks; previews are a cache the server keeps:
   `exclusive` job runs (`_auto_thumbnail_blocker`), checked when a write starts (after
   its slot) and again just before its rename.
 - Shutdown is bounded and logged: the worker stops at a file boundary, ffmpeg is
-  killed, an idle worker leaves (the next output starts a fresh one), the view pool
+  killed, an idle worker leaves (the next output starts a fresh one), the image pool
   shuts down, and after the app's cleanup a late monitor event
   starts nothing. A package reload stops the workers the previous import left.
 - Cards and strips load previews only: Images in every layout and size, Library cards,
