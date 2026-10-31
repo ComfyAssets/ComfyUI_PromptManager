@@ -156,8 +156,9 @@ test('at 390px the window fits the screen, actions stay reachable and the page s
     expect(frame.bottom-frame.top).toBeLessThan(844);
     expect(frame.bottom-frame.top).toBeGreaterThanOrEqual(280);
     expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-    // The last row's actions can be scrolled to inside the window and fit its width.
-    const last=rows(page).last().getByRole('button',{name:'Rename / merge',exact:true});
+    // The first page's last row's actions can be scrolled to inside the window and fit its width.
+    // Pinned to row 100: reaching it loads the next page (D183), and last() would then follow row 200.
+    const last=rows(page).nth(99).getByRole('button',{name:'Rename / merge',exact:true});
     await last.scrollIntoViewIfNeeded();await expect(last).toBeInViewport();
     const [button]=await boxes(last);const [after]=await boxes(tagWindow(page));
     expect(button.right).toBeLessThanOrEqual(after.right);
