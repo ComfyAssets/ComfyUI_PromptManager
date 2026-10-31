@@ -24,7 +24,7 @@ import tempfile
 import textwrap
 import threading
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)

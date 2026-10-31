@@ -286,7 +286,7 @@ class TestNodeRecordsCachedRunReceipt(UsageTestCase):
     }
 
     def _node(self):
-        from unittest import mock
+        import unittest.mock as mock
 
         from prompt_manager_text import PromptManagerText
 

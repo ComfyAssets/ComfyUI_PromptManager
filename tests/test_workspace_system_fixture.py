@@ -8,7 +8,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer

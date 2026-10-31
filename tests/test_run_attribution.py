@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 from database.run_attribution import (
     RecordedOutput,

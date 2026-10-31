@@ -26,7 +26,7 @@ import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 from py.api import thumbnail_auto
 from utils import image_monitor, parallel

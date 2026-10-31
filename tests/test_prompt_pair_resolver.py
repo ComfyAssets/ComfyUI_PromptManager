@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 from utils import inspection_semantics
 from utils import prompt_pair_resolver as resolver
