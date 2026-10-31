@@ -72,13 +72,24 @@ CHILD = textwrap.dedent("""
         package = state.get("package")
         result = getattr(package, "_background_work_result", None)
         # The image worker, the tracker, and watchdog's observer and emitters.
+        # watchdog 7's InotifyFD is one daemon reader per process that no
+        # observer stop ends, by design; it is not the package's.
         alive = sorted(
             t.name
             for t in threading.enumerate()
             if t.name in ("PromptManagerImageWorker", "PromptManagerPromptCleanup")
-            or isinstance(t, BaseThread)
+            or (isinstance(t, BaseThread) and type(t).__name__ != "InotifyFD")
         )
-        print("PM_EXIT_REPORT " + json.dumps({"result": result, "alive": alive}))
+        # Threads that would hold the exit before any atexit callback (#561).
+        holding = sorted(
+            t.name
+            for t in threading.enumerate()
+            if not t.daemon and t is not threading.main_thread()
+        )
+        print(
+            "PM_EXIT_REPORT "
+            + json.dumps({"result": result, "alive": alive, "holding": holding})
+        )
         sys.stdout.flush()
 
     # First registered, so it runs last: after the package's teardown and
@@ -168,6 +179,7 @@ class TestPackageExit(unittest.TestCase):
             detail,
         )
         self.assertEqual(report["alive"], [], detail)
+        self.assertEqual(report["holding"], [], detail)
         # The teardown's own warnings. Import-time warnings (the API's
         # output-folder search finds no ComfyUI here) are not about exit.
         for text in (
@@ -187,5 +199,7 @@ class TestPackageExit(unittest.TestCase):
             {"monitor": False, "thumbnails": True, "tracker": True},
             detail,
         )
+        # The stuck reader is still alive, but as a daemon it holds nothing.
+        self.assertEqual(report["holding"], [], detail)
         self.assertIn("watchdog observer still running", completed.stderr, detail)
         self.assertIn("Background work not stopped in time", completed.stderr, detail)
