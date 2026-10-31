@@ -39,10 +39,8 @@ from .thumbnail_encode import (
     PREVIEW_HELD,
     EncoderClosed,
     PreviewWriteHeld,
-    replace_unless_held,
     run_encoder,
     sweep_stray_temps,
-    temp_sibling,
     thumbnail_frame,
     writer_settings,
     write_thumbnail,
@@ -338,11 +336,6 @@ def _thumbnail_batch_size(workers):
     """Files per executor job: enough to keep every worker thread busy."""
     return max(4, workers * 2)
 
-
-# Preview files are written by thumbnail_encode in the configured format
-# (thumbnail_settings, #317); these names stay importable from here.
-_temp_sibling = temp_sibling
-_replace_unless_held = replace_unless_held
 
 # A preview that could not be replaced (#249 S5 M6). Windows refuses to rename
 # over a file another process has open (WinError 5 or 32), such as a preview
