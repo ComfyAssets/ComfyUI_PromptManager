@@ -302,6 +302,32 @@ class TestClassification(PairMetadataCase):
         self.assertEqual(draft.details[-1]["label"], "Record")
         self.assertEqual(draft.scope["count"], 60)
 
+    def test_detail_rows_list_conflicts_before_other_kept_prompts(self):
+        _a, archived = self.pair("aa archived", category="portrait")
+        self.run_sql(
+            "INSERT INTO prompt_archive(prompt_id, archived_at) VALUES(?, ?)",
+            archived,
+            "2026-10-31T00:00:00+00:00",
+        )
+        _b, edited = self.pair("bb edited", category="portrait")
+        self.edit_stamp(edited)
+        self.pair("zz conflict", "n1", category="x")
+        self.pair("zz conflict", "n2", category="y")
+        draft = self.preview()
+        self.assertEqual(
+            [label for label, _detail in self.details(draft)],
+            ["zz conflict", "bb edited", "aa archived"],
+        )
+        # The reasons keep the precedence order.
+        self.assertEqual(
+            draft.protected["reasons"],
+            [
+                "1 archived in the Library",
+                "1 edited after it was saved",
+                "1 where pairs disagree",
+            ],
+        )
+
     def test_same_library_same_fingerprint_and_pair_use_does_not_change_it(self):
         pair_id, _prompt = self.pair("fp", category="portrait", tags=["a"])
         first = self.preview().fingerprint

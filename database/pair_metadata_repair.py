@@ -78,6 +78,8 @@ PROTECTED = (
     ),
 )
 _PROTECTED_ORDER = [key for key, *_rest in PROTECTED]
+# Detail rows: what the user can act on (a conflict) first.
+DETAIL_ORDER = ("conflict", "edited", "archived", "too-many-tags")
 
 _CANDIDATES_SQL = """
     SELECT p.id, p.hash, p.text, p.created_at, p.updated_at,
@@ -304,7 +306,7 @@ def _protected_detail(result, key):
 
 def _details(results, targets):
     rows = []
-    for key in _PROTECTED_ORDER:
+    for key in DETAIL_ORDER:
         for result in results:
             if key in _protected_classes(result):
                 rows.append(
@@ -384,7 +386,8 @@ def _fill_tags(conn, fills, expected):
     """Copy each source pair's tags onto its untagged prompt."""
     cursor = conn.executemany(
         "INSERT INTO prompt_tags(prompt_id, tag_id) "
-        "SELECT ?, tag_id FROM prompt_pair_tags WHERE pair_id = ? "
+        "SELECT ?, ppt.tag_id FROM prompt_pair_tags ppt "
+        "JOIN tags t ON t.id = ppt.tag_id WHERE ppt.pair_id = ? "
         "AND NOT EXISTS (SELECT 1 FROM prompt_tags WHERE prompt_id = ?)",
         fills,
     )
