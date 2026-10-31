@@ -62,7 +62,7 @@ import functools
 import io
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
 
 from aiohttp import web
@@ -721,9 +721,14 @@ class AutoThumbnailMixin:
     def _image_pool(self):
         """The interactive image pool (#523): IMAGE_POOL_SIZE threads for view
         previews (behind their gate), card facts and inspector reads, so
-        image buffers never spread over the default executor's threads."""
+        image buffers never spread over the default executor's threads.
+
+        None after the package teardown (``close_auto_thumbnails(final=True)``):
+        a late request then runs on the default executor (``run_in_executor``
+        with None) and starts no thread the teardown no longer stops.
+        """
         with AutoThumbnailMixin._auto_thumbnailer_lock:
-            if self._image_pool_obj is None:
+            if self._image_pool_obj is None and not self._auto_thumbnails_shut:
                 self._image_pool_obj = ThreadPoolExecutor(
                     IMAGE_POOL_SIZE, thread_name_prefix=POOL_PREFIX
                 )
@@ -732,35 +737,45 @@ class AutoThumbnailMixin:
     async def _run_image(self, func, *args, **kwargs):
         """``_run_in_executor`` for interactive image work: the image pool.
 
-        A pool closed in between (a test reset, the teardown) refuses the
-        call; it then runs on the default executor as before.
+        After the teardown, or with the pool shut down in between (a test
+        reset), the call runs on the default executor as before.
         """
         call = functools.partial(func, *args, **kwargs)
         loop = asyncio.get_running_loop()
         try:
             future = loop.run_in_executor(self._image_pool(), call)
-        except RuntimeError:
+        except RuntimeError:  # submit refused: the pool was shut down
             future = loop.run_in_executor(None, call)
         return await future
 
     def _map_image(self, func, items):
         """``func`` over *items* on the image pool, in order (blocking).
 
-        Called from an image pool thread, or with the pool closed, the items
-        run on the calling thread.
+        Called from an image pool thread, after the teardown, or with the
+        pool shut down in between (its queued items are cancelled), the
+        items it did not run run on the calling thread.
         """
         items = list(items)
-        if not items or _on_image_thread():
+        pool = None if not items or _on_image_thread() else self._image_pool()
+        if pool is None:
             return [func(item) for item in items]
         futures = []
         try:
-            pool = self._image_pool()
             for item in items:
                 futures.append(pool.submit(func, item))
         except RuntimeError:
-            pass  # closed in between: the rest run here
-        done = [future.result() for future in futures]
-        return done + [func(item) for item in items[len(futures) :]]
+            pass  # shut down in between: the rest run here
+        results = []
+        for index, item in enumerate(items):
+            future = futures[index] if index < len(futures) else None
+            if future is None or future.cancelled():
+                results.append(func(item))
+                continue
+            try:
+                results.append(future.result())
+            except CancelledError:  # cancelled while this caller waited
+                results.append(func(item))
+        return results
 
     def _image_pool_threads(self):
         pool = self._image_pool_obj

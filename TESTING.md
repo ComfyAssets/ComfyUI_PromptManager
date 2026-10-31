@@ -466,11 +466,13 @@ malloc arena at its high-water mark, so image buffers spread over the default
 executor's threads stay resident. Interactive image work (view previews behind their
 gate, workspace card facts, both inspector routes) runs on the API's fixed
 `pm-image` pool (`IMAGE_POOL_SIZE` 3, `_run_image`, `_map_image`; card facts already
-cached answer without a trip). Jobs (scan metadata and file facts, thumbnail and
+cached answer without a trip; while the gate's 3 preview writes hold every thread, a
+card or inspector read waits for one of them, by design of the merged pool; after the
+package teardown the pool is not recreated and late calls use the default executor). Jobs (scan metadata and file facts, thumbnail and
 convert jobs, the legacy gallery generation, capture previews) run through
 `map_parallel` on one long-lived `pm-worker` pool of Worker threads, reused between
-jobs; a new Worker threads value replaces it, and a call made from a job thread runs
-inline. After a scan, thumbnail or convert job, or the legacy gallery generation,
+jobs; a new Worker threads value replaces it (the teardown also joins a replaced pool
+still finishing), and a call made from a job thread runs inline. After a scan, thumbnail or convert job, or the legacy gallery generation,
 `release_free_memory` (`utils/native_memory.py`) calls glibc's `malloc_trim(0)` once;
 it does nothing on Windows, macOS and musl and never raises. No allocator setting
 changes. `tests/test_image_pools.py` asserts the thread of each read and write and the

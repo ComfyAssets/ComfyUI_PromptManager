@@ -44,6 +44,7 @@ _noted = set()
 _noted_lock = threading.Lock()
 _pool_lock = threading.Lock()
 _pool = None  # (workers, ThreadPoolExecutor)
+_retired = []  # pools replaced by a new size, finishing what they hold
 
 
 def refused_at_shutdown(error):
@@ -63,8 +64,8 @@ def note_refusal(logger, what):
 
 
 def job_pool_started():
-    """Whether the long-lived job pool exists (the teardown stops it)."""
-    return _pool is not None
+    """Whether a job pool exists (the teardown stops it)."""
+    return _pool is not None or bool(_retired)
 
 
 def _job_pool(workers):
@@ -81,27 +82,34 @@ def _job_pool(workers):
         current = _pool[1]
     if retired is not None:
         retired[1].shutdown(wait=False)  # it still runs what it holds
+        with _pool_lock:
+            _retired[:] = [p for p in _retired if _alive(p)] + [retired[1]]
     return current
 
 
 def shutdown_job_pool(timeout=None):
-    """Stop the job pool: queued items are cancelled (their callers run
-    them on their own thread), running ones are joined up to ``timeout``
-    seconds. True when no job thread is left running."""
+    """Stop the job pool (and any pool a resize retired): queued items are
+    cancelled (their callers run them on their own thread), running ones are
+    joined up to ``timeout`` seconds. True when no job thread is left."""
     global _pool
     with _pool_lock:
-        retired, _pool = _pool, None
-    if retired is None:
-        return True
-    executor = retired[1]
-    # After shutdown: it takes the lock ``submit`` holds while it starts and
-    # records a thread, so every thread is listed and no new one starts.
-    executor.shutdown(wait=False, cancel_futures=True)
-    threads = list(getattr(executor, "_threads", ()))
+        current, _pool = _pool, None
+        executors = _retired[:] + ([] if current is None else [current[1]])
+        _retired.clear()
+    threads = []
+    for executor in executors:
+        # After shutdown: it takes the lock ``submit`` holds while it starts
+        # and records a thread, so every thread is listed and none starts.
+        executor.shutdown(wait=False, cancel_futures=True)
+        threads.extend(getattr(executor, "_threads", ()))
     deadline = None if timeout is None else time.monotonic() + timeout
     for thread in threads:
         thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
     return not any(thread.is_alive() for thread in threads)
+
+
+def _alive(executor):
+    return any(t.is_alive() for t in getattr(executor, "_threads", ()))
 
 
 def _forget(executor):

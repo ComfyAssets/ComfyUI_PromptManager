@@ -132,6 +132,57 @@ class TestInteractiveImagePool(ImagePoolCase):
             )
         self.assertEqual(names, [here, here])
 
+    async def test_after_the_final_close_no_image_thread_starts(self):
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: self.api.close_auto_thumbnails(final=True)
+        )
+        self.assertIsNone(self.api._image_pool())
+        here = threading.current_thread().name
+        names = self.api._map_image(lambda _: threading.current_thread().name, [1])
+        self.assertEqual(names, [here])
+        name = await self.api._run_image(lambda: threading.current_thread().name)
+        self.assertFalse(name.startswith(IMAGE_THREAD), name)
+        self.assertEqual(self.api._image_pool_threads(), [])
+
+    def test_map_image_runs_items_a_shutdown_cancelled_here(self):
+        entered = threading.Barrier(auto.IMAGE_POOL_SIZE + 1)
+        release = threading.Event()
+        self.addCleanup(release.set)
+        pool = self.api._image_pool()
+        for _ in range(auto.IMAGE_POOL_SIZE):  # occupy every pool thread
+            pool.submit(lambda: (entered.wait(WAIT), release.wait(WAIT)))
+        entered.wait(WAIT)
+        here = threading.current_thread().name
+        results, submitted = {}, threading.Event()
+
+        class Counting:
+            calls = 0
+
+            def submit(self, *args):
+                future = pool.submit(*args)
+                Counting.calls += 1
+                if Counting.calls == 2:
+                    submitted.set()
+                return future
+
+        def call():
+            with patch.object(self.api, "_image_pool", return_value=Counting()):
+                results["names"] = self.api._map_image(
+                    lambda _: threading.current_thread().name, [1, 2]
+                )
+
+        caller = threading.Thread(target=call, name="map-image-caller")
+        caller.start()
+        # The caller's two items are queued behind the busy threads; the
+        # shutdown cancels them and the caller runs them itself.
+        self.assertTrue(submitted.wait(WAIT))
+        pool.shutdown(wait=False, cancel_futures=True)
+        caller.join(WAIT)
+        release.set()
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(results["names"], ["map-image-caller"] * 2)
+        self.assertNotEqual(here, "map-image-caller")
+
     async def test_run_image_after_a_close_uses_the_default_executor(self):
         pool = self.api._image_pool()
         pool.shutdown(wait=True)

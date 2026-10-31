@@ -64,6 +64,25 @@ class TestMapParallel(unittest.TestCase):
             self.assertFalse(thread.is_alive(), thread.name)
         self.assertLessEqual(len(_job_threads()), 3)
 
+    def test_shutdown_also_joins_a_pool_a_resize_retired(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def hold(_):
+            entered.set()
+            release.wait(WAIT)
+
+        caller = threading.Thread(target=map_parallel, args=(hold, [1], 1))
+        caller.start()
+        self.addCleanup(caller.join, WAIT)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(WAIT))
+        map_parallel(lambda n: n, [1, 2], 2)  # a new size retires the busy pool
+        self.assertFalse(parallel.shutdown_job_pool(0.05))
+        release.set()
+        caller.join(WAIT)
+        self.assertTrue(parallel.shutdown_job_pool(WAIT))
+        self.assertFalse(parallel.job_pool_started())
+
     def test_an_item_run_from_a_job_thread_runs_inline(self):
         """A nested map never waits for the threads it is running on."""
 
