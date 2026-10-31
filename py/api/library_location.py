@@ -373,6 +373,7 @@ class LibraryLocationRoutesMixin:
         line += ". Logs move at the next restart."
         job.log_line(line)
         job.update(progress=100, status_line=line)
+        return None
 
     @staticmethod
     def _fail_library_move(job, code, message):

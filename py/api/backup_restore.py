@@ -971,6 +971,7 @@ class BackupRestoreRoutesMixin:
         line = restored_line(staged.summary)
         job.log_line(line)
         job.update(progress=100, status_line=line)
+        return None
 
 
 async def _outlive_cancel(future):

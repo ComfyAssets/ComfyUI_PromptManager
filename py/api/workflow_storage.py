@@ -275,3 +275,4 @@ class WorkflowStorageRoutesMixin:
         job.record_counted("changed", 1)
         job.log_line(line)
         job.update(progress=100, status_line=line)
+        return None

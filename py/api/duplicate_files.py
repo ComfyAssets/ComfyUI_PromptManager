@@ -574,12 +574,13 @@ class DuplicateFilesMixin:
             return _fail_job(job, "sources-changed", SOURCES_CHANGED)
         ok, backup = await self._safety_backup_step(job, db, backup_on)
         if not ok:
-            return
+            return None
         try:
             await self._remove_duplicates(job, db, plan, backup)
         finally:
             if backup:
                 await self._prune_backup_pool(job, db)
+        return None
 
     async def _remove_duplicates(self, job, db, plan, backup):
         targets = plan.payload["targets"]

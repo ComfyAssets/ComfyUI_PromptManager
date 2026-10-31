@@ -436,7 +436,7 @@ class LoraImportRoutesMixin:
             job.log_line(f"{CANCELLED} {CACHE_NOTE}")
             job.update(status_line=CANCELLED)
             job.finish("cancelled")
-            return
+            return None
         except Exception:
             self.logger.exception("LoRA import staging failed")
             return _fail_job(job, "import-failed", f"{FAILED} {CACHE_NOTE}")
@@ -455,10 +455,10 @@ class LoraImportRoutesMixin:
             job.log_line(f"{CANCELLED} {CACHE_NOTE}")
             job.update(status_line=CANCELLED)
             job.finish("cancelled")
-            return
+            return None
         ok, _backup = await self._safety_backup_step(job, db, backup_on)
         if not ok:
-            return
+            return None
         # I1: the files are listed and fingerprinted again right before the
         # replace, so a file changed, removed or added while the downloads ran
         # (LoraManager refreshing its CivitAI info) aborts with nothing deleted.
@@ -466,6 +466,7 @@ class LoraImportRoutesMixin:
             return _fail_job(job, "plan-changed", f"{SOURCE_CHANGED} {CACHE_NOTE}")
         job.update(status_line="Replacing the LoRA collection", progress=95)
         await self._replace_in_job(job, db, plan, staged)
+        return None
 
     def _count_downloads(self, job, staged):
         downloaded = staged.stats.get("downloaded", 0)
@@ -518,3 +519,4 @@ class LoraImportRoutesMixin:
             staged.stats.get("download_errors", 0),
         )
         job.update(progress=100, processed=job.total, status_line=line)
+        return None

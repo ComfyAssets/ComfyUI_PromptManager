@@ -205,3 +205,4 @@ class LogCleanupMixin:
             line += f", {failed} could not be deleted"
         job.log_line(line)
         job.update(processed=len(files), progress=100, status_line=line)
+        return None
