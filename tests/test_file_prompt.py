@@ -564,6 +564,66 @@ class TestUndecidedGraph(unittest.TestCase):
         self.assertEqual(decision.review, "untraced")
 
 
+def _search_list(text="fox", side="positive"):
+    """f22: a PromptSearchList batch (no PromptManager node) feeds CLIPTextEncode."""
+    graph = parity.build("f22")["prompt"]
+    graph["10"]["inputs"]["text"] = text
+    if side == "negative":
+        # The search feeds the negative; the positive is typed text.
+        graph["6"]["inputs"]["text"] = parity.POS
+        graph["7"]["inputs"]["text"] = ["10", 0]
+    return graph
+
+
+class TestSearchTextIsNeverAPrompt(unittest.TestCase):
+    """#548: the PromptSearchList query is a search, never the prompt."""
+
+    def test_the_search_text_is_never_linked_or_stored(self):
+        for policy in Policy:
+            with self.subTest(policy=policy):
+                decision = _decide(
+                    _graph(_search_list()), policy=policy, lookup=_Lookup()
+                )
+                self.assertEqual(decision.kind, "never")
+                self.assertIsNone(decision.text)
+                self.assertEqual(decision.unlinked_status, "unresolved")
+                self.assertTrue(decision.try_recorded_run)
+
+    def test_a_search_text_from_a_primitive_is_never_linked(self):
+        graph = _search_list()
+        graph["10"]["inputs"]["text"] = ["30", 0]
+        graph["30"] = {"class_type": "PrimitiveString", "inputs": {"value": "fox"}}
+        for policy in Policy:
+            with self.subTest(policy=policy):
+                decision = _decide(_graph(graph), policy=policy, lookup=_Lookup())
+                self.assertEqual(decision.kind, "never")
+                self.assertIsNone(decision.text)
+
+    def test_an_empty_search_text_is_unchanged(self):
+        """Regression guard (passes on the base): nothing to exclude."""
+        for policy in Policy:
+            with self.subTest(policy=policy):
+                decision = _decide(
+                    _graph(_search_list("")), policy=policy, lookup=_Lookup()
+                )
+                self.assertEqual((decision.kind, decision.text), ("never", None))
+
+    def test_without_a_sampler_any_search_list_query_is_excluded(self):
+        graph = _search_list()
+        del graph["3"]
+        self.assertTrue(file_prompt._search_text(graph, " fox "))
+        self.assertFalse(file_prompt._search_text(graph, "a fox"))
+        self.assertFalse(file_prompt._search_text(None, "fox"))
+
+    def test_a_search_on_the_negative_keeps_the_typed_positive(self):
+        """Regression guard (passes on the base): only the positive's source
+        is excluded, so the legacy answer from typed text still links."""
+        graph = _search_list(side="negative")
+        decision = _decide(_graph(graph), lookup=_Lookup())
+        self.assertEqual((decision.kind, decision.text), ("positive", parity.POS))
+        self.assertEqual(decision.source, "legacy-parser")
+
+
 class TestStepsWithoutAnUndecidedGraph(unittest.TestCase):
     def test_step_9_ambiguous_parameters_only(self):
         meta = {
