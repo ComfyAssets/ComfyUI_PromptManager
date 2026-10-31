@@ -41,6 +41,9 @@ async function serverJson(request, url) {
     return response.json();
 }
 
+// `openSources` dismisses the notice itself unless a test asks for it.
+test.use({ olderImagesNotice: true });
+
 /** Open Sources with the update notice dismissed (or shown, `notice: true`) once the source list has loaded. */
 async function openSources(page, { notice = false } = {}) {
     if (!notice) await page.addInitScript(key => { if (location.protocol.startsWith('http')) localStorage.setItem(key, '3.2.0'); }, NOTICE_KEY);

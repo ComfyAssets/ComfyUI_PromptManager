@@ -9,7 +9,10 @@ candidates and the dependency fingerprint. ``POST .../items/{id}/decision``
 records one explicit decision: Apply links the chosen sampler's pair only
 when the capture is the item's bytes, the current file still hashes to them,
 the evidence they yield is unchanged and the ingester's compatible-only rules
-allow it; Leave unresolved links nothing.
+allow it; Leave unresolved links nothing. ``POST .../items/{id}/link`` (#536)
+links a Library prompt the reviewer chose, under the same capture and
+compatibility guards; it is their choice, so what the bytes resolve to is not
+asked.
 
 Targets are formatted from the recorded spelling against the current roots
 (no file access beyond the roots' real paths); a file under no current root
@@ -28,12 +31,13 @@ import urllib.parse
 
 from aiohttp import web
 
-from .annotations import _HEX64, _TOKEN, _UUID, _capture_error, _error
+from .annotations import _capture_error, _error
 from .images import media_thumbnail_url
 from .inspection_service import VIDEO_EXTENSIONS
 from .job_routes import busy_response
 from .jobs import JobBusy
 from .prompts import bad_request
+from .review_guards import UNRESOLVED, _decision_guards, _link_guards
 
 try:
     from ...database.library import display_title
@@ -59,17 +63,6 @@ MAX_CURSOR = 4096
 MAX_BODY_BYTES = 64 * 1024
 # The serialized detail stays under this; past it the detail is ``limited``.
 MAX_DETAIL_BYTES = 8 * 1024 * 1024
-UNRESOLVED = "unresolved"
-_DECISION_FIELDS = frozenset(
-    {
-        "expected_epoch",
-        "expected_revision",
-        "capture_token",
-        "sha256",
-        "dependency_fingerprint",
-        "choice",
-    }
-)
 _CURSOR_SECRET = os.urandom(32)
 # The real path of a spelling; module-level so a test can fake a junction.
 _realpath = os.path.realpath
@@ -84,6 +77,7 @@ _STATUS = {
     "storage-changed": 409,
     "source-changed": 409,
     "capture-expired": 409,
+    "prompt-missing": 409,
 }
 _MESSAGES = {
     "review-missing": "This review item no longer exists. Reload the queue.",
@@ -94,6 +88,9 @@ _MESSAGES = {
         "This image is already linked to another prompt or negative, so this "
         "sampler path cannot be attached safely. The existing links were "
         "preserved."
+    ),
+    "prompt-missing": (
+        "That prompt or recipe is no longer in the Library. Search again."
     ),
     "dependencies-changed": (
         "The image's saved links changed since this item was opened. Reopen it "
@@ -251,6 +248,7 @@ class ReviewRoutesMixin:
         routes.get(ITEMS_URL)(self.list_review_items)
         routes.get(ITEMS_URL + "/{item_id}")(self.get_review_item)
         routes.post(ITEMS_URL + "/{item_id}/decision")(self.decide_review_item)
+        routes.post(ITEMS_URL + "/{item_id}/link")(self.link_review_item)
 
     # -- shared ----------------------------------------------------------------
 
@@ -464,6 +462,43 @@ class ReviewRoutesMixin:
         except JobBusy as busy:
             return busy_response(busy)
 
+    async def link_review_item(self, request: web.Request) -> web.Response:
+        """POST the Library prompt the reviewer chose for one pending item.
+
+        Under the same lease as a decision. The capture must be the item's
+        current bytes; the choice and the file's links are checked in the
+        decision's transaction.
+        """
+        try:
+            async with self._jobs.lease(REVIEW_DECISION_LEASE):
+                return await self._link_review_item(request)
+        except JobBusy as busy:
+            return busy_response(busy)
+
+    async def _link_review_item(self, request: web.Request) -> web.Response:
+        data, error = await self._read_json_body(request, max_bytes=MAX_BODY_BYTES)
+        if error is not None:
+            return error
+        guards, error = _link_guards(data)
+        if error is not None:
+            return error
+        try:
+            item = await self._run_in_executor(
+                self.db.review_item, request.match_info["item_id"]
+            )
+        except Exception:
+            self.logger.exception("Review item read failed")
+            return _failed()
+        if item is None:
+            return _coded("review-missing")
+        verified, error = await self._verified_review_capture(
+            item, guards, need_metadata=True
+        )
+        if error is not None:
+            return error
+        manual = {"positive_id": guards["positive_id"], "pair_id": guards["pair_id"]}
+        return await self._record_decision(item, guards, None, verified, manual)
+
     async def _decide_review_item(self, request: web.Request) -> web.Response:
         data, error = await self._read_json_body(request, max_bytes=MAX_BODY_BYTES)
         if error is not None:
@@ -549,22 +584,25 @@ class ReviewRoutesMixin:
             return None, _coded("file-changed")
         metadata = None
         if need_metadata:
-            if captured is None or not _candidate_still_offered(
-                captured[1], guards["choice"]
+            # A manual link has no ``choice``: it rests on the bytes alone.
+            if captured is None or (
+                "choice" in guards
+                and not _candidate_still_offered(captured[1], guards["choice"])
             ):
                 return None, _coded("review-conflict", "evidence-changed")
             metadata = captured[0]
         image_path = os.path.join(str(root), *relative.split("/"))
         return (capture, facts, image_path, metadata), None
 
-    def _decide_sync(self, item, guards, candidate, verified):
+    def _decide_sync(self, item, guards, candidate, verified, manual=None):
         """Worker thread: resolve the file's spellings, decide, build the view.
 
         Returns ``(result, view)``; a refusal raises with ``exc.view`` set.
         """
         _capture, facts, image_path, metadata = verified or (None, None, None, None)
         aliases, known = (), None
-        if candidate is not None:
+        selected = candidate is not None or manual is not None
+        if selected:
             aliases, known = physical_spellings(self.db, image_path, item["locator"])
         try:
             result = self.db.decide_review_item(
@@ -573,8 +611,9 @@ class ReviewRoutesMixin:
                 expected_revision=guards["expected_revision"],
                 # The bytes the re-hash proved, or the body's for Leave unresolved.
                 sha256=facts.sha256 if facts is not None else guards["sha256"],
-                outcome="selected" if candidate is not None else UNRESOLVED,
+                outcome="selected" if selected else UNRESOLVED,
                 candidate=candidate,
+                manual=manual,
                 image_path=image_path,
                 metadata=metadata,
                 expected_fingerprint=guards["dependency_fingerprint"],
@@ -589,11 +628,11 @@ class ReviewRoutesMixin:
         roots, real_roots = self._review_roots()
         return result, self._review_view(result["item"], roots, real_roots)
 
-    async def _record_decision(self, item, guards, candidate, verified):
+    async def _record_decision(self, item, guards, candidate, verified, manual=None):
         capture = verified[0] if verified else None
         try:
             result, view = await self._run_in_executor(
-                self._decide_sync, item, guards, candidate, verified
+                self._decide_sync, item, guards, candidate, verified, manual
             )
         except ReviewCommandError as exc:
             return self._decision_refused(exc)
@@ -627,36 +666,6 @@ class ReviewRoutesMixin:
         if exc.code == "association-conflict" and exc.changed:
             message = "dependencies-changed"
         return _coded(exc.code, message, **extra)
-
-
-def _decision_guards(data: dict):
-    """The validated decision fields, or ``(None, error)``."""
-    if set(data) != _DECISION_FIELDS:
-        return None, bad_request(
-            "Request must contain exactly " + ", ".join(sorted(_DECISION_FIELDS))
-        )
-    epoch, revision = data["expected_epoch"], data["expected_revision"]
-    if not isinstance(epoch, str) or _UUID.fullmatch(epoch) is None:
-        return None, bad_request("expected_epoch must be a canonical UUID")
-    if type(revision) is not int or revision < 0:
-        return None, bad_request("expected_revision must be a non-negative integer")
-    token = data["capture_token"]
-    if token is not None and (
-        not isinstance(token, str) or _TOKEN.fullmatch(token) is None
-    ):
-        return None, bad_request("Invalid capture token")
-    for name in ("sha256", "dependency_fingerprint"):
-        value = data[name]
-        if not isinstance(value, str) or _HEX64.fullmatch(value) is None:
-            return None, bad_request(
-                f"{name} must be 64 lowercase hexadecimal characters"
-            )
-    choice = data["choice"]
-    if not isinstance(choice, str) or (
-        choice != UNRESOLVED and _HEX64.fullmatch(choice) is None
-    ):
-        return None, bad_request("choice must be a candidate hash or unresolved")
-    return {**data}, None
 
 
 def _verify_and_read(store, capture, item, root, need_metadata: bool):

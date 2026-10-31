@@ -17,7 +17,7 @@ test('tags is a native route titled Tags; only unbuilt routes hand off to legacy
     const tags = resolveRoute('#/tags');
     assert.equal(tags.label, 'Tags & categories');
     assert.equal(routeTitle(tags), 'Tags');
-    assert.equal(tags.href, '/prompt_manager/admin#/tags', 'Overview keeps the existing tag manager card');
+    assert.equal(tags.href, '#/tags', 'Overview opens the native page (#525)');
     for (const id of ['images', 'library', 'inspect', 'overview', 'system']) {
         const route = resolveRoute(`#/${id}`);
         assert.equal(routeTitle(route), route.label);
@@ -48,7 +48,6 @@ test('system resolves its sections; #/overview stays the production hub', async 
     // Q12: Overview's System card opens the native System Overview, with no legacy href or action.
     const card = routes.find(route => route.id === 'system');
     assert.equal(card.href, '#/system/overview');
-    assert.equal(card.native, true);
     assert.equal(card.action, 'Open System');
 });
 
@@ -77,9 +76,28 @@ test('inspect is the native Inspect a file page with the concept description', a
     // The concept's heading description (app.js renderMetadata 743).
     assert.equal(inspect.description, 'A standalone file uses the same image viewer and prompt actions.');
     assert.equal(isHandoff(inspect), false);
-    // Overview keeps its card for the legacy metadata page, which stays working.
-    assert.equal(inspect.href, '/prompt_manager/gallery.html');
-    assert.equal(inspect.action, 'Open existing metadata inspector');
+    // Overview's card opens the native page (#525); the legacy metadata page stays at its URL.
+    assert.equal(inspect.href, '#/inspect');
+    assert.equal(inspect.action, 'Open Inspect a file');
+});
+
+test('every Overview card opens its own native page, never a legacy one (#525)', async () => {
+    const { resolveRoute, routes } = await source;
+    const cards = routes.filter(route => route.href);
+    assert.deepEqual(cards.map(card => card.id), ['images', 'library', 'tags', 'inspect', 'system']);
+    for (const card of cards) {
+        assert.match(card.href, /^#\//, card.id);
+        assert.equal(resolveRoute(card.href).id, card.id);
+        assert.match(card.action, /^Open /, card.id);
+        assert.doesNotMatch(card.action, /existing/, card.id);
+    }
+});
+
+test('the legacy pages System links are the four that stay at their URLs (#525 D165)', async () => {
+    const { LEGACY_PAGES } = await source;
+    assert.deepEqual(LEGACY_PAGES.map(page => page.href), ['/prompt_manager/admin', '/prompt_manager/admin#/tags',
+        '/prompt_manager/gallery', '/prompt_manager/gallery.html']);
+    for (const page of LEGACY_PAGES) assert.ok(page.label);
 });
 
 test('a job of the Activity page is its own deep link', async () => {
@@ -105,17 +123,29 @@ test('a job of the Activity page is its own deep link', async () => {
     dispose();
 });
 
-test('statistics preserve zero and reject incomplete or invalid counts', async () => {
-    const { summarizeStats } = await source;
-    assert.deepEqual(summarizeStats({total_prompts:0, total_images:12, total_tags:3}), [
-        ['Prompts', 0], ['Images', 12], ['Tags', 3],
-    ]);
-    for (const stats of [undefined, null, {}, {total_prompts:0, total_images:-1, total_tags:0},
-        {total_prompts:'2', total_images:0, total_tags:0},
-        {total_prompts:Infinity, total_images:0, total_tags:0},
-        {total_prompts:0, total_images:1.5, total_tags:0}]) {
-        assert.throws(() => summarizeStats(stats), /statistics/i);
-    }
+test('Overview cards show the count of the page they name', async () => {
+    const { summarizeOverviewCounts, OVERVIEW_COUNT_ROUTES } = await source;
+    assert.deepEqual(OVERVIEW_COUNT_ROUTES, ['library', 'images', 'tags']);
+    const counts = new Map([['library', 64], ['images', 122], ['tags', 306], ['favorites', 8]]);
+    assert.deepEqual(summarizeOverviewCounts(counts), {
+        cards: [['Prompts', 64], ['Images', 122], ['Tags', 306]], pending: false, failed: false, empty: false,
+    });
+});
+
+test('Overview tells loading, failed and really empty counts apart', async () => {
+    const { summarizeOverviewCounts } = await source;
+    const nothing = summarizeOverviewCounts(new Map());
+    assert.deepEqual([nothing.pending, nothing.failed, nothing.empty], [true, false, false]);
+    assert.deepEqual(nothing.cards, [['Prompts', null], ['Images', null], ['Tags', null]]);
+    // A slow Images read does not hold back the cards already read.
+    const partial = summarizeOverviewCounts(new Map([['library', 0], ['tags', 0]]));
+    assert.deepEqual(partial.cards, [['Prompts', 0], ['Images', null], ['Tags', 0]]);
+    assert.deepEqual([partial.pending, partial.failed, partial.empty], [true, false, false]);
+    const failed = summarizeOverviewCounts(new Map([['library', 2], ['images', null], ['tags', 3]]));
+    assert.deepEqual([failed.pending, failed.failed, failed.empty], [false, true, false]);
+    assert.deepEqual(failed.cards[1], ['Images', null]);
+    const empty = summarizeOverviewCounts(new Map([['library', 0], ['images', 0], ['tags', 0]]));
+    assert.deepEqual([empty.pending, empty.failed, empty.empty], [false, false, true]);
 });
 
 test('router normalizes unknown routes, avoids duplicate renders, and disposes its listener', async () => {

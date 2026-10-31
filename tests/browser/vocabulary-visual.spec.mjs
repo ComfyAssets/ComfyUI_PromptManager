@@ -1,5 +1,6 @@
 import {writeFile} from 'node:fs/promises';
 import {test,expect} from './fixtures.mjs';
+import {mapConceptLayout} from './concept-inventory.mjs';
 import {captureCanonicalState} from './history-canonical-comparison.mjs';
 import {pageInventoryOf,inventoryOf,diffInventory,mapVocabularyConcept,mapVocabularyDialog,compareVocabularyPage} from './vocabulary-canonical-comparison.mjs';
 
@@ -116,6 +117,7 @@ const PREVIEW='“Landscapes” is used by 3 positive prompts and 2 images. Appl
 const pageOf=(page,production)=>page.locator(production?'#workspace-main':'#main').evaluate(pageInventoryOf);
 async function openConceptRoute(page,route,theme) {
     await page.goto('about:blank');await page.goto(`${concept}#${route}`);
+    await mapConceptLayout(page);
     await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption(theme);
 }
 /** The concept page as D143 records it: image counts after the prompt counts, image-only rows before Manage category. */

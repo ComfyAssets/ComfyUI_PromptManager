@@ -69,12 +69,16 @@ function fakeDOM() {
         createElement: tag => new Element(tag),
         createTextNode: text => Object.assign(new Element('#text'), { _text: String(text) }),
         getElementById: id => (id === 'workspace-toast' ? toast : null),
+        querySelectorAll: () => [],
     };
     return { Element, body, toast, restore() { globalThis.document = previous; } };
 }
 
 /** The bar over `items` with `checked` keys; `options` adds the collection props. */
 function mountBar(dom, items, checkedKeys, options = {}) {
+    // The bar publishes its height for the sticky chrome (D186); nothing in this DOM ever resizes.
+    globalThis.ResizeObserver ??= class { observe() {} disconnect() {} };
+    document.documentElement ??= { style: { setProperty() {}, removeProperty() {} } };
     const scope = createScope();
     const grid = new dom.Element('div');
     const focusFallback = new dom.Element('h1');

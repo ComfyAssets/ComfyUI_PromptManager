@@ -5,12 +5,16 @@
  * - The queue is read 40 at a time, oldest first; `total` is the exact pending count. The cursor is bound to the
  *   storage epoch only, so Load more keeps working while new items arrive.
  * - Selecting an item reads its detail: one "Sampler <id> · <positive> / <negative>" option per candidate, unusable
- *   ones disabled, the first workable one chosen, then "Leave unresolved" (rulings R2/R3).
+ *   ones disabled with the server's reason, the first workable one chosen (rulings R2/R3). "Leave unresolved" is its
+ *   own action (#536 D179, `leaveUnresolved()`). With nothing workable `unreadable` says why (D180).
+ * - `link(choice)` (#536) records the Library prompt the reviewer chose, under the same capture and retry rules.
+ * - A recorded decision opens the item after it (else the one before) and re-reads the queue quietly: the page stays
+ *   (#536, overturning ruling R7). `decisions` counts them, for the page's toast.
  * - Apply takes a fresh capture of the file (`observe`), then posts the decision; the server releases a capture it
  *   used. A refused decision releases the capture and keeps the selection with the server's sentence as the warning;
  *   a restored storage or a changed queue reads the queue again. A request that got no answer keeps its capture and
  *   its exact body, and the next Apply of the same choice (`retry()`) resends that body once.
- * - Leave for later writes nothing. Tagging the image (the shared Tag dialog) never changes the item.
+ * - Leave for later writes nothing and opens the next item, wrapping. Tagging the image (the shared Tag dialog) never changes the item.
  * - `refresh()` re-reads the queue quietly when the server says the queue changed (F2: the review change stream:
  *   a scan or the monitor added items, another tab decided one). The open item, its choice and an unanswered decision
  *   stay; when the open item has left the queue the next one opens with a note. Refreshes asked for while one runs
@@ -47,7 +51,10 @@ export const COPY = Object.freeze({
     detailLoading: 'Loading sampler paths…',
     detailFailed: 'This item could not be read. Select it again to retry.',
     moreFailed: 'More items could not be loaded. Try again.',
-    limited: 'This file has too many sampler paths to list. You can leave it unresolved.',
+    limited: 'This file has too many sampler paths to list. Link it to a prompt or leave it unresolved.',
+    // #536 D180: nothing to apply.
+    unreadable: count => `${count === 1 ? "This file's sampler path" : `None of this file's ${count} sampler paths`} could be traced to a complete prompt, so there is nothing to apply. Choose the prompt yourself, or leave it unresolved.`,
+    lostLink: 'The link may not have been saved. Press Link image again to send the same choice once more.',
     unavailable: 'This file is not under a current image source, so it cannot be opened. You can leave it unresolved.',
     lost: 'The decision may not have been saved. Apply again to send the same decision once more.',
     storageChanged: 'Prompt storage was restored; reload the review queue.',
@@ -57,6 +64,7 @@ export const COPY = Object.freeze({
     failed: 'The decision could not be saved. Try again.',
     applied: 'Association accepted.',
     leftUnresolved: 'Left unresolved.',
+    linked: title => `Linked to ${title}.`,
 });
 
 // Answers after which the queue itself is out of date: read it again.
@@ -76,19 +84,34 @@ export function optionLabel(candidate) {
 const workable = candidate => candidate?.state === 'resolved' && typeof candidate.positive?.text === 'string' &&
     typeof candidate.negative?.text === 'string';
 
-/** The Sampler context options of a detail: its candidates (unusable ones disabled), then Leave unresolved. */
+/** The Sampler context options of a detail: its candidates, unusable ones disabled with the server's reason. */
 export function contextOptions(detail) {
     const usable = detail.target !== null && !detail.unavailable;
-    const options = (Array.isArray(detail.candidates) ? detail.candidates : []).map(candidate => Object.freeze({
-        value: candidate.hash, label: optionLabel(candidate), disabled: !usable || !workable(candidate), candidate,
+    return Object.freeze((Array.isArray(detail.candidates) ? detail.candidates : []).map(candidate => {
+        const readable = workable(candidate);
+        return Object.freeze({
+            value: candidate.hash, candidate, disabled: !usable || !readable,
+            label: readable || !candidate.reason ? optionLabel(candidate) : `${optionLabel(candidate)} (${candidate.reason})`,
+        });
     }));
-    options.push(Object.freeze({ value: UNRESOLVED, label: COPY.leaveUnresolved, disabled: false, candidate: null }));
-    return Object.freeze(options);
 }
 
-/** The prompt blocks of the chosen option: its two role texts, or the ambiguous status for Leave unresolved. */
+/**
+ * When no candidate of an available, listed file can be applied: their count and each distinct reason with its count
+ * (first seen first). Null otherwise.
+ */
+export function unreadableOf(detail) {
+    const candidates = Array.isArray(detail.candidates) ? detail.candidates : [];
+    if (detail.limited || detail.unavailable || detail.target === null || candidates.some(workable)) return null;
+    const reasons = new Map();
+    for (const { reason } of candidates) if (reason) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    return Object.freeze({ count: candidates.length,
+        reasons: Object.freeze([...reasons].map(([reason, count]) => Object.freeze({ reason, count }))) });
+}
+
+/** The prompt blocks of the chosen option: its two role texts, or nothing without a choice. */
 function promptsOf(option) {
-    if (!option?.candidate) return { positive: { status: 'ambiguous' }, negative: { status: 'ambiguous' } };
+    if (!option?.candidate) return null;
     const { positive, negative } = option.candidate;
     return { positive: { status: 'resolved', text: positive.text }, negative: { status: 'resolved', text: negative.text } };
 }
@@ -106,13 +129,13 @@ const isLost = error => !isAbort(error) && !error?.code && !(error?.status >= 40
 const initial = () => ({
     status: 'idle', epoch: null, total: 0, items: Object.freeze([]), nextCursor: null, more: 'idle',
     selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null,
-    phase: 'idle', warning: '', canRetry: false, toast: null,
+    unreadable: null, phase: 'idle', warning: '', canRetry: false, toast: null, decisions: 0,
 });
 
 /**
  * @param {{api: {get: Function, post: Function, del: Function}}} options
  * @returns the controller: `state`, `subscribe(listener)`, `load()`, `refresh()`, `loadMore()`, `select(id)`, `choose(value)`,
- *   `sync(version)`, `apply()`, `retry()`, `leave()`, `dispose()`.
+ *   `sync(version)`, `apply()`, `leaveUnresolved()`, `link(choice)`, `retry()`, `leave()`, `dispose()`.
  */
 export function createReviewController({ api }) {
     let state = Object.freeze(initial());
@@ -218,15 +241,16 @@ export function createReviewController({ api }) {
             if (keep && !stale && (quiet || state.detail)) return;
             if (quiet && left && !keep && pending?.id === left.id) {
                 // M5: the decision that got no answer was recorded (the server used its capture).
-                const choice = pending.body.choice;
+                const { toast } = pending;
                 pending = null;
-                set({ phase: 'done', warning: '', canRetry: false,
-                    toast: choice === UNRESOLVED ? COPY.leftUnresolved : COPY.applied });
+                set({ warning: '', canRetry: false, toast, decisions: state.decisions + 1 });
+                if (items.length) await select(items[0].id);
+                else clearSelection();
             } else if (quiet && left && !keep && items.length) {
                 set({ warning: COPY.decidedElsewhere(left.filename) });
                 await select(items[0].id, { keepWarning: true });
             } else if (items.length) await select((keep ?? items[0]).id, { keepWarning });
-            else set({ selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null });
+            else clearSelection();
         } catch (error) {
             if (read !== listRead || disposed || isAbort(error)) return;
             // M7: a click this read took over can be made again.
@@ -242,6 +266,11 @@ export function createReviewController({ api }) {
                 if (owed === 'always' || !current(owed)) refresh();
             }
         }
+    }
+
+    function clearSelection() {
+        set({ selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null,
+            unreadable: null });
     }
 
     /** The stream's `ready`: re-read only when the queue shown is older than `version`. */
@@ -320,14 +349,14 @@ export function createReviewController({ api }) {
         dropPending();
         const read = detailRead = new AbortController();
         set({ selectedId: id, detail: null, detailStatus: 'loading', options: Object.freeze([]), choice: null, prompts: null,
-            canRetry: false, ...(keepWarning ? {} : { warning: '' }) });
+            unreadable: null, canRetry: false, ...(keepWarning ? {} : { warning: '' }) });
         try {
             const detail = await api.get(`${REVIEW_URL}/${encodeURIComponent(id)}`, { signal: signalOf(read), cache: 'no-store' });
             if (read !== detailRead || disposed) return;
             const options = contextOptions(detail);
             const chosen = options.find(option => !option.disabled);
-            set({ detail: Object.freeze(detail), detailStatus: 'ready', options, choice: chosen.value, prompts: promptsOf(chosen),
-                warning: (keepWarning && state.warning) || warningOf(detail) });
+            set({ detail: Object.freeze(detail), detailStatus: 'ready', options, choice: chosen?.value ?? null,
+                prompts: promptsOf(chosen), unreadable: unreadableOf(detail), warning: (keepWarning && state.warning) || warningOf(detail) });
         } catch (error) {
             if (read !== detailRead || disposed || isAbort(error)) return;
             if (RELOAD.has(error?.code)) { set({ warning: error.message }); await load({ keepWarning: true, stale: true }); return; }
@@ -339,7 +368,7 @@ export function createReviewController({ api }) {
         const option = state.options.find(entry => entry.value === value);
         if (!option || option.disabled || state.phase === 'applying') return;
         // Another choice is another decision: an unanswered one is no longer resent.
-        if (pending && pending.body.choice !== value) { dropPending(); set({ canRetry: false }); }
+        if (pending && pending.key !== value) { dropPending(); set({ canRetry: false }); }
         set({ choice: value, prompts: promptsOf(option) });
     }
 
@@ -350,24 +379,35 @@ export function createReviewController({ api }) {
         if (owed && !reloading && !disposed) refresh();
     }
 
-    /** Send `body`; true once the decision is recorded. */
-    async function send(body) {
+    /** The item recorded: it leaves the page's queue, the one after it opens and the queue is read again. */
+    async function advance(id, total, toast) {
+        const index = state.items.findIndex(entry => entry.id === id);
+        const items = Object.freeze(state.items.filter(entry => entry.id !== id));
+        const next = items[index] ?? items[index - 1] ?? null;
+        set({ phase: 'idle', items, total, warning: '', toast, decisions: state.decisions + 1 });
+        owedRefresh = false;
+        if (next) await select(next.id);
+        else clearSelection();
+        // Not refresh(): an answer already on its way may predate the decision, and this read aborts it.
+        await load({ keepWarning: true, quiet: true });
+    }
+
+    /** Send one decision; true once it is recorded. */
+    async function send({ path, body, key, toast, lost = COPY.lost }) {
         const id = state.selectedId;
-        const choice = body.choice;
         set({ phase: 'applying', canRetry: false });
         try {
-            const result = await api.post(`${REVIEW_URL}/${encodeURIComponent(id)}/decision`, body, { signal: lifetime.signal });
+            const result = await api.post(`${REVIEW_URL}/${encodeURIComponent(id)}/${path}`, body, { signal: lifetime.signal });
             pending = null;
-            set({ phase: 'done', total: result.total, warning: '',
-                toast: choice === UNRESOLVED ? COPY.leftUnresolved : COPY.applied });
+            await advance(id, result.total, toast);
             return true;
         } catch (error) {
             // Leaving the page mid-request: the server may never see it, so the capture is released here (a release
             // of a capture the server already used is a harmless 404).
             if (disposed || isAbort(error)) { release(body.capture_token); return false; }
             if (isLost(error)) {
-                pending = { id, body };
-                set({ phase: 'idle', warning: COPY.lost, canRetry: true });
+                pending = { id, path, body, key, toast, lost };
+                set({ phase: 'idle', warning: lost, canRetry: true });
                 idleAgain(false);
                 return false;
             }
@@ -380,55 +420,82 @@ export function createReviewController({ api }) {
         }
     }
 
-    async function apply() {
-        const { detail, choice } = state;
-        if (state.phase !== 'idle' || state.detailStatus !== 'ready' || !detail || !choice) return false;
-        // After an unanswered request, Apply resends that same decision once (its capture and body).
-        if (pending?.id === state.selectedId && pending.body.choice === choice) return retry();
+    /** A fresh capture of the open file, or null when there is no target; `false` when the decision must stop. */
+    async function capture(detail) {
+        if (!detail.target) return null;
+        let observed;
+        try {
+            // M4: not aborted on leave, so the capture it answers can be released.
+            observed = await api.post(OBSERVE_URL, { target: detail.target });
+        } catch (error) {
+            if (disposed || isAbort(error)) return false;
+            set({ phase: 'idle', warning: error?.message || COPY.failed });
+            idleAgain(RELOAD.has(error?.code));
+            if (RELOAD.has(error?.code)) await load({ keepWarning: true, stale: true });
+            return false;
+        }
+        const taken = observed.capture;
+        if (disposed) { release(taken?.token); return false; }
+        // M3: the file was observed under another storage than the detail was read from.
+        if (observed.library_epoch !== detail.library_epoch) {
+            release(taken?.token);
+            set({ phase: 'idle', warning: COPY.storageChanged });
+            idleAgain(true);
+            await load({ keepWarning: true, stale: true });
+            return false;
+        }
+        return taken ?? null;
+    }
+
+    /** One decision from the idle page: resend an unanswered same one, else capture and send. */
+    async function decide({ key, path, fields, toast, lost }) {
+        const { detail } = state;
+        if (state.phase !== 'idle' || state.detailStatus !== 'ready' || !detail) return false;
+        // After an unanswered request, the same decision resends that body once (its capture and body).
+        if (pending?.id === state.selectedId && pending.key === key) return retry();
         dropPending();
         set({ phase: 'applying', warning: '', canRetry: false });
-        let capture = null;
-        if (detail.target) {
-            let observed;
-            try {
-                // M4: not aborted on leave, so the capture it answers can be released.
-                observed = await api.post(OBSERVE_URL, { target: detail.target });
-            } catch (error) {
-                if (disposed || isAbort(error)) return false;
-                set({ phase: 'idle', warning: error?.message || COPY.failed });
-                idleAgain(RELOAD.has(error?.code));
-                if (RELOAD.has(error?.code)) await load({ keepWarning: true, stale: true });
-                return false;
-            }
-            capture = observed.capture;
-            if (disposed) { release(capture?.token); return false; }
-            // M3: the file was observed under another storage than the detail was read from.
-            if (observed.library_epoch !== detail.library_epoch) {
-                release(capture?.token);
-                set({ phase: 'idle', warning: COPY.storageChanged });
-                idleAgain(true);
-                await load({ keepWarning: true, stale: true });
-                return false;
-            }
-        }
-        return send({
-            expected_epoch: detail.library_epoch, expected_revision: detail.revision, capture_token: capture?.token ?? null,
-            sha256: capture?.sha256 ?? detail.sha256, dependency_fingerprint: detail.dependency_fingerprint, choice,
-        });
+        const taken = await capture(detail);
+        if (taken === false) return false;
+        return send({ path, key, toast, lost, body: {
+            expected_epoch: detail.library_epoch, expected_revision: detail.revision, capture_token: taken?.token ?? null,
+            sha256: taken?.sha256 ?? detail.sha256, dependency_fingerprint: detail.dependency_fingerprint, ...fields,
+        } });
+    }
+
+    function apply() {
+        const { choice } = state;
+        if (!choice) return Promise.resolve(false);
+        return decide({ key: choice, path: 'decision', fields: { choice }, toast: COPY.applied });
+    }
+
+    function leaveUnresolved() {
+        return decide({ key: UNRESOLVED, path: 'decision', fields: { choice: UNRESOLVED }, toast: COPY.leftUnresolved });
+    }
+
+    /** Link item `itemId`, which must still be the open one, to prompt `positiveId` with recipe `pairId` (null: no negative). */
+    function link({ itemId, positiveId, pairId, title }) {
+        if (state.selectedId !== itemId || !state.detail?.target) return Promise.resolve(false);
+        return decide({ key: `link:${positiveId}:${pairId}`, path: 'link', toast: COPY.linked(title), lost: COPY.lostLink,
+            fields: { positive_id: positiveId, pair_id: pairId } });
     }
 
     /** Resend the unanswered decision once, with its own capture; false when there is nothing to resend. */
     async function retry() {
         if (!pending || state.phase !== 'idle' || pending.id !== state.selectedId) return false;
-        const { body } = pending;
+        const decision = pending;
         pending = null;
-        return send(body);
+        return send(decision);
     }
 
+    /** Leave for later: nothing is written; the next item opens, wrapping. */
     function leave() {
-        if (state.phase === 'applying') return;
+        if (state.phase === 'applying') return Promise.resolve();
         dropPending();
-        set({ phase: 'done', toast: null, canRetry: false });
+        const index = state.items.findIndex(entry => entry.id === state.selectedId);
+        const next = state.items[index + 1] ?? state.items[0];
+        if (!next || next.id === state.selectedId) { set({ canRetry: false, warning: '' }); return Promise.resolve(); }
+        return select(next.id);
     }
 
     return {
@@ -437,7 +504,7 @@ export function createReviewController({ api }) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, retry, leave,
+        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, leaveUnresolved, link, retry, leave,
         dispose() {
             if (disposed) return;
             dropPending();

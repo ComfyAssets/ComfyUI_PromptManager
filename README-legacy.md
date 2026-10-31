@@ -253,9 +253,9 @@ match Classic and Focused.
    - **PromptManagerText**: Look for "Prompt Manager Text" in the PromptManager/Text category - outputs STRING for any text node
 
 5. **Access the web interface**:
-   - **Admin Dashboard**: `http://localhost:8188/prompt_manager/admin` - Full management interface
-   - **Metadata Viewer**: `http://localhost:8188/prompt_manager/metadata.html` - Standalone PNG analysis tool
-   - **Simple Interface**: `http://localhost:8188/prompt_manager/` - Basic prompt browser
+   - **Workspace**: click **PM** in ComfyUI's top bar or **Web UI** on a node, or open `http://localhost:8188/prompt_manager/workspace`
+   - **Legacy pages** still work at their URLs, and System's Overview section links to them:
+     `/prompt_manager/admin` (dashboard), `/prompt_manager/admin#/tags` (tags), `/prompt_manager/gallery` (gallery), `/prompt_manager/gallery.html` (metadata viewer)
 
 ### Prerequisites
 
@@ -326,9 +326,10 @@ The comprehensive gallery system provides complete access to all your ComfyUI ou
 
 #### **📁 Accessing the Gallery**
 
-1. **Open the admin interface** at `http://localhost:8188/prompt_manager/admin`
-2. **Click the "🖼️ Gallery" button** to open the output-wide gallery
-3. **Browse all content** from your ComfyUI output directory
+1. **Open the workspace's Images page** at `http://localhost:8188/prompt_manager/workspace#/images`
+2. **Browse all content** from your ComfyUI output directory
+
+The legacy gallery stays at `http://localhost:8188/prompt_manager/gallery`.
 
 #### **🎬 Video & Image Support**
 

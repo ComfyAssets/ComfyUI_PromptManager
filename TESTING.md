@@ -763,7 +763,7 @@ filter Images, D21), the six facts, and a footer with "Send to ComfyUI" and
 "Prompt history" only when prompt roles resolved or a link is saved; the sticky panel
 scrolls inside the window. The viewer's details (`#viewer-details`) repeat that
 content without the cover, then "File & provenance" (the honest file facts, the
-`Prompt evidence` line, Download original and, for a listed file, D38's local-only
+`Prompt evidence` line, Download original and, for a listed file, D38's
 "Show in folder" after the Path) and "Workflow & raw metadata" (raw records and their
 two downloads), then the pair send and Prompt history buttons. D22 words an empty
 positive explicitly and makes confirmed prompt text focusable.
@@ -1402,6 +1402,13 @@ seeds two seedless files (`seedless_images` on `/__test__/concept/reset`, with
 Tag) and asserts that every row reserves the tallest footer and that their own footer
 is shorter than the row it reserves.
 
+### Overview counts (#547)
+
+Each Overview card is the count of the page it names: the shell's Library, Images and Tags sidebar counts, one source,
+so a card and its badge cannot differ. `/prompt_manager/stats` is for the legacy page and counts raw rows. A visit re-reads
+the three unless a read is in flight. An unread or failed card shows a dash; Retry re-reads only the failed counts.
+Tests: `tests/js/workspace-state.test.js`, `tests/browser/workspace.spec.mjs`, `tests/comfyui/workspace.spec.mjs`.
+
 ### Images page controls and recorded deviations (#249 PR C)
 
 The Images page renders the concept's DOM with real data. Its controls, top to bottom:
@@ -1566,20 +1573,27 @@ Recorded deviations on this page (spec §8):
 
   | Result | Toast |
   |---|---|
-  | Success | "Opened the folder on this computer." |
-  | 403 `not-local` | "Show in folder works only in a browser on the computer running ComfyUI." |
-  | 501 `unavailable` | "No file manager is available on this computer." |
+  | Success | "Opened the folder on the computer running ComfyUI." |
+  | 403 `not-same-origin` | "The folder was not opened: this page's address does not match the server's." |
+  | 501 `unavailable` | "No file manager is available on the computer running ComfyUI." |
   | 429 `busy` | "The folder is already opening." |
   | Anything else (415, 404, 409, 500, offline) | "The folder could not be opened. Try again." |
 
-  The route is local-only. It answers 403 `not-local` unless all of these hold: no
-  forwarding-style header (`Forwarded`, `Via`, `X-Real-IP`, `CF-Connecting-IP`,
-  `True-Client-IP`, `X-Client-IP`, `X-Cluster-Client-IP`, `Fastly-Client-IP`, and any
-  `X-Forwarded-*`, `X-Original-*` or `*-Client-IP`); a loopback `request.remote`; a
-  loopback `Host` (`localhost`, `*.localhost` or a loopback address, against DNS
-  rebinding); an `Origin` equal to the request's own scheme, host and port (absent,
-  `null`, another port or another scheme is refused; browsers send `Origin` on every
-  fetch POST); and, when sent, `Sec-Fetch-Site: same-origin`. A body that is not
+  **D176 (#533, beyond the concept):** the viewer is a modal, so `showWorkspaceToast`
+  moves `#workspace-toast` into the topmost open modal (by hit test when several are
+  open), keeping its fixed position, and back when that modal closes. A modal opened
+  after a toast covers it until the next toast. Otherwise every toast raised from a modal is
+  covered and inert while `toHaveText` still passes: assert `toBeVisible` and the
+  hit test as `full-inspector.spec.mjs` does.
+
+  The route opens the folder on the computer running ComfyUI wherever the browser is,
+  through a proxy too (maintainer decision, #533, amending the original local-only
+  rule; accepted risk: anyone who can reach the server can open file windows on it).
+  It answers 403 `not-same-origin` unless `Origin` is present and matches: its host
+  and port against `X-Forwarded-Host` when sent, else `Host`, with the scheme's default
+  port filled in; its scheme against `X-Forwarded-Proto` when sent, else the socket's
+  (an https page on an http socket passes, TLS having ended at a proxy); and, when
+  sent, `Sec-Fetch-Site: same-origin`. A body that is not
   `application/json` is 415 `unsupported-media-type`, so any cross-origin request
   needs a CORS preflight. The body is strict (an int root, a 64-hex scope, a bounded
   relative path; absolute, drive and `..` paths are 400), the scope goes through
@@ -1596,7 +1610,9 @@ Recorded deviations on this page (spec §8):
   reach it), falling back to `os.startfile(folder, "explore")`. macOS runs
   `/usr/bin/open -R`; Linux asks FileManager1 `ShowItems` with `dbus-send
   --print-reply --reply-timeout=2000` (a real reply or a fallback) and else runs
-  `xdg-open` on the folder. Those openers are argv lists resolved only on a fixed
+  `xdg-open` on the folder, or answers 501 without `DISPLAY` and `WAYLAND_DISPLAY`.
+  `open` and `xdg-open` get `OPENER_WAIT` (1 s): a nonzero exit is the 500 above, and
+  one still running counts as started and goes to the reaper (#533). Those openers are argv lists resolved only on a fixed
   system PATH, with no shell, DEVNULL streams, `close_fds`, their own session, a
   minimal environment (no venv PATH, PYTHONPATH or API keys) and a daemon-thread
   reaper. `tests/test_image_reveal.py` mocks `Popen`, `sys.platform`, `shutil.which`,
@@ -1604,12 +1620,11 @@ Recorded deviations on this page (spec §8):
   (`POST`/`GET /__test__/reveal`) with no cooldown. The inspector comparison reads
   closed disclosures as hidden, so the button needs no mapping there.
 
-  Residual risk, accepted: a reverse proxy or tunnel that adds no forwarding header
-  (a bare nginx `proxy_pass` to 127.0.0.1, `ssh -R`, `socat`) cannot be told apart
-  from a local client, and a non-browser client behind it can forge a matching
-  `Host` and `Origin`. Such a client can open a folder of a listed file on the host's
-  screen, at most once a second, and learn whether that file exists (which the
-  listing routes already tell it). Operators who expose ComfyUI that way accept this.
+  Limits of that check: a proxy that rewrites `Host` and sends no `X-Forwarded-Host` is
+  refused with that toast until it sends one. A non-browser client can forge every
+  header. The check stops a plain cross-site POST, not every other site: a DNS-rebinding
+  page has a matching `Host` and `Origin`, so it can open a folder of a listed file, at
+  most once a second. The path check confines it, one check ahead of every opener.
 - **D39** (ruled 2026-10-21: fallback): a recipe-linked image shows its recipe's own
   category when set, otherwise the linked positive prompt's, and its recipe's own tags
   when it has any, otherwise the positive's; each field falls back on its own and the
@@ -2489,7 +2504,28 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   (`_collect_media_files`), the legacy auto-tag listing (`_collect_scan_files`) and the
   delete review (`trash-folder`), and the image monitor, which tests the folders below the
   watched folder holding the new file (a source named like a trash folder is still watched). Tests: `tests/test_media_folders.py`,
-  `tests/test_image_removal_gaps.py`.
+  `tests/test_image_removal_gaps.py`. Media routes answer not found for a path in such a
+  folder, resolved first so a link or another spelling cannot pass (#543):
+  `_media_access_error` is the one gate (by-id, inspect, reveal, link, rescope as
+  `file-missing`, a prompt's media listing); `/images/serve` and the autotag target ask
+  `in_trash_below_roots` too, `media_target` refuses by name (annotations, collections,
+  whose capture store denies links and aliases), and previews are neither made nor served, the fallback past the preview gate's cap
+  included (`_quick_source`). A History output in one answers `missing`, checked at the
+  candidate and again at the open (a preview can be a link). The legacy duplicate delete
+  removes exactly the folder's real path plus the name (a link itself, never its target)
+  and refuses if either spelling is in a trash folder; `file_problem` refuses too. The delete
+  and Return flows never use this gate. Windows spellings (trailing dots and spaces, case,
+  8.3) run for real on the Windows job in `tests/test_trash_gate_routes.py`.
+- **An output folder that is a mount point** (#543): the mount's own `.Trash-$uid` and
+  `.Trash/$uid` are allowed only for a root that is exactly that mount, with the spec's
+  checks intact. A root above the mount, a mount nested under the root, a source that is or
+  sits in the trash folder, and a link in place of the trash folder stay refused. Tests:
+  `tests/test_trash_mount_root.py`, on a fake mount table in the suite and, with
+  `PM_TRASH_MOUNT=<real mount>`, in portability.yml's `native-trash-linux` job (loop-mounted
+  ext4). Locally, without root: `unshare -Urm` over a tmpfs.
+- **D190** (#543, beyond the concept): a trash review where nothing can move shows a primary
+  that clearly cannot act: `aria-disabled`, no danger colors (also on hover), and a press does
+  nothing. Tests: `tests/browser/workspace-images-delete.spec.mjs`.
 - **Trash backends** (`utils/trash.py`, no dependency): Linux and BSD implement the
   freedesktop Trash specification (home trash on the same mount, else the mount's
   `.Trash/$uid` or `.Trash-$uid`), reserve the name with `O_EXCL` and move with
@@ -2641,8 +2677,8 @@ applied), D35 (singular captions), D36 (sorted categories), D40 (the continuatio
 the grid) and D43 (sorted chips, checked against the concept with its chips sorted).
 D44 needs no mapping: the comparison runs with no Refine filter active, so the button
 reads "Filters" as the concept's does. Nothing else follows the grid: the legacy
-"Current prompt library" link is removed from the shelf; Overview's legacy card ("Open
-existing prompt library") and the sidebar still link `/prompt_manager/admin`
+"Current prompt library" link is removed from the shelf; the legacy Library stays at
+`/prompt_manager/admin` by direct URL, linked only from System (#525, D165)
 (`tests/browser/workspace.spec.mjs`). `library comparison detects
 mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
 
@@ -2888,6 +2924,14 @@ with its own negative, a self-pair, each drift, validation); `tests/test_library
 copy, the server after, archive-only, reset to Archive) and `library-delete-concept.spec.mjs`. A Python
 change: ComfyUI needs a restart.
 
+### Pair node gives a new prompt its category and tags (#546)
+
+A Pair save, by a run or the node's Save pair button, writes the category and tags to the positive prompt only when that
+save creates the prompt row (maintainer ruling). An existing prompt never changes on a run: empty, cleared or set by a person, including one first seen as
+another pair's negative. The negative stays empty, the saved pair keeps its own metadata, and `save_prompt_pair` writes
+no prompt metadata unless called with `fill_new_positive`. No backfill; optional repair is #550.
+Tests: `tests/test_prompt_pair_node.py`, `tests/test_api_pairs.py`, `tests/comfyui/pair-node.spec.mjs`. A Python change: ComfyUI needs a restart.
+
 ### Delete… on the archived shelf (#492)
 
 Extends **D160** (coordinator ruling 2026-10-29, cutover item): the archived shelf's bar reads "N selected · Restore ·
@@ -2927,6 +2971,29 @@ concept's danger "Archive…" maps to "Archive variant…" followed by a "Delete
 
 Tests: `tests/browser/workspace-library-delete.spec.mjs` (#481 cases), and `workspace-library-editor.spec.mjs` (the
 hand-off and the comparisons) and `library-editor-visual.spec.mjs` with the renamed button. JS only: no restart.
+
+### Card tops, the Reusable tags window and System's width (#530)
+
+Found in the maintainer's test of the cutover branch; each departs from the concept, whose files are not edited. The
+comparisons add `CONCEPT_LAYOUT_DEVIATIONS` (`concept-inventory.mjs`, four rules: card margins, System limit, tag header
+background and line) to the opened concept page, so the boxes that follow from them are still compared. The new spec pins the
+real values and that the unmapped concept keeps its 18px offset.
+
+- **D182**: the second card of a `.two-col` starts level with the first. The concept's `.surface + .surface` 18px margin
+  also applies inside its grid, which put Categories and Workspace preferences 18px lower. Stacked cards are now one 18px
+  gap apart instead of 36px. A surface after a two-column row (Backup & export's Recovery policy) touched the row in the
+  concept and on main; it now sits 18px below it.
+- **D183**: Reusable tags scrolls in its own window inside the card (`max(280px, 100dvh - 500px)`), so a long vocabulary no
+  longer runs the page off screen. The column headers stick to the top of the window, with the surface background and a
+  drawn line. Load more stays below the window; the end of the list inside the window (`.vocabulary-end`, observed with
+  the window as root) appends the next page. A new search or sort returns the window to its top. Reaching Load more by
+  keyboard no longer appends on its own; Enter does. A rename or merge reloads page one, so the window returns to its top.
+- **D184**: `.settings-layout` has no 1000px limit, so every System section uses the full content width, as the section
+  nav and the other pages do.
+- **D185**: on touch and at 390px the same window stays shorter than the screen and overscroll chains to the page, so a
+  swipe outside the window, or past its top, moves the page.
+
+Measured in `workspace-layout-tags-system.spec.mjs`; the swipe case runs in the touch project.
 
 ### Prompt page heading on one row (#524)
 
@@ -3117,8 +3184,8 @@ npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
 ### Inspect a file page and recorded deviations (#249 local Inspect, PR L2)
 
 `#/inspect` ("Inspect a file") is a native workspace route; it no longer hands off to
-the legacy metadata page, which stays reachable from Overview's "Open existing metadata
-inspector" card (`/prompt_manager/gallery.html`). The page is the concept's `#metadata`
+the legacy metadata page, which stays at its URL
+(`/prompt_manager/gallery.html`) linked only from System (#525, D165). The page is the concept's `#metadata`
 (app.js `renderMetadata` a740–748, selection a1715–1729; style.css 709–722, 1180–1194,
 1543–1545, 1559–1564) in the concept's own classes (`.surface`, `.file-drop`,
 `.spaced-20`, `.local-file-preview`, all from the synced `concept.css`), with no
@@ -3396,15 +3463,20 @@ document title "Review" (the concept's), heading "Metadata review" with its line
 concept's sentence, then `.gallery-layout`: the queue's concept media cards
 (`image-card.mjs`, shared with Images; the image opens the shared viewer, Info selects
 the item, Tag opens the shared Tag image dialog with the review scope note) and
-`section.surface` "Resolve the association" (filename, Tag image, Sampler context,
-the chosen path's prompt blocks, Leave for later and primary Apply association). The
+`section.surface` "Resolve the association" (filename, Tag image, Link to a prompt…,
+Sampler context, the chosen path's prompt blocks, Leave for later, Leave unresolved and
+primary Apply association). The
 first item is selected on load, as the concept's first image is. Sampler context lists
 "Sampler <id> · <positive> / <negative>" per candidate (the server's label), disables
-unusable ones, preselects the first workable one and ends with "Leave unresolved"
-(rulings R2/R3); "Leave unresolved" shows the ambiguous status in both blocks. Apply
+unusable ones with the server's reason and preselects the first workable one
+(rulings R2/R3). Apply
 takes a fresh capture (`observe`) and posts the decision; Leave unresolved on a file
-under no current root posts without a capture. Both actions return to Images (R7); a
-recorded decision re-reads the row's count, as does every metadata scan that ends. A
+under no current root posts without a capture. Each decision and Leave for later opens
+the next item and the page stays (#536 overturns ruling R7); Leave for later writes
+nothing. Link to a prompt… (#536) records a Library prompt the reviewer chose,
+`POST /prompt_manager/review/items/{id}/link`: the capture guards of Apply, the same
+one-prompt-per-file rules, and link provenance `kind: "manual-link"` with no prompt
+sides, so it never reads as file evidence. A recorded decision re-reads the row's count, as does every metadata scan that ends. A
 refused decision keeps the selection and shows the server's sentence (the
 association conflict's explanation included) as `p.warning-note` in the panel; a
 restored storage or a changed queue reads the queue again; a request with no answer
@@ -3419,6 +3491,14 @@ pending count (`GET /prompt_manager/review/items?limit=1`, its `total`).
   carries the concept's **Review metadata** (app.js a738 `go-review`): in its Activity
   item after the item's line, and in its job view's heading after Download report. The
   item's chip still names its state (D54), where the concept's says "Needs attention".
+- **D179** (#536, maintainer decision 2026-10-30): "Leave unresolved" is a button beside
+  Leave for later, not the Sampler context select's last option; a disabled option names
+  the server's reason.
+- **D180** (#536): with nothing to apply, the select, the prompt blocks and Apply are
+  hidden; the panel gives the path count and each reason, and Link to a prompt… is primary.
+- **D181** (#536): the concept has no picker. Link to a prompt… opens the shared content
+  dialog: Library search, the prompt's recipes as Negative prompt (one preselected,
+  several must be chosen, always "No negative"), Cancel and Link image.
 - **D119**: the queue cards have no selection checkbox and
   no star (the page has no selection bar and the queue carries no favorite state); a
   file under no current root has an empty, `aria-disabled` image button and Tag; more
@@ -3992,6 +4072,23 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   defaults" ("Restore this browser’s display defaults, then save. Other settings are
   kept.", button "Reset"), which drafts the gallery's defaults for the browser rows only.
   The node search timeout shows the server's real value, not the sample 30. CSS under D97.
+- **D170** (#532, maintainer request 2026-10-30, beyond the concept): every viewer has
+  `button#viewer-keys.icon-btn` right before the D156 view switch (accessible name and
+  `title` "Keyboard shortcuts", a `command` outline icon, hidden at ≤700px with the
+  switch). It opens `dialog#viewer-keys-dialog`, a modal built on demand inside the
+  viewer, so a closed overlay adds nothing to the concept comparisons but the button:
+  `.dialog-header` with × and the keys grouped as Move (← → Space), Image (+ - 0 R H),
+  View (F I ? Esc) and File (D, Delete where the viewer has Delete…), one column at
+  390px. Esc or × closes only the overlay and focus returns to the button; opening it
+  stops the slideshow. ← and → navigate from anywhere in the viewer, on `document` as the
+  legacy gallery does, unless a modifier is held, text is selected, another dialog is on
+  top, or focus is in a video, form field, `pre`, `summary`, or anything in the details
+  but a button or link. The other keys share that gate but allow Shift, and each clicks
+  the toolbar's own control, so an aria-disabled, missing or hidden control does nothing
+  (Rotate on a video, I when Centered, F at ≤700px, Delete without Delete…). `?` opens
+  the overlay directly. Delete only opens the review. Space on a focused button or link
+  activates it instead, and only + and - repeat. `workspace-viewer-keys.spec.mjs` pins
+  this.
 - **D156** (#450, maintainer request 2026-10-28, beyond the concept): every viewer (the
   shared `dialog#viewer-dialog` of Images, Library, History, collections and Inspect) has
   `button#viewer-mode.icon-btn` in `.dialog-header`, right before ✕ (a direct child, so
@@ -4235,6 +4332,24 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   makes the page see a restore run and finish deterministically. A refused file toasts "This file can't be restored: <validator reason>.". A
   review value may wrap anywhere (`#modal-body > dl.meta-grid dd`, CSS under D105), so a
   long file name keeps the concept's two equal columns at phone width.
+- **D173** (#535, amends D106; maintainer 2026-10-30): "always asks" now means asks when
+  there is a choice. One eligible window is selected, and a selected window with exactly
+  one eligible node selects that node; two or more nodes are never selected. A node whose
+  requested field is linked is not offered (`linkedRoles` on each destination), and the
+  status line says which case applies: linked, wrong roles, no node, or no window. It
+  counts the other nodes that cannot receive, and the review names the node and window.
+- **D174** (#535): the window option shows the tab's current title, read at each discovery
+  (a getter on the host options, which the Toolkit reads per discover), without the old
+  "PromptManager —" prefix. Same-named windows get " (window 2)", numbered by host id so the
+  number is stable while the tabs stay loaded. Every node option reads "#<id> <title>", so
+  identical nodes can be told apart. Discovery waits 300 ms, as System does.
+- **D175** (#535, maintainer 2026-10-30): the concept README previews before applying;
+  production makes Preview optional. Apply is enabled once a window and node are selected
+  and requests the ticket itself, in one click. It stays closed after "Sent to ComfyUI.",
+  so a double click sends once, and after an unknown outcome until a new preview or
+  choice. The host's checks still refuse a linked field or a changed workflow, and the
+  sender also refuses if the destination's `revision` (node object plus graph version)
+  moved since discovery; it is undefined on an older tab, which skips the comparison. A host error reads as a refusal, not "may have applied".
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
   and node, and the nodes always follow ComfyUI's own renderer, so "Default send
   destination" offers only "Ask each time" and "Host compatibility" only "Follow host
@@ -4340,6 +4455,15 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   `system shell and overview match the concept` (the mapping inserts the row) and
   `library notice matches the concept notice` with its mutation check
   (system-concept.spec), and the D129 tests of workspace-system.spec.
+- **D166** (one-time upgrade notice, #527): the concept's README puts the notice in the
+  new shell, while its `app.js` draws it in System › Sources. Production does both: the
+  Sources `.notice` is kept and compared as drawn, and `#older-images-notice`, styled as
+  `#library-banner`, shows the same notice above every other page until dismissed. The
+  shell hides on Sources, so they never show together. Dismissal is the legacy key
+  `pm_update_notice_dismissed`, shared with the admin modal and across tabs. Browser
+  contexts start dismissed (`tests/browser/fixtures.mjs`, `storageState`); a spec about
+  the notice sets `test.use({ olderImagesNotice: true })`. Pinned by
+  workspace-older-images-notice.spec.
 - **D130** (Appearance, #317): the concept keeps "Thumbnail quality, size limit" in
   Appearance (README) but draws no rows for them. Appearance gains a second
   `section.surface`, "Thumbnails", after "Browsing & display", built from the concept's
@@ -5616,6 +5740,23 @@ npm run --prefix tools/vendor test:workflows -- workspace-system-backups.spec.mj
   system-backups-concept.spec.mjs \
   --project chromium --project touch --project firefox --project webkit
 ```
+
+## Sticky chrome (#531)
+
+Beyond the concept, from the maintainer's test of #528; the concept is unchanged. `workspace-sticky-chrome.spec.mjs` holds these.
+
+- **D186:** the selection bars (Images `#bulkbar`, Library `#library-bulkbar`; there are no others) are sticky: under the
+  top bar at the top of the page, and at the top of the window once that non-sticky top bar has scrolled away (one rule
+  in workspace.css). While the bar's flow place is above the window, its appearing, resizing or leaving does not move the cards
+  (`keepingPlace`). Focused card controls and the Images panel keep clear of it (`--selection-bar-block`). At 700px and below
+  the bar is one row that scrolls sideways. After a bulk action finishes the page scrolls to the top and refreshes the
+  list; Set category, Delete… and Return to library clear the selection as before, while tagging and collections keep
+  it (D85, D138). Export metadata changes nothing, so it stays put. Single-image actions from the inspector and viewer stay put.
+- **D187:** Back to top: one shell chip past 200px of scroll, above the toast's spot; it rises only for a toast taller than two lines. It never animates, because the
+  pages' height corrections would cancel a smooth scroll, and focus moves to `#workspace-main`. D42's band grows to 140px.
+- **D188:** the Needs review panel is sticky like the Images panel, with its own scroll on a window under 720px tall, and static at 700px and below.
+- **D189:** where a panel is one column (static): Info brings the panel into view. On
+  Images the panel follows the whole list, past infinite scroll, so loading waits for the reader's next move (wheel, touch or key) rather than pushing the panel away.
 
 ## Workspace data fields for the concept pages (#249)
 
@@ -7029,8 +7170,8 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 ## Native vocabulary UI (#236)
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
-longer hands off to the legacy tag manager. That page stays reachable from Overview's
-"Open existing tag manager" card for its own page; tag search and sort, the untagged
+longer hands off to the legacy tag manager. That page stays at
+`/prompt_manager/admin#/tags` linked only from System (#525, D165); tag search and sort, the untagged
 entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
 (#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
 library's selection bar, D151). A prompt's category is changed in the Prompt library
@@ -7152,3 +7293,23 @@ until acceptance. Not compared: hover states and the dialog focus ring (the page
 keyboard ring and link ring offsets are asserted). No coverage floor was lowered;
 `vocabulary-state.mjs`, `vocabulary.mjs` and `vocabulary-dialog.mjs` have additive
 floors in `frontend-coverage-baseline.json`.
+
+## Cutover entry points (#525)
+
+The top-bar PM button, both Web UI buttons and `/prompt_manager/web` open
+`/prompt_manager/workspace#/library` (`web/js/workspace-entry.js`; `web/index.html` keeps its
+own copy, pinned by `tests/js/workspace-entry.test.js`). Overview's cards open native hashes.
+The legacy pages (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.html`) stay at
+their URLs, and admin's Metadata and Gallery buttons still open their legacy pages (maintainer
+ruling; pinned by `legacy-system-links.spec.mjs`).
+
+- **D165** (beyond the concept, maintainer ruling 2026-10-30): System's Overview section ends
+  with one small line, "Legacy pages: Dashboard · Tags · Gallery · Metadata viewer"
+  (`.legacy-pages`, new tabs), outside `.settings-layout`. The concept has no such line;
+  `mapOverviewConcept` adds it to the page tree.
+- **Load failure** (maintainer ruling 2026-10-30): `web/workspace.html` holds static
+  `#workspace-boot-failure` with the same four links, styled inline so it needs no stylesheet.
+  An inline guard shows it at `load` unless `index.mjs` set `data-workspace-booted`, so a failed
+  fetch of any module and a throw while starting are both covered; `workspace.spec.mjs` tests
+  both. Editing `workspace.html` needs a ComfyUI restart, because the server caches it. The PM button has no
+page-fixture test; it is proven on the managed host (`tests/comfyui/prompt-manager.spec.mjs`).

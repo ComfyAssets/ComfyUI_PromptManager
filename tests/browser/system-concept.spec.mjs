@@ -33,8 +33,8 @@ function measureSystem(mainSelector) {
         const rect = node.getBoundingClientRect(), base = origin.getBoundingClientRect();
         return { left: Math.round(rect.left - base.left), width: Math.round(rect.width) };
     };
-    // A surface's top: from `.two-col` beside its neighbour, else from the bottom of the surface above it. This pins the
-    // concept's `.surface + .surface` 18px offset, which concept.css applies inside `.two-col` too (copied, not ruled).
+    // A surface's top: from `.two-col` beside its neighbour, else from the bottom of the surface above it. D182 (#530)
+    // levels the second `.two-col` card, on both sides through mapConceptLayout; the real values are in workspace-layout-tags-system.spec.
     const top = node => {
         const rect = node.getBoundingClientRect(), previous = node.previousElementSibling?.getBoundingClientRect();
         if (previous && rect.top >= previous.bottom) return Math.round(rect.top - previous.bottom);
@@ -165,6 +165,8 @@ const number = value => value.toLocaleString('en-US');
 
 /** The concept's shell and Overview with the recorded deviations applied, given the server's real overview. */
 function mapOverviewConcept(reference, overview) {
+    // D165: the discreet legacy-pages line follows the settings layout.
+    reference = { ...reference, tree: [...reference.tree, 'p.legacy-pages.small'] };
     const relabel = { 'Database integrity': 'Not checked', 'Positive prompts': number(overview.library.positive_prompts),
         'Negative variants': number(overview.library.negative_variants), Images: number(overview.images.indexed) };
     const rows = {
@@ -257,7 +259,7 @@ const UNMAPPED_PATHS = [
     'columns.surfaces.0.rows.length', 'columns.surfaces.0.tree.4', 'columns.surfaces.0.tree.length',
     'columns.surfaces.1.rows.0.description', 'columns.surfaces.1.rows.1.title', 'columns.surfaces.1.rows.2.description',
     'heading.actions.0', 'heading.actions.length', 'metrics.items.3.value', 'nav.label',
-    'save.button.cursor', 'save.button.opacity', 'save.status.text',
+    'save.button.cursor', 'save.button.opacity', 'save.status.text', 'tree.3', 'tree.length',
 ].sort();
 
 test('system comparison detects mutations', async ({ page, request }) => {
@@ -683,6 +685,8 @@ async function watchedSources(request) {
 
 for (const theme of THEMES) for (const [width, height] of SIZES) for (const notice of [true, false]) {
     const variant = notice ? 'with' : 'without';
+    test.describe(() => {
+    test.use({ olderImagesNotice: notice });
     test(`sources matches the concept ${variant} the notice ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
         await page.setViewportSize({ width, height });
         const server = await watchedSources(request);
@@ -693,8 +697,11 @@ for (const theme of THEMES) for (const [width, height] of SIZES) for (const noti
         expect(diffInventory(mapSourcesConcept(concept, server), production)).toEqual([]);
         expect(production.pageScroll).toBe(false);
     });
+    });
 }
 
+test.describe(() => {
+test.use({ olderImagesNotice: true });
 test('sources comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     const server = await watchedSources(request);
@@ -736,6 +743,7 @@ test('sources comparison detects mutations', async ({ page, request }) => {
     expect(await paths()).toEqual(expect.arrayContaining(['operation.borderTopColor']));
     await undoToken();
     expect(diffInventory(expected, await measure())).toEqual([]);
+});
 });
 
 /**

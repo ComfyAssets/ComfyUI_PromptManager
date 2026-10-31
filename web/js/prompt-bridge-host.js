@@ -16,7 +16,8 @@ export function installPromptBridge(app, { baseUrl, runtime = globalThis,
         if (host || disposed) return;
         try {
             host = hostFactory({ namespace, origin: runtime.location.origin,
-                label: `PromptManager — ${runtime.document.title || 'ComfyUI'}`, adapter: adapterFactory(app) });
+                // A getter: the Toolkit reads this on every discovery, and the tab title follows the open workflow.
+                get label() { return runtime.document.title || 'ComfyUI'; }, adapter: adapterFactory(app) });
         } catch (error) {
             runtime.console.warn('[PromptManager] Prompt sending is unavailable:', error.message);
         }

@@ -13,16 +13,29 @@ class FakeToast extends EventTarget {
     matches(selector) { assert.equal(selector, ':hover, :focus-within'); return this.held; }
 }
 
-function install() {
+function install(dialogs = []) {
     const toast = new FakeToast();
     const previous = global.document;
     global.document = {
+        querySelectorAll: selector => { assert.equal(selector, 'dialog'); return dialogs; },
         getElementById: id => id === 'workspace-toast' ? toast : null,
         createTextNode: text => ({ textContent: text }),
         createElement: tag => ({ tag, href: '', textContent: '' }),
     };
     return { toast, restore: () => { global.document = previous; } };
 }
+
+// First: the module remembers a toast it has shown.
+test('a page without the toast shows nothing and does not fail', async () => {
+    const { showWorkspaceToast } = await source;
+    const previous = global.document;
+    global.document = { getElementById: () => null };
+    try {
+        assert.doesNotThrow(() => showWorkspaceToast('Nothing.'));
+    } finally {
+        global.document = previous;
+    }
+});
 
 test('a plain toast clears after 6.5 s and a linked one after 20 s', async t => {
     const { showWorkspaceToast, TOAST_MS, LINK_TOAST_MS } = await source;
@@ -84,13 +97,50 @@ test('a toast under the pointer or focus waits until they leave', async t => {
     }
 });
 
-test('a page without the toast shows nothing and does not fail', async () => {
+
+class FakeHost extends EventTarget {
+    constructor(modal = false, localName = 'dialog') { super(); this.modal = modal; this.localName = localName; this.nodes = []; }
+    matches(selector) { assert.equal(selector, ':modal'); return this.modal; }
+    append(node) { node.parentNode?.nodes.splice(node.parentNode.nodes.indexOf(node), 1); node.parentNode = this; this.nodes.push(node); }
+}
+
+test('a toast shows inside the topmost open modal and goes home when it closes (#533)', async () => {
     const { showWorkspaceToast } = await source;
-    const previous = global.document;
-    global.document = { getElementById: () => null };
+    const closed = new FakeHost(false), lower = new FakeHost(true), top = new FakeHost(true);
+    const dialogs = [closed, lower, top];
+    const { toast, restore } = install(dialogs);
+    const home = new FakeHost(false, 'body');home.append(toast);
     try {
-        assert.doesNotThrow(() => showWorkspaceToast('Nothing.'));
+        showWorkspaceToast('Opened the folder on this computer.');
+        assert.equal(toast.parentNode, top);
+        // The upper modal closes: the toast stays visible in the one under it.
+        top.modal = false;top.dispatchEvent(new Event('close'));
+        assert.equal(toast.parentNode, lower);
+        lower.modal = false;lower.dispatchEvent(new Event('close'));
+        assert.equal(toast.parentNode, home);
+        showWorkspaceToast('Next.');
+        assert.equal(toast.parentNode, home);
     } finally {
-        global.document = previous;
+        restore();
+    }
+});
+
+test('a toast removed along with its modal still shows the next message (#533)', async () => {
+    const { showWorkspaceToast } = await source;
+    const modal = new FakeHost(true);
+    const { toast, restore } = install([modal]);
+    const home = new FakeHost(false, 'body');home.append(toast);
+    try {
+        showWorkspaceToast('Inside.');
+        assert.equal(toast.parentNode, modal);
+        modal.modal = false;
+        const byId = document.getElementById;
+        document.getElementById = () => null; // the dialog left the page with the toast in it
+        showWorkspaceToast('After.');
+        assert.equal(toast.parentNode, home);
+        assert.equal(toast.textContent, 'After.');
+        document.getElementById = byId;
+    } finally {
+        restore();
     }
 });

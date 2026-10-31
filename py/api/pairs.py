@@ -102,7 +102,12 @@ class PairRoutesMixin:
             validate_prompt_text(negative)
         fields = metadata_fields(data)
         pair_id = await self._run_in_executor(
-            self.db.save_prompt_pair, positive, negative, **fields
+            self.db.save_prompt_pair,
+            positive,
+            negative,
+            # The node's Save pair button: as a run, a new prompt gets the metadata.
+            fill_new_positive=True,
+            **fields,
         )
         pair = await self._run_in_executor(self.db.get_prompt_pair, pair_id)
         return web.json_response({"success": True, "pair": pair})

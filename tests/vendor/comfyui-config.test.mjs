@@ -25,7 +25,8 @@ test('execution script discovers only the new matrix and preserves all 78 origin
     // + local Inspect host case (inspect-sender.spec.mjs, 2 projects), + the S10 renderer case (prompt-bridge.spec.mjs, 2 projects)
     // + #343 linked text: five node types, PromptSearchList, the pre-#343 workflows, legacy Primitive, moved link,
     //   paste/clone/undo, wildcard Primitive, subgraph Primitive (text-link.spec.mjs, 2 projects)
-    assert.match(stock, /Total: 110 tests in 9 files/);
+    // + #525 the PM button and three nodes' Web UI after renderer switches and reload (prompt-manager.spec.mjs, 2 projects)
+    assert.match(stock, /Total: 118 tests in 9 files/);
     assert.doesNotMatch(stock, /execution-history/);
     assert.doesNotMatch(stock, /execution-outputs/);
     assert.doesNotMatch(stock, /library-location/);  // it starts its own fresh host (#249 S6b)

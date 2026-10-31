@@ -1,5 +1,6 @@
 import {createScope, createButton, createField, mountTheme} from './shared/toolkit/core.js';
 import {createPromptLibrary} from './prompt-library.js';
+import {WORKSPACE_ENTRY_ROUTE} from './workspace-entry.js';
 import {attachMetadataAutocomplete} from './metadata-autocomplete.js';
 import {exposeTextSockets, linkNoteText, preferTextInputs, textInputAtPoint} from './text-links.js';
 import {SAVE_WIDGET, normalizeSaveWidget, placeSaveWidgetLast, saveWidget, savesToLibrary, setSaveToLibrary} from './save-to-library.js';
@@ -253,7 +254,7 @@ export function installFocusedNode(nodeType, app, api, parseQuery, {layout = 'fo
             }
         });
         scope.listen(web,'click',() => {
-            const url = api.fileURL('/prompt_manager/web');
+            const url = api.fileURL(WORKSPACE_ENTRY_ROUTE);
             const opened = webDisplayMode === 'newtab' ? window.open(url,'_blank') : window.open(url,'_blank','width=1200,height=800,scrollbars=yes,resizable=yes');
             footer.setAttribute('role',opened ? 'status' : 'alert');
             footer.textContent = opened ? 'Web UI opened.' : 'Allow popups to open Web UI, then try again.';

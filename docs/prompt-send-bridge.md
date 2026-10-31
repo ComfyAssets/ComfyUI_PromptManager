@@ -18,9 +18,13 @@ protocol and peer checks reject unrelated messages. Same-origin scripts are
 trusted; this transport is not authentication against other scripts on that origin.
 Unsupported messaging is reported without breaking existing ComfyUI nodes.
 
+Apply works in one click: without a preview, the sender requests the ticket itself
+and applies it. Preview remains optional, and shows the exact change first.
+
 An apply timeout or abort after posting means the outcome is unknown. It cannot
 prove the host cancelled the write. The sender must inspect a fresh destination
-preview before deciding to send again; automatic retry must not overwrite edits.
+preview or choose the destination again before sending again; automatic retry must
+not overwrite edits. An error the host returned is a refusal: nothing was written.
 
 ## PromptManager adapter
 
@@ -31,7 +35,9 @@ field. Unknown/ambiguous metadata must not become an empty string.
 
 Previews show original and requested text plus positive prepend/append composition.
 Connected composition is marked unknown rather than guessing upstream values.
-Connected destination fields reject writes. Applying rechecks graph, node, widgets,
+Connected destination fields reject writes. The sender compares the destination's revision
+(node object and graph version) from discovery with the one at the preview, and refuses if the workflow changed.
+Applying rechecks graph, node, widgets,
 values and connections. Ordinary serialization cache synchronization is accepted
 only when it preserves live values. Both requested roles are checked before writing.
 

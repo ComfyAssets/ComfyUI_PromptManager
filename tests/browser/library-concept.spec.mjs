@@ -233,7 +233,7 @@ function productionSent(host) {
     return async page=>{
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Concept ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Concept destination'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair-1 Concept destination'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await expect.poll(()=>host.evaluate(()=>window.previewed.length)).toBe(1);
         const roles=await host.evaluate(()=>window.previewed.pop());
@@ -374,7 +374,9 @@ for(const [width,height] of SIZES)for(const theme of THEMES)test(`the Library se
     await captureCanonicalState(page,testInfo,`production-library-selection-${width}-${theme}`);
     await testInfo.attach('library-selection',{body:JSON.stringify({reference,actual},null,2),contentType:'application/json'});
     expect(reference.bar.buttons.map(button=>button.text),'the concept bar has every Library action').toEqual(['Add tags','Set category','Clear']);
-    expect(actual).toEqual(reference);
+    // D186: at one column the bar is one row that scrolls sideways, with the same buttons.
+    const mapped=width<=700?{...reference,bar:{...reference.bar,flexWrap:'nowrap',buttons:reference.bar.buttons.map((button,index)=>({...button,left:actual.bar.buttons[index].left,top:actual.bar.buttons[index].top}))}}:reference;
+    expect(actual).toEqual(mapped);
     // The comparison notices a moved checkbox (spec §7 mutation check).
     await mutate(page,{css:'.prompt-card .image-overlays { inset: 20px 9px auto }'});
     expect((await measureSelection(page,{card:CARDS,main:'#workspace-main'})).overlay.top).not.toBe(reference.overlay.top);

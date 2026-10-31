@@ -231,6 +231,9 @@ export function mapConceptReview(reference,actual) {
     const actualActions=findNode(actual.main,'div.dialog-actions');
     let cardIndex=0;
     let main={...reference.main,id:actual.main.id};
+    // D188: the Resolve panel is sticky.
+    const actualPanel=findNode(actual.main,'div.gallery-layout')?.children[1];
+    if(actualPanel)main=editNodes(main,'div.gallery-layout',layout=>({...layout,children:layout.children.map((child,index)=>index===1?{...child,position:actualPanel.position}:child)}));
     let noticeLoss=0;
     main=editNodes(main,'div.notice',notice=>{
         const chip=notice.children.find(child=>child.tag==='span.chip');
@@ -279,7 +282,7 @@ export function mapConceptReview(reference,actual) {
     });
     main=editNodes(main,'select',select=>{
         const twin=findNode(actual.main,'select');
-        return select.id==='review-context'?{...select,options:[...twin.options.slice(0,-1),select.options.at(-1)]}:select;
+        return select.id==='review-context'?{...select,options:twin.options}:select; // D179: no Leave unresolved option
     });
     main=editNodes(main,node=>/^section\..*\bprompt-section\b/.test(node.tag),section=>({...section,label:section.tag.includes('positive')?'Positive prompt':'Negative prompt'}));
     main=editNodes(main,node=>node.tag?.startsWith('button')&&/^(Copy|Send) (positive|negative) prompt/.test(node.label??''),

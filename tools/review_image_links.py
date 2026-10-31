@@ -142,6 +142,14 @@ def certain_prompts(db, handler, path, metadata, output_dir):
     return found
 
 
+def _manually_linked(db, image_id):
+    """True when a link of this image records a reviewer's manual choice."""
+    return any(
+        link["provenance"].get("kind") == "manual-link"
+        for link in db.get_image_prompt_pairs(image_id)
+    )
+
+
 def judge(db, handler, row, output_dir):
     """One image's verdict dict."""
     path = row["image_path"]
@@ -152,6 +160,9 @@ def judge(db, handler, row, output_dir):
         "sources": {},
         "target": None,
     }
+    if _manually_linked(db, row["id"]):
+        # The reviewer named this prompt in Needs review (#536): not ours to undo.
+        return {**verdict, "verdict": "manual", "target": row["prompt_id"]}
     if not os.path.isfile(path):
         return {**verdict, "verdict": "missing"}
     try:

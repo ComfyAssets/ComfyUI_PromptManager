@@ -13,7 +13,7 @@ function dom() {
         closest(selector){if(selector==='section'&&this.tagName==='section')return this;if(selector==='[data-send-role]'&&Object.hasOwn(this.dataset,'sendRole'))return this;if(selector==='[data-copy-role]'&&Object.hasOwn(this.dataset,'copyRole'))return this;if(selector==='[data-retry-prompts]'&&Object.hasOwn(this.dataset,'retryPrompts'))return this;return this.parent?.closest(selector);}
         click(target){this.listeners.get('click')?.({target});}
     }
-    const previous=global.document,toast=new Element('div');global.document={createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),getElementById:id=>id==='workspace-toast'?toast:null};
+    const previous=global.document,toast=new Element('div');global.document={querySelectorAll:()=>[],createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),getElementById:id=>id==='workspace-toast'?toast:null};
     const walk=(root,predicate)=>[...(predicate(root)?[root]:[]),...root.children.flatMap(child=>walk(child,predicate))];
     return {Element,walk,toast,restore:()=>{global.document=previous;}};
 }

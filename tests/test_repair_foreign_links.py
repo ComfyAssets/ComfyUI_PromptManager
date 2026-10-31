@@ -285,6 +285,51 @@ class DryRunTests(RepairFixture):
         self.assertIn("would lose every link", markdown)
 
 
+class ManualLinkTests(RepairFixture):
+    """A prompt the reviewer named in Needs review (#536) is not ours to undo."""
+
+    def mark_manual(self, key):
+        row = self.rows[key]
+        ((prompt,),) = self.query(
+            "SELECT prompt_id FROM generated_images WHERE id=?", (row,)
+        )
+        self.query_write(
+            "INSERT OR IGNORE INTO prompt_pairs(positive_prompt_id,created_at,"
+            "updated_at) VALUES(?,'2026-10-30T00:00:00Z','2026-10-30T00:00:00Z')",
+            (prompt,),
+        )
+        ((pair,),) = self.query(
+            "SELECT id FROM prompt_pairs WHERE positive_prompt_id=? "
+            "AND negative_prompt_id IS NULL",
+            (prompt,),
+        )
+        self.query_write(
+            "INSERT INTO image_prompt_pairs(pair_id,image_id,provenance,created_at) "
+            "VALUES(?,?,?,'2026-10-30T00:00:00Z')",
+            (pair, row, '{"kind":"manual-link"}'),
+        )
+
+    def test_a_manual_link_is_skipped_in_the_plan(self):
+        self.mark_manual("A")
+        code, out = self.dry_run()
+        self.assertEqual(code, 0, out)
+        items = {item["row_id"]: item for item in self.plan()["rows"]}
+        item = items[self.rows["A"]]
+        self.assertEqual(item["action"], "skip")
+        self.assertEqual(item["reason"], "linked by hand in Needs review")
+        self.assertEqual(items[self.rows["B"]]["action"], "relink")
+
+    def test_a_manual_link_made_after_the_plan_refuses_the_apply(self):
+        code, out = self.dry_run()
+        self.assertEqual(code, 0, out)
+        self.mark_manual("A")
+        before = self.links()
+        code, out = self.apply()
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("action changed", out)
+        self.assertEqual(self.links(), before)
+
+
 class DryRunReviewTests(RepairFixture):
     def test_plan_records_its_library_and_fingerprint(self):
         self.dry_run()

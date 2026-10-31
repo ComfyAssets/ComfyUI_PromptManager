@@ -6,7 +6,10 @@ Two rules hold for every backend:
   filesystem. Nothing is ever copied, unlinked or overwritten: a file that
   cannot be moved recoverably stays where it is, and ``TrashRefused`` says why.
 - **Never into a root.** A trash folder inside an output root would be listed
-  as images, so it is refused (``trash-in-root``).
+  as images, so it is refused (``trash-in-root``). The one exception (#543): for
+  an output root that is exactly a mount root, that mount's own ``.Trash-$uid``
+  and ``.Trash/$uid``, which every walker and media route ignores
+  (``utils.media_folders``).
 
 Linux and BSD use :class:`FreedesktopBackend`, the freedesktop.org Trash
 specification 1.0: the home trash (``$XDG_DATA_HOME/Trash``) for a file on the
@@ -184,10 +187,21 @@ def _canonical(path: str) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
-def _check_roots(trash_dir: str, roots) -> None:
+def _check_roots(trash_dir: str, roots, top: str | None = None) -> None:
+    """Refuse a trash that a root would list, or that holds a root.
+
+    *top* is the mount a per-drive *trash_dir* was built from. A root that is
+    exactly that mount may hold it, unless a link makes the trash really live
+    somewhere else (#543). Any other root holding it refuses, also beside one.
+    """
     trash_key = _canonical(trash_dir)
+    top_key = None if top is None else _canonical(top)
+    unlinked = trash_key == os.path.normcase(trash_dir)
     for root in roots:
-        if _inside(trash_key, _canonical(str(root))):
+        root_key = _canonical(str(root))
+        if _inside(root_key, trash_key):
+            raise TrashRefused(TRASH_IN_ROOT)
+        if _inside(trash_key, root_key) and not (unlinked and root_key == top_key):
             raise TrashRefused(TRASH_IN_ROOT)
 
 
@@ -267,7 +281,7 @@ class FreedesktopBackend:
             candidates.append(os.path.join(shared, str(self._uid)))
         candidates.append(os.path.join(top, f".Trash-{self._uid}"))
         for trash_dir in candidates:
-            _check_roots(trash_dir, roots)
+            _check_roots(trash_dir, roots, top)
             if self._usable(trash_dir, create=create):
                 label = f"{os.path.relpath(trash_dir, top)} on its drive"
                 return trash_dir, top, label

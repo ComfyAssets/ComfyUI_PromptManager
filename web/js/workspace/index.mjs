@@ -1,9 +1,10 @@
 import '../api-client.js';
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { routes, mountRouter, summarizeStats, routeTitle, loadNavCounts, navigateTo, COLLECTION_ROUTE,
+import { routes, mountRouter, summarizeOverviewCounts, OVERVIEW_COUNT_ROUTES, routeTitle, loadNavCounts, navigateTo, COLLECTION_ROUTE,
     LIBRARY_WRITE_COUNTS, NAV_COUNT_ROUTES, FAVORITE_WRITE_COUNTS, FAVORITE_COUNT_DELAY_MS, REVIEW_WRITE_COUNTS,
     JOB_END_COUNTS } from './state.mjs';
 import { mountWorkspaceTheme } from './theme.mjs';
+import { mountBackToTop } from './sticky-chrome.mjs';
 import { forgetImagesVisit, mountImages, onFavoriteChange } from './images.mjs';
 import { forgetLibraryVisit, mountLibrary, mountNewPromptAction, onLibraryWrite } from './library.mjs';
 import { mountVocabulary } from './vocabulary.mjs';
@@ -23,6 +24,7 @@ import { createPromptSender } from './prompt-sender.mjs';
 import { mountSystem } from './system.mjs';
 import { createRestoreReload, onRestoreFinished, onRestoreHandedBack, showRestoreReview } from './system-backups.mjs';
 import { mountLibraryBanner } from './library-location.mjs';
+import { mountOlderImagesNotice } from './older-images-notice.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
@@ -34,10 +36,9 @@ function element(tag, text, className) {
     return node;
 }
 
-function legacyLink(route) {
+function cardLink(route) {
     const link = element('a', route.action, 'workspace-link');
-    // A native card (System, Q12) links its workspace hash; a legacy tool's page goes through the mount prefix.
-    link.href = route.native ? route.href : resolveUrl(route.href);
+    link.href = route.href;
     return link;
 }
 
@@ -83,9 +84,12 @@ function mountWorkspace() {
     // row's count and the Activity page, on every route.
     const activity = createActivityStore({ api, scope, connect: url => new EventSource(resolveUrl(url)) });
     mountActivityTopbar({ store: activity, scope });
+    mountBackToTop({ scope, toast: document.getElementById('workspace-toast') });
     activity.load();
     // D129: a node-folder library is offered a move (or "Keep it here") above every page.
     mountLibraryBanner(document.getElementById('library-banner'), { api, activity, scope });
+    // D166: the one-time upgrade notice, above every page until dismissed; System > Sources shows its own.
+    const olderImages = mountOlderImagesNotice(document.getElementById('older-images-notice'), { api, activity, scope, main });
     const sidebar = document.querySelector('aside.sidebar');
     // The route key a nav link carries in `data-route`: a saved view's is `saved/<id>`, a collection's `collection/<id>`.
     const routeKey = route => route.id === 'saved' ? `saved/${route.savedId}`
@@ -149,9 +153,13 @@ function mountWorkspace() {
             countRequests.get(id)?.abort();
             const request = new AbortController();
             countRequests.set(id, request);
+            // A failed count reads as loading again while it is retried; a known one stays until replaced.
+            if (knownCounts.get(id) === null) { knownCounts.delete(id); notifyCounts(); }
             // Each badge lands as its own read settles; a count that failed to refresh is removed, never left stale.
             loadNavCounts(api, request.signal, (_, count) => {
-                if (!request.signal.aborted) showCount(id, count);
+                if (request.signal.aborted) return;
+                countRequests.delete(id);
+                showCount(id, count);
             }, [id]);
         }
     }
@@ -159,7 +167,15 @@ function mountWorkspace() {
         const link = sidebar.querySelector(`nav [data-route="${id}"]`);
         link?.querySelector('.nav-count')?.remove();
         if (link && Number.isSafeInteger(count)) link.append(element('span', count.toLocaleString(), 'nav-count'));
+        knownCounts.set(id, count);
+        notifyCounts();
     }
+    /** #547: Overview shows these same counts, so a card and its badge cannot differ, and no read runs twice. */
+    const knownCounts = new Map();
+    const countListeners = new Set();
+    function notifyCounts() { for (const listener of countListeners) listener(); }
+    /** Re-read the given counts unless a read is already in flight. */
+    function freshenCounts(ids) { refreshCounts(ids.filter(id => !countRequests.has(id))); }
     /** A count a page has just read itself: it replaces the badge, and an older read in flight no longer lands. */
     function setCount(id, count) {
         countRequests.get(id)?.abort();
@@ -260,6 +276,7 @@ function mountWorkspace() {
 
     function renderNow(route) {
         leaveGuard = null;
+        olderImages.showFor(route);
         // A shared page dialog never stays open over the next route.
         closeWorkspaceDialog();
         if (route.id === 'system' && system && currentKey === 'system') {
@@ -485,43 +502,47 @@ function mountWorkspace() {
         stats.setAttribute('aria-label', 'Library statistics');
         main.append(stats);
         const tools = element('section', undefined, 'surface');
-        tools.append(element('h2', 'Continue creating'), element('p', 'Your existing tools remain available while the new workspaces take shape.'));
+        tools.append(element('h2', 'Continue creating'), element('p', 'Pick up where you left off in your images, prompts and tools.'));
         const cards = element('div', undefined, 'tool-grid');
         for (const target of routes.filter(item => item.href)) {
             const card = element('article', undefined, 'tool-card');
-            card.append(element('h3', target.label), element('p', target.description, 'small'), legacyLink(target));
+            card.append(element('h3', target.label), element('p', target.description, 'small'), cardLink(target));
             cards.append(card);
         }
         tools.append(cards);
         main.append(tools);
-        async function loadStats() {
-            const status = element('p', 'Loading library statistics…');
-            status.setAttribute('role', 'status');
-            stats.replaceChildren(status);
-            try {
-                const result = await api.get('/prompt_manager/stats', { signal: view.signal });
-                if (view.signal.aborted) return;
-                const values = summarizeStats(result.stats);
+        function showStats() {
+            const { cards, pending, failed, empty } = summarizeOverviewCounts(knownCounts);
+            const parts = [];
+            if (cards.some(([, count]) => count !== null)) {
                 const list = element('dl', undefined, 'stat-grid');
-                for (const [label, count] of values) {
+                for (const [label, count] of cards) {
                     const stat = element('div', undefined, 'stat');
-                    stat.append(element('dt', label), element('dd', count.toLocaleString()));
+                    stat.append(element('dt', label), element('dd', count === null ? '–' : count.toLocaleString()));
                     list.append(stat);
                 }
-                stats.replaceChildren(list);
-                if (values.every(([, count]) => count === 0)) {
-                    stats.append(element('p', 'Your library is empty. Add a prompt in the prompt library or configure sources in System.', 'empty-state'));
-                }
-            } catch (error) {
-                if (view.signal.aborted) return;
+                parts.push(list);
+            }
+            if (pending) {
+                const status = element('p', 'Loading library statistics…');
+                status.setAttribute('role', 'status');
+                parts.push(status);
+            } else if (failed) {
                 const alert = element('p', 'Library statistics could not be loaded. Your saved data has not changed.');
                 alert.setAttribute('role', 'alert');
                 const retry = createButton('Retry');
-                view.listen(retry, 'click', loadStats);
-                stats.replaceChildren(alert, retry);
+                view.listen(retry, 'click', () => refreshCounts(OVERVIEW_COUNT_ROUTES.filter(id => knownCounts.get(id) === null)));
+                parts.push(alert, retry);
+            } else if (empty) {
+                parts.push(element('p', 'Your library is empty. Add a prompt in the prompt library or configure sources in System.', 'empty-state'));
             }
+            stats.replaceChildren(...parts);
         }
-        loadStats();
+        countListeners.add(showStats);
+        view.cleanup(() => countListeners.delete(showStats));
+        showStats();
+        // A visit reads them again, as a generation since the last read changes the sidebar's badges too.
+        freshenCounts(OVERVIEW_COUNT_ROUTES);
     }
     scope.cleanup(mountRouter(window, render));
     scope.listen(window, 'pagehide', () => scope.dispose());
@@ -529,6 +550,8 @@ function mountWorkspace() {
 }
 
 mountWorkspace();
+// #525: web/workspace.html shows its legacy-page fallback at `load` unless the shell got this far.
+document.documentElement.dataset.workspaceBooted = 'true';
 window.addEventListener('pageshow', event => {
     if (event.persisted) mountWorkspace();
 });

@@ -1,6 +1,7 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
 import { seedConceptAt, openProduction } from './concept-inventory.mjs';
+import { RETURN_URL, startAndAwaitJob } from './job-end.mjs';
 
 // #498 (D162): Images › Show removed images (N) lists the files "Remove from the library only" hid; Return to library
 // (bar or inspector) clears their marks and scans them again. Nothing is deleted or moved.
@@ -46,7 +47,7 @@ async function removeFromLibrary(page, count) {
     await bar(page).getByRole('button', { name: 'Delete…', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: /^Delete \d+ images?$/ });
     await dialog.getByRole('radio', { name: /^Remove from the library only/ }).check();
-    await dialog.locator('.dialog-actions button.danger').click();
+    await startAndAwaitJob(page, () => dialog.locator('.dialog-actions button.danger').click());
     await expect(toast(page)).toContainText(`Removed ${count} image${count === 1 ? '' : 's'} from the library.`);
     for (const key of keys) await expect(page.locator(`${CARDS}[data-image-key="${key}"]`)).toHaveCount(0);
     return keys;
@@ -78,7 +79,7 @@ test('Show removed images lists the removed files; Return to library brings them
     await check(page, 1);
     const actions = bar(page).locator('button');
     await expect(actions).toHaveText(['Return to library', 'Clear']);
-    await bar(page).getByRole('button', { name: 'Return to library' }).click();
+    await startAndAwaitJob(page, () => bar(page).getByRole('button', { name: 'Return to library' }).click(), RETURN_URL);
     await expect(toast(page)).toContainText('Returned 2 images to the library');
     await expect(toast(page)).toContainText('Tags, categories, collections and favorites do not come back.');
     // The view emptied: it turns off and Images lists every file again.
@@ -98,7 +99,7 @@ test('Return to library from the inspector', async ({ page }) => {
     await expect(panel.getByRole('button', { name: 'Return to library' })).toBeVisible();
     await expect(panel.getByRole('button', { name: 'Delete…' })).toHaveCount(0);
     await expect(panel.locator('button[data-collections]')).toHaveCount(0);
-    await panel.getByRole('button', { name: 'Return to library' }).click();
+    await startAndAwaitJob(page, () => panel.getByRole('button', { name: 'Return to library' }).click(), RETURN_URL);
     await expect(toast(page)).toContainText('Returned 1 image to the library');
     await expect(toggle(page)).toHaveCount(0);
     await expect(page.locator(`${CARDS}[data-image-key="${key}"]`)).toHaveCount(1);
@@ -112,7 +113,7 @@ test('the sidebar Images count follows a remove and a return', async ({ page }) 
     await expect(imagesBadge(page)).toHaveText((start - 1).toLocaleString('en-US'));
     await toggle(page).click();
     await check(page, 0);
-    await bar(page).getByRole('button', { name: 'Return to library' }).click();
+    await startAndAwaitJob(page, () => bar(page).getByRole('button', { name: 'Return to library' }).click(), RETURN_URL);
     await expect(toast(page)).toContainText('Returned 1 image to the library');
     await expect(imagesBadge(page)).toHaveText(start.toLocaleString('en-US'));
 });

@@ -7,7 +7,7 @@ test.beforeEach(async ({page, browserName}) => {
     page.classicErrors = [];
     page.on('pageerror', error => page.classicErrors.push(error.message));
     await page.route('**/scripts/app.js', route => route.fulfill({contentType:'text/javascript', body:'export const app = window.fixtureApp;'}));
-    await page.route('**/scripts/api.js', route => route.fulfill({contentType:'text/javascript', body:'export const api = {fileURL: path => path, queuePrompt: async (...args) => args};'}));
+    await page.route('**/scripts/api.js', route => route.fulfill({contentType:'text/javascript', body:'export const api = {fileURL: path => (window.fixtureApiBase ?? "") + path, queuePrompt: async (...args) => args};'}));
     await page.route('**/extensions/promptmanager/prompt_manager.js', route => route.fulfill({contentType:'text/javascript', body:readFileSync(new URL('../../web/comfy/prompt_manager.js', import.meta.url),'utf8')}));
     await page.goto('/prompt_manager/test');
     await page.evaluate(() => {
@@ -62,6 +62,28 @@ test('Classic keeps immediate selection, search query and metadata serialization
     });
     expect(released).toBe('A new portrait');
     await expect(page.getByRole('button',{name:'🌐 Web UI',exact:true})).toBeVisible();
+});
+
+test('Classic Web UI opens the workspace Library in the saved display mode, through the mount prefix (#525)',async({page})=>{
+    await page.evaluate(()=>{window.fixtureApiBase='/mounted';window.open=(...args)=>{window.openArgs=args;return {};};});
+    const webUi=page.getByRole('button',{name:'🌐 Web UI',exact:true});
+    for (const [mode,args] of [
+        ['newtab',['/mounted/prompt_manager/workspace#/library','_blank']],
+        ['popup',['/mounted/prompt_manager/workspace#/library','_blank','width=1200,height=800,scrollbars=yes,resizable=yes']],
+    ]) {
+        await page.evaluate(value=>{node.properties.webuiDisplayMode=value;},mode);
+        await webUi.click();
+        expect(await page.evaluate(()=>window.openArgs)).toEqual(args);
+    }
+});
+
+test('Classic Web UI reports a blocked popup and keeps the canvas open (#525)',async({page})=>{
+    const before=page.url();
+    await page.evaluate(()=>{window.open=()=>null;});
+    await page.getByRole('button',{name:'🌐 Web UI',exact:true}).click();
+    await expect(page.getByText('Allow popups to open Web UI, then try again.')).toBeVisible();
+    expect(page.url()).toBe(before);
+    await expect(page.locator('.pm-classic')).toBeVisible();
 });
 
 test('Classic detaches native text synchronization on removal',async({page})=>{

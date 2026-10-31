@@ -176,7 +176,7 @@ test('failed library reads retry while late search responses cannot overwrite ne
 // D153 (#447): a Browse visit that still names the retired "Highest rated" sort opens the shelf on Recently added.
 test('a Library visit with the retired rating sort opens on Recently added',async({page})=>{
     await page.goto(route);await expect(cards(page)).toHaveCount(3);
-    const sorts=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library')sorts.push(url.searchParams.get('sort'));});
+    const sorts=[];page.on('request',item=>{const url=new URL(item.url());if(url.pathname==='/prompt_manager/library'&&url.searchParams.get('limit')!=='1')sorts.push(url.searchParams.get('sort'));});// limit=1 is a sidebar count read, not the shelf
     await page.goto('/prompt_manager/workspace#/overview');await expect(page.locator('#workspace-main h1')).toHaveText('Overview');
     await page.evaluate(async()=>{const {browseLibrary}=await import('/prompt_manager/js/workspace/library.mjs');browseLibrary({sort:'rating'});});
     await expect(cards(page)).toHaveCount(3);
@@ -364,7 +364,7 @@ test('history shares real image metadata, vendored Viewer and the acknowledged p
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         const hosts=sender.getByRole('combobox',{name:'ComfyUI window',exact:true});
         await expect(hosts.locator('option')).toHaveCount(2);await hosts.selectOption({label:'Library ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Library destination'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#pair-1 Library destination'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await expect(sender).toContainText(chosenNegative||'(empty)');
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.libraryApplied)).toEqual([{positive:'Cat portrait',negative:chosenNegative}]);
@@ -716,7 +716,7 @@ test('long prompt is clamped to two lines while copy sends the full text',async(
         await card.locator('.card-footer .row-actions > button.send').click();
         const sender=page.getByRole('dialog',{name:'Send to ComfyUI',exact:true});
         await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Card ComfyUI'});
-        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'Card destination'});
+        await sender.getByRole('combobox',{name:'Destination node',exact:true}).selectOption({label:'#positive-1 Card destination'});
         await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
         await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();await expect(sender).toContainText('Sent to ComfyUI.');
         expect(await host.evaluate(()=>window.cardApplied)).toEqual([{positive:longPrompt}]);

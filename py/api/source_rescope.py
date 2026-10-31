@@ -41,6 +41,13 @@ def _coded(status: int, code: str, message: str) -> web.Response:
     )
 
 
+def _missing_if_not_found(response: web.Response) -> web.Response:
+    """A file in a trash folder answers as a missing file does (#543)."""
+    if response.status == 404:
+        return _coded(404, "file-missing", "Image file not found")
+    return response
+
+
 def _no_store(response: web.Response) -> web.Response:
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -71,7 +78,7 @@ class SourceRescopeMixin:
         path = root / relative
         denied = _media_access_error(path, [root])
         if denied is not None:
-            return denied
+            return _missing_if_not_found(denied)
         try:
             mtime = path.stat().st_mtime if path.is_file() else None
         except OSError:
@@ -89,7 +96,7 @@ class SourceRescopeMixin:
             return bad_request("Send exactly one target")
         target, error = media_target(data["target"])
         if error is not None:
-            return error
+            return _missing_if_not_found(error)
         old_index, scope, relative = target
         if old_index > MAX_ROOT_INDEX:
             return bad_request("Invalid gallery root")

@@ -32,7 +32,7 @@ const frame = page => viewer(page).evaluate(node => {
 test('the button beside ✕ switches between Centered and Full screen and names the view it switches to', async ({ page }) => {
     await openImages(page);
     const header = await viewer(page).locator('.dialog-header').evaluate(node => [...node.children].map(child => child.id || child.localName));
-    expect(header).toEqual(['div', 'viewer-mode', 'viewer-close']);
+    expect(header).toEqual(['div', 'viewer-keys', 'viewer-mode', 'viewer-close']);
     await expect(modeButton(page)).toHaveAccessibleName('Full screen view');
     await expect(modeButton(page)).toHaveAttribute('title', 'Full screen view');
     await expect(modeButton(page).locator('svg.icon')).toHaveCount(1);

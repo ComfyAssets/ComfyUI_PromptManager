@@ -107,6 +107,14 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
     .stat dd { font-size: 26px; }
 }
 
+/* D182 (#530, the concept has the offset): the second card of a `.two-col` starts level with the first. The grid gap
+   already spaces them; `.surface + .surface` is for surfaces stacked in plain flow. */
+.two-col > .surface + .surface { margin-top: 0; /* D182 */ }
+/* D182: a surface after a two-column row has the same gap as stacked surfaces; the concept has none there. */
+.two-col + .surface { margin-top: 18px; /* D182 */ }
+/* D184 (#530, the concept stops System at 1000px): every System section uses the full content width, as other pages do. */
+.settings-layout { max-width: none; /* D184 */ }
+
 /* Tags & categories (#245): real vocabulary has unbounded names and bounded lists, which the concept's short samples
    never show. Proven by the 390px layout and long-name cases in workspace-vocabulary.spec.mjs. */
 .vocabulary-main :where(.two-col, .surface, .table-wrap, .operation > div) { min-width: 0; }
@@ -118,6 +126,14 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 .vocabulary-main .vocabulary-continuation { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-block: 15px 0; overflow-anchor: none; }
 .vocabulary-main .vocabulary-continuation p { margin: 0; flex: 1 1 200px; font-size: 12px; color: var(--ca-muted); }
 .vocabulary-main .vocabulary-continuation .vocabulary-error { color: var(--ca-error-text); }
+/* D183 (#530, beyond the concept, whose sample list is short): Reusable tags scrolls in its own window and the page keeps
+   its height. The first term is the smallest usable window; the subtraction leaves the heading, the card's own rows and
+   Load more on screen. D185: on touch and at 390px the window stays shorter than the screen and overscroll chains to the
+   page (the default), so a swipe is never trapped in the list. A collapsed border does not stick, so the header draws its
+   line instead of its border. */
+.vocabulary-main .table-wrap { overflow: auto; max-block-size: max(280px, calc(100dvh - 500px)); scroll-padding-block-start: 44px; }
+.vocabulary-main .table-wrap thead th { position: sticky; inset-block-start: 0; z-index: 1; background: var(--ca-surface); border-bottom-color: transparent; box-shadow: inset 0 -1px 0 var(--line); }
+.vocabulary-main .vocabulary-end { block-size: 1px; overflow-anchor: none; }
 @media (max-width: 700px) {
     /* One column: the Tag column has no fixed minimum and Actions asks only for its stacked width (the concept's 390px
        rows stack Browse over Rename / merge), so a wider fallback font wraps the name instead of hiding an action. */
@@ -190,10 +206,23 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 /* #450 D156: the view switch sits before ✕ (8px apart; the header's gap is the concept's 18px), and Full screen fills the
    browser window edge to edge (no outer margin), beating the concept's box, D34's max-height and the ≤700px height.
    At ≤700px the viewer is already full-bleed, so the switch hides there. */
-#viewer-dialog .dialog-header > #viewer-mode { margin-inline-start: auto; margin-inline-end: -10px; }
+#viewer-dialog .dialog-header > #viewer-mode { margin-inline-end: -10px; }
+/* #532 D170: ⌘ sits before the view switch, 8px apart, and takes the header's free space. */
+#viewer-dialog .dialog-header > #viewer-keys { margin-inline-start: auto; margin-inline-end: -10px; }
 .ca-tools #viewer-dialog.viewer-fullscreen[open] { inset: 0; width: auto; height: auto; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; }
 /* `!important` only to beat the concept's `.icon-btn { display: inline-grid !important }`. */
-@media (max-width: 700px) { #viewer-dialog .dialog-header > #viewer-mode { display: none !important; } }
+@media (max-width: 700px) { #viewer-dialog .dialog-header > :is(#viewer-mode, #viewer-keys) { display: none !important; } }
+/* #532 D170: the shortcuts overlay, a small dialog over the viewer. */
+.ca-tools #viewer-keys-dialog { width: min(600px, calc(100vw - 32px)); height: fit-content; max-height: 90dvh; overflow: auto; }
+#viewer-keys-dialog .viewer-keys-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px 24px; margin-bottom: 14px; }
+#viewer-keys-dialog h3 { margin: 0 0 8px; }
+#viewer-keys-dialog .dialog-header > button { margin-inline-start: auto; }
+#viewer-keys-dialog dl { display: grid; gap: 8px; margin: 0; }
+#viewer-keys-dialog dl > div { display: flex; align-items: center; gap: 12px; }
+#viewer-keys-dialog dt { flex: 0 0 64px; }
+#viewer-keys-dialog dd { margin: 0; }
+#viewer-keys-dialog kbd { display: inline-block; min-width: 28px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; text-align: center; }
+#viewer-keys-dialog > p { margin: 0; }
 #viewer-title { overflow-wrap: anywhere; /* D34 */ }
 #viewer-dialog, #viewer-dialog::backdrop { overscroll-behavior: contain; }
 #viewer-details { overscroll-behavior: contain; /* D34 */ }
@@ -261,7 +290,7 @@ main:focus-visible { outline: 2px solid var(--ca-focus); outline-offset: 4px; }
 }
 /* #249 D42: a discovery alert a rescan leaves scrolls clear of the concept's fixed toast (22px inset, 12px at 700px and
    below, two 12px lines at 390px), never under it; the toast itself keeps the concept's placement. */
-.options-status { font-size: 12px; padding-inline: 4px; scroll-margin-block-end: 96px; /* D42 */ }
+.options-status { font-size: 12px; padding-inline: 4px; scroll-margin-block-end: 140px; /* D42, D187: clear of the toast and the chip above it */ }
 
 /* Prompt library cards (#249 PR E): the concept's `article.prompt-card` (s653–708) with real prompts, titles and media. */
 /* #249 D23: real prompts are far longer than the concept's samples, so the card clamps the positive to two lines; copy
@@ -433,6 +462,13 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 .review-queue .image-open[aria-disabled="true"] { cursor: not-allowed; aspect-ratio: 1.33; /* D119 */ }
 /* D119: a long file name in the panel wraps inside the panel, where the concept's sample name never overflows. */
 .review-panel > p.small { min-inline-size: 0; overflow-wrap: anywhere; /* D119 */ }
+/* #536: the concept's rows hidden when there is nothing to apply (D180), and the picker (D181). */
+.review-panel > [hidden], .review-panel .dialog-actions > [hidden], #modal .field[hidden] { display: none; }
+.review-unreadable { display: grid; gap: 6px; margin-block: 12px; overflow-wrap: anywhere; }
+.review-link-results { display: grid; gap: 6px; max-block-size: 40vh; overflow-y: auto; }
+.review-link-results > button { justify-content: flex-start; inline-size: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-link-results > button[aria-pressed="true"] { border-color: var(--ca-accent); background: var(--soft-blue); }
+.review-panel button[aria-disabled="true"], .review-link-actions button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 /* Auto-tag selected images (#249 PR D, D85/D90): the Tag image dialog's model panel, then How to apply, a radio group
    in the concept's `.field` row whose radios keep their own size (the concept's `.field input` is a full-width text
    field) beside their label, as the concept's own radio rows (s1160 `.compare-item label`). */
@@ -478,7 +514,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 /* D147 (#430): a state that blocks Save shows its reason on its own row above the sticky actions, with Refresh for a
    changed source; the disabled actions look disabled; a refused capture's empty preview says so. */
 .tagging-modal .dialog-actions [aria-disabled="true"], .tagging-modal .tag-model-panel [aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* D147 */ }
-#modal .dialog-actions .image-delete-start[aria-disabled="true"] { opacity: .55; cursor: not-allowed; /* #480 D159: no mode chosen yet */ }
+#modal .dialog-actions .image-delete-start[aria-disabled="true"], #modal .dialog-actions .image-delete-start[aria-disabled="true"]:hover { color: var(--ca-muted); border-color: var(--ca-border); background: transparent; opacity: .55; cursor: not-allowed; /* #480 D159: no mode chosen yet, #543 D190: or nothing can move: neutral, no danger colors */ }
 .tagging-modal .tag-action-notice { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 0; color: var(--ca-text); font-size: 12px; /* D147 */ }
 .tagging-modal .tag-action-notice > span { flex: 1 1 16em; }
 .tag-image-preview.tag-preview-empty { display: grid; place-items: center; padding: 8px; text-align: center; font-size: 12px; color: var(--ca-muted); background: var(--ca-field); box-sizing: border-box; /* D147 */ }
@@ -493,6 +529,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 }
 .more-menu-list[hidden] { display: none; }
 .more-menu-list > button { justify-content: flex-start; text-align: left; width: 100%; white-space: nowrap; }
+.legacy-pages { margin: 16px 0 0; color: var(--muted); /* D165 */ }
 
 /* D164 (#524): the prompt page has four heading actions and titles of any length, which the concept never shows. From
    the concept's sidebar breakpoint up the actions keep one row and the title takes what is left, clamped to two lines
@@ -505,3 +542,34 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
         overflow: hidden; overflow-wrap: anywhere;
     }
 }
+
+/* D186 (#531, beyond the concept): the selection bars stay in view while you select. This one rule is their position. `--selection-bar-block`
+   (sticky-chrome.mjs) is the room a shown bar takes; a focused card control and the Images panel keep clear of it
+   (scroll-margin on them, not scroll-padding on the root, which would scroll the page to reveal the bar's own buttons). At one
+   column the bar is one row that scrolls sideways, so it does not take a fifth of a phone screen. */
+#bulkbar, #library-bulkbar { position: sticky; inset-block-start: 8px; z-index: 5; }
+:is(#image-grid, .library-grid) :is(article, a, button, input, select, textarea, [tabindex]) { scroll-margin-block-start: var(--selection-bar-block, 0px); }
+.detail-panel { inset-block-start: max(20px, var(--selection-bar-block, 0px)); max-block-size: calc(100dvh - 20px - max(20px, var(--selection-bar-block, 0px))); /* D186 */ }
+@media (max-width: 700px) {
+    .detail-panel { max-block-size: none; /* D186 */ }
+    .bulkbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; /* D186 */ }
+    .bulkbar > * { flex: none; /* D186 */ }
+}
+@container images-page (inline-size < 600px) { .detail-panel { max-block-size: none; /* D186 */ } }
+
+/* D187 (#531, beyond the concept): Back to top, in the toast's column. It rests above a two-line toast, so the usual
+   toast does not move it under a finger, and rises only for a taller one. */
+.ca-tools .back-to-top {
+    --toast-rest: 70px;
+    position: fixed; inset-inline-start: 50%; transform: translateX(-50%); z-index: 10;
+    inset-block-end: calc(22px + max(var(--toast-rest), var(--toast-block, 0px)));
+    padding: 6px 12px; border: 1px solid var(--ca-line); border-radius: 999px; background: var(--ca-surface);
+    box-shadow: 0 8px 35px #0004; font-size: 12px; white-space: nowrap;
+}
+@media (max-width: 700px) { .ca-tools .back-to-top { inset-block-end: calc(12px + max(var(--toast-rest), var(--toast-block, 0px))); } }
+@media (pointer: coarse) { .ca-tools .back-to-top { min-block-size: 40px; } }
+
+/* D188 (#531, beyond the concept): the Resolve panel stays with you as the Images panel does. */
+.review-panel { position: sticky; inset-block-start: 20px; }
+@media (max-width: 700px) { .review-panel { position: static; } }
+@media (min-width: 701px) and (max-height: 720px) { .review-panel { max-block-size: calc(100dvh - 40px); overflow: auto; } }
