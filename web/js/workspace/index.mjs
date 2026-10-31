@@ -176,6 +176,12 @@ function mountWorkspace() {
     function notifyCounts() { for (const listener of countListeners) listener(); }
     /** Re-read the given counts unless a read is already in flight. */
     function freshenCounts(ids) { refreshCounts(ids.filter(id => !countRequests.has(id))); }
+    /** #555: the counts as System › Overview reads them, so its Images metric and the Images badge cannot differ. */
+    const sharedCounts = Object.freeze({
+        get: id => knownCounts.get(id),
+        subscribe(listener) { countListeners.add(listener); return () => countListeners.delete(listener); },
+        freshen: freshenCounts,
+    });
     /** A count a page has just read itself: it replaces the badge, and an older read in flight no longer lands. */
     function setCount(id, count) {
         countRequests.get(id)?.abort();
@@ -488,7 +494,7 @@ function mountWorkspace() {
         if (route.id === 'system') {
             // The concept's System (app.js renderSystem): its heading description, section nav and Save row.
             description.textContent = route.description;
-            system = mountSystem(main, api, view, { section: route.section, activity });
+            system = mountSystem(main, api, view, { section: route.section, activity, counts: sharedCounts });
             return;
         }
         if (route.id === 'inspect') {
