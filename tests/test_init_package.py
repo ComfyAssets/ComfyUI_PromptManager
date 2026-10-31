@@ -390,7 +390,16 @@ class TestConsoleBanner(unittest.TestCase):
 
         stream.flush()
         banner = stream.buffer.getvalue().decode("cp1252")
-        self.assertIn("Loaded:", banner)
+        lines = [
+            line
+            for line in banner.splitlines()
+            if "PromptManager" in line or "loaded" in line
+        ]
+        self.assertEqual(len(lines), 1, banner)
+        self.assertRegex(
+            lines[0], r"\[ComfyUI-PromptManager\] Version:.* \S+ - \d+ tools loaded$"
+        )
+        self.assertNotIn("Loaded:", banner)
 
 
 class PriorFileHandler(logging.FileHandler):
@@ -553,7 +562,7 @@ class TestPackageLoggerIsolation(unittest.TestCase):
         original_print = print
 
         def fail_banner(*args, **kwargs):
-            if any("Total:" in str(arg) for arg in args):
+            if any("tools loaded" in str(arg) for arg in args):
                 captured["package"] = sys.modules[name]
                 captured["handlers"] = [
                     h
