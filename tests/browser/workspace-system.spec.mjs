@@ -8,6 +8,8 @@ import { readCoverageTable, parseControl, CONTROL_EXEMPTIONS } from '../../tools
 const workspace = '/prompt_manager/workspace';
 const OVERVIEW_URL = '/prompt_manager/system/overview';
 const THUMBNAILS_URL = '/prompt_manager/images/thumbnails/status';
+// The sidebar's Images count (state.mjs NAV_COUNT_SOURCES): the Images page's own total.
+const IMAGES_COUNT_URL = '/prompt_manager/images/output?mode=workspace&limit=1';
 const number = value => value.toLocaleString('en-US');
 
 test.beforeEach(async ({ page, request, browserName }) => {
@@ -55,6 +57,7 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     page.on('request', item => { if (!['GET', 'HEAD', 'OPTIONS'].includes(item.method())) writes.push(item.url()); });
     const overview = await serverJson(request, OVERVIEW_URL);
     const thumbnails = await serverJson(request, THUMBNAILS_URL);
+    const images = (await serverJson(request, IMAGES_COUNT_URL)).total;
     // The concept fixture: six positives, their saved negatives and 24 linked images, all with thumbnails.
     expect([overview.library.positive_prompts, overview.images.indexed, thumbnails.pending]).toEqual([6, 24, 0]);
     // I2: the Overview never walks the sources for thumbnails; the row reads the status route itself.
@@ -66,7 +69,8 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
         [item.querySelector('strong').textContent, item.querySelector('span').textContent]))).toEqual([
         [number(overview.library.positive_prompts), 'Positive prompts'],
         [number(overview.library.negative_variants), 'Negative variants'],
-        [number(overview.images.indexed), 'Images'],
+        // #555: the Images page's own count, the same number as its sidebar badge.
+        [number(images), 'Images'],
         ['Not checked', 'Database integrity'],
     ]);
     expect(await rowsOf(layout, 'Library health')).toEqual([
@@ -79,9 +83,29 @@ test('overview shows real counts and Not checked', async ({ page, request }) => 
     expect(await rowsOf(layout, 'Workspace preferences')).toEqual([
         ['One display configuration', 'Grid and density settings are shared across views.', 'Appearance'],
         ['2 output sources', 'Monitoring and enrichment share one source list.', 'Manage sources'],
-        ['Statistics', 'Runs by category, with library totals.', 'Explore'],
+        ['Statistics', 'Runs by category, with database record counts.', 'Explore'],
     ]);
     expect(writes).toEqual([]);
+});
+
+test('#555: the Images metric is the sidebar Images count, not the indexed image rows', async ({ page, request }) => {
+    const overview = await serverJson(request, OVERVIEW_URL);
+    // The Images page lists files no row links (the demo library: 122 files, 110 rows); the listing says so.
+    const listed = overview.images.indexed + 12;
+    await page.route(`**${IMAGES_COUNT_URL}`, async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...(await response.json()), total: listed } });
+    });
+    const layout = await openOverview(page);
+    const imagesMetric = layout.locator('.summary-metrics > .metric').filter({ has: page.locator('span', { hasText: /^Images$/ }) });
+    await expect(imagesMetric.locator('strong')).toHaveText(number(listed));
+    await expect(page.locator('#primary-nav a[data-route="images"] .nav-count')).toHaveText(number(listed));
+    // A failed count reads as a dash, never the row count.
+    await page.unroute(`**${IMAGES_COUNT_URL}`);
+    await page.route(`**${IMAGES_COUNT_URL}`, route => route.fulfill({ status: 503, json: { success: false, error: 'Unavailable' } }));
+    await page.goto(`${workspace}#/system/appearance`);
+    await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Overview', exact: true }).click();
+    await expect(imagesMetric.locator('strong')).toHaveText('–');
 });
 
 // D129 (#249 S6b): where the library lives. The hook makes the fixture's database read as a node-folder library; its
@@ -364,7 +388,7 @@ test('View backups / Appearance / Manage sources switch sections', async ({ page
     }
 });
 
-test('statistics dialog lists runs by category and library totals', async ({ page, request }) => {
+test('statistics dialog lists runs by category and database record counts', async ({ page, request }) => {
     const statistics = await serverJson(request, '/prompt_manager/system/statistics');
     expect(statistics.by_category.length).toBeGreaterThan(1);
     const layout = await openOverview(page);
@@ -373,13 +397,14 @@ test('statistics dialog lists runs by category and library totals', async ({ pag
     const dialog = page.locator('dialog#modal[open]');
     await expect(dialog.locator('#modal-title')).toHaveText('Usage statistics');
     const tables = dialog.locator('#modal-body > table');
-    await expect(tables.locator('caption')).toHaveText(['Runs by category', 'Library totals']);
+    await expect(tables.locator('caption')).toHaveText(['Runs by category', 'Database records']);
     // D153 (#447): no rating column and no rated-images total.
     await expect(tables.first().locator('thead th')).toHaveText(['Category', 'Runs']);
     const cells = table => table.locator('tbody tr').evaluateAll(rows => rows.map(row => [...row.cells].map(cell => cell.textContent)));
     expect(await cells(tables.first())).toEqual(statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]));
-    expect(await cells(tables.nth(1))).toEqual([['Prompts', number(statistics.totals.total_prompts)],
-        ['Tags', number(statistics.totals.total_tags)], ['Images', number(statistics.totals.total_images)]]);
+    // #555: raw rows of the legacy /stats, labelled as rows so they never read as the Library or Images page counts.
+    expect(await cells(tables.nth(1))).toEqual([['Prompt records', number(statistics.totals.total_prompts)],
+        ['Tags on prompts', number(statistics.totals.total_tags)], ['Image records', number(statistics.totals.total_images)]]);
     await page.keyboard.press('Escape');
     await expect(explore).toBeFocused();
     // A statistics read that fails says so; the Overview stays.

@@ -16,10 +16,20 @@ const OVERVIEW = Object.freeze({
 
 test('metrics are the server counts and Not checked before any health check', async () => {
     const { metricValues } = await overviewModule;
-    assert.deepEqual(metricValues(OVERVIEW), [
+    assert.deepEqual(metricValues(OVERVIEW, 24), [
         [(1234).toLocaleString(), 'Positive prompts'], ['7', 'Negative variants'], ['24', 'Images'],
         ['Not checked', 'Database integrity'],
     ]);
+});
+
+test('#555: the Images metric is the Images page count (the sidebar badge), not the indexed rows', async () => {
+    const { metricValues } = await overviewModule;
+    // The demo library: 110 indexed rows, 122 files on the Images page (unlinked ones included).
+    const overview = { ...OVERVIEW, images: { indexed: 110, rated: 0 } };
+    assert.deepEqual(metricValues(overview, 122)[2], [(122).toLocaleString(), 'Images']);
+    // Not read yet (undefined) or failed (null): a dash, as on the workspace Overview, never the row count.
+    assert.deepEqual(metricValues(overview, undefined)[2], ['–', 'Images']);
+    assert.deepEqual(metricValues(overview, null)[2], ['–', 'Images']);
 });
 
 test('metric 4 is the last health result', async () => {
@@ -150,7 +160,7 @@ test('statistics rows are the real runs, then the library totals, without rating
         rated_images: 20,
     };
     assert.deepEqual(categoryRows(statistics), [['Landscapes', (1200).toLocaleString()], ['Uncategorized', '3']]);
-    assert.deepEqual(totalsRows(statistics), [['Prompts', '12'], ['Tags', '15'], ['Images', '24']]);
+    assert.deepEqual(totalsRows(statistics), [['Prompt records', '12'], ['Tags on prompts', '15'], ['Image records', '24']]);
 });
 
 /** A fake api answering each `get`/`post` from a queue per URL, recording the calls. */

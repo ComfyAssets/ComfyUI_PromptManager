@@ -1407,6 +1407,8 @@ is shorter than the row it reserves.
 Each Overview card is the count of the page it names: the shell's Library, Images and Tags sidebar counts, one source,
 so a card and its badge cannot differ. `/prompt_manager/stats` is for the legacy page and counts raw rows. A visit re-reads
 the three unless a read is in flight. An unread or failed card shows a dash; Retry re-reads only the failed counts.
+System › Overview's Images metric reads the same shell count (#555), so it, the Overview card and the Images badge show
+one number; its Statistics dialog labels the legacy row counts as "Database records".
 Tests: `tests/js/workspace-state.test.js`, `tests/browser/workspace.spec.mjs`, `tests/comfyui/workspace.spec.mjs`.
 
 ### Images page controls and recorded deviations (#249 PR C)
@@ -4006,7 +4008,11 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   "Save preferences" is `aria-disabled` (opacity .55, `not-allowed`) while clean or
   saving; a setting the last save could not save gets a red outline. CSS under D92.
 - **D93** (Overview): real values. The metrics are the Library's eligible positives
-  and active saved negatives and the indexed `generated_images` rows (Q2). "Database
+  and active saved negatives and the Images count (#555, amending Q2's indexed
+  `generated_images` rows): the shell's Images sidebar count, the Images page's own
+  total, which also lists files no row links, as the concept's `images.length` is
+  both. A visit re-reads it unless a read is in flight; "–" until read or after a
+  failed read. `images.indexed` stays in the API and is not shown. "Database
   integrity" is "Not checked" until a check ran this session, then "N issues" (checks
   that found issues, even beside a check that could not run), "Passed" or "Incomplete".
   The review row is "N ambiguous image links" (the Needs review queue's pending count,
@@ -4044,10 +4050,11 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
 - **D96** (Statistics; amended by D153): "Usage statistics" without the sample note: the
   concept's "Runs by category" table without its Avg. rating column (Category / Runs)
   with the real runs of eligible parents per category ("Uncategorized"), then a second
-  table "Library totals" (Total / Count: Prompts, Tags, Images from the legacy
-  statistics; no Rated images). The API still reports `average_rating` and
+  table "Database records" (Total / Count: Prompt records, Tags on prompts, Image
+  records: the raw row counts of the legacy statistics, labelled as rows so they never
+  read as the Library or Images page counts, #555; no Rated images). The API still reports `average_rating` and
   `rated_images`; the workspace does not show them.
-  The Overview row says "Runs by category, with library totals." because
+  The Overview row says "Runs by category, with database record counts." because
   that is what the dialog shows (the concept's own dialog shows only "Runs by
   category"); per-prompt run counts, prompt tags and dated runs are recorded, but no
   table of them exists yet. A failed read toasts "Statistics could not
@@ -5413,7 +5420,7 @@ list stay unscoped: any row's control proves them.
 | Worker threads | `admin.html:437–445` | S4 Sources | covered | `sources` · slider · "Worker threads" | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
 | LoraManager badge, enable, path, trigger words, CivitAI key, clear key | `admin.html:448–490`; `admin.js:1052–1156` | S10 Integrations | covered | `integrations` · switch · "LoraManager integration" | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
 | LoRA data import with progress | `admin.html:492–498,517–541`; `admin.js:1157` | S10 Integrations | covered | `integrations` · button · "Review import" | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
-| Statistics | `admin.html:159`; `admin.js:1627` | S2 Overview | covered | `overview` · button · "Explore" | statistics dialog lists runs by category and library totals (workspace-system.spec.mjs) |
+| Statistics | `admin.html:159`; `admin.js:1627` | S2 Overview | covered | `overview` · button · "Explore" | statistics dialog lists runs by category and database record counts (workspace-system.spec.mjs) |
 | Export components JSON `/export` | `admin.html:163`; `admin.js:1607`; `py/api/prompts.py:238` | S9 Backup & export | covered | `backups` · button · "Export all prompts JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |
 | Saved pairs export | `py/api/pairs.py:84` | S9 Backup & export | covered | `backups` · button · "Export saved pairs JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |
 | Library export | `py/api/library.py:223` | S9 Backup & export | covered | `backups` · button · "Export JSON" | Export JSON downloads /library/export; secondary buttons download all prompts (/export) and /pairs/export (D103) (workspace-system-backups.spec.mjs) |

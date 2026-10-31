@@ -11,8 +11,10 @@
  *   D99: its Review thumbnails opens the same "Thumbnail maintenance" dialog as Sources (thumbnail-review.mjs).
  *   #317: it reads "N missing · M outdated · K failed"; while previews are outdated (another format than the
  *   configured one) a second button, "Convert outdated", opens that dialog on its Convert outdated scope (D131).
- * - D96: the Statistics dialog lists the real runs per category, then "Library totals" (D153: no rating column or
- *   rated-images total).
+ * - #555: metric 3, "Images", is the shell's Images count (the Images page's total, its sidebar badge), not the
+ *   overview's indexed rows, which leave out files no row links: a dash until it is read or when its read failed.
+ * - D96: the Statistics dialog lists the real runs per category, then "Database records" (D153: no rating column or
+ *   rated-images total; #555: the legacy row counts, labelled as records).
  * - D95: the "Health report" lists every check the server ran, Missing files per image source, with a chip per real
  *   result and when it was checked. The check runs from Maintenance's notice ("Run health checks", D123) as a
  *   read job of the registry, tracked in the Activity store (its event stream); the report opens when it ends.
@@ -61,12 +63,20 @@ export function integrityText(health) {
     return health.status === 'passed' ? 'Passed' : 'Incomplete';
 }
 
-/** The concept's four metrics `[value, label]`, in its order. */
-export function metricValues(overview) {
+/** #555: the Images metric's value from the shell's Images count; a dash while unread (undefined) or failed (null). */
+export function imagesText(images) {
+    return Number.isSafeInteger(images) && images >= 0 ? number(images) : '–';
+}
+
+/**
+ * The concept's four metrics `[value, label]`, in its order. `images` is the shell's Images count (#555): the concept's
+ * `images.length`, the same number as the Images sidebar badge.
+ */
+export function metricValues(overview, images) {
     return [
         [number(overview.library.positive_prompts), 'Positive prompts'],
         [number(overview.library.negative_variants), 'Negative variants'],
-        [number(overview.images.indexed), 'Images'],
+        [imagesText(images), 'Images'],
         [integrityText(overview.health), 'Database integrity'],
     ];
 }
@@ -174,10 +184,15 @@ export function categoryRows(statistics) {
     return statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]);
 }
 
-/** D96: the added "Library totals" rows `[label, count]` (the legacy statistics; D153 drops the rated images). */
+/**
+ * D96: the added "Database records" rows `[label, count]` (the legacy statistics; D153 drops the rated images). #555:
+ * they count raw rows (every prompt row, tags on a prompt, every image row), so they say so and never read as the
+ * Library or Images page counts.
+ */
 export function totalsRows(statistics) {
     const { totals } = statistics;
-    return [['Prompts', totals.total_prompts], ['Tags', totals.total_tags], ['Images', totals.total_images]]
+    return [['Prompt records', totals.total_prompts], ['Tags on prompts', totals.total_tags],
+        ['Image records', totals.total_images]]
         .map(([label, value]) => [label, number(value)]);
 }
 
@@ -208,11 +223,11 @@ function table(caption, head, rows, empty) {
     return node;
 }
 
-/** The Statistics dialog: "Runs by category" (the concept's table), then "Library totals" (D96). */
+/** The Statistics dialog: "Runs by category" (the concept's table), then "Database records" (D96, #555). */
 export function statisticsNodes(statistics) {
     return [
         table('Runs by category', ['Category', 'Runs'], categoryRows(statistics), 'No prompts in the library yet.'),
-        table('Library totals', ['Total', 'Count'], totalsRows(statistics), ''),
+        table('Database records', ['Total', 'Count'], totalsRows(statistics), ''),
     ];
 }
 
@@ -332,9 +347,9 @@ export function healthNotice({ api, activity, scope, navigate = navigateTo, noti
     return notice;
 }
 
-function metricsNode(overview) {
+function metricsNode(overview, images) {
     const metrics = el('div', undefined, 'summary-metrics');
-    for (const [value, label] of metricValues(overview)) {
+    for (const [value, label] of metricValues(overview, images)) {
         const metric = el('div', undefined, 'metric');
         metric.append(el('strong', value), el('span', label));
         metrics.append(metric);
@@ -349,7 +364,7 @@ function surface(heading, rows) {
 }
 
 /** The Overview's nodes, and its thumbnail row (painted by its own read). */
-function overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics, openThumbnails }) {
+function overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics, openThumbnails, images }) {
     const go = section => () => navigate(`#/system/${section}`);
     const review = operationRow({ scope, title: ambiguousTitle(overview.needs_review),
         description: Number.isSafeInteger(overview.needs_review?.pending)
@@ -374,26 +389,36 @@ function overviewNodes(overview, { api, activity, notify, scope, navigate, openS
         operationRow({ scope, title: 'One display configuration', description: 'Grid and density settings are shared across views.',
             label: 'Appearance', onClick: go('appearance') }),
         operationRow({ scope, title: sourcesTitle, description: sourcesDescription, label: 'Manage sources', onClick: go('sources') }),
-        operationRow({ scope, title: 'Statistics', description: 'Runs by category, with library totals.', label: 'Explore',
+        operationRow({ scope, title: 'Statistics', description: 'Runs by category, with database record counts.', label: 'Explore',
             onClick: openStatistics }),
     ]);
     const columns = el('div', undefined, 'two-col');
     columns.append(health, preferences);
-    return { nodes: [metricsNode(overview), columns], thumbnails, backup: backupRow };
+    const metrics = metricsNode(overview, images);
+    return { nodes: [metrics, columns], thumbnails, backup: backupRow, metrics };
 }
 
 /**
  * The Overview section's mount (`mountSystem`'s `sections.overview`): returns its loading line, which the server's
  * answer replaces in place (the concept's metrics and columns sit directly in `.settings-layout`). A read that a newer
  * one superseded, or one answering after the section left, paints nothing.
+ *
+ * `counts` is the shell's sidebar counts (`{get(id), subscribe(listener), freshen(ids)}`, index.mjs): the Images metric
+ * shows its `images` count and follows it, and a visit re-reads it as the workspace Overview does (#555).
  */
-export function mountOverview(container, { api, activity, scope, navigate = navigateTo, notify = showWorkspaceToast,
-    latestOnly = window.ApiClient.latestOnly, STALE = window.ApiClient.STALE }) {
+export function mountOverview(container, { api, activity, scope, counts = null, navigate = navigateTo,
+    notify = showWorkspaceToast, latestOnly = window.ApiClient.latestOnly, STALE = window.ApiClient.STALE }) {
     const overviewRead = latestOnly({ lifetime: scope.signal });
     const statisticsRead = latestOnly({ lifetime: scope.signal });
     const thumbnailsRead = latestOnly({ lifetime: scope.signal });
     const backupRead = latestOnly({ lifetime: scope.signal });
     let shown = [];
+    // #555: the Images metric's value node, repainted whenever the shell's Images count changes.
+    let imagesValue = null;
+    const imagesCount = () => counts?.get('images');
+    const paintImages = () => {
+        if (imagesValue) imagesValue.textContent = imagesText(imagesCount());
+    };
     // The backup status (undefined while read, null when it failed), painted into its row once both are there (S9).
     let backupStatus;
     let backupRow = null;
@@ -439,8 +464,10 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
         try {
             const overview = await overviewRead(signal => api.get(OVERVIEW_URL, { signal, cache: 'no-store' }));
             if (overview === STALE || scope.signal.aborted) return;
-            const { nodes, thumbnails, backup } = overviewNodes(overview, { api, activity, notify, scope, navigate, openStatistics,
+            const { nodes, thumbnails, backup, metrics } = overviewNodes(overview, { api, activity, notify, scope, navigate,
+                openStatistics, images: imagesCount(),
                 openThumbnails: trigger => openThumbnailReview({ api, store: activity, scope, trigger, navigate }) });
+            imagesValue = metrics.children[2].querySelector('strong');
             thumbnailRow = thumbnails;
             backupRow = backup;
             sources = overview.sources;
@@ -488,6 +515,10 @@ export function mountOverview(container, { api, activity, scope, navigate = navi
     const first = swap(loading());
     // D129: a finished Move library changes where the library lives.
     scope.cleanup(onMoveEnded(activity, load));
+    if (counts) {
+        scope.cleanup(counts.subscribe(paintImages));
+        counts.freshen(['images']);
+    }
     load();
     loadThumbnails();
     loadBackup();

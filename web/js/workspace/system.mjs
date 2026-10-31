@@ -135,7 +135,7 @@ export const DELIVERED_SECTIONS = Object.freeze({
 /**
  * Mount System under the heading `renderHeading` wrote in `main`. Returns `{show(section)}`, which shows another
  * section in place. `scope` is the page's view scope; `sections` maps a section id to a delivered section's mount
- * (`(container, {api, activity, scope, drafts}) => nodes`) for every section. `activity` is the page's Activity store, which follows the jobs a section starts.
+ * (`(container, {api, activity, scope, drafts, counts}) => nodes`; `counts` is the shell's sidebar counts, #555) for every section. `activity` is the page's Activity store, which follows the jobs a section starts.
  *
  * The host values are read on mount (and by the store again after a conflict), so a save carries the current revision;
  * until a read returned one, a host save fails without a request (system-state.mjs). The browser values are read on
@@ -159,7 +159,8 @@ function legacyPagesLine() {
     return line;
 }
 
-export function mountSystem(main, api, scope, { section, activity, sections = DELIVERED_SECTIONS, navigate = navigateTo }) {
+export function mountSystem(main, api, scope, { section, activity, counts = null, sections = DELIVERED_SECTIONS,
+    navigate = navigateTo }) {
     const store = systemDrafts(api);
     jobs = activity;
     store.reloadHost();
@@ -208,7 +209,7 @@ export function mountSystem(main, api, scope, { section, activity, sections = DE
         for (const button of nav.children) button.setAttribute('aria-pressed', String(button.dataset.value === next));
         while (layout.firstChild !== saveRow) layout.firstChild.remove();
         // Every section is delivered (S12), and the router only names known sections (state.mjs).
-        const nodes = sections[next](layout, { api, activity, scope: sectionScope, drafts: store });
+        const nodes = sections[next](layout, { api, activity, scope: sectionScope, drafts: store, counts });
         layout.prepend(...nodes);
         if (next === 'overview') main.append(legacyPages);
         else legacyPages.remove();

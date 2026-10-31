@@ -162,13 +162,15 @@ async function serverJson(request, url) {
 }
 
 const number = value => value.toLocaleString('en-US');
+// The sidebar's Images count (state.mjs), which System's Images metric shows (#555).
+const IMAGES_COUNT_URL = '/prompt_manager/images/output?mode=workspace&limit=1';
 
 /** The concept's shell and Overview with the recorded deviations applied, given the server's real overview. */
-function mapOverviewConcept(reference, overview) {
+function mapOverviewConcept(reference, overview, images) {
     // D165: the discreet legacy-pages line follows the settings layout.
     reference = { ...reference, tree: [...reference.tree, 'p.legacy-pages.small'] };
     const relabel = { 'Database integrity': 'Not checked', 'Positive prompts': number(overview.library.positive_prompts),
-        'Negative variants': number(overview.library.negative_variants), Images: number(overview.images.indexed) };
+        'Negative variants': number(overview.library.negative_variants), Images: number(images) };
     const rows = {
         // D93: the real pending count; Review metadata opens Needs review (the concept's go-review).
         '3 ambiguous image links': row => ({ ...row,
@@ -179,8 +181,9 @@ function mapOverviewConcept(reference, overview) {
         'One display configuration': row => ({ ...row, description: 'Grid and density settings are shared across views.' }),
         // D93: the real sources, not samples.
         '2 sample output sources': row => ({ ...row, title: `${number(overview.sources.effective)} output sources` }),
-        // D96: the dialog shows runs by category and library totals, not prompt, tag or date usage (D153: no ratings).
-        Statistics: row => ({ ...row, description: 'Runs by category, with library totals.' }),
+        // D96: the dialog shows runs by category and database record counts, not prompt, tag or date usage (D153: no
+        // ratings; #555: the counts are labelled as records, not as the Library or Images page counts).
+        Statistics: row => ({ ...row, description: 'Runs by category, with database record counts.' }),
     };
     const surfaces = reference.columns.surfaces.map(surface => ({ ...surface,
         rows: surface.rows.map(row => (rows[row.title] ?? (value => value))(row)) }));
@@ -218,6 +221,8 @@ async function conceptOverview(page, theme) {
 async function productionOverview(page, theme) {
     await openProduction(page, 'system/overview', theme);
     await expect(page.locator('#workspace-main .summary-metrics')).toBeVisible();
+    // #555: the Images metric is the shell's Images count: compare once it was read.
+    await expect(page.locator('#workspace-main .summary-metrics > .metric:nth-child(3) strong')).toHaveText(/^[\d,]+$/);
     // The thumbnail row is its own read (I2): compare once it answered.
     await expect(page.locator('#workspace-main .operation h3').filter({ hasText: 'thumbnails' })).toHaveText('No missing thumbnails');
     // So is the backup row (S9).
@@ -231,6 +236,7 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
     test(`system shell and overview match the concept ${theme} ${width}x${height}`, async ({ page, request }, testInfo) => {
         await page.setViewportSize({ width, height });
         const overview = await serverJson(request, '/prompt_manager/system/overview');
+        const images = (await serverJson(request, IMAGES_COUNT_URL)).total;
         // The fixture's thumbnails all exist, so the concept's "No missing thumbnails" is also the real title.
         expect((await serverJson(request, '/prompt_manager/images/thumbnails/status')).pending).toBe(0);
         const concept = await conceptOverview(page, theme);
@@ -239,7 +245,7 @@ for (const theme of THEMES) for (const [width, height] of SIZES) {
         await page.screenshot({ path: testInfo.outputPath(`concept-system-${theme}-${width}.png`), fullPage: true });
         const production = await productionOverview(page, theme);
         await page.screenshot({ path: testInfo.outputPath(`production-system-${theme}-${width}.png`), fullPage: true });
-        expect(diffInventory(mapOverviewConcept(concept, overview), production)).toEqual([]);
+        expect(diffInventory(mapOverviewConcept(concept, overview, images), production)).toEqual([]);
         expect(production.pageScroll).toBe(false);
     });
 }
@@ -265,8 +271,9 @@ const UNMAPPED_PATHS = [
 test('system comparison detects mutations', async ({ page, request }) => {
     await page.setViewportSize({ width: 1600, height: 1100 });
     const overview = await serverJson(request, '/prompt_manager/system/overview');
+    const images = (await serverJson(request, IMAGES_COUNT_URL)).total;
     const concept = await conceptOverview(page, 'dark');
-    const expected = mapOverviewConcept(concept, overview);
+    const expected = mapOverviewConcept(concept, overview, images);
     const production = await productionOverview(page, 'dark');
     expect(diffInventory(expected, production)).toEqual([]);
     // Unmapped, the concept differs exactly where a deviation is recorded, and nowhere else.
@@ -290,7 +297,7 @@ test('system comparison detects mutations', async ({ page, request }) => {
 });
 
 /**
- * D96: the concept's table, its rows the real ones; then "Library totals" in the same table markup. D153 (#447): the
+ * D96: the concept's table, its rows the real ones; then "Database records" (#555) in the same table markup. D153 (#447): the
  * concept's "Avg. rating" column and a "Rated images" total are not drawn.
  */
 function mapStatisticsConcept(reference, statistics) {
@@ -302,9 +309,10 @@ function mapStatisticsConcept(reference, statistics) {
         tables: [
             { ...runs, head: runs.head.filter(([, , text]) => text !== 'Avg. rating'),
                 rows: statistics.by_category.map(row => [row.category ?? 'Uncategorized', number(row.runs)]) },
-            { caption: 'Library totals', head: [['th', 'col', 'Total'], ['th', 'col', 'Count']],
-                rows: [['Prompts', number(statistics.totals.total_prompts)], ['Tags', number(statistics.totals.total_tags)],
-                    ['Images', number(statistics.totals.total_images)]] },
+            { caption: 'Database records', head: [['th', 'col', 'Total'], ['th', 'col', 'Count']],
+                rows: [['Prompt records', number(statistics.totals.total_prompts)],
+                    ['Tags on prompts', number(statistics.totals.total_tags)],
+                    ['Image records', number(statistics.totals.total_images)]] },
         ],
     };
 }
@@ -420,7 +428,7 @@ for (const theme of THEMES) test(`statistics and health dialogs match the concep
     expect(diffInventory(mapHealthConcept(concept.health), await page.evaluate(measureDialog)).map(item => item.path))
         .toEqual(['operations.rows.0.title']);
     await page.evaluate(() => { document.querySelector('#modal .operation h3').textContent = 'Integrity check'; });
-    // And a removed "Library totals" table and a changed caption in the statistics dialog.
+    // And a removed "Database records" table and a changed caption in the statistics dialog.
     await page.keyboard.press('Escape');
     await page.locator('#workspace-main .section-nav').getByRole('button', { name: 'Overview', exact: true }).click();
     await page.locator('#workspace-main').getByRole('button', { name: 'Explore', exact: true }).click();
