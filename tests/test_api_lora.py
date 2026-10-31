@@ -840,6 +840,23 @@ class TestLoraScanRoute(LoraAPITestCase):
             ("error", error["message"], 0),
         )
 
+    async def test_unexpected_scan_error_is_generic_in_the_stream(self):
+        self._enable()
+        secret = str(self.tmp_root / "x.db")
+        err = RuntimeError(f"could not open {secret}")
+        with patch.object(self.api.db, "replace_category_prompts", side_effect=err):
+            with self.assertLogs("prompt_manager.api", level="ERROR") as logs:
+                resp = await self.client.request("POST", "/prompt_manager/lora/scan")
+                body = await resp.text()  # the stream ends inside the patch
+        self.assertNotIn("x.db", body)
+        error = self._sse_events(body)[-1]
+        self.assertEqual(
+            (error["type"], error["status"], error["progress"]),
+            ("error", error["message"], 0),
+        )
+        self.assertIn("server log", error["message"])
+        self.assertIn(secret, "\n".join(logs.output))
+
     @staticmethod
     def _sse_events(text):
         return [

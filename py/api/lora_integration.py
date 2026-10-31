@@ -44,6 +44,7 @@ _FILES_CHANGED = (
     "The LoRA metadata files changed during the scan; the previous imports "
     "were kept. Run the scan again."
 )
+_LORA_SCAN_FAILED = "The LoRA import failed. Check the server log for details."
 _IMPORTS_CHANGED = (
     "The imported LoRA prompts changed during the scan; the previous imports "
     "were kept. Run the scan again."
@@ -407,10 +408,21 @@ class LoraIntegrationMixin:
             return
         if isinstance(error, PlanChanged):
             message = _IMPORTS_CHANGED
-        elif isinstance(error, (LoraFilesChanged, LoraSettingsUnusable)):
+        elif isinstance(
+            error,
+            (
+                LoraFilesChanged,
+                LoraSettingsUnusable,
+                EmptyReplacement,
+                PairDependencyError,
+            ),
+        ):
             message = str(error)
-        else:
+        elif isinstance(error, OSError):
+            # Reduced to its reason and the file's basename.
             message = self._public_error(error)
+        else:
+            message = _LORA_SCAN_FAILED
         if isinstance(
             error,
             (
