@@ -533,6 +533,7 @@ class AutoThumbnailer:
             try:
                 process.kill()
             except OSError:
+                # the process has already exited
                 pass
         if worker is None:
             return True

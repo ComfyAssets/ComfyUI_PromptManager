@@ -539,6 +539,7 @@ def _diagnose_output_dirs(configured_dirs, public_path=None):
 
         candidates.append(folder_paths.get_output_directory())
     except ImportError:
+        # outside ComfyUI there is no output folder to add
         pass
 
     output_dirs = []

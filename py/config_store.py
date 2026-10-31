@@ -109,6 +109,7 @@ def _write_atomically(path: str, payload: bytes) -> None:
         try:
             os.unlink(temp_path)
         except OSError:
+            # nothing to clean up; the original error is raised below
             pass
         raise
 

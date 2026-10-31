@@ -207,6 +207,7 @@ class LibraryLocationRoutesMixin:
         try:
             size = os.path.getsize(location.db_path)
         except OSError:
+            # no library file yet: report size 0
             pass
         return {
             "path": self._library_public_path(location.db_path),

@@ -585,6 +585,7 @@ def _read_capped(resp, cap: int) -> Optional[bytes]:
             if int(declared) > cap:
                 return None
         except ValueError:
+            # a bad header says nothing; the read below enforces the cap
             pass
 
     chunks = []
@@ -707,6 +708,7 @@ def _save_atomically(image, local_path: Path) -> None:
         try:
             os.remove(temp)
         except OSError:
+            # nothing to clean up; the original error is raised below
             pass
         raise
 

@@ -339,6 +339,7 @@ class FreedesktopBackend:
         try:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
         except FileExistsError:
+            # the folder already exists; the checks below still vet it
             pass
         except OSError as error:
             raise TrashRefused(NO_TRASH, str(error)) from error

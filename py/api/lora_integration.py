@@ -536,6 +536,7 @@ class LoraIntegrationMixin:
                 except asyncio.CancelledError:
                     interrupted = True
                 except Exception:
+                    # the await after this loop raises it for the caller
                     pass
             if interrupted:
                 raise asyncio.CancelledError

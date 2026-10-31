@@ -114,6 +114,7 @@ def inside_any_root(path: str, roots) -> bool:
             if _identity(current) in identities:
                 return True
         except OSError:
+            # an unreadable folder cannot be a trash; try its parent
             pass
         parent = os.path.dirname(current)
         if parent == current:

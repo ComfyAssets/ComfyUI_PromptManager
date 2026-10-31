@@ -398,6 +398,7 @@ class HistoryWriter:
                         try:
                             command = self._queue.get_nowait()
                         except queue.Empty:
+                            # no command waiting; the loop below handles command None
                             pass
                 if probe:
                     try:

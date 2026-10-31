@@ -396,6 +396,7 @@ def _video_placeholder_image(thumbnail_size):
             font=font,
         )
     except (OSError, AttributeError):
+        # a placeholder without its label still works
         pass
     return img
 
@@ -499,6 +500,7 @@ def _preview_names(folders, folder):
                     except OSError:
                         continue
         except OSError:
+            # an unreadable folder lists as empty; nothing there to cache
             pass
         folders[folder] = names
     return names

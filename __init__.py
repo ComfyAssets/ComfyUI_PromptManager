@@ -120,6 +120,7 @@ except Exception as e:
         logger = get_logger("prompt_manager.init")
         logger.error(f"Failed to register API routes: {e}")
     except Exception:
+        # logging failed too; a report must never stop the node loading
         pass
 
 # Shared database, set up with the monitoring system below. Stays None when that
@@ -411,6 +412,7 @@ except Exception as e:
             f"Failed to register the exit signal: {e}"
         )
     except Exception:
+        # logging failed too; a report must never stop the node loading
         pass
 
 try:
@@ -428,6 +430,7 @@ except Exception as e:
             f"Failed to register the background work teardown: {e}"
         )
     except Exception:
+        # logging failed too; a report must never stop the node loading
         pass
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
