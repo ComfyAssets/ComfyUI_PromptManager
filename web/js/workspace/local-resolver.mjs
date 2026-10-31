@@ -41,7 +41,6 @@ import {
     UNVERIFIABLE_CODES,
     Unresolved,
     ZEROED_SOURCE,
-    compileSemantics,
     explained,
     isLink,
     nodeRef,

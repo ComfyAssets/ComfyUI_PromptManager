@@ -6,7 +6,6 @@ import { THEMES, seedConcept, openConcept, openProduction, diffInventory, mutate
 // app.js 1428–1432) and its backup box with the concept's System `.notice`; the differences are D55. The job view
 // has no concept counterpart: it is compared with the approved mockup `activity-scan.html` (a local, ignored file),
 // whose structure and CSS values are restated below (D56). Each comparison is shown to notice a mutation.
-const workspace = '/prompt_manager/workspace';
 
 test.beforeEach(async ({ page, request, browserName }) => {
     await startCoverage(page, browserName);

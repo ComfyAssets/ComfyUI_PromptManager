@@ -21,14 +21,6 @@ function jsonResponse(status, body) {
         json: async () => body };
 }
 
-function sseResponse(frames) {
-    const bytes = new TextEncoder().encode(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(''));
-    let sent = false;
-    return { ok: true, status: 200, body: { getReader: () => ({
-        read: async () => (sent ? { done: true } : (sent = true, { done: false, value: bytes })),
-    }) } };
-}
-
 function load(file, className, fetchUrl, extra = {}, dom = elements()) {
     const timers = [];
     const notifications = [];
@@ -62,8 +54,6 @@ function load(file, className, fetchUrl, extra = {}, dom = elements()) {
     page.hideModal = id => notifications.push(['hide', id]);
     return { page, dom, timers, notifications, storage };
 }
-
-const BUSY = 'Scan for metadata already running';
 
 test('admin settings save shows why config.json refused it', async () => {
     const message = 'config.json cannot be read, so nothing was saved. Fix or remove the file, then save again.';

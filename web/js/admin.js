@@ -2391,8 +2391,6 @@ Seed: ${this.currentMetadata.seed || 'Unknown'}`;
                     // Extract relative path from the full path
                     // The image_path might be absolute, we need to serve it via the API
                     const path = image.image_path;
-                    // Try to get filename for serving
-                    const filename = image.filename || path.split(/[/\\]/).pop();
                     // Use the image ID if available, otherwise use the path-based serve endpoint
                     if (image.id) {
                         return ApiClient.resolveUrl(`/prompt_manager/images/${image.id}/file`);

@@ -354,8 +354,6 @@ app.registerExtension({
             if (textWidget) {
               // Store reference to the widget for the closure
               const widgetRef = textWidget;
-              const originalSerializeValue = textWidget.serializeValue;
-
               // Override serializeValue - use arrow function to capture widgetRef
               textWidget.serializeValue = (nodeId, widgetIndex) => {
                 // Always return the current DOM value using our stored reference

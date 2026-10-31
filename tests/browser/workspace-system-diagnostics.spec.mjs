@@ -11,7 +11,6 @@ const REPORT_URL = '/prompt_manager/system/diagnostics';
 const LOGS_URL = '/prompt_manager/logs';
 const CONFIG_URL = '/prompt_manager/logs/config';
 const PREVIEW_URL = '/prompt_manager/maintenance/preview';
-const APPLY_URL = '/prompt_manager/maintenance/apply';
 const TEST_LINK_URL = '/prompt_manager/diagnostics/test-link';
 const CHANGED = 'The log files changed since the review; nothing was deleted. Review again.';
 const KEY = 'sk-s12-browser-SECRET-0123456789';
