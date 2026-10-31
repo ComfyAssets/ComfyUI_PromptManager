@@ -139,6 +139,15 @@ const synth = (page, key, init = {}) => page.evaluate(([key, init]) => {
 }, [key, init]);
 async function ready(page) {
     await expect(control(page, 'Zoom in')).toHaveAttribute('aria-disabled', 'false');
+    // Zoom opens as the image is viewed; the viewer's first fit to the stage follows a frame later.
+    let previous;
+    await expect.poll(async () => {
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const settled = await transform(page);
+        const same = settled === previous;
+        previous = settled;
+        return same;
+    }).toBe(true);
     await stage(page).focus();
 }
 /** Nothing the keys can change has changed. */
