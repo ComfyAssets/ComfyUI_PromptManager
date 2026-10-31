@@ -345,8 +345,10 @@ and the time left. The steps, in order:
    monitor's callbacks (Needs review recorder, preview queue, Images listing
    listener).
 2. `ImageMonitor.stop_monitoring` works against one 5 s deadline. Closing the
-   image handler joins the image worker; watchdog's `observer.stop()` (not
-   bounded here) and the observer join get what is left, which can be 0 s.
+   image handler joins the image worker; watchdog's `observer.stop()` and the
+   observer join get what is left, which can be 0 s. `stop()` joins watchdog's
+   emitters without a limit, so it runs on a daemon thread and is waited for
+   only until the deadline; a later stop waits for that same call (#561).
 3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s) and
    kills ffmpeg.
 4. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
@@ -360,6 +362,15 @@ between two steps (each step catches its own) is re-raised after the result is
 stored, with the parts not reached False, and the `atexit` callback is
 removed: the later steps are skipped, no summary line is logged, and a later
 call returns that result and runs nothing.
+
+The observer is started from a short-lived daemon thread, so every thread it
+creates is a daemon (a thread inherits that flag from the thread that creates
+it). watchdog 7 on Windows starts a plain `threading.Thread` per watch for its
+`ReadDirectoryChangesW` reader; created from ComfyUI's main thread it would not
+be a daemon, and the interpreter waits for every such thread before it runs any
+`atexit` callback, so the teardown would never start (#561).
+`tests/test_package_exit.py` runs a child whose observer does both (a plain
+reader thread, a `stop()` that never returns) and requires its exit.
 
 ComfyUI never runs aiohttp's `on_cleanup` hooks, because it never calls
 `runner.cleanup()`. So `atexit` is the live host's path. It runs on Ctrl+C
