@@ -1178,7 +1178,9 @@ class TestModelStatus(AutotagAPITestCase):
         )
         # Kept fields legacy pages and the workspace read.
         for model in models.values():
-            self.assertTrue({"name", "description", "size", "downloaded"} <= set(model))
+            self.assertLessEqual(
+                {"name", "description", "size", "downloaded"}, set(model)
+            )
         self.assertTrue(data["model_loaded"])
         self.assertEqual(data["loaded_model_type"], "wd14-vit")
 
