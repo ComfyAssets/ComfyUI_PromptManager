@@ -1,5 +1,5 @@
 # Runtime dependencies
-watchdog>=6.0.0
+watchdog>=6.0.0,<7
 Pillow>=12.3.0
 aiohttp>=3.14.5
 
