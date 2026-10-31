@@ -76,6 +76,22 @@ export function statusText(outcome) {
     return saved.join(' ') || SETTINGS_STATUS.clean;
 }
 
+const plain = value => value !== null && typeof value === 'object'
+    && (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype);
+/** JSON with every object's keys sorted, so key order never makes two values differ. */
+const canonical = value => JSON.stringify(value, (key, item) => (item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(name => [name, item[name]])) : item));
+
+/**
+ * #431: whether a draft equals a saved value: `Object.is`, or both are arrays or plain objects with the same JSON (keys
+ * sorted). A list setting (Skipped tags) whose added entry was removed again is clean, not a new array that differs.
+ */
+export function sameDraft(a, b) {
+    if (Object.is(a, b)) return true;
+    if (!plain(a) || !plain(b) || Array.isArray(a) !== Array.isArray(b)) return false;
+    return canonical(a) === canonical(b);
+}
+
 function requireDomain(domain) {
     if (!DRAFT_DOMAINS.includes(domain)) throw new TypeError(`Unknown settings domain: ${domain}`);
 }
@@ -112,7 +128,7 @@ export function createSystemDrafts(adapters) {
             values = await (domain === 'browser' ? adapters.readBrowser() : adapters.readRuntime());
         }
         baseline[domain] = { ...(values ?? {}) };
-        for (const [key, value] of drafts[domain]) if (Object.is(baseline[domain][key], value)) drafts[domain].delete(key);
+        for (const [key, value] of drafts[domain]) if (sameDraft(baseline[domain][key], value)) drafts[domain].delete(key);
         notify();
         return { ...baseline[domain] };
     }
@@ -124,7 +140,7 @@ export function createSystemDrafts(adapters) {
 
     function set(domain, key, value) {
         requireDomain(domain);
-        if (Object.is(baseline[domain][key], value)) drafts[domain].delete(key);
+        if (sameDraft(baseline[domain][key], value)) drafts[domain].delete(key);
         else drafts[domain].set(key, value);
         failedKeys[domain].delete(key);
         outcome = null;
@@ -153,7 +169,7 @@ export function createSystemDrafts(adapters) {
     function commit(domain, written) {
         for (const [key, value] of written) {
             baseline[domain][key] = value;
-            if (drafts[domain].has(key) && Object.is(drafts[domain].get(key), value)) drafts[domain].delete(key);
+            if (drafts[domain].has(key) && sameDraft(drafts[domain].get(key), value)) drafts[domain].delete(key);
         }
     }
 

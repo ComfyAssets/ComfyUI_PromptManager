@@ -1025,6 +1025,7 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
         "CHARACTER_THRESHOLD",
         "TEMPLATE",
         "SUGGESTION_LIMIT",
+        "SKIPPED_TAGS",
     )
     SAVED = {
         "autotag_model_type": "gguf",
@@ -1069,6 +1070,7 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
                 "CHARACTER_THRESHOLD": 0.8,
                 "TEMPLATE": "Tags only.",
                 "SUGGESTION_LIMIT": 15,
+                "SKIPPED_TAGS": (),
             },
         )
         settings = (await self._get())["settings"]
@@ -1166,3 +1168,64 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
                 self.assertEqual(status, 400, data)
                 self.assertEqual(data["error"], message)
                 self.assertEqual((self._config_bytes(), self._runtime()), before)
+
+    async def test_skipped_tags_save_trimmed_and_read_back(self):
+        """#431: the list is saved as typed (trimmed), published at once and
+        read back by GET /settings."""
+        self._write_config({"custom": {"keep": True}})
+        settings = (await self._get())["settings"]
+        self.assertEqual(settings["autotag_skipped_tags"], [])
+        revision = (await self._get())["revision"]
+        status, data = await self._post(
+            "/prompt_manager/settings",
+            {
+                "expected_revision": revision,
+                "autotag_skipped_tags": [" blurry ", "closed eyes", "(fate)"],
+            },
+        )
+        self.assertEqual(status, 200, data)
+        saved = self._read_config()
+        self.assertEqual(
+            saved["autotag"]["defaults"],
+            {"skipped_tags": ["blurry", "closed eyes", "(fate)"]},
+        )
+        self.assertEqual(saved["custom"], {"keep": True})
+        self.assertEqual(self.autotag.SKIPPED_TAGS, ("blurry", "closed eyes", "(fate)"))
+        settings = (await self._get())["settings"]
+        self.assertEqual(
+            settings["autotag_skipped_tags"], ["blurry", "closed eyes", "(fate)"]
+        )
+
+    async def test_bad_skipped_tags_are_refused_with_their_sentence(self):
+        self._write_config({"custom": {"keep": True}})
+        revision = (await self._get())["revision"]
+        before = (self._config_bytes(), self._runtime())
+        for value, message in (
+            (["sky", "  "], "Skipped tags: entry 2 is empty."),
+            (["x" * 51], "Skipped tags: entry 1 must be at most 50 characters."),
+            (
+                ["a, b"],
+                "Skipped tags: entry 1 must not contain a comma or a line break.",
+            ),
+            (["blurry", "Blurry"], "Skipped tags: entry 2 repeats entry 1."),
+            ([f"w{i}" for i in range(201)], "Skipped tags: at most 200 entries."),
+        ):
+            with self.subTest(value=value[:3]):
+                status, data = await self._post(
+                    "/prompt_manager/settings",
+                    {"expected_revision": revision, "autotag_skipped_tags": value},
+                )
+                self.assertEqual(status, 400, data)
+                self.assertEqual(data["error"], message)
+                self.assertEqual((self._config_bytes(), self._runtime()), before)
+
+    async def test_skipped_tags_without_a_revision_are_refused(self):
+        """A list saved without expected_revision could merge a stale copy."""
+        self._write_config({"custom": {"keep": True}})
+        before = (self._config_bytes(), self._runtime())
+        status, data = await self._post(
+            "/prompt_manager/settings", {"autotag_skipped_tags": ["blurry"]}
+        )
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "Reload the page and try again.")
+        self.assertEqual((self._config_bytes(), self._runtime()), before)

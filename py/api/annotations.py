@@ -35,6 +35,7 @@ from .media_target import media_target as _target
 from .images import _unavailable_link, _verified_title
 from .prompts import bad_request
 from .. import model_gate
+from ..tagging_defaults import SkipMatcher
 
 try:
     from ...database.annotations import (
@@ -640,6 +641,8 @@ class AnnotationRoutesMixin:
             owner = model_gate.new_owner("image-annotations")
             if not model_gate.try_acquire(owner):
                 return model_busy_response()
+            # #431: the Skipped tags as they are when the request is accepted.
+            skip = SkipMatcher(AutotagConfig.SKIPPED_TAGS).counting()
             try:
                 # From here the pin is the gate's to end: the worker ends it,
                 # or ``on_skipped`` does when the worker never starts.
@@ -653,6 +656,7 @@ class AnnotationRoutesMixin:
                     capture,
                     model_type,
                     options,
+                    skip,
                     on_skipped=functools.partial(store.release_use, token),
                 )
             except MissingBackendPackages as exc:
@@ -677,6 +681,8 @@ class AnnotationRoutesMixin:
                 "model_type": model_type,
                 "options": options,
                 "suggestions": suggestion_rows(pairs),
+                # How many distinct suggestions the Skipped tags hid (#431).
+                "skipped": len(skip.hidden),
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -732,10 +738,10 @@ def _byte_range(request: web.Request, size: int):
     return start, stop
 
 
-def _pinned_suggestions(store, token, service, capture, model_type, options):
+def _pinned_suggestions(store, token, service, capture, model_type, options, skip=None):
     """Worker thread: infer on the capture, then end its pin (even on error)."""
     try:
-        return run_suggestions(service, capture.path, model_type, options)
+        return run_suggestions(service, capture.path, model_type, options, skip)
     finally:
         store.release_use(token)
 

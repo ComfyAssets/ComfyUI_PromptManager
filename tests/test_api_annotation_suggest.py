@@ -73,6 +73,7 @@ class FakeTagger:
         self.calls = []
         self.read_paths = []
         self.read_bytes = []
+        self.skips = []
         self.download_model = MagicMock(side_effect=AssertionError("downloaded"))
         self.load_error = None
         self.block = None  # (entered, proceed) events
@@ -115,8 +116,10 @@ class FakeTagger:
         prompt=None,
         general_threshold=None,
         character_threshold=None,
+        skip=None,
     ):
         self.read_paths.append(image_path)
+        self.skips.append(skip)
         with open(image_path, "rb") as handle:
             self.read_bytes.append(handle.read())
         self.calls.append(
@@ -132,9 +135,11 @@ class FakeTagger:
             entered, proceed = self.block
             entered.set()
             proceed.wait(WAIT)
+        # As the engine does (#431): a skipped tag uses up no slot.
+        kept = [pair for pair in SCORED if skip is None or not skip.matches(pair[0])]
         if self.loaded.startswith("wd14"):
-            return list(SCORED[:limit])
-        return [(name, None) for name, _ in SCORED[:limit]]
+            return list(kept[:limit])
+        return [(name, None) for name, _ in kept[:limit]]
 
 
 class SuggestTestCase(AnnotationAPITestCase):

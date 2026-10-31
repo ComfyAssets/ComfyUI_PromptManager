@@ -444,6 +444,7 @@ class TestAutotagConfig(unittest.TestCase):
                 "CHARACTER_THRESHOLD",
                 "TEMPLATE",
                 "SUGGESTION_LIMIT",
+                "SKIPPED_TAGS",
             )
         }
 
@@ -487,6 +488,7 @@ class TestAutotagConfig(unittest.TestCase):
                     "general_threshold": 0.35,
                     "character_threshold": 0.85,
                     "suggestion_limit": 10,
+                    "skipped_tags": [],
                 }
             },
         )
@@ -526,6 +528,7 @@ class TestAutotagConfig(unittest.TestCase):
             "character_threshold": 0.7,
             "template": "Tags only.",
             "suggestion_limit": 15,
+            "skipped_tags": ("blurry", "closed eyes"),
         }
         fallback = {
             "model_type": "wd14-swinv2",
@@ -534,6 +537,7 @@ class TestAutotagConfig(unittest.TestCase):
             "character_threshold": 0.85,
             "template": config_module.DEFAULT_TAG_TEMPLATE,
             "suggestion_limit": 10,
+            "skipped_tags": (),
         }
         bad_values = {
             "model_type": ["wd14-convnext", 3, None],
@@ -544,6 +548,8 @@ class TestAutotagConfig(unittest.TestCase):
             # 4000 characters are at most 16,000 UTF-8 bytes, so the 16 KiB
             # byte cap can only be met past the character cap.
             "template": ["", "   ", "x" * 4001, "\U0001f600" * 4097, "\ud800", 7],
+            # #431: the whole list falls back; entries are never dropped one by one.
+            "skipped_tags": ["blurry", ["a,b"], ["sky", "Sky"], [""], ["x"] * 201],
         }
         for key, values in bad_values.items():
             for value in values:
@@ -552,7 +558,7 @@ class TestAutotagConfig(unittest.TestCase):
                     with tempfile.TemporaryDirectory() as tmpdir:
                         path = os.path.join(tmpdir, "config.json")
                         with open(path, "w") as f:
-                            json.dump({"autotag": {"defaults": saved}}, f)
+                            json.dump({"autotag": {"defaults": saved}}, f, default=list)
                         with self.assertLogs(
                             "prompt_manager.config", level="WARNING"
                         ) as logs:
@@ -564,6 +570,26 @@ class TestAutotagConfig(unittest.TestCase):
                         for k, (attr, _v, _d) in self.config_class._KEYS.items()
                     }
                     self.assertEqual(loaded, dict(good, **{key: fallback[key]}))
+
+    def test_skipped_tags_load_trimmed_and_warn_once_when_damaged(self):
+        """#431: the list is kept as typed (trimmed); a damaged list is
+        replaced by no skipped tags with one warning naming the reason."""
+        PromptManagerConfig.update_config(
+            {"autotag": {"defaults": {"skipped_tags": [" blurry ", "(fate)"]}}}
+        )
+        self.assertEqual(self.config_class.SKIPPED_TAGS, ("blurry", "(fate)"))
+        with self.assertLogs("prompt_manager.config", level="WARNING") as logs:
+            PromptManagerConfig.update_config(
+                {"autotag": {"defaults": {"skipped_tags": ["sky", "a,b"]}}}
+            )
+        self.assertEqual(self.config_class.SKIPPED_TAGS, ())
+        self.assertEqual(
+            [record.getMessage() for record in logs.records],
+            [
+                "autotag.defaults.skipped_tags entry 2 must not contain a comma"
+                " or a line break; using no skipped tags"
+            ],
+        )
 
     def test_tagging_validators_moved_with_their_messages(self):
         validate_threshold = config_module.validate_threshold

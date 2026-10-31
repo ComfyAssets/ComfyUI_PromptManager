@@ -9,6 +9,7 @@
  * - "Existing tags", "General-tag confidence", "Character-tag confidence": the concept's labels and descriptions
  *   verbatim (they state the shipped defaults); host keys `autotag_existing`, `autotag_general_threshold`,
  *   `autotag_character_threshold`. D133 adds "Suggestions per image" (`autotag_suggestion_limit`, 1–100) after them.
+ * - D202 (#431): the "Skipped tags" block after it (system-skipped-tags.mjs, host key `autotag_skipped_tags`).
  * - The `.field` "LLM tag template" (`#tag-template`, `autotag_template`).
  * - `.row-actions`: "Preview tagging review" (`ca-primary`) opens the Tag image dialog for the image selected in Images
  *   with the section's current model and values, aria-disabled without one (the D115 sentence) or with an invalid
@@ -35,6 +36,7 @@ import { selectedImage } from './images.mjs';
 import { NO_SELECTION } from './vocabulary.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { navigateTo } from './state.mjs';
+import { skippedTagsBlock } from './system-skipped-tags.mjs';
 
 export const MODELS_URL = '/prompt_manager/autotag/models';
 export const UNLOAD_URL = '/prompt_manager/autotag/unload';
@@ -410,6 +412,9 @@ export function mountTagging(container, { api, activity, scope, drafts, notify =
     // D133: the persisted suggestion count, which the concept does not show.
     add(settingRow({ id: 'tag-suggestions', label: 'Suggestions per image', description: SUGGESTIONS_DESCRIPTION,
         control: { type: 'number', min: 1, max: 100, step: 1 } }), 'tag-suggestions');
+    // D202 (#431): the words whose suggested tags are hidden on every suggestion path.
+    const skipped = skippedTagsBlock({ api, scope, drafts });
+    surface.append(skipped.node);
 
     const field = el('div', undefined, 'field');
     const templateLabel = el('label', 'LLM tag template');
@@ -454,6 +459,7 @@ export function mountTagging(container, { api, activity, scope, drafts, notify =
     const known = () => MODEL_IDS.includes(chosen());
 
     const repaint = () => {
+        skipped.repaint();
         const values = current();
         const unread = values.autotag_model_type === undefined;
         const failed = drafts.hostState?.() === 'failed' && unread;

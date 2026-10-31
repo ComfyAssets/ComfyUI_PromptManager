@@ -257,9 +257,16 @@ function initialState(source, preset) {
         image: null, savedTags: [], tagRevision: 0, currentTags: null, manual: '',
         model: preset?.model ?? MODEL_OPTIONS[0].id, options: {...DEFAULTS, ...preset?.options}, generated: false, suggestions: [],
         suggestionsText: COPY.modelChanged, statusText: '', generateSupported: false, generateReason: null, toast: null,
+        skippedCount: 0,
         // Bumped whenever the controller itself rewrites the option fields or the manual draft, never while typing.
         optionsRevision: 0, draftRevision: 0,
     };
+}
+
+/** #431: how many suggestions the saved Skipped tags hid, after the chip hint ('' when none). */
+export function skippedNote(count) {
+    if (!Number.isSafeInteger(count) || count <= 0) return '';
+    return count === 1 ? ' 1 skipped tag was not suggested.' : ` ${count.toLocaleString('en-US')} skipped tags were not suggested.`;
 }
 
 /** Derived labels and permissions; never stored independently of the fields they follow. */
@@ -269,7 +276,7 @@ function derive(state) {
         ...state,
         primaryLabel: state.generated ? 'Approve selected tags' : 'Save manual tags',
         countText: state.generated ? `${state.suggestions.length} ${noun(state.suggestions.length, 'suggestion')}` : 'Not generated',
-        chipHint: state.suggestions.length ? COPY.chipHint : '',
+        chipHint: state.suggestions.length ? COPY.chipHint + skippedNote(state.skippedCount) : '',
         canSave: editable,
         canGenerate: editable && state.generateSupported,
         canRetry: RETRYABLE.has(state.phase),
@@ -445,13 +452,14 @@ export function createImageTaggingController({api, target, source = 'images', on
         const options = requestOptions(model, state.options);
         const stale = () => closed || serial !== generateSerial;
         set({phase: 'generating', statusText: COPY.generating});
-        let rows;
+        let rows, skippedCount;
         try {
             const value = await api.post(SUGGEST_URL, {
                 target: {...imageTarget}, capture_token: capture.token, expected_epoch: epoch, model_type: model, options,
             }, {signal: controller.signal});
             if (stale()) return false;
             rows = validateSuggestions(value, options.suggestion_limit);
+            skippedCount = Number.isSafeInteger(value.skipped) && value.skipped > 0 ? value.skipped : 0;
         } catch (error) {
             if (stale()) return false;
             const phase = isApiError(error) && REOPEN[error.code];
@@ -460,7 +468,7 @@ export function createImageTaggingController({api, target, source = 'images', on
         }
         generateAbort = null;
         set({
-            phase: 'ready', generated: true, suggestions: rows, suggestionsText: rows.length ? '' : COPY.empty,
+            phase: 'ready', generated: true, suggestions: rows, suggestionsText: rows.length ? '' : COPY.empty, skippedCount,
             statusText: `Suggestions from ${modelOf(model).label}. Approve tags to save.`,
         });
         return true;

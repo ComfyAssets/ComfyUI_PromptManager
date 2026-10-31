@@ -849,3 +849,15 @@ test('a failed listing re-read after a save says so and keeps the cards (M2)', a
     await expect(page.locator('#gallery-continuation [aria-disabled="true"]')).toHaveCount(0);
     await page.unroute(failing);
 });
+
+// #431: the saved Skipped tags hide matching suggestions before the limit (WD14 fills it from lower scores), and the
+// chip hint says how many were not suggested.
+test('suggestions omit skipped tags and say how many were hidden', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/defaults', { data: { general: 0.35, character: 0.85, limit: 4,
+        skipped: ['desert', 'rock'] } })).toBeOK();
+    await openTag(page);
+    const answer = await (await generated(page)).json();
+    expect(answer.skipped).toBe(2);
+    await expect(chips(page).locator(':scope > span:first-child')).toHaveText(['sandstone', 'arch', 'sky', 'dune']);
+    await expect(dialog(page).locator('#tag-suggestions > p.small')).toHaveText(`${CHIP_HINT} 2 skipped tags were not suggested.`);
+});

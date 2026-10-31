@@ -39,6 +39,7 @@ from typing import NamedTuple
 from aiohttp import web
 
 from .. import model_gate
+from ..tagging_defaults import SkipMatcher
 from .admin import _plural, _time_left
 from .annotation_suggest import (
     OptionError,
@@ -170,6 +171,8 @@ class _Run:
     owner: object
     service: object = None
     roots: dict = field(default_factory=dict)
+    # The job's Skipped tags, compiled once at its start (#431).
+    skip: object = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +186,9 @@ class _Spec:
     options: dict | None = None
     # A listing filter the start resolves into ``targets`` (#392).
     filter: dict | None = None
+    # The Skipped tags when the job was requested (#431); a later save does
+    # not change a running job.
+    skip: tuple = ()
 
     @property
     def title(self) -> str:
@@ -238,7 +244,11 @@ def _parse_auto(targets, data):
         )
     except OptionError as exc:
         return None, bad_request(str(exc))
-    return _Spec("auto", targets, model_type=model_type, options=options), None
+    skip = tuple(AutotagConfig.SKIPPED_TAGS)
+    return (
+        _Spec("auto", targets, model_type=model_type, options=options, skip=skip),
+        None,
+    )
 
 
 def parse_image_tag_request(data: dict):
@@ -329,6 +339,8 @@ class AutotagRun:
     keep_in_memory: bool
     backup_on: bool
     owner: object
+    # The Skipped tags when the job was started (#431).
+    skip: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -398,6 +410,14 @@ def _load_model(service, model_type: str, use_gpu: bool) -> None:
         return
     if service.load_model(model_type, use_gpu) is False:
         raise RuntimeError(f"{model_type} could not be loaded")
+
+
+def _skipped_tags_line(entries: tuple) -> str:
+    """The job log's one line about the Skipped tags it runs with (#431)."""
+    if not entries:
+        return "Skipped tags: none"
+    count = len(entries)
+    return f"Skipped tags: {count} {'entry' if count == 1 else 'entries'}"
 
 
 def _refusal(status: int, code: str, message: str) -> Refusal:
@@ -507,6 +527,7 @@ class ImageTagJobsMixin:
         released when the task ends, also before its runner ever starts.
         """
         from ..autotag import MODELS, get_autotag_service
+        from ..config import AutotagConfig
 
         backup_on = self._safety_backup_policy() == "on"
         status = await self._run_in_executor(get_autotag_service().get_models_status)
@@ -529,7 +550,13 @@ class ImageTagJobsMixin:
             response = model_busy_response()
             return None, Refusal(409, "model-busy", MODEL_BUSY_ERROR, response)
         run = AutotagRun(
-            model_type, existing, options, keep_in_memory, backup_on, owner
+            model_type,
+            existing,
+            options,
+            keep_in_memory,
+            backup_on,
+            owner,
+            skip=tuple(AutotagConfig.SKIPPED_TAGS),
         )
         admitted = False
         try:
@@ -598,7 +625,9 @@ class ImageTagJobsMixin:
             return _batch_cancelled(job)
         job.publish({"type": "phase", "phase": "model"})
         job.update(status_line="Loading the tagging model")
-        spec = _Spec("auto", (), model_type=run.model_type, options=run.options)
+        spec = _Spec(
+            "auto", (), model_type=run.model_type, options=run.options, skip=run.skip
+        )
         service = await self._prepare_tagging_model(job, spec, run.owner)
         if service is None:
             return "failed"
@@ -624,6 +653,7 @@ class ImageTagJobsMixin:
             f"Tagging started · {job.scope.get('label') or run.model_type} · "
             f"{_plural(total, 'image')} · {policy}"
         )
+        job.log_line(_skipped_tags_line(spec.skip))
         if job.cancelled:
             return _batch_cancelled(job)
         remaining = await self._autotag_prepass(job, targets, run.existing == "skip")
@@ -633,7 +663,9 @@ class ImageTagJobsMixin:
         spec = dataclasses.replace(
             spec, targets=tuple(item.target for item in remaining)
         )
-        loop_run = _Run(job, spec, epoch, run.owner, service)
+        loop_run = _Run(
+            job, spec, epoch, run.owner, service, skip=SkipMatcher(spec.skip)
+        )
         if not await self._tag_each_file(loop_run, done_before=done):
             job.update(status_line=STORAGE_RESTORED)
             job.log_line(f"Tagging stopped · {STORAGE_RESTORED}")
@@ -739,6 +771,9 @@ class ImageTagJobsMixin:
             started += f" · {spec.model_type}"
         job.log_line(started)
         run = _Run(job, spec, epoch, owner)
+        if spec.mode == "auto":
+            job.log_line(_skipped_tags_line(spec.skip))
+            run.skip = SkipMatcher(spec.skip)
         try:
             if spec.mode == "auto":
                 run.service = await self._prepare_tagging_model(job, spec, owner)
@@ -894,6 +929,7 @@ class ImageTagJobsMixin:
                 capture,
                 spec.model_type,
                 spec.options,
+                run.skip,
                 on_skipped=functools.partial(store.release_use, capture.token),
             )
         except Exception:

@@ -56,7 +56,12 @@ _SETTINGS_FILE_KEYS = {
     "AUTOTAG_CHARACTER_THRESHOLD": ("autotag", "defaults", "character_threshold"),
     "AUTOTAG_TEMPLATE": ("autotag", "defaults", "template"),
     "AUTOTAG_SUGGESTION_LIMIT": ("autotag", "defaults", "suggestion_limit"),
+    "AUTOTAG_SKIPPED_TAGS": ("autotag", "defaults", "skipped_tags"),
 }
+# Whole-list settings (#431): a save without ``expected_revision`` would merge
+# a stale copy over a list changed elsewhere, so it is refused.
+_REVISION_REQUIRED = frozenset({"autotag_skipped_tags"})
+REVISION_REQUIRED_ERROR = "Reload the page and try again."
 # The thumbnail settings a running Convert outdated job fixes (#317).
 _THUMBNAIL_SETTINGS = ("THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY", "THUMBNAIL_EDGE")
 # Attributes that live on GalleryConfig; the others on PromptManagerConfig.
@@ -176,6 +181,7 @@ def _validate_autotag_settings(data):
         MAX_SUGGESTION_LIMIT,
         MODEL_TYPES,
         validate_saved_threshold,
+        validate_skipped_tags,
         validate_template,
     )
 
@@ -219,6 +225,10 @@ def _validate_autotag_settings(data):
                 f"{MAX_SUGGESTION_LIMIT}."
             )
         updates["AUTOTAG_SUGGESTION_LIMIT"] = value
+    if "autotag_skipped_tags" in data:
+        updates["AUTOTAG_SKIPPED_TAGS"] = tuple(
+            validate_skipped_tags(data["autotag_skipped_tags"])
+        )
     return updates
 
 
@@ -283,6 +293,7 @@ class SettingsRoutesMixin:
                         ),
                         "autotag_template": AutotagConfig.TEMPLATE,
                         "autotag_suggestion_limit": AutotagConfig.SUGGESTION_LIMIT,
+                        "autotag_skipped_tags": list(AutotagConfig.SKIPPED_TAGS),
                         "cpu_count": PromptManagerConfig.max_worker_threads(),
                         "gallery_root_paths": root_paths,
                         "gallery_root_path": root_paths[0] if root_paths else "",
@@ -382,6 +393,10 @@ class SettingsRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": "expected_revision must be a string"},
                     status=400,
+                )
+            if expected_revision is None and _REVISION_REQUIRED & set(data):
+                return web.json_response(
+                    {"success": False, "error": REVISION_REQUIRED_ERROR}, status=400
                 )
             try:
                 updates = self._validate_settings(data)

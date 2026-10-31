@@ -33,6 +33,8 @@ test.afterEach(async ({ page, request, browserName }) => {
 const PREVIEW_URL = '/prompt_manager/autotag/batch/preview';
 const MODEL_OPTIONS = ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF JoyCaption · ~4.5 GB', 'HuggingFace JoyCaption · ~16 GB'];
 const SUGGESTIONS = 'From 1 to 100: the most suggestions Generate shows for one image.';
+const SKIPPED_DESCRIPTION = 'Suggested tags that contain one of these words are hidden. Words are separated by spaces, _ or -; '
+    + 'other characters such as ( ) belong to the word.';
 const BATCH = 'Tag each output image from its own pixels with the model above. Prompts are not changed. Review the scope first.';
 
 /** Runs in the page: Auto-tagging's surface under `mainSelector`: rows, field, actions, operation, geometry and tokens. */
@@ -70,6 +72,16 @@ function measureTagging(mainSelector) {
             ...css(actions, 'display', 'flexWrap', 'columnGap', 'justifyContent'),
             primary: css(actions.querySelector('.ca-primary'), 'backgroundColor', 'color', 'fontSize', 'paddingTop', 'paddingLeft'),
             plain: css(actions.querySelector('button:not(.ca-primary)'), 'backgroundColor', 'color', 'fontSize', 'borderTopColor') },
+        // D202 (#431): the Skipped tags block (the concept has none).
+        skipped: (block => block && { tree: [...block.children].map(name), key: block.dataset.key,
+            text: [...block.firstElementChild.children].map(node => [node.localName, text(node), node.localName === 'label' ? node.htmlFor : null]),
+            add: [...block.querySelector('.skip-add').children].map(node => [name(node), node.id, node.placeholder ?? null, text(node)]),
+            preview: [text(block.querySelector('.skip-preview')), block.querySelector('.skip-preview').getAttribute('role')],
+            ...css(block, 'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderTopColor'),
+            label: css(block.querySelector('label'), 'fontSize', 'fontWeight', 'color'),
+            description: css(block.querySelector('.setting-block-text p'), 'fontSize', 'color', 'marginTop'),
+            input: css(block.querySelector('input'), 'fontSize', 'backgroundColor', 'color', 'borderTopColor') })(
+            surface.querySelector(':scope > .setting-block')),
         operations: [...surface.querySelectorAll(':scope > .operation')].map(row => ({ tree: [...row.children].map(name),
             title: text(row.querySelector('h3')), description: text(row.querySelector('p')),
             actions: [...row.querySelectorAll('.row-actions > button')].map(item => [text(item), item.className]) })),
@@ -108,8 +120,9 @@ function mapTaggingConcept(reference, { template, phone }) {
     const [preview] = reference.actions.buttons;
     return {
         ...reference,
-        // D133 adds a row after the thresholds; D134 adds the operation after the actions.
-        tree: [...reference.tree.slice(0, 6), 'div.setting-row', ...reference.tree.slice(6), 'div.operation'],
+        // D133 adds a row after the thresholds, D202 the Skipped tags block after it; D134 adds the operation after the
+        // actions.
+        tree: [...reference.tree.slice(0, 6), 'div.setting-row', 'div.setting-block', ...reference.tree.slice(6), 'div.operation'],
         rows: [
             // D132 (OQ5, OQ6): the four real engines with their download size, and the chosen one's live status.
             { ...model, text: [model.text[0], ['p', 'Downloaded. Not loaded.', null]],
@@ -121,6 +134,20 @@ function mapTaggingConcept(reference, { template, phone }) {
             { ...general, text: [['label', 'Suggestions per image', 'tag-suggestions'], ['p', SUGGESTIONS, null]],
                 control: { ...general.control, id: 'tag-suggestions', value: '10' } },
         ],
+        // D202 (#431): the Skipped tags block in the concept's setting-row tokens: its label and description as a row's,
+        // the row's padding and rule above, the concept's field input; an empty list says so.
+        skipped: { tree: ['div.setting-block-text', 'div.skip-add', 'p.skip-problem.small', 'div.skip-chips.tags', 'p.skip-preview.small'],
+            key: 'autotag_skipped_tags',
+            text: [['label', 'Skipped tags', 'tag-skipped-input'], ['p', SKIPPED_DESCRIPTION, null]],
+            add: [['input', 'tag-skipped-input', 'Add a word or words', ''], ['button', 'tag-skipped-add', '', 'Add']],
+            preview: ['No tags are skipped.', 'status'],
+            paddingTop: reference.row.paddingTop, paddingBottom: reference.row.paddingBottom,
+            borderTopWidth: reference.row.borderTopWidth, borderTopColor: reference.row.borderTopColor,
+            label: reference.label,
+            description: { fontSize: reference.description.fontSize, color: reference.description.color,
+                marginTop: reference.description.marginTop },
+            input: { fontSize: '12px', backgroundColor: reference.field.textarea.backgroundColor, color: reference.field.textarea.color,
+                borderTopColor: reference.field.textarea.borderTopColor } },
         // The saved template (the server's default until one is saved) replaces the concept's sample text.
         field: { ...reference.field, textarea: { ...reference.field.textarea, value: template } },
         // D132: Download (for an engine already on disk, "Download again") and Unload replace the two simulated jobs.
@@ -198,12 +225,13 @@ test('auto-tagging comparison detects mutations', async ({ page, request }) => {
     const expected = mapTaggingConcept(concept, saved);
     const production = await productionTagging(page, 'dark');
     expect(diffInventory(expected, production)).toEqual([]);
-    // Unmapped, the section differs only where D132, D133 and D134 are recorded (and the saved template's text).
+    // Unmapped, the section differs only where D132, D133, D134 and D202 are recorded (and the saved template's text).
     expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 3).join('.'))
         .filter((path, index, all) => all.indexOf(path) === index).sort()).toEqual([
         'actions.buttons.1', 'actions.buttons.2', 'field.textarea.value', 'operations.0.actions', 'operations.0.description',
         'operations.0.title', 'operations.0.tree', 'operations.length', 'rows.0.control', 'rows.0.text', 'rows.4.control', 'rows.4.controlBelow',
-        'rows.4.flexWrap', 'rows.4.text', 'rows.4.tree', 'rows.length', 'tree.6', 'tree.7', 'tree.8', 'tree.9', 'tree.length'].sort());
+        'rows.4.flexWrap', 'rows.4.text', 'rows.4.tree', 'rows.length', 'skipped', 'tree.6', 'tree.7', 'tree.8', 'tree.9', 'tree.10',
+        'tree.length'].sort());
     const measure = () => page.evaluate(measureTagging, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
     // A removed row.

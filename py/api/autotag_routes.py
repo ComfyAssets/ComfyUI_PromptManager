@@ -40,6 +40,10 @@ BATCH_PREVIEW_BODY_MAX = 1024
 APPLY_BODY_MAX = 64 * 1024  # POST /autotag/apply: one image and its tags
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 BATCH_JOB_BODY_MAX = 32 * 1024
+# Skipped tags preview (#431): 200 entries of 50 characters, with room for JSON.
+SKIPPED_PREVIEW_BODY_MAX = 64 * 1024
+SKIPPED_PREVIEW_LEASE = "Skipped tags preview"
+SKIPPED_PREVIEW_SAMPLE = 12
 REVIEW_REQUIRED = (
     "Replacing tags needs a review of each image. Use Preview tagging review, "
     "or choose Skip or Merge for a batch run."
@@ -246,6 +250,10 @@ class AutotagRoutesMixin:
         @routes.post("/prompt_manager/autotag/batch/preview")
         async def preview_autotag_batch_route(request):
             return await self.preview_autotag_batch(request)
+
+        @routes.post("/prompt_manager/autotag/skipped-tags/preview")
+        async def preview_skipped_tags_route(request):
+            return await self.preview_skipped_tags(request)
 
         @routes.post("/prompt_manager/autotag/start")
         async def start_autotag_route(request):
@@ -699,6 +707,83 @@ class AutotagRoutesMixin:
             return None, "existing must be one of " + ", ".join(EXISTING_POLICIES)
         return MODELS[model_type], None
 
+    async def preview_skipped_tags(self, request):
+        """Which known tags a Skipped tags list would hide (#431); no write.
+
+        ``{entries}`` is checked as a save checks it (the same 400 sentence).
+        The known tags are the library's plus the general and character names
+        of each downloaded WD14 label list; no model is loaded and no image is
+        opened. Refused (409 ``busy``) while an exclusive job runs.
+        """
+        from ..tagging_defaults import validate_skipped_tags
+
+        data, error = await self._batch_body(
+            request, ("entries",), SKIPPED_PREVIEW_BODY_MAX
+        )
+        if error is not None:
+            return error
+        try:
+            entries = validate_skipped_tags(data["entries"])
+        except ValueError as exc:
+            return web.json_response({"success": False, "error": str(exc)}, status=400)
+        try:
+            async with self._jobs.lease(SKIPPED_PREVIEW_LEASE):
+                result = await self._run_in_executor(self._skipped_preview, entries)
+        except JobBusy as busy:
+            return busy_response(busy)
+        except Exception:
+            self.logger.exception("The Skipped tags preview failed")
+            return web.json_response(
+                {"success": False, "error": _INTERNAL_ERROR}, status=500
+            )
+        return web.json_response({"success": True, **result})
+
+    def _skipped_preview(self, entries):
+        """Worker thread: the preview's counts over the known tags."""
+        from ..autotag import MODELS, get_autotag_service
+        from ..tagging_defaults import (
+            WD14_MODEL_TYPES,
+            SkipMatcher,
+            wd14_label_names,
+        )
+
+        library = self.db.get_all_tags()
+        known = {}  # case-folded -> (0 library / 1 label list, spelling)
+        for name in library:
+            known.setdefault(name.casefold(), (0, name))
+        lists = []
+        models_dir = getattr(get_autotag_service(), "models_dir", None)
+        for model_type in sorted(WD14_MODEL_TYPES, key=lambda t: MODELS[t]["name"]):
+            if models_dir is None:
+                break
+            path = Path(models_dir) / MODELS[model_type]["subdir"] / "selected_tags.csv"
+            try:
+                names = wd14_label_names(path)
+            except (OSError, ValueError) as exc:
+                self.logger.debug(f"No WD14 label list for {model_type}: {exc}")
+                continue
+            lists.append(MODELS[model_type]["name"])
+            for name in names:
+                known.setdefault(name.casefold(), (1, name))
+        matchers = [(entry, SkipMatcher([entry])) for entry in entries]
+        whole = SkipMatcher(entries)
+        hidden = [item for item in known.values() if whole.matches(item[1])]
+        hidden.sort(key=lambda item: (item[0], item[1].casefold()))
+        per_entry = [
+            {
+                "entry": entry,
+                "count": sum(1 for _, name in hidden if matcher.matches(name)),
+            }
+            for entry, matcher in matchers
+        ]
+        return {
+            "count": len(hidden),
+            "sample": [name for _, name in hidden[:SKIPPED_PREVIEW_SAMPLE]],
+            "sample_limit": SKIPPED_PREVIEW_SAMPLE,
+            "per_entry": per_entry,
+            "sources": {"library": len(library), "wd14": lists},
+        }
+
     async def preview_autotag_batch(self, request):
         """Review Tag output images: counts, model, backup and disk; no write.
 
@@ -1096,6 +1181,8 @@ class AutotagRoutesMixin:
 
     async def _suggest_single(self, target, model_type, options, base):
         from ..autotag import MODELS, MissingBackendPackages, get_autotag_service
+        from ..config import AutotagConfig
+        from ..tagging_defaults import SkipMatcher
         from .annotation_suggest import model_refusal
         from .annotations import _pinned_suggestions, _settled, _submit
 
@@ -1112,6 +1199,8 @@ class AutotagRoutesMixin:
         owner = model_gate.new_owner("legacy-single")
         if not model_gate.try_acquire(owner):
             return model_busy_response()
+        # #431: the legacy review hides the Skipped tags too (19A).
+        skip = SkipMatcher(AutotagConfig.SKIPPED_TAGS)
         store = self._capture_store()
         try:
             epoch = await self._run_in_executor(self.db.get_execution_epoch)
@@ -1151,6 +1240,7 @@ class AutotagRoutesMixin:
                     capture,
                     model_type,
                     options,
+                    skip,
                     on_skipped=functools.partial(store.release_use, capture.token),
                 )
             except MissingBackendPackages as exc:

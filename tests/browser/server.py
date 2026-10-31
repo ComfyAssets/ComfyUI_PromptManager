@@ -85,6 +85,9 @@ class TestModel:
     suggestions: list | None = None
     # The engine's model table (``py/autotag.py`` MODELS), set at startup.
     models_config: dict = {}
+    # Where the WD14 label lists live (the Skipped tags preview, #431), set at
+    # startup; the tagging fixture writes or removes a small list there.
+    models_dir = None
 
     def get_models_status(self) -> dict:
         from py.autotag import package_fields
@@ -115,21 +118,26 @@ class TestModel:
         return ["generated", Path(image_path).parent.parent.name]
 
     def generate_tag_suggestions(
-        self, image_path: str, *, limit: int, **kwargs: object
+        self, image_path: str, *, limit: int, skip=None, **kwargs: object
     ) -> list[tuple[str, float | None]]:
-        """Fixed scored suggestions (WD14) or unscored ones (language models)."""
+        """Fixed scored suggestions (WD14) or unscored ones (language models),
+        without the ones ``skip`` hides before the limit, as the engine does
+        (#431)."""
         scored = self.loaded is not None and self.loaded.startswith("wd14")
         if self.suggestions is not None:
-            return [
+            pairs = [
                 (name, confidence if scored else None)
-                for name, confidence in self.suggestions[:limit]
+                for name, confidence in self.suggestions
             ]
-        names = ["sandstone", "desert", "arch", "sky", "rock", "dune", "canyon"]
-        names += [f"tag_{index:02d}" for index in range(100)]
-        return [
-            (name, round(0.98 - index * 0.008, 3) if scored else None)
-            for index, name in enumerate(names[:limit])
-        ]
+        else:
+            names = ["sandstone", "desert", "arch", "sky", "rock", "dune", "canyon"]
+            names += [f"tag_{index:02d}" for index in range(100)]
+            pairs = [
+                (name, round(0.98 - index * 0.008, 3) if scored else None)
+                for index, name in enumerate(names)
+            ]
+        kept = [pair for pair in pairs if skip is None or not skip.matches(pair[0])]
+        return kept[:limit]
 
     def download_model(self, model_type: str, progress_callback=None) -> bool:
         raise AssertionError("browser tests never download a model")
@@ -233,6 +241,7 @@ def create_app(root: Path) -> web.Application:
 
     TestModel.models_config = autotag.MODELS
     model = TestModel()
+    model.models_dir = root / "models"
     autotag.get_autotag_service = lambda: model
     api = PromptManagerAPI()
     api.add_routes(routes)

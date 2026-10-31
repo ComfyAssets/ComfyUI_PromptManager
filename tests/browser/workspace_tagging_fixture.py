@@ -226,6 +226,7 @@ def register_tagging_commands(
         return download["result"]
 
     _set_defaults(model, DEFAULTS)  # the server starts on the standard ones
+    _write_labels(model, True)
 
     @routes.post("/__test__/tagging/reset")
     async def reset(request: web.Request) -> web.Response:
@@ -244,6 +245,7 @@ def register_tagging_commands(
         model.loaded = None
         restore_download()
         _set_defaults(model, DEFAULTS)
+        await api._run_in_executor(_write_labels, model, True)
         # A test that ends with the dialog open leaves its capture behind; drop
         # every capture so the next test starts below the store's limits.
         await api._run_in_executor(api.close_annotation_captures)
@@ -353,13 +355,22 @@ def register_tagging_commands(
 
         ``{"general": g, "character": c, "limit": n}``: the WD14 thresholds
         (in [0, 1]) and the persisted suggestion count (1..100), so a test can
-        tell the server's values from the dialog's built-in ones. Reset
-        restores the standard 0.35 / 0.85 / 10.
+        tell the server's values from the dialog's built-in ones. Optional
+        ``skipped`` sets the saved Skipped tags (#431) and ``labels`` (true or
+        false) writes or removes the fake WD14 SwinV2 label list the Skipped
+        tags preview reads. Reset restores the standard 0.35 / 0.85 / 10, no
+        skipped tags and the label list.
         """
         data = await request.json() if request.can_read_body else None
         if request.query or not _valid_defaults(data):
             raise web.HTTPBadRequest()
         _set_defaults(model, (data["general"], data["character"], data["limit"]))
+        if "skipped" in data:
+            from py.config import AutotagConfig
+
+            AutotagConfig.SKIPPED_TAGS = tuple(data["skipped"])
+        if "labels" in data:
+            await api._run_in_executor(_write_labels, model, data["labels"])
         return web.json_response({"success": True})
 
     @routes.get("/__test__/tagging/captures")
@@ -394,6 +405,33 @@ def _set_defaults(model, values) -> None:
         AutotagConfig.MODEL_TYPE = "wd14-swinv2"
         AutotagConfig.EXISTING = "skip"
         AutotagConfig.TEMPLATE = model.default_prompt
+        AutotagConfig.SKIPPED_TAGS = ()
+
+
+# The fake WD14 SwinV2 label list (general 0, character 4, rating 9): the
+# names the Skipped tags preview checks beside the library's tags (#431).
+FAKE_LABELS = (
+    ("blurry", "0"),
+    ("blurry_background", "0"),
+    ("signature", "0"),
+    ("watermark", "0"),
+    ("t-shirt", "0"),
+    ("half-closed_eyes", "0"),
+    ("saber_(fate)", "4"),
+    ("general", "9"),
+)
+
+
+def _write_labels(model, present: bool) -> None:
+    """Write (or remove) the fake label list under the fake models folder."""
+    path = Path(model.models_dir) / "WD14-SwinV2" / "selected_tags.csv"
+    if not present:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["tag_id,name,category,count"]
+    lines += [f"{i},{name},{cat},1" for i, (name, cat) in enumerate(FAKE_LABELS)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _valid_defaults(data: object) -> bool:
@@ -402,9 +440,20 @@ def _valid_defaults(data: object) -> bool:
         and not isinstance(value, bool)
         and 0 <= value <= 1
     )
+    optional = {"skipped", "labels"}
+    if isinstance(data, dict) and "skipped" in data:
+        try:
+            from py.tagging_defaults import validate_skipped_tags
+
+            validate_skipped_tags(data["skipped"])
+        except ValueError:
+            return False
+    if isinstance(data, dict) and not isinstance(data.get("labels", True), bool):
+        return False
     return (
         isinstance(data, dict)
-        and set(data) == {"general", "character", "limit"}
+        and {"general", "character", "limit"} <= set(data)
+        and set(data) <= {"general", "character", "limit"} | optional
         and unit(data["general"])
         and unit(data["character"])
         and type(data["limit"]) is int

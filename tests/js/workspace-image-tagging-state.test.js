@@ -936,3 +936,17 @@ test('#515: text typed before Retry after a failed first observation follows the
     assert.equal(c.state.manual, 'Minimal, warm_light, dunes');
     assert.equal(c.state.statusText, '');
 });
+
+test('the chip hint says how many skipped tags were not suggested (#431)', async () => {
+    const { skippedNote } = await load();
+    assert.equal(skippedNote(0), '');
+    assert.equal(skippedNote(undefined), '');
+    assert.equal(skippedNote(1), ' 1 skipped tag was not suggested.');
+    assert.equal(skippedNote(2), ' 2 skipped tags were not suggested.');
+    for (const [skipped, hint] of [[2, 'Remove anything you do not want to add. 2 skipped tags were not suggested.'],
+        [0, 'Remove anything you do not want to add.'], ['3', 'Remove anything you do not want to add.']]) {
+        const { c } = await opened({ [`POST ${SUGGEST}`]: () => response(200, { ...suggested(), skipped }) });
+        await c.generate();
+        assert.equal(c.state.chipHint, hint, String(skipped));
+    }
+});

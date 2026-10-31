@@ -129,8 +129,10 @@ class FakeAutotagService:
         prompt=None,
         general_threshold=None,
         character_threshold=None,
+        skip=None,
     ):
-        """The suggestion entry point (#379): the fixed tags, at most ``limit``."""
+        """The suggestion entry point (#379): the fixed tags, at most ``limit``,
+        without the ones ``skip`` hides (#431)."""
         self.suggest_calls += 1
         tags = self.generate_tags(
             image_path,
@@ -138,6 +140,7 @@ class FakeAutotagService:
             general_threshold=general_threshold,
             character_threshold=character_threshold,
         )
+        tags = [name for name in tags if skip is None or not skip.matches(name)]
         return [(name, None) for name in tags[:limit]]
 
 
