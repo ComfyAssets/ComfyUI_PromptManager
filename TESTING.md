@@ -261,7 +261,7 @@ the process exits non-zero.
   job fails anyway and the dump is what matters.
 - `PM_TEST_SLOWEST=N` (off by default) lists the N slowest tests after the
   summary, each timed from its `start:` line to the next one like the hang
-  limit. The Windows and macOS jobs (`portability.yml`) set it to 40, so every
+  limit. The Windows jobs (`portability.yml`) set it to 40, so every
   run shows where its time went (#487). The list prints only when the run
   ends: a job GitHub cancels or a watchdog exit prints none, so read the
   timestamps between `start:` lines instead.
@@ -327,7 +327,7 @@ Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures first show up in the
 merge queue, on the merge-group commit rather than the
 pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
 (or `viewerjs-check.yml`) and match its head branch
-(`gh-readonly-queue/main/pr-<N>-...`). Windows and macOS failures show up only
+(`gh-readonly-queue/main/pr-<N>-...`). Windows failures show up only
 after the merge, in `gh run list --workflow portability.yml`.
 
 Start fixing as soon as a failed log shows the cause, but push the fix only after
@@ -450,7 +450,7 @@ measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests
 It runs on every push to `main` and on `workflow_dispatch`, never on pull
 requests, because shared-runner timing must not block a merge. Dispatch it on a
 branch to measure before merging.
-Shared Windows and macOS runners do not run them; the structural tests cover
+Shared Windows runners do not run them; the structural tests cover
 portability. Run it locally with
 `PROMPTMANAGER_PERF_BUDGET=1 python -m unittest tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget`
 and quote the printed p95 in the PR body.
@@ -646,10 +646,10 @@ Before changing paths, SQLite, streams, restore or cleanup:
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
 - Run native Windows CI early for these changes. Pull requests and the merge
-  queue run only Linux, so start Windows and macOS on the branch with
+  queue run only Linux, so start Windows on the branch with
   `gh workflow run portability.yml --ref <branch>`.
-  Include a Windows impact and evidence note in the PR. All six Windows/macOS
-  combinations in that run, every Linux leg and every applicable
+  Include a Windows impact and evidence note in the PR. All three Windows
+  legs in that run, every Linux leg and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
@@ -668,7 +668,7 @@ what runs:
 | `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
 | `all tests`, `viewerjs` (gates) | run | run |
 | `perf budget` | skipped | push and dispatch only (not in the queue) |
-| `py3.12-3.14 on windows-latest/macos-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
+| `py3.12-3.14 on windows-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
 
 GitHub has one required set for pull requests and the queue. A job skipped by
 its `if:` reports Success. A dropped matrix leg never reports, so it would stay
@@ -681,8 +681,9 @@ guarantee:
 So a merge group cannot turn green unless all three Linux Python legs, real
 ComfyUI and the four browser shards passed.
 
-Windows and macOS (Python 3.12-3.14) are out of the blocking path for now
-(maintainer, 2026-10-28). They run in `portability.yml` on every push to `main`,
+Windows (Python 3.12-3.14) is out of the blocking path for now
+(maintainer, 2026-10-28). macOS is not tested in CI (maintainer, 2026-10-31, #571);
+its code stays and support is best-effort. They run in `portability.yml` on every push to `main`,
 nightly and on demand, and no context there is required. A red portability run
 is still a failure: fix it at its cause, not by rerunning, and have every one
 green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
@@ -2551,8 +2552,8 @@ files to the system trash. **No code path unlinks or overwrites a media file.**
   ("Moving files to the Recycle Bin isn't available on Windows: files larger than the bin's
   capacity would be deleted permanently."). Library-only removal works everywhere. Tests use `tests/fake_trash.py`; the
   browser test server installs it, so no test touches a real trash. The native proof,
-  `tests/test_trash_macos_native.py`, runs only with `PM_NATIVE_TRASH=macos` in
-  portability.yml's `native-trash` job (`macos-latest` and `macos-15-intel`): the startup
+  `tests/test_trash_macos_native.py`, runs only with `PM_NATIVE_TRASH=macos` on a Mac, by hand
+  (CI dropped its `native-trash` macOS job in #571; it last passed on `macos-latest` and `macos-15-intel`): the startup
   volume, a name clash, fresh APFS and FAT32 disk images, an image used as an output root,
   a read-only image and an unwritable folder (design and probe:
   `docs/egm/499-macos-trash/`, local).

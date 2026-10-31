@@ -331,7 +331,7 @@ const testJobs = () => jobs(readWorkflow('test.yml'));
 
 test('the Python matrix is Linux 3.12 on a pull request and Linux 3.12-3.14 on every other event', () => {
     const body = testJobs().get('test');
-    assert.deepEqual(matrixList(body, 'os'), ['ubuntu-latest'], 'Windows and macOS never gate a merge');
+    assert.deepEqual(matrixList(body, 'os'), ['ubuntu-latest'], 'Windows never gates a merge');
     const match = /^ {8}python-version: \$\{\{ github\.event_name == 'pull_request' && fromJSON\('(\[[^\]]*\])'\) \|\| fromJSON\('(\[[^\]]*\])'\) \}\}$/m.exec(body);
     assert.ok(match, 'python-version is chosen by event');
     assert.deepEqual({ pr: JSON.parse(match[1]), other: JSON.parse(match[2]) }, { pr: ['3.12'], other: ['3.12', '3.13', '3.14'] });
@@ -339,32 +339,19 @@ test('the Python matrix is Linux 3.12 on a pull request and Linux 3.12-3.14 on e
     assert.match(body, /^ {4}name: py\$\{\{ matrix\.python-version \}\} on \$\{\{ matrix\.os \}\}$/m);
 });
 
-test('Windows and macOS run 3.12-3.14 on main, nightly and on demand, never on a PR or in the queue', () => {
+test('Windows runs 3.12-3.14 on main, nightly and on demand, never on a PR or in the queue', () => {
     const text = readWorkflow('portability.yml');
     const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\nconcurrency:'));
     for (const event of ['push', 'schedule', 'workflow_dispatch']) assert.match(triggers, new RegExp(`^ {2}${event}:`, 'm'));
     for (const event of ['pull_request', 'merge_group']) assert.doesNotMatch(triggers, new RegExp(`^ {2}${event}`, 'm'));
     assert.match(triggers, /^ {4}branches: \[main\]$/m, 'push runs only for main');
     const body = jobs(text).get('test');
-    assert.deepEqual(matrixList(body, 'os'), ['windows-latest', 'macos-latest']);
+    assert.deepEqual(matrixList(body, 'os'), ['windows-latest'], 'macOS is not tested in CI (#571)');
+    assert.doesNotMatch(text, /macos-/, 'no macOS runner is used');
     assert.deepEqual(matrixList(body, 'python-version'), ['"3.12"', '"3.13"', '"3.14"']);
     assert.match(body, /^ {6}fail-fast: false$/m);
     assert.match(body, /^ {8}run: python -m tests\.run_suite -v$/m);
     assert.doesNotMatch(text, /cancel-in-progress: true|cancel-in-progress: \$/, 'no portability run is cancelled');
-});
-
-// #499: the native trash proof runs on both macOS CPUs, apart from the suite so a red suite never skips it.
-test('portability runs the native trash proof on arm64 and Intel macOS', () => {
-    const body = jobs(readWorkflow('portability.yml')).get('native-trash');
-    assert.ok(body, 'portability.yml has a native-trash job');
-    assert.deepEqual(matrixList(body, 'os'), ['macos-latest', 'macos-15-intel']);
-    assert.match(body, /^ {6}fail-fast: false$/m);
-    assert.doesNotMatch(body, /^ {4}needs:/m, 'it does not wait for the suite job');
-    assert.match(body, /^ {10}PM_NATIVE_TRASH: macos$/m);
-    assert.match(body, /^ {8}run: python -m unittest tests\.test_trash_macos_native tests\.test_trash_macos -v$/m);
-    const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(body)[1]);
-    const stepMinutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(body)?.[1]);
-    assert.ok(stepMinutes > 0 && jobMinutes - stepMinutes >= 2, 'the proof step stops before the job limit');
 });
 
 // #493: the portability limit follows the rule in its comment: ceil(1.5 x the slowest of three
@@ -427,5 +414,5 @@ test('every required check reports on a pull request and the gates carry the ful
     ].sort());
     assert.equal(contexts.filter(context => /^py/.test(context)).length, 1,
         'a dropped matrix leg never reports on a pull request, so it cannot be required');
-    assert.ok(!contexts.some(context => /windows|macos/.test(context)), 'Windows and macOS never gate a merge');
+    assert.ok(!contexts.some(context => /windows|macos/.test(context)), 'Windows never gates a merge');
 });

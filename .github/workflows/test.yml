@@ -28,7 +28,7 @@ env:
 #   py matrix, slowest py3.10 on windows-latest: 12m43s / 15m54s / 14m53s -> 27 min
 #     (ubuntu 5m27s-6m27s, macos 6m14s-8m30s, windows 11m42s-15m54s)
 #     3.10 and 3.11 left the matrix and 3.14 joined it in #356; re-measure after three green main runs.
-#     Windows and macOS moved to portability.yml (#420), which has its own measured limit (#493);
+#     Windows moved to portability.yml (#420; macOS left CI in #571), which has its own measured limit (#493);
 #     this Linux-only matrix keeps 27 minutes until it is re-measured.
 #   real ComfyUI compatibility: 13m32s / 8m55s / 11m46s -> 24 min
 #   coverage gate (85%): 7m26s / 7m22s / 7m54s -> 15 min
@@ -39,7 +39,7 @@ env:
 # Pull requests run a fast subset (#420): Python 3.12 on ubuntu-latest, coverage, lint and frontend
 # modules. The merge queue (merge_group), pushes to main and manual runs add Python 3.13 and 3.14 on
 # Linux and the real ComfyUI job. "all tests" is the required gate that holds the queue to that set.
-# Windows and macOS run in portability.yml (push to main, nightly, on demand) and never gate a merge.
+# Windows runs in portability.yml (push to main, nightly, on demand) and never gate a merge.
 jobs:
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
