@@ -176,7 +176,7 @@ def _physical_file_key(path, stat):
     volumes on Windows) falls back to the resolved, case-folded path.
     """
     if stat.st_ino:
-        return ("inode", stat.st_dev, stat.st_ino)
+        return ("inode", (stat.st_dev, stat.st_ino))
     return ("path", os.path.normcase(os.path.realpath(str(path))))
 
 
