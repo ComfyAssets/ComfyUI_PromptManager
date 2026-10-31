@@ -445,6 +445,19 @@ A hot SQLite read that returns many rows aggregates them into one step
 (`json_group_array`) instead of stepping once per row, so it does not wait for
 the GIL once per row while ComfyUI generates (#354, `get_image_link_matches`).
 
+A metadata read never decodes pixels (#523). Pillow's `PngImageFile.text` loads
+every pixel to reach text chunks after IDAT; the scan (`_extract_comfyui_metadata`)
+and the image monitor (`ComfyUIMetadataExtractor.extract_metadata`) read PNG text
+through `utils/png_text.py`, which runs Pillow's own chunk handlers after the
+first IDAT and seeks over pixel data. The legacy `.text` read is the floor:
+`tests/test_png_text.py` compares both readers on every image under
+`tests/fixtures`, a curated corpus (text after IDAT, zTXt, iTXt, split IDAT, bad
+checksums, truncations, oversized text, APNG) and a seeded fuzz, and asserts that
+neither reader decodes pixels by patching `ImageFile.load`. The only reads that
+differ are files whose pixel data is undecodable or cut short: legacy found
+nothing, the walk keeps the text before the pixels. Animated PNGs still use
+`.text`.
+
 The `perf budget` job in `.github/workflows/test.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
 It runs on every push to `main` and on `workflow_dispatch`, never on pull

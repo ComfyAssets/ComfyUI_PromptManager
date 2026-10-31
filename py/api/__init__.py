@@ -85,6 +85,7 @@ try:
     from ...database.operations import PromptDatabase
     from ...utils.file_prompt import parse_comfyui_prompt
     from ...utils.logging_config import get_logger
+    from ...utils.png_text import png_text
     from ...utils.video_metadata import is_video_path, read_video_metadata
 except ImportError:
     import sys
@@ -95,6 +96,7 @@ except ImportError:
     from database.operations import PromptDatabase
     from utils.file_prompt import parse_comfyui_prompt
     from utils.logging_config import get_logger
+    from utils.png_text import png_text
     from utils.video_metadata import is_video_path, read_video_metadata
 
 
@@ -1048,6 +1050,8 @@ class PromptManagerAPI(
     def _extract_comfyui_metadata(self, image_path):
         """Embedded ComfyUI metadata of an image (PNG text chunks) or a video.
 
+        PNG text is read without decoding the pixels (``utils.png_text``, #523).
+
         Videos go through ffprobe (see utils/video_metadata). Unreadable files
         are a warning, not an error: a scan over a large output tree meets
         truncated and foreign files, and it carries on past them.
@@ -1056,7 +1060,7 @@ class PromptManagerAPI(
             return read_video_metadata(image_path)
         try:
             with Image.open(image_path) as img:
-                return dict(getattr(img, "text", None) or {})
+                return png_text(img)
         except Exception as e:
             self.logger.warning(
                 f"Unreadable image {os.path.basename(str(image_path))}: {e}"

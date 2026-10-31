@@ -1668,9 +1668,9 @@ class AdminRoutesMixin:
     def _extract_batch_metadata_sync(self, file_batch):
         """Extract metadata from a batch of files in one executor call.
 
-        Files are read on ``PromptManagerConfig.WORKER_THREADS`` threads:
-        Pillow decodes the whole image to reach trailing text chunks and
-        releases the GIL while doing so.
+        Files are read on ``PromptManagerConfig.WORKER_THREADS`` threads.
+        PNG text is read chunk by chunk without decoding pixels (#523); file
+        reads and ffprobe release the GIL.
         """
         from ..config import PromptManagerConfig
 
