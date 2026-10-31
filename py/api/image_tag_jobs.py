@@ -531,6 +531,7 @@ class ImageTagJobsMixin:
         run = AutotagRun(
             model_type, existing, options, keep_in_memory, backup_on, owner
         )
+        admitted = False
         try:
             job = self._jobs.start(
                 AUTOTAG_BATCH_JOB_KIND,
@@ -541,11 +542,12 @@ class ImageTagJobsMixin:
                 groups=AUTOTAG_GROUP_NAMES,
                 runner=functools.partial(self._run_autotag_batch, run),
             )
-        except BaseException as refused:
-            model_gate.release(owner)
-            if isinstance(refused, JobBusy):
-                return None, _busy_refusal(refused)
-            raise
+            admitted = True
+        except JobBusy as refused:
+            return None, _busy_refusal(refused)
+        finally:
+            if not admitted:
+                model_gate.release(owner)
         job.task.add_done_callback(lambda _task: model_gate.release(owner))
         return job, None
 

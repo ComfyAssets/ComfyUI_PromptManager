@@ -998,7 +998,7 @@ class TestConfiguration(IsolatedLoggerTestCase):
         def log_from_background_thread() -> None:
             try:
                 self.manager.logger.info(message)
-            except BaseException as error:
+            except Exception as error:
                 errors.append(error)
 
         # Allow this record through the fixture's normal main-thread filter.

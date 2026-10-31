@@ -424,6 +424,7 @@ class AutotagRoutesMixin:
         title = f"Tagging model download · {label}"
         _download_titles.clear()
         _download_titles[owner] = title
+        admitted = False
         try:
             job = self._jobs.start(
                 MODEL_DOWNLOAD_JOB_KIND,
@@ -439,13 +440,13 @@ class AutotagRoutesMixin:
                     self._run_model_download, service, model_type, owner
                 ),
             )
-        except BaseException as refused:
-            # JobBusy, or anything else the registry raised: give the gate back.
-            model_gate.release(owner)
-            _download_titles.pop(owner, None)
-            if isinstance(refused, JobBusy):
-                return None, busy_response(refused)
-            raise
+            admitted = True
+        except JobBusy as refused:
+            return None, busy_response(refused)
+        finally:
+            if not admitted:  # JobBusy, or anything else: give the gate back.
+                model_gate.release(owner)
+                _download_titles.pop(owner, None)
 
         def ended(_task):
             model_gate.release(owner)

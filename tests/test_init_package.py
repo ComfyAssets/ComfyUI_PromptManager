@@ -527,7 +527,7 @@ class TestPackageLoggerIsolation(unittest.TestCase):
         def log_from_background_thread():
             try:
                 logging.getLogger("prompt_manager.late_emitter").warning(message)
-            except BaseException as error:
+            except Exception as error:
                 errors.append(error)
 
         self.handler.addFilter(pause_before_handler_lock)
