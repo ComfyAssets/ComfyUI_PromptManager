@@ -28,6 +28,8 @@ import struct
 from PIL import ImageFile
 
 _PIXEL_CHUNKS = (b"IDAT", b"fdAT")
+# Signature, IHDR chunk and IDAT chunk header: the earliest pixel data offset.
+_FIRST_DATA_OFFSET = 8 + 25 + 8
 
 
 def png_text(image) -> dict:
@@ -57,6 +59,9 @@ def _walkable(image) -> bool:
         and isinstance(tile, list)
         and len(tile) == 1
         and tile[0][0] == "zip"
+        # The first IDAT's data offset; anything else is not a layout we know.
+        and isinstance(tile[0][2], int)
+        and tile[0][2] >= _FIRST_DATA_OFFSET
     )
 
 
@@ -65,7 +70,10 @@ def _walk_after_pixels(stream, fp, offset: int) -> dict:
 
     ``stream`` is the image's own ``PngStream``: its text so far and its text
     memory budget carry on exactly as a ``load()`` would carry them. The text
-    and info dictionaries are copied first, so the image's state is unchanged.
+    and info dictionaries are copied first, so ``image.text`` and
+    ``image.info`` are unchanged. Like ``load_end``, a handler for a chunk
+    misplaced after the pixels (a second IHDR or PLTE) may still update the
+    stream's other header fields; Pillow ignores them once the image is open.
     """
     end = fp.seek(0, os.SEEK_END)
     saved = stream.im_text, stream.im_info, stream.text_memory

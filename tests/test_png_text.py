@@ -148,6 +148,13 @@ def curated():
                 itxt_chunk("workflow", WORKFLOW, compressed=True),
             )
         ),
+        "xmp-after-pixels": assemble(
+            before_iend(
+                base_png(),
+                itxt_chunk("XML:com.adobe.xmp", "<x:xmpmeta/>"),
+                text_chunk("prompt", PROMPT),
+            )
+        ),
         "itxt-bad-utf8": assemble(
             before_iend(
                 base_png(),
@@ -288,9 +295,9 @@ class PngTextParityTests(_TempFiles):
         self.assertEqual(walked_text(path), legacy_text(path))
         self.assertEqual(walked_text(path)["workflow"], WORKFLOW)
 
-    def test_truncated_pixels_still_fail_when_truncated_images_load(self):
+    def test_truncated_pixels_read_alike_when_truncated_images_load(self):
         """With LOAD_TRUNCATED_IMAGES set (a node pack may set it) both readers
-        accept a short file."""
+        accept a short file alike."""
         path = self.write("t.png", curated()["truncated-in-pixels"])
         with patch.object(ImageFile, "LOAD_TRUNCATED_IMAGES", True):
             self.assertEqual(walked_text(path), legacy_text(path))
@@ -317,6 +324,25 @@ class PngTextParityTests(_TempFiles):
             old = legacy_text(path)
             self.assertEqual(walked_text(path), old)
         self.assertEqual(old, {"prompt": PROMPT})
+
+    def test_the_text_memory_budget_counts_text_before_the_pixels(self):
+        """Pillow's MAX_TEXT_MEMORY spans the whole file: text before and
+        after the pixels, each under it, fail together in both readers."""
+        path = self.write(
+            "m.png",
+            assemble(
+                before_iend(
+                    base_png(text={"prompt": PROMPT}), text_chunk("workflow", WORKFLOW)
+                )
+            ),
+        )
+        budget = len(PROMPT) + len(WORKFLOW) - 1
+        with patch.object(PngImagePlugin, "MAX_TEXT_MEMORY", budget):
+            self.assertEqual(legacy_text(path), {})
+            self.assertEqual(walked_text(path), {})
+        with patch.object(PngImagePlugin, "MAX_TEXT_MEMORY", budget + 1):
+            self.assertEqual(walked_text(path), legacy_text(path))
+            self.assertEqual(len(walked_text(path)), 2)
 
     def test_complete_but_undecodable_pixels_read_more_than_legacy(self):
         path = self.write("c.png", corrupt_pixels())
