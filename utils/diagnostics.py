@@ -386,14 +386,9 @@ class GalleryDiagnostics:
         except ImportError:
             self.logger.error("   [FAIL] PIL (Pillow): NOT AVAILABLE")
 
-        # Check sqlite3
-        try:
-            import sqlite3
-
-            dependencies["sqlite3"] = True
-            self.logger.info(f"   [PASS] sqlite3: {sqlite3.sqlite_version}")
-        except ImportError:
-            self.logger.error("   [FAIL] sqlite3: NOT AVAILABLE")
+        # sqlite3 is imported at the top of this module, so it is always here.
+        dependencies["sqlite3"] = True
+        self.logger.info(f"   [PASS] sqlite3: {sqlite3.sqlite_version}")
 
         all_deps_ok = all(dependencies.values())
 

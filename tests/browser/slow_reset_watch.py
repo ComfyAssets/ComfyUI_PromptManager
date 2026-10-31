@@ -109,6 +109,7 @@ class ResetWatch:
             stream.write(text)
             stream.flush()
         except (OSError, ValueError):
+            # the stream closed; a watcher must not fail the server
             pass
 
 

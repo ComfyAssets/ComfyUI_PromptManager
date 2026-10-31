@@ -1,7 +1,7 @@
 // Tables, evidence reader, bounds and outcome lines for local-resolver.mjs (#249 local Inspect, PR L3 Tasks 8-9):
 // the constants of utils/prompt_pair_resolver.py and utils/inspection_outcomes.py, utils/pair_execution.py
 // `read_pair_execution` and the semantics table check of utils/inspection_semantics.py. No DOM.
-import { PyFloat, PyValueError, isDict, isList, isInt, pyJsonLoads, pyLen, pySlice, pyStrip, pyTruthy, pyEqualsOne, pyStr, pyGet } from './py-json.mjs';
+import { PyValueError, isDict, isList, isInt, pyJsonLoads, pyLen, pySlice, pyTruthy, pyEqualsOne, pyGet } from './py-json.mjs';
 
 /** The semantics table is unusable: the server's `SemanticsError`. */
 export class SemanticsError extends Error {

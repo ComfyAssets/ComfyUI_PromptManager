@@ -140,8 +140,10 @@ class TestIdempotentMigrations(MigrationTestCase):
     def test_stale_prompts_new_from_a_failed_rebuild_does_not_block_startup(self):
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name)"
-                " VALUES ('a', 'h1', 'wf')",
+                (
+                    "INSERT INTO prompts (text, hash, workflow_name)"
+                    " VALUES ('a', 'h1', 'wf')"
+                ),
                 "CREATE TABLE prompts_new (id INTEGER PRIMARY KEY, junk TEXT)",
                 "INSERT INTO prompts_new (junk) VALUES ('leftover')",
             ]
@@ -157,10 +159,14 @@ class TestIdempotentMigrations(MigrationTestCase):
         # DROP TABLE prompts with foreign keys ON cascades into generated_images
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name)"
-                " VALUES ('a', 'h1', 'wf')",
-                "INSERT INTO generated_images (prompt_id, image_path, filename)"
-                " VALUES (1, '/out/a.png', 'a.png')",
+                (
+                    "INSERT INTO prompts (text, hash, workflow_name)"
+                    " VALUES ('a', 'h1', 'wf')"
+                ),
+                (
+                    "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                    " VALUES (1, '/out/a.png', 'a.png')"
+                ),
             ]
         )
 
@@ -172,11 +178,15 @@ class TestIdempotentMigrations(MigrationTestCase):
     def test_rebuild_keeps_library_state_rows(self):
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name)"
-                " VALUES ('a', 'h1', 'wf')",
-                "CREATE TABLE prompt_library_state (prompt_id INTEGER PRIMARY KEY,"
-                " title TEXT, FOREIGN KEY(prompt_id) REFERENCES prompts(id)"
-                " ON DELETE CASCADE)",
+                (
+                    "INSERT INTO prompts (text, hash, workflow_name)"
+                    " VALUES ('a', 'h1', 'wf')"
+                ),
+                (
+                    "CREATE TABLE prompt_library_state (prompt_id INTEGER PRIMARY KEY,"
+                    " title TEXT, FOREIGN KEY(prompt_id) REFERENCES prompts(id)"
+                    " ON DELETE CASCADE)"
+                ),
                 "INSERT INTO prompt_library_state VALUES (1, 'kept')",
             ]
         )
@@ -232,43 +242,59 @@ class TestIdempotentMigrations(MigrationTestCase):
         byte_id = "6a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d"
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name)"
-                " VALUES ('a', 'h1', 'wf')",
-                "CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " name TEXT NOT NULL UNIQUE)",
+                (
+                    "INSERT INTO prompts (text, hash, workflow_name)"
+                    " VALUES ('a', 'h1', 'wf')"
+                ),
+                (
+                    "CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    " name TEXT NOT NULL UNIQUE)"
+                ),
                 "INSERT INTO tags (id, name) VALUES (3, 'img-only')",
-                "CREATE TABLE media_annotation_metadata (singleton_id INTEGER"
-                " PRIMARY KEY CHECK(singleton_id=1), schema_version INTEGER NOT"
-                " NULL CHECK(schema_version=1), image_index_revision INTEGER NOT"
-                " NULL DEFAULT 0 CHECK(image_index_revision>=0))",
+                (
+                    "CREATE TABLE media_annotation_metadata (singleton_id INTEGER"
+                    " PRIMARY KEY CHECK(singleton_id=1), schema_version INTEGER NOT"
+                    " NULL CHECK(schema_version=1), image_index_revision INTEGER NOT"
+                    " NULL DEFAULT 0 CHECK(image_index_revision>=0))"
+                ),
                 "INSERT INTO media_annotation_metadata VALUES (1, 1, 4)",
-                "CREATE TABLE media_annotation_files (id TEXT PRIMARY KEY"
-                " CHECK(length(id)=36), locator TEXT NOT NULL UNIQUE,"
-                " created_at TEXT NOT NULL)",
+                (
+                    "CREATE TABLE media_annotation_files (id TEXT PRIMARY KEY"
+                    " CHECK(length(id)=36), locator TEXT NOT NULL UNIQUE,"
+                    " created_at TEXT NOT NULL)"
+                ),
                 f"INSERT INTO media_annotation_files VALUES ('{file_id}',"
                 " '/out/a.png', '2026-10-22T00:00:00.000000+00:00')",
-                "CREATE TABLE media_annotation_bytes (id TEXT PRIMARY KEY"
-                " CHECK(length(id)=36), file_id TEXT NOT NULL REFERENCES"
-                " media_annotation_files(id) ON DELETE CASCADE, sha256 TEXT NOT"
-                " NULL CHECK(length(sha256)=64 AND sha256 NOT GLOB"
-                " '*[^0-9a-f]*'), size INTEGER NOT NULL CHECK(size>=0), mtime_ns"
-                " INTEGER NOT NULL, verified_at TEXT NOT NULL, first_seen_at TEXT"
-                " NOT NULL, tag_revision INTEGER NOT NULL DEFAULT 0"
-                " CHECK(tag_revision>=0), UNIQUE(file_id, sha256))",
-                "CREATE INDEX idx_media_annotation_bytes_fingerprint ON"
-                " media_annotation_bytes(file_id, size, mtime_ns)",
+                (
+                    "CREATE TABLE media_annotation_bytes (id TEXT PRIMARY KEY"
+                    " CHECK(length(id)=36), file_id TEXT NOT NULL REFERENCES"
+                    " media_annotation_files(id) ON DELETE CASCADE, sha256 TEXT NOT"
+                    " NULL CHECK(length(sha256)=64 AND sha256 NOT GLOB"
+                    " '*[^0-9a-f]*'), size INTEGER NOT NULL CHECK(size>=0), mtime_ns"
+                    " INTEGER NOT NULL, verified_at TEXT NOT NULL, first_seen_at TEXT"
+                    " NOT NULL, tag_revision INTEGER NOT NULL DEFAULT 0"
+                    " CHECK(tag_revision>=0), UNIQUE(file_id, sha256))"
+                ),
+                (
+                    "CREATE INDEX idx_media_annotation_bytes_fingerprint ON"
+                    " media_annotation_bytes(file_id, size, mtime_ns)"
+                ),
                 f"INSERT INTO media_annotation_bytes VALUES ('{byte_id}',"
                 f" '{file_id}', '{'a' * 64}', 3, 1700000000000000000,"
                 " '2026-10-22T00:00:00.000000+00:00',"
                 " '2026-10-22T00:00:00.000000+00:00', 2)",
-                "CREATE TABLE media_image_tags (byte_id TEXT NOT NULL REFERENCES"
-                " media_annotation_bytes(id) ON DELETE CASCADE, tag_id INTEGER"
-                " NOT NULL REFERENCES tags(id) ON DELETE CASCADE, position"
-                " INTEGER NOT NULL CHECK(position>=0), PRIMARY KEY(byte_id,"
-                " tag_id))",
+                (
+                    "CREATE TABLE media_image_tags (byte_id TEXT NOT NULL REFERENCES"
+                    " media_annotation_bytes(id) ON DELETE CASCADE, tag_id INTEGER"
+                    " NOT NULL REFERENCES tags(id) ON DELETE CASCADE, position"
+                    " INTEGER NOT NULL CHECK(position>=0), PRIMARY KEY(byte_id,"
+                    " tag_id))"
+                ),
                 "CREATE INDEX idx_media_image_tags_tag ON media_image_tags(tag_id)",
-                "CREATE UNIQUE INDEX idx_media_image_tags_position ON"
-                " media_image_tags(byte_id, position)",
+                (
+                    "CREATE UNIQUE INDEX idx_media_image_tags_position ON"
+                    " media_image_tags(byte_id, position)"
+                ),
                 f"INSERT INTO media_image_tags VALUES ('{byte_id}', 3, 0)",
             ]
         )
@@ -367,18 +393,28 @@ class TestIdempotentMigrations(MigrationTestCase):
     def test_image_table_is_rebuilt_with_uniqueness_by_full_path(self):
         self._legacy_db(
             [
-                "INSERT INTO prompts (text, hash, workflow_name)"
-                " VALUES ('a', 'h1', 'wf')",
+                (
+                    "INSERT INTO prompts (text, hash, workflow_name)"
+                    " VALUES ('a', 'h1', 'wf')"
+                ),
                 # same basename in two folders: both must survive
-                "INSERT INTO generated_images (prompt_id, image_path, filename)"
-                " VALUES (1, '/out/2026-01-01/a.png', 'a.png')",
-                "INSERT INTO generated_images (prompt_id, image_path, filename)"
-                " VALUES (1, '/out/2026-01-02/a.png', 'a.png')",
+                (
+                    "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                    " VALUES (1, '/out/2026-01-01/a.png', 'a.png')"
+                ),
+                (
+                    "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                    " VALUES (1, '/out/2026-01-02/a.png', 'a.png')"
+                ),
                 # two spellings of one file: only the newest row survives
-                "INSERT INTO generated_images (prompt_id, image_path, filename)"
-                " VALUES (1, '/out/x/../b.png', 'b.png')",
-                "INSERT INTO generated_images (prompt_id, image_path, filename)"
-                " VALUES (1, '/out/b.png', 'b.png')",
+                (
+                    "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                    " VALUES (1, '/out/x/../b.png', 'b.png')"
+                ),
+                (
+                    "INSERT INTO generated_images (prompt_id, image_path, filename)"
+                    " VALUES (1, '/out/b.png', 'b.png')"
+                ),
             ]
         )
 

@@ -1048,8 +1048,8 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 with Image.open(image_path) as img:
                     file_info["dimensions"] = list(img.size)
                     file_info["format"] = img.format
-            except Exception:
-                pass
+            except Exception as error:
+                self.logger.debug(f"No dimensions for {image_path}: {error}")
 
             return file_info
         except Exception as e:
@@ -1424,8 +1424,8 @@ class ImageMonitor:
         if self.observer is not None:
             try:
                 observer_alive = self.observer.is_alive()
-            except Exception:
-                pass
+            except Exception as error:
+                self.logger.debug(f"Could not read the observer state: {error}")
         return {
             "running": self.observer is not None,
             "monitored_directories": self.monitored_directories,

@@ -2,7 +2,7 @@
 
 import logging
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 from prompt_manager import PromptManager, PromptManagerFocused
 from utils.prompt_graph import positive_prompt_nodes, run_prompt_nodes

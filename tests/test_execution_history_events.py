@@ -31,6 +31,20 @@ def message(kind, job_id=JOB, **fields):
     return (kind, {"prompt_id": job_id, **fields})
 
 
+def hash_recording_kind():
+    """A str subclass for event kinds, and the list of hashes taken of it."""
+    hashed = []
+
+    class OversizedKind(str):
+        __eq__ = str.__eq__
+
+        def __hash__(self):
+            hashed.append(len(self))
+            return str.__hash__(self)
+
+    return OversizedKind, hashed
+
+
 def finish(messages, completed=True):
     return make_finish(SESSION, 0, EPOCH, Status("success", completed, messages), 500)
 
@@ -346,13 +360,10 @@ class ExecutionHistoryEventsTests(unittest.TestCase):
         self.assertLessEqual(len(encode_command(command)), 2048)
 
     def test_oversized_unknown_kind_is_ignored_without_hashing(self):
-        class OversizedKind(str):
-            def __hash__(self):
-                raise AssertionError("Oversized event kind must not be hashed")
-
+        kind_class, hashed = hash_recording_kind()
         command = finish(
             [
-                message(OversizedKind("x" * 1_000_000)),
+                message(kind_class("x" * 1_000_000)),
                 message("execution_success", timestamp=300),
             ]
         )
@@ -361,19 +372,16 @@ class ExecutionHistoryEventsTests(unittest.TestCase):
             (result.outcome, result.reason), ("succeeded", "terminal_success")
         )
         self.assertLessEqual(len(encode_command(command)), 2048)
+        self.assertEqual(hashed, [], "Oversized event kind must not be hashed")
 
     def test_encoder_rejects_oversized_kind_without_hashing(self):
-        class OversizedKind(str):
-            def __hash__(self):
-                raise AssertionError("Oversized event kind must not be hashed")
-
+        kind_class, hashed = hash_recording_kind()
         command = finish([message("execution_success")])
-        event = LifecycleEvent(
-            OversizedKind("x" * 1_000_000), JOB, None, None, None, None
-        )
+        event = LifecycleEvent(kind_class("x" * 1_000_000), JOB, None, None, None, None)
         with self.assertRaises(ValueError):
             encode_command(
                 replace(
                     command, evidence=TerminalEvidence((event,), False, False, False)
                 )
             )
+        self.assertEqual(hashed, [], "Oversized event kind must not be hashed")

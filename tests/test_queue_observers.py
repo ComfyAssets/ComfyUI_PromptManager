@@ -13,19 +13,19 @@ class FakeQueue:
     def __init__(self):
         self.result = ((0, "job", {}, {}, [], {}), 0)
         self.calls = []
-        self.failure = None
+        self.failures = ()
         self.done_result = object()
 
     def get(self, *args, **kwargs):
         self.calls.append(("get", args, kwargs))
-        if self.failure:
-            raise self.failure
+        for failure in self.failures:
+            raise failure
         return self.result
 
     def task_done(self, *args, **kwargs):
         self.calls.append(("done", args, kwargs))
-        if self.failure:
-            raise self.failure
+        for failure in self.failures:
+            raise failure
         return self.done_result
 
 
@@ -46,7 +46,7 @@ class QueueObserversTests(unittest.TestCase):
         self.assertIsNone(host.get())
         self.assertEqual(seen, [original])
         for error in (queue.Empty(), RuntimeError("host failure")):
-            host.failure = error
+            host.failures = (error,)
             with self.assertRaises(type(error)) as raised:
                 host.get(timeout=sentinel)
             self.assertIs(raised.exception, error)
@@ -59,7 +59,7 @@ class QueueObserversTests(unittest.TestCase):
         self.assertIs(host.task_done(0, sentinel, status=sentinel), host.done_result)
         self.assertEqual(seen, [((0, sentinel), {"status": sentinel})])
         error = ValueError("host failure")
-        host.failure = error
+        host.failures = (error,)
         with self.assertRaises(ValueError) as raised:
             host.task_done(1)
         self.assertIs(raised.exception, error)

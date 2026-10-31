@@ -673,6 +673,7 @@ class MaintenanceRoutesMixin:
         line = _changed_line(plan.operation, result["changed"], result.get("marks", 0))
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
+        return None
 
     def _maintenance_rows(self, operation, described):
         """Outcome rows for the changed records (root-relative paths only)."""

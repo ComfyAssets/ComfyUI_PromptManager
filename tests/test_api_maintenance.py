@@ -675,7 +675,7 @@ class TestBackupPoolAndDiskSpace(ApplyTestCase):
         self.assertEqual(len(backups), MAX_SAFETY_BACKUPS)
         self.assertNotIn(restore_style[0], backups)
         self.assertNotIn(restore_style[1], backups)
-        self.assertTrue(set(maintenance_style) <= set(backups))
+        self.assertLessEqual(set(maintenance_style), set(backups))
         # A restore prunes the same pool, maintenance backups included.
         self.old_backup("prompts.db.backup_20020101_000000", 3000)
         _prune_safety_backups(self.api.db.model.db_path)

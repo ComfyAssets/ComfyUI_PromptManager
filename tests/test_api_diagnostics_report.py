@@ -16,7 +16,7 @@ import re
 import sqlite3
 import sys
 import unittest
-from unittest import mock
+import unittest.mock as mock
 from unittest.mock import MagicMock
 
 _mock_server = MagicMock()

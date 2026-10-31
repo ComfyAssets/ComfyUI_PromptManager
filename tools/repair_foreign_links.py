@@ -506,8 +506,10 @@ def markdown(plan, prompt_texts):
         "",
         f"## Relink ({sum(i['action'] == 'relink' for i in rows)})",
         "",
-        "| row | file | linked prompt | linked text | target | target hash "
-        "| target text |",
+        (
+            "| row | file | linked prompt | linked text | target | target hash "
+            "| target text |"
+        ),
         "|---:|---|---:|---|---|---|---|",
     ]
     for item in (i for i in rows if i["action"] == "relink"):

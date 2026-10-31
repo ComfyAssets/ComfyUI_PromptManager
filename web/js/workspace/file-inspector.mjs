@@ -1,7 +1,6 @@
 import { createScope, createButton } from '../shared/toolkit/core.js';
 import { mountPromptBlocks, promptRoles } from './prompt-blocks.mjs';
 import { createInspectionController } from './inspection-state.mjs';
-import { createSendButton } from './prompt-sender.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { navigateTo } from './state.mjs';
 import { showWorkspaceToast } from './toast.mjs';

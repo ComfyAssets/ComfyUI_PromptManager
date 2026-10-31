@@ -330,12 +330,13 @@ class ImageDeleteMixin:
             return _fail_job(job, "sources-changed", SOURCES_CHANGED)
         ok, backup = await self._safety_backup_step(job, db, backup_on)
         if not ok:
-            return
+            return None
         try:
             await self._delete_images(job, db, targets, mode, backup)
         finally:
             if backup:
                 await self._prune_backup_pool(job, db)
+        return None
 
     async def _delete_images(self, job, db, targets, mode, backup):
         job.update(total=len(targets), status_line=TITLES[mode])

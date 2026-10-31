@@ -11,7 +11,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 try:
     from tests.open_handles import assert_closed

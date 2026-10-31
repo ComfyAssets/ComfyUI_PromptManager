@@ -27,7 +27,7 @@ def _identity(path):
     except OSError:
         return None
     if info.st_ino:
-        return ("inode", info.st_dev, info.st_ino)
+        return ("inode", (info.st_dev, info.st_ino))
     return ("path", os.path.normcase(os.path.realpath(str(path))))
 
 

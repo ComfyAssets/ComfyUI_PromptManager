@@ -197,7 +197,7 @@ class TestGetPromptSubfolders(LoraDBTestCase):
 
     def test_subfolders_use_forward_slashes_on_every_platform(self):
         """Clients split folders on "/" whatever separator the OS produced."""
-        from unittest import mock
+        import unittest.mock as mock
 
         import database.operations as operations
 

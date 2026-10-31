@@ -143,8 +143,6 @@ class TestLibrary(unittest.TestCase):
             self.db.get_library_positive(positive, variant_limit=201)
 
     def test_sorts_keysets_survive_anchor_deletion_and_insertions_without_writes(self):
-        import sqlite3
-
         a = self.save("Alpha", rating=2, tags=["tag"])
         b = self.save("beta", rating=5)
         c = self.save("charlie")

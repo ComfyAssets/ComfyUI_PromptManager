@@ -600,6 +600,33 @@ class TestAutotagSingleEdgeCases(AutotagAPITestCase):
             {"path": str(image), "general_threshold": "high"},
         )
         self.assertEqual(resp.status, 400)
+        self.assertEqual(
+            (await resp.json())["error"],
+            "general_threshold and character_threshold must be numeric",
+        )
+
+    async def test_invalid_single_options_report_the_validation_error(self) -> None:
+        image = self._make_image(self.output_dir)
+        cases = (
+            (
+                {"model_type": "wd14-vit", "general_threshold": 2},
+                "general_threshold must be between 0 and 1",
+            ),
+            (
+                {"model_type": "gguf", "prompt": "x" * 4001},
+                "instructions must be at most 4000 characters",
+            ),
+        )
+        for options, message in cases:
+            with self.subTest(options=options["model_type"]):
+                resp = await self._post_json(
+                    "/prompt_manager/autotag/single",
+                    {"path": str(image), **options},
+                )
+                self.assertEqual(resp.status, 400)
+                self.assertEqual(
+                    await resp.json(), {"success": False, "error": message}
+                )
 
     async def test_prompt_lookup_failure_still_returns_tags(self):
         image = self._make_image(self.output_dir)
@@ -1151,7 +1178,9 @@ class TestModelStatus(AutotagAPITestCase):
         )
         # Kept fields legacy pages and the workspace read.
         for model in models.values():
-            self.assertTrue({"name", "description", "size", "downloaded"} <= set(model))
+            self.assertLessEqual(
+                {"name", "description", "size", "downloaded"}, set(model)
+            )
         self.assertTrue(data["model_loaded"])
         self.assertEqual(data["loaded_model_type"], "wd14-vit")
 

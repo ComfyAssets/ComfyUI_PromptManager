@@ -46,7 +46,6 @@ class TestResetWatch(unittest.TestCase):
         self.assertFalse(is_reset_path("/__test__/reset/extra"))
 
     def test_a_stalled_reset_reports_state_and_stacks_while_it_waits(self):
-        stream = io.StringIO()
         reported = threading.Event()
 
         class Stream(io.StringIO):

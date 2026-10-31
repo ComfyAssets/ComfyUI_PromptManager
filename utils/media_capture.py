@@ -181,6 +181,7 @@ def _unlink_quietly(path: str) -> None:
     try:
         os.unlink(path)
     except FileNotFoundError:
+        # already gone, which is what was wanted
         pass
     except OSError as error:
         logger.warning("Capture file %s could not be removed: %s", path, error)
@@ -390,6 +391,7 @@ class CaptureStore:
         try:
             os.rmdir(self.directory)
         except FileNotFoundError:
+            # already gone, which is what was wanted
             pass
         except OSError as error:
             logger.warning(

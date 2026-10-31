@@ -466,6 +466,7 @@ def ensure_private_dir(path: str) -> str:
             try:
                 os.chmod(path, 0o700)
             except OSError:
+                # the folder exists; a filesystem without modes keeps its own
                 pass
     return path
 

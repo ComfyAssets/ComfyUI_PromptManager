@@ -351,8 +351,6 @@ class TestLongJobLock(unittest.TestCase):
         self.api = PromptManagerAPI(db=database)
 
     def _run(self, coro):
-        import asyncio
-
         return asyncio.run(coro)
 
     def test_second_acquire_is_refused_until_first_releases(self):
@@ -825,8 +823,6 @@ class TestInstanceHelpers(FolderPathsFixture):
         self.addCleanup(setattr, GalleryConfig, "MONITORING_DIRECTORIES", orig_dirs)
 
     def _run(self, coro):
-        import asyncio
-
         return asyncio.run(coro)
 
     def test_run_in_executor_with_kwargs(self):

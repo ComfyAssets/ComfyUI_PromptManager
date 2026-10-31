@@ -7,7 +7,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 try:
     from tests.open_handles import assert_closed

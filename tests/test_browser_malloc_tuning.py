@@ -6,7 +6,7 @@ Large frees then go back to the OS instead of fragmenting per-thread arenas.
 import ctypes
 import sys
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 from tests.browser import malloc_tuning
 

@@ -7,7 +7,7 @@ I/O: history comes in through ``lookup``.
 
 import json
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 from database.run_attribution import RecordedOutput
 from tests.test_pair_scan import flux_graph, sampled_graph

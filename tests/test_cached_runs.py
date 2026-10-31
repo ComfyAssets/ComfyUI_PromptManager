@@ -14,7 +14,7 @@ import threading
 import types
 import unittest
 from collections import namedtuple
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

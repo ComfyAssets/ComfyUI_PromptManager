@@ -381,7 +381,7 @@ class TestAnotherMount(SafetyTestCase):
         self.assertTrue(other.is_file() and keeper.is_file())
 
     async def test_a_volume_without_file_ids_is_named_truthfully(self):
-        keeper, other, patches = self.mount("x.png", "x.png")
+        self.mount("x.png", "x.png")
 
         def zero(path, *args, **kwargs):
             return _fake_stat(self.real_stat(path), st_dev=0, st_ino=0)

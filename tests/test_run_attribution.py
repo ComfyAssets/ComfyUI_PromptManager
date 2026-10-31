@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 from database.run_attribution import (
     RecordedOutput,
@@ -86,11 +86,10 @@ class RecordedRuns:
 
 
 class TestStoredRunPrompt(RecordedRuns, unittest.TestCase):
-    setUp = history_tests.HistoryDatabaseTests.setUp
     close_databases = history_tests.HistoryDatabaseTests.close_databases
     database = history_tests.HistoryDatabaseTests.database
 
-    def setUp(self):  # noqa: F811 - the shared temp dir and database list first
+    def setUp(self):  # the shared temp dir and database list first
         history_tests.HistoryDatabaseTests.setUp(self)
         self.db = self.database()
         self.output = str(Path(self.temp.name) / "output")

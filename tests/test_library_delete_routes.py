@@ -297,7 +297,7 @@ class TestLibraryDeleteRoutes(LibraryDeleteRouteCase):
         )
         page = await response.json()
         self.assertEqual(page["archived_total"], 3)
-        self.assertTrue(set(item["id"] for item in page["items"]) <= set(kept))
+        self.assertLessEqual(set(item["id"] for item in page["items"]), set(kept))
         response = await self.client.request(
             "GET",
             "/prompt_manager/library?limit=2&shelf=archived"

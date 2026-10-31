@@ -46,6 +46,7 @@ def remove_quietly(*paths):
             if path and os.path.exists(path):
                 os.remove(path)
         except OSError:
+            # cleanup after a failure must not replace that failure
             pass
 
 

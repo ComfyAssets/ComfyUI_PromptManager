@@ -158,6 +158,7 @@ def _unlink_quietly(path):
     try:
         Path(path).unlink()
     except FileNotFoundError:
+        # already gone, which is what was wanted
         pass
     except OSError as exc:
         logger.debug(f"Could not remove temp file {Path(path).name}: {exc}")
@@ -221,6 +222,7 @@ def shutdown_encoders():
         try:
             process.kill()
         except OSError:
+            # the process has already exited
             pass
 
 
@@ -359,10 +361,12 @@ def thumbnail_frame(img, edge):
     try:
         img.seek(0)
     except (EOFError, AttributeError, ValueError):
+        # not seekable or a single frame: use the current one
         pass
     try:
         img.draft("RGB", (edge, edge))  # JPEG: decode at a reduced scale
     except (AttributeError, ValueError, OSError):
+        # draft is only a speedup; the full decode below still works
         pass
     frame = img.convert("RGB") if img.mode != "RGB" else img.copy()
     frame.thumbnail((edge, edge), Image.Resampling.LANCZOS)

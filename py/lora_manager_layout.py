@@ -642,6 +642,7 @@ def layout_summary(layout: LoraManagerLayout, home: Path) -> Dict:
             relative = Path(settings_file).relative_to(home)
             settings_file = os.path.join("~", str(relative))
         except ValueError:
+            # outside the home folder: show the full path
             pass
     return {
         "source": layout.source,

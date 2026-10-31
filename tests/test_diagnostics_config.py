@@ -182,7 +182,7 @@ class TestAdminEndpointsUseConfigPath(unittest.TestCase):
                 self.assertIsNone(warning)
                 self.assertEqual(os.path.dirname(snapshot), folder)
                 with open(snapshot, "rb") as handle:
-                    self.assertTrue(handle.read(16) == b"SQLite format 3\x00")
+                    self.assertEqual(handle.read(16), b"SQLite format 3\x00")
             finally:
                 os.unlink(snapshot)
         finally:

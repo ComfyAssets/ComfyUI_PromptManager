@@ -60,7 +60,7 @@ async function openReview(page, request, items = 30) {
 const inViewport = (rect, page) => rect.top >= 0 && rect.bottom <= page.viewportSize().height;
 
 test.beforeEach(async ({ page, browserName }) => { await startCoverage(page, browserName); });
-test.afterEach(async ({ page, browserName }, testInfo) => { await saveCoverage(page, browserName, testInfo); });
+test.afterEach(async ({ page, browserName }) => { await saveCoverage(page, browserName); });
 
 for (const viewport of [null, PHONE]) {
     const label = viewport ? ' at 390px' : '';

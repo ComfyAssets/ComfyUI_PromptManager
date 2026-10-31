@@ -357,7 +357,7 @@ class TestRestoreAdmission(RestoreTestCase):
         gate.set()
         await health.task
 
-        restore, release = self.gated_job("restore", "exclusive", RESTORE_JOB_TITLE)
+        self.gated_job("restore", "exclusive", RESTORE_JOB_TITLE)
         resp = await self.client.post("/prompt_manager/system/health")
         refusal = await resp.json()
         self.assertEqual((resp.status, refusal["code"]), (409, "busy"))
@@ -369,7 +369,7 @@ class TestRestoreAdmission(RestoreTestCase):
         self.assertEqual(body["running"]["title"], "Move library")
 
         self.api._jobs.list()[0].finish()
-        body = await self.preview(self.upload(["restored"]))
+        await self.preview(self.upload(["restored"]))
         self.gated_job("restore", "exclusive", RESTORE_JOB_TITLE)
         resp = await self.client.post("/prompt_manager/system/library/move")
         self.assertEqual(resp.status, 409)

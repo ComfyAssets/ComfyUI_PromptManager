@@ -584,9 +584,6 @@ class CentralizedDiscoveryTests(LayoutTestCase):
     def test_an_unlistable_folder_raises(self):
         layout = self.load()
 
-        def refuse(error):
-            raise error
-
         def failing_walk(top, onerror=None, followlinks=False):
             onerror(PermissionError(13, "denied", top))
             return iter(())

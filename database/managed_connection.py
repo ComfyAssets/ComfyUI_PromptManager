@@ -35,38 +35,51 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import operator
+import sys
 import threading
 import time
 import weakref
-from typing import Iterable, Iterator, List, Optional
+from collections import deque
+from typing import Any, Callable, Iterable, Iterator, List, Optional
 
 import sqlite3
 
 CLOSED_MESSAGE = "Cannot operate on a closed database."
 # Rows fetched per step when a cursor is iterated: the connection is marked
 # in use once per chunk instead of once per row (iteration costs about what
-# a plain cursor costs). A loop that stops early leaves up to this many rows
-# fetched; ``fetchone``/``fetchmany`` after a partial loop skip them.
+# a plain cursor costs). Prefetched rows belong to the cursor so iteration
+# and explicit fetches always advance the same position.
 ITER_CHUNK = 128
 
 
 class ManagedCursor(sqlite3.Cursor):
     """A cursor whose calls into SQLite count as its connection being in use."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._pending = deque()
+        self._closed = False
+
     def execute(self, sql, parameters=(), /):
-        conn = self.connection
-        conn._enter()
-        try:
-            return super().execute(sql, parameters)
-        finally:
-            conn._leave()
+        return self._run_statement(super().execute, sql, parameters)
 
     def executemany(self, sql, seq_of_parameters, /):
+        return self._run_statement(super().executemany, sql, seq_of_parameters)
+
+    def _run_statement(self, operation: Callable, *args: Any) -> ManagedCursor:
         conn = self.connection
         conn._enter()
+        description = self.description
+        completed = False
         try:
-            return super().executemany(sql, seq_of_parameters)
+            result = operation(*args)
+            completed = True
+            return result
         finally:
+            # Argument parsing can fail before SQLite replaces the old statement.
+            if completed or self.description is not description:
+                self._pending.clear()
             conn._leave()
 
     def executescript(self, sql_script, /):
@@ -81,6 +94,8 @@ class ManagedCursor(sqlite3.Cursor):
         conn = self.connection
         conn._enter()
         try:
+            if self._pending and not self._closed:
+                return self._pending.popleft()
             return super().fetchone()
         finally:
             conn._leave()
@@ -89,7 +104,20 @@ class ManagedCursor(sqlite3.Cursor):
         conn = self.connection
         conn._enter()
         try:
-            return super().fetchmany(*args, **kwargs)
+            # Let SQLite validate the original arguments, including version-specific
+            # handling of zero/negative sizes, before touching prefetched rows.
+            rows = super().fetchmany(*args, **kwargs)
+            if not self._pending:
+                return rows
+            size = operator.index(
+                kwargs.get("size", args[0] if args else self.arraysize)
+            )
+            # Python 3.12 reads all rows for size=0; 3.13+ reads none.
+            if size == 0 and sys.version_info >= (3, 13):
+                return rows
+            self._pending.extend(rows)
+            count = len(self._pending) if size <= 0 else min(size, len(self._pending))
+            return [self._pending.popleft() for _ in range(count)]
         finally:
             conn._leave()
 
@@ -97,25 +125,31 @@ class ManagedCursor(sqlite3.Cursor):
         conn = self.connection
         conn._enter()
         try:
-            return super().fetchall()
+            rows = super().fetchall()
+            pending = list(self._pending)
+            self._pending.clear()
+            return pending + rows
         finally:
             conn._leave()
 
     def __iter__(self) -> Iterator:
-        return self._chunks()
-
-    def _chunks(self) -> Iterator:
-        while True:
-            rows = self.fetchmany(ITER_CHUNK)
-            if not rows:
-                return
-            yield from rows
+        return self
 
     def __next__(self):
         conn = self.connection
+        pending = self._pending
+        # Buffered Python rows need no SQLite lock, but retirement and cursor
+        # close must still stop an iterator obtained before either operation.
+        if conn._retired or self._closed:
+            raise sqlite3.ProgrammingError(CLOSED_MESSAGE)
+        if pending:
+            return pending.popleft()
         conn._enter()
         try:
-            return super().__next__()
+            pending.extend(super().fetchmany(ITER_CHUNK))
+            if not pending:
+                raise StopIteration
+            return pending.popleft()
         finally:
             conn._leave()
 
@@ -126,7 +160,10 @@ class ManagedCursor(sqlite3.Cursor):
         except sqlite3.ProgrammingError:
             return super().close()  # the connection is closed or closing
         try:
-            return super().close()
+            result = super().close()
+            self._pending = deque()
+            self._closed = True
+            return result
         finally:
             conn._leave()
 
@@ -293,6 +330,9 @@ class ManagedConnection(sqlite3.Connection):
             cursors = list(self._cursors)
         try:
             for cursor in cursors:
+                if isinstance(cursor, ManagedCursor):
+                    cursor._pending = deque()
+                    cursor._closed = True
                 with contextlib.suppress(sqlite3.Error):
                     sqlite3.Cursor.close(cursor)
             super().close()

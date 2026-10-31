@@ -66,7 +66,6 @@ def _tag_rows(page: str, order: str = "page.id") -> str:
     )
 
 
-_TAG_PAGE = _tag_rows("SELECT id,name FROM tags WHERE id>? ORDER BY id LIMIT ?")
 # #444 tag sorts: sort -> (key expression on tags/counted, direction). Ties and
 # "created" follow the id, so every order is total and keyset pages are exact.
 TAG_SORTS = {

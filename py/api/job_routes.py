@@ -250,7 +250,7 @@ class JobRoutesMixin:
         try:
             await response.write(_summary_event(job))
             async with contextlib.aclosing(job.events()) as events:
-                async for _payload in events:
+                async for _ in events:
                     await response.write(_summary_event(job))
             # The last event is published before the job takes its final state.
             await response.write(_summary_event(job))

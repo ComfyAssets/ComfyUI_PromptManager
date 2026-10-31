@@ -2584,7 +2584,7 @@ class TestActivityJobs(AdminAPITestCase):
     async def test_cancel_after_first_batch_keeps_partial_counts(self):
         """Review M7: the real scan stops at the batch boundary, keeping batch 1."""
         import threading
-        from unittest import mock
+        import unittest.mock as mock
 
         from py.api import admin
 

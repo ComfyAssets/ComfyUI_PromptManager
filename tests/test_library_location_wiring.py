@@ -135,6 +135,7 @@ class TestLogsAndCache(_EnvCase):
 
             get_logger_manager()._setup_loggers()
         except Exception:
+            # best effort restore in teardown; must not hide the test result
             pass
 
     def test_lora_image_cache_follows_the_data_folder(self):

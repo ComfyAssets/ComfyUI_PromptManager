@@ -590,6 +590,7 @@ class _Move:
             try:
                 os.rmdir(self.plan.target_dir)
             except OSError:
+                # not empty or already gone: the undo leaves it alone
                 pass
 
 

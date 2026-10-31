@@ -88,6 +88,7 @@ def _unlink(path: str) -> None:
     try:
         os.unlink(path)
     except OSError:
+        # best effort cleanup; the next sweep removes a leftover temp
         pass
 
 
@@ -105,6 +106,7 @@ def _sweep_temps(directory: str) -> None:
                 if os.stat(path).st_mtime < cutoff:
                     os.unlink(path)
             except OSError:
+                # best effort: a later sweep removes what this one could not
                 pass
 
 
@@ -116,6 +118,7 @@ def _tighten(path: str) -> None:
         if stat.S_IMODE(os.stat(path).st_mode) & 0o077:
             os.chmod(path, 0o600)
     except OSError:
+        # best effort: the key still works with its old mode
         pass
 
 

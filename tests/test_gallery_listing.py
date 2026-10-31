@@ -312,7 +312,7 @@ class RootContainsTests(unittest.TestCase):
         root = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
         inside = os.path.join(root, "x.png")
         self.assertTrue(root_contains(root, inside))
-        self.assertTrue(root_contains(root, inside.upper()) == (os.name == "nt"))
+        self.assertEqual(root_contains(root, inside.upper()), os.name == "nt")
 
 
 if __name__ == "__main__":

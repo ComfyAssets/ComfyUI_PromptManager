@@ -607,7 +607,6 @@
                     button: true,
                     backdrop: true,
                     navbar: true,
-                    title: true,
                     // IMPORTANT: Use original images for viewing, not thumbnails
                     url: 'data-original',  // Tell ViewerJS to use data-original attribute
                     toolbar: {

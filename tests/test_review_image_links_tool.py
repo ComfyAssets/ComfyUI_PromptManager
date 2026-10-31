@@ -116,7 +116,7 @@ class ReviewToolTests(ToolFixture):
         self.assertEqual(code, 0)
         (verdict,) = json.loads(out.split("--apply, for")[0])
         self.assertEqual(verdict["verdict"], "manual")
-        code, _out = self.run_tool("--ids", str(self.guessed[0]), "--apply")
+        self.run_tool("--ids", str(self.guessed[0]), "--apply")
         self.assertEqual(self.links(), before)
 
     def test_prompt_selection_and_text_report(self):
