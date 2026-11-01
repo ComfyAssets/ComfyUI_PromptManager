@@ -30,8 +30,12 @@ class ReleaseFreeMemoryTests(unittest.TestCase):
     def test_musl_does_nothing(self):
         with (
             mock.patch.object(sys, "platform", "linux"),
+            # Windows has no os.confstr: this test fakes Linux there too.
             mock.patch.object(
-                native_memory.os, "confstr", side_effect=ValueError("unknown name")
+                native_memory.os,
+                "confstr",
+                side_effect=ValueError("unknown name"),
+                create=True,
             ),
             mock.patch.object(native_memory.ctypes, "CDLL") as cdll,
         ):
