@@ -150,7 +150,8 @@ test('another folder’s marker offers Use this folder', async ({ page, request 
 
 test('Overview shows the notice and Change location opens the row', async ({ page, request }) => {
     await expect(await request.post('/__test__/thumbnail-location', { data: { mode: 'folder' } })).toBeOK();
-    await request.post('/__test__/thumbnail-folder/remove');
+    const removed = await request.post('/__test__/thumbnail-folder/remove');
+    expect((await removed.json()).available).toBe(false);
     await page.goto(`${workspace}#/system/overview`);
     const notice = page.locator('#unavailable-notice');
     await expect(notice.locator('h2')).toHaveText('The thumbnail folder is unavailable');

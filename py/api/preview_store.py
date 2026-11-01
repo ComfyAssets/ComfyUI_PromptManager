@@ -263,22 +263,40 @@ class _Probe:
         self._checking = None
 
     def check(self, path, expected_id):
-        """``folder_state`` within IO_BUDGET; raises TimeoutError. A check
-        already running (the probe's, or a stuck one) is joined, never run
-        twice at once."""
+        """``folder_state`` within IO_BUDGET; raises TimeoutError.
+
+        The answer comes from a check that started after this call: one
+        already running may have looked before what the caller just did, so
+        it is waited for (never run twice at once; a stuck one times out here)
+        and followed by a new one."""
+        key = (path, expected_id)
         with self._lock:
-            pending = self._checking
-            if pending is None or pending[0] != (path, expected_id):
-                pending = self._start_check(path, expected_id)
-        key, done, result = pending
-        if not done.wait(IO_BUDGET):
-            raise TimeoutError("the thumbnail folder did not answer in time")
+            earlier = self._running(key)
+            pending = None if earlier else self._start_check(path, expected_id)
+        if earlier:
+            self._wait(earlier)
+            with self._lock:
+                # One another caller started meanwhile is new enough to join.
+                pending = self._running(key) or self._start_check(path, expected_id)
+        self._wait(pending)
         with self._lock:
             if self._checking is pending:
                 self._checking = None
-        if "error" in result:
-            raise result["error"]
-        return result["value"]
+        if "error" in pending[2]:
+            raise pending[2]["error"]
+        return pending[2]["value"]
+
+    def _running(self, key):
+        """The check of *key* still running (lock held), else None."""
+        pending = self._checking
+        if pending is None or pending[0] != key or pending[1].is_set():
+            return None
+        return pending
+
+    @staticmethod
+    def _wait(pending):
+        if not pending[1].wait(IO_BUDGET):
+            raise TimeoutError("the thumbnail folder did not answer in time")
 
     def _start_check(self, path, expected_id):
         """Start one check on its own thread (lock held)."""
