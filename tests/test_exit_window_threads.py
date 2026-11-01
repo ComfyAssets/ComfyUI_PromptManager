@@ -146,6 +146,18 @@ class TestPreviewQueueRefusedAtShutdown(unittest.TestCase):
 
 
 class TestMapParallelRefusedAtShutdown(unittest.TestCase):
+    def setUp(self):
+        # The job pool is long-lived (#523): start each test without one, so
+        # the patched pool class is the one created.
+        self.assertTrue(parallel.shutdown_job_pool(30))
+        self.addCleanup(parallel.shutdown_job_pool, 30)
+
+    def test_the_refused_pool_is_not_reused(self):
+        with mock.patch.object(parallel, "ThreadPoolExecutor", _ShutPool):
+            parallel.map_parallel(lambda n: n, [1, 2], 2)
+        self.assertFalse(parallel.job_pool_started())
+        self.assertEqual(parallel.map_parallel(lambda n: n + 1, [1, 2], 2), [2, 3])
+
     def test_a_shut_pool_runs_the_items_on_the_calling_thread(self):
         records = _capture(self, "prompt_manager.parallel")
         with mock.patch.object(parallel, "ThreadPoolExecutor", _ShutPool):

@@ -2975,6 +2975,7 @@ class ImageRoutesMixin:
             result = await self._run_in_executor(
                 self._generate_gallery_thumbnails_sync, output_dirs
             )
+            await self._release_job_memory()
             return web.json_response(result)
 
         except Exception as e:
@@ -3997,7 +3998,8 @@ class ImageRoutesMixin:
                     **observed,
                 )
 
-            body = await self._run_in_executor(inspect)
+            # Header and text reads: the interactive image pool (#523).
+            body = await self._run_image(inspect)
             if body is None:
                 return web.json_response(
                     {
@@ -4210,6 +4212,22 @@ class ImageRoutesMixin:
         # (which Windows refuses on open files) is not held up by it.
         return _CardFacts(width, height, *self._card_parse(path, records))
 
+    def _cached_card_facts(self, entry: tuple) -> _CardFacts | None:
+        path, mtime, root, index = entry[:4]
+        return self._workspace_card_cache.get((index, str(root)), {}).get((path, mtime))
+
+    def _card_facts_of(self, entries: list, *, parse: bool) -> list[_CardFacts]:
+        """Card facts of *entries*, in order; files not cached yet are read on
+        the interactive image pool (#523), cached ones answer here."""
+        found = [self._cached_card_facts(entry) for entry in entries]
+        missing = [i for i, facts in enumerate(found) if facts is None]
+        read = self._map_image(
+            lambda i: self._card_facts(entries[i], parse=parse), missing
+        )
+        for i, facts in zip(missing, read):
+            found[i] = facts
+        return found
+
     def _card_facts(self, entry: tuple, *, parse: bool) -> _CardFacts:
         """One listed image's card facts, read once per ``(path, mtime)``.
 
@@ -4218,11 +4236,11 @@ class ImageRoutesMixin:
         and drops the rest, and a roots change drops them all. Only files of
         the current scan are stored, so the cache is bounded by the listing.
         """
-        path, mtime, root, index = entry[:4]
-        root_key, key = (index, str(root)), (path, mtime)
-        cached = self._workspace_card_cache.get(root_key, {}).get(key)
+        cached = self._cached_card_facts(entry)
         if cached is not None:
             return cached
+        path, mtime, root, index = entry[:4]
+        root_key, key = (index, str(root)), (path, mtime)
         facts = self._read_card_facts(path, parse=parse)
         if facts is None:
             # Not stored: a locked or half-written file may read next time.
@@ -4248,15 +4266,17 @@ class ImageRoutesMixin:
             if linked
             else {}
         )
+        # Videos: the card reads no video metadata. Library previews show
+        # no card facts, so they skip the parse (``parse=linked``).
+        stills = [image for image in images if not image["is_video"]]
+        read = self._card_facts_of(
+            [entries[(image["root_index"], image["path"])] for image in stills],
+            parse=linked,
+        )
+        facts_of = {id(image): facts for image, facts in zip(stills, read)}
         for image in images:
             entry = entries[(image["root_index"], image["path"])]
-            # Videos: the card reads no video metadata. Library previews show
-            # no card facts, so they skip the parse (``parse=linked``).
-            facts = (
-                _NO_CARD_FACTS
-                if image["is_video"]
-                else self._card_facts(entry, parse=linked)
-            )
+            facts = facts_of.get(id(image), _NO_CARD_FACTS)
             image["width"], image["height"] = facts.width, facts.height
             if not linked:
                 continue

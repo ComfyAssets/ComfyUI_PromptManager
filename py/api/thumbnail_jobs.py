@@ -226,6 +226,7 @@ class ThumbnailJobsMixin:
             )
             state = "failed"
         job.finish(state)
+        await self._release_job_memory()
 
     async def _thumbnail_job_body(self, job, options):
         """Plan, then generate in worker batches; returns the final state.

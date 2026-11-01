@@ -280,11 +280,11 @@ def _teardown_logger():
 
 
 def _stop_background_work():
-    """Stop the image monitor, the preview worker and the prompt cleanup
-    thread against one TEARDOWN_SECONDS deadline, once.
+    """Stop the image monitor, the preview worker, the job worker threads
+    and the prompt cleanup thread against one TEARDOWN_SECONDS deadline, once.
 
-    Returns ``{"monitor", "thumbnails", "tracker"}`` booleans (True: it
-    stopped), leaving out parts that never started. Later calls return a
+    Returns ``{"monitor", "thumbnails", "workers", "tracker"}`` booleans
+    (True: it stopped), leaving out parts that never started. Later calls return a
     copy of the first result. A Ctrl+C inside a step is logged and the
     step is False; one between steps is re-raised after the result (parts
     not reached are False) is stored and the ``atexit`` entry removed.
@@ -298,11 +298,14 @@ def _stop_background_work():
             api,
             _global_prompt_tracker,
         )
+        from .utils import parallel
+
         # A part whose global is set has started; False until its step says
         # otherwise, so an interrupt between steps leaves an honest result.
         started = (
             ("monitor", monitor),
             ("thumbnails", thumbnails),
+            ("workers", parallel.job_pool_started() or None),
             ("tracker", tracker),
         )
         result = {name: False for name, part in started if part is not None}
@@ -344,6 +347,16 @@ def _stop_background_work():
 
                 result["thumbnails"] = _teardown_step(
                     "the preview worker", close_previews, logger
+                )
+            if "workers" in result:
+
+                def stop_workers():
+                    from .utils.parallel import JOB_POOL_JOIN_SECONDS
+
+                    return parallel.shutdown_job_pool(left(JOB_POOL_JOIN_SECONDS))
+
+                result["workers"] = _teardown_step(
+                    "the job worker threads", stop_workers, logger
                 )
             if tracker is not None:
 

@@ -8,7 +8,8 @@ previews behind those URLs are made here, in three ways:
 - **On first view.** ``GET /prompt_manager/images/serve/thumbnails/<rel>_thumb
   <ext>`` for a preview that does not exist yet is admitted on the event loop
   (``_PreviewGate``): at most ``ON_DEMAND_LIMIT`` previews are written at once,
-  on this API's own small pool (never the default executor), one flight runs
+  on this API's interactive image pool (``IMAGE_POOL_SIZE`` threads, shared
+  with card facts and inspector reads; never the default executor), one flight runs
   per file, and the requests waiting are capped (``MAX_WAITING``); past the
   cap a request gets its fallback at once. Inside the admission the preview is
   mapped back to its media file under the same root (the request text is
@@ -24,7 +25,8 @@ previews behind those URLs are made here, in three ways:
 - **On capture.** The image monitor hands every new output it settles to
   ``queue_capture_thumbnail``, which queues its preview for one background
   worker thread (``AutoThumbnailer``). Each wake takes at most Worker threads
-  (``WORKER_THREADS``) files and writes them on that many threads; enqueuing
+  (``WORKER_THREADS``) files and writes them on the long-lived job pool
+  (``utils.parallel``, shared with scans and thumbnail jobs); enqueuing
   is O(1), so the monitor and ComfyUI's queue never wait. A file already
   queued is not queued again, the queue is bounded (``MAX_QUEUED``) and a
   preview left out is made on its first view instead.
@@ -49,7 +51,7 @@ write starts (after its slot) and again just before its rename.
 
 Shutdown: ``close_auto_thumbnails`` stops the worker at a file boundary,
 kills a running ffmpeg, waits a bounded time (and logs when the wait ran
-out) and shuts the view pool down; after the app's cleanup
+out) and shuts the image pool down; after the app's cleanup
 (``final=True``) nothing starts a worker again. Importing this module again
 (a package reload) stops the workers the previous import left.
 """
@@ -60,7 +62,7 @@ import functools
 import io
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
 
 from aiohttp import web
@@ -104,8 +106,11 @@ PLACEHOLDER_SIZE = (thumbnail_settings.DEFAULT_EDGE, thumbnail_settings.DEFAULT_
 PLACEHOLDER_QUALITY = 85
 # Source extensions in the order a shared preview name looks for them (R2).
 _SOURCE_ORDER = thumbnail_settings.IMAGE_SOURCE_ORDER + tuple(sorted(VIDEO_EXTENSIONS))
-# Previews views may write at once (the size of the view pool).
-ON_DEMAND_LIMIT = 3
+# Threads of the interactive image pool (#523): view previews, card facts and
+# inspector reads. Fixed, so image buffers stay in a few threads' arenas.
+IMAGE_POOL_SIZE = 3
+# Previews views may write at once (the whole image pool).
+ON_DEMAND_LIMIT = IMAGE_POOL_SIZE
 # View requests that may wait on the gate; one more gets its fallback at once.
 MAX_WAITING = 64
 # How long a pool thread waits for the capture worker's flight of the same file.
@@ -124,7 +129,7 @@ AUTO_REFUSED_KINDS = frozenset(
     {RESTORE_JOB_KIND, DUPLICATE_CLEANUP_JOB_KIND, SOURCE_CHANGE_JOB_KIND}
 )
 WORKER_NAME = "PromptManagerThumbnailWorker"
-POOL_PREFIX = "pm-preview"
+POOL_PREFIX = "pm-image"
 # Identifies this import's workers: a reload stops the ones it did not start.
 _MODULE_TOKEN = object()
 
@@ -294,7 +299,7 @@ class AutoThumbnailer:
     ``generate(src, dst, is_video, *, stop, guard, track)`` writes one
     preview and returns ``_generate_one``'s result dict; ``may_write()``
     says whether automatic previews may be written now. Views call
-    ``ensure`` on the view pool, the monitor calls ``enqueue`` from its
+    ``ensure`` on the image pool, the monitor calls ``enqueue`` from its
     thread.
     """
 
@@ -491,12 +496,15 @@ class AutoThumbnailer:
                     self._worker_running = False
                     self._changed.notify_all()
                     return
-                take = min(len(self._queue), max(1, int(self._workers() or 1)))
+                workers = max(1, int(self._workers() or 1))
+                take = min(len(self._queue), workers)
                 batch = [self._queue.popleft() for _ in range(take)]
                 self._batch = len(batch)
                 self._changed.notify_all()
             try:
-                map_parallel(self._write_queued, batch, len(batch))
+                # The job pool's size is the setting; a smaller batch uses
+                # fewer of its threads (#523: one long-lived pool).
+                map_parallel(self._write_queued, batch, workers)
             finally:
                 with self._changed:
                     self._batch = 0
@@ -567,7 +575,7 @@ class _PreviewGate:
     """Admission of view requests on the event loop (#249 I2).
 
     Waiters are coroutines: at most ``limit`` previews are written at once
-    on the view pool, one flight runs per key, and past ``MAX_WAITING``
+    on the image pool, one flight runs per key, and past ``MAX_WAITING``
     waiting requests ``run`` answers ``OVER`` at once.
     """
 
@@ -622,13 +630,17 @@ class _PreviewGate:
                 flight.set_result(result)
 
 
+def _on_image_thread():
+    return threading.current_thread().name.startswith(POOL_PREFIX + "_")
+
+
 class AutoThumbnailMixin:
     """Automatic previews on the API: views, the monitor's queue, scans."""
 
     _auto_thumbnailer = None
     _auto_thumbnails_shut = False
     _preview_gate_obj = None
-    _preview_pool_obj = None
+    _image_pool_obj = None
     _auto_thumbnailer_lock = threading.Lock()
 
     def _auto_thumbnails(self):
@@ -651,7 +663,7 @@ class AutoThumbnailMixin:
             self._auto_thumbnails_shut = True
 
     def close_auto_thumbnails(self, final=False, timeout=None):
-        """Stop the capture worker and the view pool, and forget them.
+        """Stop the capture worker and the image pool, and forget them.
 
         Bounded by ``timeout`` (see AutoThumbnailer.close). ``final`` (the
         package teardown) also keeps a late monitor event from starting a
@@ -662,7 +674,7 @@ class AutoThumbnailMixin:
             if final:
                 self._auto_thumbnails_shut = True
             thumbnailer, self._auto_thumbnailer = self._auto_thumbnailer, None
-            pool, self._preview_pool_obj = self._preview_pool_obj, None
+            pool, self._image_pool_obj = self._image_pool_obj, None
             self._preview_gate_obj = None
         closed = True
         if thumbnailer is not None:
@@ -706,16 +718,67 @@ class AutoThumbnailMixin:
             gate = self._preview_gate_obj = _PreviewGate(ON_DEMAND_LIMIT, self.logger)
         return gate
 
-    def _preview_pool(self):
-        with AutoThumbnailMixin._auto_thumbnailer_lock:
-            if self._preview_pool_obj is None:
-                self._preview_pool_obj = ThreadPoolExecutor(
-                    ON_DEMAND_LIMIT, thread_name_prefix=POOL_PREFIX
-                )
-            return self._preview_pool_obj
+    def _image_pool(self):
+        """The interactive image pool (#523): IMAGE_POOL_SIZE threads for view
+        previews (behind their gate), card facts and inspector reads, so
+        image buffers never spread over the default executor's threads.
 
-    def _preview_pool_threads(self):
-        pool = self._preview_pool_obj
+        None after the package teardown (``close_auto_thumbnails(final=True)``):
+        a late request then runs on the default executor (``run_in_executor``
+        with None) and starts no thread the teardown no longer stops.
+        """
+        with AutoThumbnailMixin._auto_thumbnailer_lock:
+            if self._image_pool_obj is None and not self._auto_thumbnails_shut:
+                self._image_pool_obj = ThreadPoolExecutor(
+                    IMAGE_POOL_SIZE, thread_name_prefix=POOL_PREFIX
+                )
+            return self._image_pool_obj
+
+    async def _run_image(self, func, *args, **kwargs):
+        """``_run_in_executor`` for interactive image work: the image pool.
+
+        After the teardown, or with the pool shut down in between (a test
+        reset), the call runs on the default executor as before.
+        """
+        call = functools.partial(func, *args, **kwargs)
+        loop = asyncio.get_running_loop()
+        try:
+            future = loop.run_in_executor(self._image_pool(), call)
+        except RuntimeError:  # submit refused: the pool was shut down
+            future = loop.run_in_executor(None, call)
+        return await future
+
+    def _map_image(self, func, items):
+        """``func`` over *items* on the image pool, in order (blocking).
+
+        Called from an image pool thread, after the teardown, or with the
+        pool shut down in between (its queued items are cancelled), the
+        items it did not run run on the calling thread.
+        """
+        items = list(items)
+        pool = None if not items or _on_image_thread() else self._image_pool()
+        if pool is None:
+            return [func(item) for item in items]
+        futures = []
+        try:
+            for item in items:
+                futures.append(pool.submit(func, item))
+        except RuntimeError:
+            pass  # shut down in between: the rest run here
+        results = []
+        for index, item in enumerate(items):
+            future = futures[index] if index < len(futures) else None
+            if future is None or future.cancelled():
+                results.append(func(item))
+                continue
+            try:
+                results.append(future.result())
+            except CancelledError:  # cancelled while this caller waited
+                results.append(func(item))
+        return results
+
+    def _image_pool_threads(self):
+        pool = self._image_pool_obj
         return [] if pool is None else list(getattr(pool, "_threads", ()))
 
     def _video_placeholder_bytes(self):
@@ -730,7 +793,7 @@ class AutoThumbnailMixin:
         return await self._preview_gate().run(
             flight_key(Path(dst).parent, (Path(dst).name,)),
             functools.partial(self._ensure_view, src, dst, is_video),
-            self._preview_pool(),
+            self._image_pool(),
         )
 
     def _ensure_view(self, src, dst, is_video):
@@ -774,13 +837,13 @@ class AutoThumbnailMixin:
         The flight answers only the outcome (a history flight may be the one
         joined); the file it previews is derived here: the preview path is
         the request's own, and a fallback looks its source up again on the
-        view pool (bounded by it, never the default executor).
+        image pool (bounded by it, never the default executor).
         """
         if _has_traversal(filepath) or not _is_preview_request(filepath):
             return None
         parts = tuple(filepath.split("/"))
         gate = self._preview_gate()
-        pool = self._preview_pool()
+        pool = self._image_pool()
         for root in output_dirs:
             root = Path(root)
             outcome = await gate.run(

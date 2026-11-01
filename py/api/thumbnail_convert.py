@@ -153,6 +153,7 @@ class ThumbnailConvertMixin:
             job.log_line("Conversion failed · internal error")
             state = "failed"
         job.finish(state)
+        await self._release_job_memory()
 
     async def _convert_job_body(self, job, options):
         output_dirs = await self._run_in_executor(self._get_all_output_dirs)

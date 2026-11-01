@@ -15,18 +15,36 @@ create new thread at interpreter shutdown") only once the interpreter is
 marked finalizing, after the ``atexit`` callbacks. ``refused_at_shutdown``
 recognises both; ``note_refusal`` logs one DEBUG line per place, with no
 traceback.
+
+One long-lived pool (#523): every ``map_parallel`` call shares one pool of
+``workers`` threads (``JOB_THREAD_PREFIX``), kept between jobs, instead of a
+new pool per call. Image work then reuses the same few threads, and their
+malloc arenas, rather than leaving each call's image-sized buffers in a new
+set of arenas. A different ``workers`` count (the Worker threads setting
+changed) replaces the pool; the old one finishes what it holds and exits.
+``shutdown_job_pool`` stops it (the package teardown); the next call starts
+a fresh one.
 """
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from .exit_signal import checked
 
 SHUTDOWN_REFUSAL = "interpreter shutdown"
+# ``submit`` on a pool already shut down (this module's teardown or a resize).
+SHUT_POOL_REFUSAL = "after shutdown"
+JOB_THREAD_PREFIX = "pm-worker"
+# The package teardown's bound for the job threads to finish their item.
+JOB_POOL_JOIN_SECONDS = 5
 _logger = logging.getLogger("prompt_manager.parallel")
 _noted = set()
 _noted_lock = threading.Lock()
+_pool_lock = threading.Lock()
+_pool = None  # (workers, ThreadPoolExecutor)
+_retired = []  # pools replaced by a new size, finishing what they hold
 
 
 def refused_at_shutdown(error):
@@ -45,39 +63,113 @@ def note_refusal(logger, what):
     logger.debug(f"{what}: refused, the interpreter is exiting")
 
 
-def map_parallel(func, items, workers):
-    """Apply ``func`` to every item on up to ``workers`` threads, keeping order.
+def job_pool_started():
+    """Whether a job pool exists (the teardown stops it)."""
+    return _pool is not None or bool(_retired)
 
-    ``workers`` of 1 (or fewer) runs on the calling thread with no pool. An
-    exception in ``func`` propagates to the caller, so callers that must
-    survive bad input wrap ``func`` themselves. A pool refused at interpreter
-    exit runs the items it did not start on the calling thread (#375). An item
+
+def _job_pool(workers):
+    """The shared pool of ``workers`` threads, replacing one of another size."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None and _pool[0] == workers:
+            return _pool[1]
+        retired = _pool
+        _pool = (
+            workers,
+            ThreadPoolExecutor(workers, thread_name_prefix=JOB_THREAD_PREFIX),
+        )
+        current = _pool[1]
+    if retired is not None:
+        retired[1].shutdown(wait=False)  # it still runs what it holds
+        with _pool_lock:
+            _retired[:] = [p for p in _retired if _alive(p)] + [retired[1]]
+    return current
+
+
+def shutdown_job_pool(timeout=None):
+    """Stop the job pool (and any pool a resize retired): queued items are
+    cancelled (their callers run them on their own thread), running ones are
+    joined up to ``timeout`` seconds. True when no job thread is left."""
+    global _pool
+    with _pool_lock:
+        current, _pool = _pool, None
+        executors = _retired[:] + ([] if current is None else [current[1]])
+        _retired.clear()
+    threads = []
+    for executor in executors:
+        # After shutdown: it takes the lock ``submit`` holds while it starts
+        # and records a thread, so every thread is listed and none starts.
+        executor.shutdown(wait=False, cancel_futures=True)
+        threads.extend(getattr(executor, "_threads", ()))
+    deadline = None if timeout is None else time.monotonic() + timeout
+    for thread in threads:
+        thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+    return not any(thread.is_alive() for thread in threads)
+
+
+def _alive(executor):
+    return any(t.is_alive() for t in getattr(executor, "_threads", ()))
+
+
+def _forget(executor):
+    """Drop *executor* as the shared pool (a later call starts a new one)."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None and _pool[1] is executor:
+            _pool = None
+
+
+def _on_job_thread():
+    return threading.current_thread().name.startswith(JOB_THREAD_PREFIX + "_")
+
+
+def map_parallel(func, items, workers):
+    """Apply ``func`` to every item on the shared pool of ``workers``
+    threads, keeping order.
+
+    ``workers`` below 1 counts as 1. A call made from a job thread runs on
+    that thread, so nested work never waits for its own pool. An exception
+    in ``func`` propagates to the caller once the call's other items have
+    stopped (those not started are dropped), so callers that must survive
+    bad input wrap ``func`` themselves. A pool refused at interpreter exit
+    runs the items it did not start on the calling thread (#375). An item
     that has not started when the interpreter starts exiting raises
     ExitRequested instead (#376).
     """
     func = checked(func)
     items = list(items)
-    workers = max(1, int(workers or 1))
-    if workers == 1 or len(items) <= 1:
+    if not items or _on_job_thread():
         return [func(item) for item in items]
-    max_workers = min(workers, len(items))
-    with ThreadPoolExecutor(max_workers, thread_name_prefix="pm-worker") as pool:
-        futures = []
-        try:
-            for item in items:
-                futures.append(pool.submit(func, item))
-        except RuntimeError as error:
-            if not refused_at_shutdown(error):
-                raise
+    pool = _job_pool(max(1, int(workers or 1)))
+    futures = []
+    try:
+        for item in items:
+            futures.append(pool.submit(func, item))
+    except RuntimeError as error:
+        if refused_at_shutdown(error):
             note_refusal(_logger, "A worker pool")
             # Drop what was queued but not started; it runs here instead.
             # (A refused Thread.start leaves its item queued without a future
             # here: it is cancelled too, unless a busy pool thread took it in
             # between, the one case where an item can run twice.)
-            pool.shutdown(wait=True, cancel_futures=True)
-        else:
-            return [future.result() for future in futures]
-    return _run_rest(func, items, futures)
+            _forget(pool)
+            pool.shutdown(wait=False, cancel_futures=True)
+        elif SHUT_POOL_REFUSAL not in str(error):
+            raise
+    return _collect(func, items, futures)
+
+
+def _collect(func, items, futures):
+    """``_run_rest``; on an error, first drop the call's items not started
+    and wait for its running ones, as the old per-call pool's exit did."""
+    try:
+        return _run_rest(func, items, futures)
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        wait(futures)
+        raise
 
 
 def _run_rest(func, items, futures):

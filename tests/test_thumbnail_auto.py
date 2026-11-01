@@ -291,7 +291,7 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         await self._writers(state, auto.ON_DEMAND_LIMIT)
         await self._waiting(len(names))
         self.assertEqual(default_calls, [], "no view waits on a default thread")
-        self.assertTrue(all(name.startswith("pm-preview") for name in state["threads"]))
+        self.assertTrue(all(name.startswith("pm-image") for name in state["threads"]))
         status = await self.client.get("/prompt_manager/images/thumbnails/status")
         self.assertEqual(status.status, 200, "another route answers meanwhile")
         await status.read()
@@ -678,7 +678,7 @@ class TestShutdown(AutoThumbnailCase):
             _entry(self.api, self.output_dir, "viewed.png")["thumbnail_url"]
         )
         await resp.read()
-        pool_threads = list(self.api._preview_pool_threads())
+        pool_threads = list(self.api._image_pool_threads())
         self.assertTrue(pool_threads)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -904,7 +904,8 @@ class TestThumbnailOnCapture(AutoThumbnailCase):
             self.api.queue_capture_thumbnail(str(path))
         release.set()
         await self._idle()
-        self.assertEqual(batches, [(1, 1), (2, 2), (2, 2)])
+        # The job pool's size is the setting; each batch is at most that (#523).
+        self.assertEqual(batches, [(1, 2), (2, 2), (2, 2)])
         self.assertLessEqual(state["peak"], 2)
         for i in range(5):
             self.assertTrue(

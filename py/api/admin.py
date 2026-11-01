@@ -1454,6 +1454,7 @@ class AdminRoutesMixin:
             verb = "cancelled" if state == "cancelled" else "finished"
             job.log_line(f"Scan {verb} · {_plural(job.processed, 'file')} processed")
         job.finish(state)
+        await self._release_job_memory()
         if state == "finished":
             # After the scan, so the guarded thumbnail job is admitted (#249).
             await self._hand_off_scan_thumbnails(job, output_dirs)
@@ -1668,7 +1669,8 @@ class AdminRoutesMixin:
     def _extract_batch_metadata_sync(self, file_batch):
         """Extract metadata from a batch of files in one executor call.
 
-        Files are read on ``PromptManagerConfig.WORKER_THREADS`` threads.
+        Files are read on the long-lived job pool of
+        ``PromptManagerConfig.WORKER_THREADS`` threads (#523).
         PNG text is read chunk by chunk without decoding pixels (#523); file
         reads and ffprobe release the GIL.
         """
