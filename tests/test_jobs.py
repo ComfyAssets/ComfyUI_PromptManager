@@ -490,6 +490,22 @@ class TestJobOutcomesAndLog(unittest.TestCase):
         with self.assertRaises(ValueError):
             job.record_counted("bogus", 1)
 
+    def test_record_counted_complete_keeps_every_row_for_the_report(self):
+        # #550: a repair's record of each change is never cut at the cap.
+        job = Job("maintenance", "Pair category and tags", groups=("changed", "errors"))
+        rows = [
+            {"path": "", "detail": f"Prompt {i}"} for i in range(MAX_OUTCOME_ROWS + 5)
+        ]
+        job.record_counted("changed", len(rows), rows, complete=True)
+        self.assertEqual(len(job.outcomes["changed"]), MAX_OUTCOME_ROWS)
+        report = job.report()["outcomes"]
+        self.assertEqual(len(report["changed"]["rows"]), MAX_OUTCOME_ROWS + 5)
+        self.assertEqual(
+            report["changed"]["rows"][-1]["detail"], f"Prompt {MAX_OUTCOME_ROWS + 4}"
+        )
+        self.assertFalse(report["changed"]["truncated"])
+        self.assertEqual(report["errors"], {"count": 0, "rows": [], "truncated": False})
+
     def test_thumbnail_job_groups(self):
         self.assertEqual(
             jobs_module.THUMBNAIL_GROUP_NAMES, ("generated", "skipped", "errors")

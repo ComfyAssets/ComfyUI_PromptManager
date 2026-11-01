@@ -1886,7 +1886,8 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   engines in the mock's order with legacy labels and sizes (`WD14 SwinV2 · ~400
   MB`, `WD14 ViT · ~400 MB`, `GGUF JoyCaption (Recommended) · ~4.5 GB` in the
   mock's Ollama slot, `HuggingFace JoyCaption · ~16 GB`); the instructions start
-  from the server's `default_prompt`.
+  from the chosen engine's default saved instructions (#431, D204; before, the
+  server's `default_prompt`).
 - **D91** (plan D68, ruling T3-bulk): a **Suggestions** number field (1–100) for
   every model, prefilled from `autotag.defaults.suggestion_limit` (10); a model
   change keeps it.
@@ -2978,7 +2979,8 @@ change: ComfyUI needs a restart.
 A Pair save, by a run or the node's Save pair button, writes the category and tags to the positive prompt only when that
 save creates the prompt row (maintainer ruling). An existing prompt never changes on a run: empty, cleared or set by a person, including one first seen as
 another pair's negative. The negative stays empty, the saved pair keeps its own metadata, and `save_prompt_pair` writes
-no prompt metadata unless called with `fill_new_positive`. No backfill; optional repair is #550.
+no prompt metadata unless called with `fill_new_positive`. No backfill on a run; the opt-in repair for prompts older
+Pair runs saved is System › Maintenance › "Pair category and tags" (#550, "Pair category and tags repair" below).
 Tests: `tests/test_prompt_pair_node.py`, `tests/test_api_pairs.py`, `tests/comfyui/pair-node.spec.mjs`. A Python change: ComfyUI needs a restart.
 
 ### Delete… on the archived shelf (#492)
@@ -4307,6 +4309,12 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   primary stays the concept's plain button; the plan it opens has the primary.
   `duplicates dialog matches the concept` and `duplicates comparison detects mutations`
   (system-maintenance-concept.spec) pin the mapping.
+- **D192** (Maintenance, #550, beyond the concept): Database adds "Pair category and
+  tags" after "Unused prompt components", a plain Review plan row (no danger mark: it
+  deletes nothing) with the line "Fill an empty category or tags on prompts older Pair
+  node runs saved, from their saved pairs. Only empty fields of never-edited prompts."
+  `system-maintenance-concept.spec.mjs` maps it (`mapPairRow`) as a copy of Optimize
+  database's row.
 - **D102** (Maintenance, S7, Q5, #222): Metadata cache clears only the browser entries
   Prompt Manager owns as a cache (`web/js/cache-ownership.js`). The inventory of every
   storage writer has none (see "Browser cache ownership" below), so the row's line adds
@@ -4606,9 +4614,9 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   engine and policy (read-only) and opens "Review tag output images" in the concept's
   record-changing review (its `maintenancePlan` shell): `h3` "Tag output images", the
   `dl.meta-grid` Model, Existing tags, Images, Already auto-tagged, Images to tag
-  ("about N"), Time, Settings ("General <g> · Character <c>" or "Template of N
-  characters", then " · up to L tags per image" with the preview's saved
-  `suggestion_limit`) and Backup, the estimate sentence ("Nothing is written until you
+  ("about N"), Time, Settings ("General <g> · Character <c>", then " · up to L tags
+  per image" with the preview's saved `suggestion_limit`; for a language model, since
+  D205, an "Instructions" row and "Up to L tags per image") and Backup, the estimate sentence ("Nothing is written until you
   start. The number to tag is an estimate: images changed since they were tagged are
   tagged again, and missing files are skipped. Activity reports what was tagged.") in the
   `p.small`, the D55 backup box and Cancel / "Start tagging", which starts the
@@ -4650,6 +4658,51 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   concept row's), `skipped tags add, preview, remove, save and reload (D202)`, `skipped
   tags preview checks library tags only …` (workspace-system-tagging.spec) and
   `suggestions omit skipped tags and say how many were hidden` (workspace-tagging.spec).
+- **D203** (Auto-tagging, #431, beyond the concept): "Saved instructions" replaces the
+  concept's "LLM tag template" field (the mock's state 2): a `.setting-block`
+  (`data-setting="tag-instructions"`, `data-key="autotag_instructions"`) with the label,
+  "Instructions for the language-model engines. Built-in can’t be changed; duplicate it
+  to make your own. N of 20 saved · Built‑in is not counted.", a `role="listbox"` list
+  (Built-in first with a "Read-only" chip, then the saved entries; "Default for GGUF" /
+  "Default for HuggingFace" chips), "+ New" ("New instructions", "(2)" if taken),
+  "Duplicate" ("<name> copy"), "Delete" (`.danger`, disabled for Built-in), "At most 20
+  saved instructions." at the cap, and the editor beside the list (under it below 700px):
+  "Name" ("N of 60") and "Text" ("N of 4,000 characters"), read-only for Built-in with
+  "Built-in instructions can’t be changed. Duplicate them to make your own.", else the
+  entry's problem ("The name “X” is already used.", "The text must not be empty."…).
+  Then two concept select rows, "Default for GGUF JoyCaption" and "Default for
+  HuggingFace JoyCaption" ("The Tag image dialog and batches start from this.",
+  `data-key="autotag_default_instructions"`), and the note a deleted default leaves
+  ("GGUF now uses Built-in."; nothing is written until Save preferences). Pinned by the
+  comparison's mapping (system-tagging-concept.spec: the block in the concept row's
+  tokens, the two rows on the concept's select row) and `saved instructions: new, edit,
+  per-engine default, delete, save and reload (D203)`, `a refused instructions save names
+  the entry and highlights the block (D203)` (workspace-system-tagging.spec).
+- **D204** (Tag image and Auto-tag selected dialogs, #431, beyond the concept): for a
+  language-model engine a "Saved instructions" select (`#image-tag-instructions-pick`,
+  `#bulk-tag-instructions-pick`) sits above "Tagging instructions" (the mock's state 3),
+  on the concept's select field: Built-in, then the saved entries (`GET /autotag/models`
+  `instructions`, full text), the engine's default marked "<name> · default". It starts
+  at that default; a pick replaces the text. The text stays editable for the run: while
+  it differs from the picked entry the select shows a disabled "Edited for this run" and
+  a muted line under the textarea reads "Edits apply to this run only. Manage saved
+  instructions in System › Auto-tagging." Choosing an entry again replaces the edit.
+  Switching between GGUF and HF starts from the new engine's default and drops an edit;
+  WD14 hides both. A preset (Preview tagging review, the bulk review) shows the entry
+  with its text, else "Edited for this run". When the read fails the select holds only
+  Built-in with the client's copy (`BUILTIN_INSTRUCTIONS`, pinned equal to
+  `DEFAULT_TAG_TEMPLATE` by workspace-image-tagging-state.test). Request bodies are
+  unchanged (`options.instructions` is the textarea's text); there is no "Save as new".
+  The workspace no longer reads `default_prompt`. Pinned by the tagging comparison's
+  mapping (tagging-canonical-comparison.mjs: the select before the instructions),
+  `the saved instructions picker fills, edits one-off and resets per engine (D204)`
+  (workspace-tagging.spec) and `Auto-tag selected picks saved instructions and sends the
+  text shown (D204)` (workspace-tagging-bulk.spec).
+- **D205** (Auto-tagging, #431; amends D134): for a language-model engine the batch
+  review adds a read-only "Instructions" row with the drafted engine default's name
+  before "Settings", which reads "Up to L tags per image"; the batch and Preview tagging
+  review send that entry's text. WD14 is unchanged. Pinned by `the batch review names the
+  language model's default instructions (D205)` (workspace-system-tagging.spec).
 - **D158** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
   without a PromptManager node; the maintainer chose a visible switch over a config key.
   A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
@@ -4880,6 +4933,47 @@ replaced the database since the review; the plan is dropped). The job:
 3. counts the changed and protected records (outcome rows hold root-relative paths or
    prompt ids only), logs the backup by its file name, and prunes safety backups to the
    newest 10. With no backup the log and the status line say "No safety backup".
+
+#### Pair category and tags repair (#550)
+
+`pair_metadata` ("Pair category and tags", D192; `database/pair_metadata_repair.py`) fills
+the empty category and the empty tag set of prompts that Pair node runs before #546
+saved, from their saved pairs. It is reviewed and applied like the operations above and
+follows the safety backup policy like them (no forced backup). Rules
+(`docs/egm/post-3.4.1/550-design.md`):
+
+- Considered: prompts the Pair node created as a positive: their earliest pair (lowest
+  id, either role, archived included) has them as the positive and its `created_at` is
+  within 2 s of theirs. A prompt first saved by the PromptManager node, or first as a
+  negative, is out of scope and not counted.
+- Sources: the prompt's non-archived pairs where it is the positive; pairs with a blank
+  category or no tags are ignored for that field. Category values are trimmed and
+  case-sensitive, tag sets compared by tag id; a field fills when exactly one value is
+  left. A whitespace-only category counts as empty.
+- Kept, per field, in this order: archived prompt, edited prompt (`updated_at` not within
+  2 s of `created_at`; NULL or unreadable counts as edited), pairs that disagree, a tag
+  set over 20 tags. A prompt can fill one field and keep the other.
+- The plan lists protected rows first, then fills, then a "Record" row, within the 50
+  detail rows; at most 20,000 prompts per plan ("review again for the rest").
+- The fingerprint covers each considered prompt's computed result (values, tag ids and
+  names, source pair ids), never a pair's title, notes, rating, run count or use
+  stamps, so a Pair run between review and apply still applies.
+- The apply's writes are guarded (`category` still blank, no `prompt_tags` row) and a
+  guard that hits nothing rolls the whole transaction back as `plan-changed`. It never
+  writes `prompt_pairs`, `prompt_pair_tags`, `updated_at`, a tag or Library state.
+- The job lists 200 changed rows ("Prompt 12: category “night”; tags a, b"); its
+  Download report lists every one (`truncated: false`, `Job.record_counted(complete=True)`).
+  Protected lists one row per kept prompt in the review's wording and order ("Prompt 7:
+  kept, pairs disagree on category: Adult, asian"), also complete in the report.
+- Activity shows a row with no path as a record: its detail as plain text, never an open
+  or locate action, and the filter reads the detail. A maintenance job of records (every
+  operation but Missing-file links) says "No records in this group.", "No listed record
+  matches this filter." and "Filter records…" (`groupCopy`); file jobs keep "files".
+
+Tests: `tests/test_maintenance_pair_metadata.py`, `tests/test_api_maintenance_pair_metadata.py`,
+`tests/test_jobs.py`, `tests/js/workspace-system-maintenance.test.js`,
+`tests/browser/workspace-system-maintenance.spec.mjs` (hook `/__test__/system/pair-metadata`).
+A Python change: ComfyUI needs a restart.
 
 The legacy restore (`POST /prompt_manager/restore`) takes a backup of any size the disks
 have room for, so a real library's safety backup restores: the upload, its staged copy
@@ -5235,16 +5329,16 @@ server-side tagging configuration, `autotag.defaults` in config.json: `model_typ
 (`wd14-swinv2`, `wd14-vit`, `gguf`, `hf`), `existing` (`skip`, `merge`,
 `replace_after_review`), `general_threshold` and `character_threshold` (0–1 in
 steps of 0.05, #369),
-`template` (non-blank, at most 4,000 characters and 16 KiB) and `suggestion_limit`
-(1–100). They are host drafts (`autotag_model_type`, `autotag_existing`,
-`autotag_general_threshold`, `autotag_character_threshold`, `autotag_template`,
-`autotag_suggestion_limit`) saved by the one Save row through `POST
+`suggestion_limit` (1–100), and since #431 `skipped_tags`, `instructions` and
+`default_instructions` (below). They are host drafts (`autotag_model_type`, `autotag_existing`,
+`autotag_general_threshold`, `autotag_character_threshold`, `autotag_suggestion_limit`,
+`autotag_skipped_tags`, `autotag_instructions`, `autotag_default_instructions`) saved by the one Save row through `POST
 /prompt_manager/settings` with `expected_revision`; a bad value is refused with a 400
 naming the setting by its row label ("General-tag confidence must be between 0 and
 1."), nothing is written, the Save row shows that sentence (`invalid-setting`, set by
 `settingRefusal` in system.mjs only for a save that carried `autotag_*` keys; every
 other section's plain 400 keeps the generic status) and the control is highlighted.
-The template's limit counts code points, as Python's `len` does. A hand-edited bad value
+Instruction text limits count code points, as Python's `len` does. A hand-edited bad value
 falls back to its default on load, one key at a time. Every page shows the thresholds in
 steps of 0.05 (the System rows, the Tag image dialogs, the legacy sliders), so a saved
 threshold off that grid is refused ("General-tag confidence must be a multiple of
@@ -5255,8 +5349,42 @@ stored exactly on the grid (#369). A per-request threshold keeps its own check: 
 `validate_options` and starts the `autotag` job titled "Tag output images (legacy page)";
 the legacy `/autotag/single` only requires a number. `GET /autotag/models` reports the
 saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
-`default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
-dialogs start from them; a preset (the bulk review, Preview tagging review) wins.
+`default_prompt`, `model_type`, `existing`, and since #431 `instructions` and
+`default_instructions`), so the Tag image and Auto-tag selected dialogs start from them;
+a preset (the bulk review, Preview tagging review) wins.
+
+**Saved instructions** (#431, D203, D205): `autotag.defaults.instructions` holds the
+saved entries `[{id, name, text}]` in order (at most 20; `id` 12 lowercase hex made by
+the client, unique, `builtin` reserved; `name` trimmed, 1–60 characters, no control
+character, unique case-folded, not "Built-in"; `text` as `validate_template`), and
+`autotag.defaults.default_instructions` is `{gguf, hf}`, each `builtin` or a saved id.
+Built-in (`{id: "builtin", name: "Built-in", text: DEFAULT_TAG_TEMPLATE}`) is never
+stored; readers put it first (`AutotagConfig.all_instructions`), so a later release's
+built-in text reaches everyone who uses it. Refusals (400, the Save row shows them and
+highlights the editor): "Saved instructions: at most 20 entries besides Built-in.",
+"Saved instructions: entry N has an invalid id.", "… repeats the id of entry M.", "…
+needs a name.", "… name must be at most 60 characters.", "… name must not contain a line
+break.", "… name “X” is already used.", "Saved instructions: the name “Built-in” is
+reserved.", "Saved instructions: entry N text must be …", "Default for GGUF JoyCaption
+must be one of the saved instructions." (and HuggingFace). A save carrying either key
+without `expected_revision` is refused ("Reload the page and try again."); a save
+carrying one is paired with the other from the running configuration and both are
+written, plus the old `template` key as the GGUF default's text (deleted when that
+default is Built-in), so an older build reads that default as its one template. `POST`
+with `autotag_template` is refused ("LLM tag template was replaced by Saved instructions.
+Reload the page."); `GET` keeps returning it (the GGUF default's text, read-only) for one
+release and adds `autotag_builtin_instructions` (Built-in's text, read-only). Load: each
+key alone (a damaged list → Built-in only, a default naming nothing → Built-in, each with
+one warning), then the in-memory migration of the old `template`: with no `instructions`
+key, a template other than Built-in becomes "Custom template" (id = first 12 hex of its
+SHA-256), the default of both engines unless `default_instructions` is stored; with the
+key, a template matching no entry (edited on an older build) is appended as "Custom
+template (n)" with one INFO line (a full list: one WARNING, nothing imported). Nothing is
+written at load; the next save that carries either key writes the list.
+`AutotagConfig.default_instructions_text(engine)` feeds the legacy batch and single
+blank-prompt fallbacks (by the request's engine) and `default_prompt`. Tests:
+`tests/test_saved_instructions.py`, `tests/test_saved_instructions_routes.py`,
+`tests/js/workspace-system-instructions.test.js`.
 
 **Skipped tags** (#431, D202): `autotag.defaults.skipped_tags`, host draft
 `autotag_skipped_tags`, a list of at most 200 entries, each trimmed, 1–50 code points,

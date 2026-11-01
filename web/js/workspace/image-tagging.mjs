@@ -17,7 +17,8 @@
  * flight at close keeps its capture until it settles, and its outcome is still toasted and announced.
  */
 import { createButton, createScope } from '../shared/toolkit/core.js';
-import { createImageTaggingController, MODEL_OPTIONS, optionError } from './image-tagging-state.mjs';
+import { createImageTaggingController, EDITED_LABEL, EDITED_NOTE, EDITED_VALUE, MODEL_OPTIONS, engineDefault, optionError }
+    from './image-tagging-state.mjs';
 import { closeWorkspaceDialog, field, openContentDialog } from './workspace-dialogs.mjs';
 import { createWorkspaceIcon } from './icons.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -107,9 +108,13 @@ function numberInput(value, {min, max, step}) {
  * It follows `controller` until `scope` is disposed (reused by the bulk Auto-tag dialog, D85, without Generate:
  * `generate: false`). Returns the `element`, `validate()` (the fields' native validity, then what the controller would
  * refuse; true when valid, else the first invalid field reports) and `requestGenerate()`, Generate's own path (field
- * validity first), for a Retry after a failed Generate.
+ * validity first), for a Retry after a failed Generate. D204 (#431): for a language model, a "Saved instructions" select
+ * (`pickId`) sits above "Tagging instructions": it starts at the engine's default ("<name> · default"), a pick replaces
+ * the text, and while the text differs from the picked entry it shows "Edited for this run" (not choosable) with a
+ * muted note under the textarea.
  */
-export function renderModelPanel({scope, controller, heading = 'Auto-tag this image', generate: withGenerate = true}) {
+export function renderModelPanel({scope, controller, heading = 'Auto-tag this image', generate: withGenerate = true,
+    pickId = 'image-tag-instructions-pick'}) {
     const panel = el('div', undefined, 'tag-model-panel');
     const select = el('select');
     for (const option of MODEL_OPTIONS) {
@@ -125,9 +130,35 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
     if (withGenerate) panel.append(generate);
     const inputs = new Map();
     let shownModel = null, shownOptions = null;
+    // D204: the Saved instructions select and the one-off note, while a language model is chosen.
+    let pick = null, editedNote = null, shownEdited = null;
+
+    /** The select's options: every entry (the engine default marked), plus "Edited for this run" while edited. */
+    function fillPick(state) {
+        shownEdited = state.instructionsEdited;
+        const fallback = engineDefault(state.instructionChoices, state.model).id;
+        pick.replaceChildren(...state.instructionChoices.entries.map(entry => {
+            const option = el('option', entry.id === fallback ? `${entry.name} · default` : entry.name);
+            option.value = entry.id;
+            return option;
+        }));
+        if (state.instructionsEdited) {
+            const option = el('option', EDITED_LABEL);
+            option.value = EDITED_VALUE;
+            option.disabled = true;
+            pick.append(option);
+        }
+        pick.value = state.instructionsEdited ? EDITED_VALUE : state.instructionId;
+        editedNote.hidden = !state.instructionsEdited;
+        // The note describes the textarea while it shows.
+        const area = inputs.get('instructions');
+        if (state.instructionsEdited) area?.setAttribute('aria-describedby', editedNote.id);
+        else area?.removeAttribute('aria-describedby');
+    }
 
     function renderOptions(state) {
         inputs.clear();
+        pick = editedNote = null;
         const classifier = MODEL_OPTIONS.find(option => option.id === state.model).classifier;
         const rows = [];
         if (classifier) {
@@ -139,10 +170,17 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
             }
             rows.push(pair);
         } else {
+            pick = el('select');
+            pick.addEventListener('change', () => { if (pick.value !== EDITED_VALUE) controller.pickInstructions(pick.value); });
+            rows.push(field('Saved instructions', pick, pickId));
             const area = el('textarea');
             area.value = state.options.instructions;
             inputs.set('instructions', area);
             rows.push(field('Tagging instructions', area, OPTION_IDS.instructions));
+            editedNote = el('p', EDITED_NOTE, 'small instructions-edited');
+            editedNote.id = `${pickId}-note`;
+            rows.push(editedNote);
+            fillPick(state);
         }
         // D91: the number of suggestions, for every model.
         const count = numberInput(state.options.suggestion_limit, {min: '1', max: '100', step: '1'});
@@ -162,7 +200,13 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
             shownModel = state.model;
             shownOptions = state.optionsRevision;
             select.value = state.model;
+            // A pick re-renders the fields; keyboard focus stays on the select it was made with.
+            const picking = pick !== null && document.activeElement === pick;
             renderOptions(state);
+            if (picking) pick?.focus();
+        } else if (pick && state.instructionsEdited !== shownEdited) {
+            // Typing never re-renders the fields (I1): only the select and the note follow an edit.
+            fillPick(state);
         }
         setDisabled(generate, !state.canGenerate);
     }

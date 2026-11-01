@@ -1144,8 +1144,10 @@ class TestEnvelopes(AnnotationAPITestCase):
         self.assertEqual(
             sorted(await self.json_of(resp)),
             [
+                "default_instructions",  # #431 adds the saved instructions
                 "default_prompt",
                 "existing",  # #328 adds the saved batch policy and model
+                "instructions",
                 "loaded_model_type",
                 "model_loaded",
                 "model_type",

@@ -49,6 +49,8 @@ export const OPERATION_TITLES = Object.freeze({
     duplicate_prompts: 'Duplicate prompt text',
     optimize: 'Optimize database',
     unused_components: 'Unused prompt components',
+    // D192 (#550): beyond the concept, System › Maintenance › Database.
+    pair_metadata: 'Pair category and tags',
     missing_links: 'Missing-file links',
     duplicate_files: 'Duplicate image files',
     // Reviewed and applied through the API and seen in Activity; Maintenance has no row for it (the concept has none).

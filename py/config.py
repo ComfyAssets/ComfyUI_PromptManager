@@ -30,6 +30,7 @@ routes = server_instance.routes
 # Extension info
 extension_uri = None  # Will be set in __init__.py
 
+import hashlib  # noqa: E402
 import os  # noqa: E402
 from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
@@ -590,6 +591,12 @@ try:
         validate_skipped_tags,
         validate_template,
         validate_threshold,
+        BUILTIN_INSTRUCTIONS_ID,
+        INSTRUCTION_ENGINES,
+        MAX_SAVED_INSTRUCTIONS,
+        builtin_instructions,
+        validate_default_instructions,
+        validate_instructions,
     )
 except ImportError:
     from py.tagging_defaults import (  # noqa: F401 - re-exported
@@ -604,6 +611,12 @@ except ImportError:
         validate_skipped_tags,
         validate_template,
         validate_threshold,
+        BUILTIN_INSTRUCTIONS_ID,
+        INSTRUCTION_ENGINES,
+        MAX_SAVED_INSTRUCTIONS,
+        builtin_instructions,
+        validate_default_instructions,
+        validate_instructions,
     )
 
 
@@ -623,13 +636,24 @@ def _valid_skipped_tags(value: Any) -> Tuple[str, ...]:
     return tuple(validate_skipped_tags(value))
 
 
+def _reason(error: ValueError) -> str:
+    """A settings sentence as a load warning's reason ("entry 2 is empty")."""
+    text = str(error).rstrip(".")
+    for prefix in ("Skipped tags", "Saved instructions"):
+        if text.startswith(prefix):
+            return text.removeprefix(prefix).lstrip(": ")
+    return text
+
+
+def _text_id(text: str) -> str:
+    """A migrated entry's id: deterministic, so every load gives the same."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
 def _fallback_warning(key: str, error: ValueError, default: Any) -> str:
     """The one load warning of a saved tagging default that fails its check."""
-    if key == "template":
-        return f"autotag.defaults.template {error}; using the built-in one"
     if key == "skipped_tags":
-        reason = str(error).removeprefix("Skipped tags").lstrip(": ").rstrip(".")
-        return f"autotag.defaults.skipped_tags {reason}; using no skipped tags"
+        return f"autotag.defaults.skipped_tags {_reason(error)}; using no skipped tags"
     return f"autotag.defaults.{key} {error}; using {default!r}"
 
 
@@ -653,9 +677,18 @@ class AutotagConfig:
     EXISTING = "skip"
     GENERAL_THRESHOLD = 0.35
     CHARACTER_THRESHOLD = 0.85
-    TEMPLATE = DEFAULT_TAG_TEMPLATE
     SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
     SKIPPED_TAGS: Tuple[str, ...] = ()
+    # #431: the saved instructions (Built-in is never stored) and the default
+    # of each language-model engine, by id.
+    INSTRUCTIONS: Tuple[Dict[str, str], ...] = ()
+    DEFAULT_INSTRUCTIONS: Dict[str, str] = {
+        "gguf": BUILTIN_INSTRUCTIONS_ID,
+        "hf": BUILTIN_INSTRUCTIONS_ID,
+    }
+    # The old single template as read at load (None when absent or invalid);
+    # only the migration reads it. Saves keep it as the GGUF default's mirror.
+    _LEGACY_TEMPLATE: Optional[str] = None
 
     # config.json key -> (attribute, validator, default)
     _KEYS = {
@@ -671,7 +704,6 @@ class AutotagConfig:
             lambda v: validate_saved_threshold("value", v),
             0.85,
         ),
-        "template": ("TEMPLATE", validate_template, DEFAULT_TAG_TEMPLATE),
         "suggestion_limit": (
             "SUGGESTION_LIMIT",
             _valid_suggestion_limit,
@@ -692,16 +724,140 @@ class AutotagConfig:
         )  # bool, float and str are rejected
 
     @classmethod
+    def all_instructions(cls) -> List[Dict[str, str]]:
+        """Built-in first, then the saved entries (copies)."""
+        return [builtin_instructions()] + [dict(item) for item in cls.INSTRUCTIONS]
+
+    @classmethod
+    def default_instructions_text(cls, engine: str) -> str:
+        """The text of ``engine``'s (``gguf`` or ``hf``) default instructions."""
+        if engine not in INSTRUCTION_ENGINES:
+            raise ValueError(f"{engine} takes no instructions")
+        wanted = cls.DEFAULT_INSTRUCTIONS.get(engine, BUILTIN_INSTRUCTIONS_ID)
+        for item in cls.INSTRUCTIONS:
+            if item["id"] == wanted:
+                return item["text"]
+        return DEFAULT_TAG_TEMPLATE
+
+    @classmethod
+    def mirror_template(cls) -> Optional[str]:
+        """What an older build reads as its one template (#431 B1.1): the
+        GGUF default's text, or None (no key) when that default is Built-in."""
+        if cls.DEFAULT_INSTRUCTIONS.get("gguf") == BUILTIN_INSTRUCTIONS_ID:
+            return None
+        return cls.default_instructions_text("gguf")
+
+    @classmethod
     def get_config(cls) -> Dict[str, Any]:
-        """The saved defaults; the template only when it is not the built-in
-        one, so a later built-in template still reaches who never set one."""
+        """The saved defaults; ``template`` only as the GGUF default's mirror."""
         defaults = {
             key: getattr(cls, attr) for key, (attr, _v, _d) in cls._KEYS.items()
         }
-        if defaults["template"] == DEFAULT_TAG_TEMPLATE:
-            del defaults["template"]
         defaults["skipped_tags"] = list(defaults["skipped_tags"])
+        defaults["instructions"] = [dict(item) for item in cls.INSTRUCTIONS]
+        defaults["default_instructions"] = dict(cls.DEFAULT_INSTRUCTIONS)
+        mirror = cls.mirror_template()
+        if mirror is not None:
+            defaults["template"] = mirror
         return {"defaults": defaults}
+
+    @classmethod
+    def _load_instructions(cls, defaults: Dict[str, Any]) -> None:
+        """Each instruction key alone, then the cross-key default check, then
+        the in-memory migration of the old template (#431). Nothing is
+        written here, so the revision never changes at load."""
+        cls._LEGACY_TEMPLATE = None
+        if "template" in defaults:
+            try:
+                cls._LEGACY_TEMPLATE = validate_template(defaults["template"])
+            except ValueError as error:
+                config_logger.warning(
+                    f"autotag.defaults.template {error}; using the built-in one"
+                )
+        entries: List[Dict[str, str]] = []
+        damaged = False
+        if "instructions" in defaults:
+            try:
+                entries = validate_instructions(defaults["instructions"])
+            except ValueError as error:
+                damaged = True
+                config_logger.warning(
+                    f"autotag.defaults.instructions {_reason(error)}; "
+                    "using Built-in only"
+                )
+        chosen = {engine: BUILTIN_INSTRUCTIONS_ID for engine in INSTRUCTION_ENGINES}
+        stored = defaults.get("default_instructions")
+        if damaged:
+            # Both defaults fall back with the list (its one warning says so);
+            # the old template is migrated as on a first upgrade.
+            pass
+        elif "default_instructions" in defaults and (
+            not isinstance(stored, dict) or set(stored) != set(INSTRUCTION_ENGINES)
+        ):
+            config_logger.warning(
+                "autotag.defaults.default_instructions must name gguf and hf; "
+                "using Built-in"
+            )
+        elif isinstance(stored, dict):
+            ids = {item["id"] for item in entries}
+            for engine in INSTRUCTION_ENGINES:
+                value = stored[engine]
+                if isinstance(value, str) and (
+                    value == BUILTIN_INSTRUCTIONS_ID or value in ids
+                ):
+                    chosen[engine] = value
+                else:
+                    config_logger.warning(
+                        f"autotag.defaults.default_instructions.{engine} names no "
+                        "saved instructions; using Built-in"
+                    )
+        cls._migrate_template(
+            entries,
+            chosen,
+            first=damaged or "instructions" not in defaults,
+            keep_defaults=not damaged and "default_instructions" in defaults,
+        )
+        cls.INSTRUCTIONS = tuple(entries)
+        cls.DEFAULT_INSTRUCTIONS = chosen
+
+    @classmethod
+    def _migrate_template(cls, entries, chosen, *, first, keep_defaults) -> None:
+        """Bring a template saved by an older build in as a named entry."""
+        legacy = cls._LEGACY_TEMPLATE
+        if legacy is None or legacy == DEFAULT_TAG_TEMPLATE:
+            return
+        if first:
+            # The first upgrade: it becomes "Custom template", the default for
+            # both engines unless defaults are stored already (20A).
+            entries.append(
+                {"id": _text_id(legacy), "name": "Custom template", "text": legacy}
+            )
+            if not keep_defaults:
+                for engine in INSTRUCTION_ENGINES:
+                    chosen[engine] = entries[-1]["id"]
+            return
+        if any(item["text"] == legacy for item in entries):
+            return  # the mirror of a saved default
+        # Edited on an older build after an upgrade (B1.2): import it.
+        if len(entries) >= MAX_SAVED_INSTRUCTIONS:
+            config_logger.warning(
+                "The tagging template edited on an older version was not imported: "
+                f"the saved instructions are full ({MAX_SAVED_INSTRUCTIONS})"
+            )
+            return
+        names = {item["name"].casefold() for item in entries}
+        number = 2
+        while f"custom template ({number})" in names:
+            number += 1
+        name = f"Custom template ({number})"
+        ids = {item["id"] for item in entries}
+        new_id, n = _text_id(legacy), 2
+        while new_id in ids:
+            new_id, n = _text_id(f"{legacy}\n{n}"), n + 1
+        entries.append({"id": new_id, "name": name, "text": legacy})
+        config_logger.info(
+            "Imported the tagging template edited on an older version as " f"'{name}'"
+        )
 
     @classmethod
     def update_config(cls, new_config: Any) -> None:
@@ -720,6 +876,7 @@ class AutotagConfig:
             except ValueError as error:
                 config_logger.warning(_fallback_warning(key, error, default))
                 setattr(cls, attr, default)
+        cls._load_instructions(defaults)
 
 
 class PromptManagerConfig:

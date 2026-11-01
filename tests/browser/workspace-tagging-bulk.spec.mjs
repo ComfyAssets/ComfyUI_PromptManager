@@ -341,3 +341,21 @@ test('a running scan makes the start report busy', async ({ page, request }) => 
         await request.post(`/__test__/jobs/${scan.job.id}/finish`, { data: { state: 'finished' } });
     }
 });
+
+// D204 (#431): Auto-tag selected has the same picker; the job sends the text the dialog shows.
+test('Auto-tag selected picks saved instructions and sends the text shown (D204)', async ({ page }) => {
+    await select(page, FIRST);
+    await barButton(page, 'Auto-tag selected').click();
+    await expect(title(page)).toHaveText('Auto-tag selected images');
+    const body = modal(page).locator('#modal-body');
+    await body.getByRole('combobox', { name: 'Tagging model', exact: true }).selectOption('gguf');
+    const pick = body.getByRole('combobox', { name: 'Saved instructions', exact: true });
+    await expect(pick).toHaveAttribute('id', 'bulk-tag-instructions-pick');
+    await expect(pick.locator('option')).toHaveText(['Built-in', 'Describe the image · default']);
+    const text = body.getByRole('textbox', { name: 'Tagging instructions', exact: true });
+    await text.fill('Bulk one-off.');
+    await expect(pick.locator('option:checked')).toHaveText('Edited for this run');
+    const started = jobStart(page);
+    await actionButtons(page).filter({ hasText: 'Start auto-tagging' }).click();
+    expect((await started).postDataJSON().options.instructions).toBe('Bulk one-off.');
+});

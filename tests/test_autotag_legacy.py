@@ -158,7 +158,30 @@ class TestLegacyBatch(LegacyTestCase):
         self.image("b.png", (2, 2, 2))
         await self.relist()
         await self.legacy("model_type=gguf&prompt=%20")
-        self.assertEqual(self.tagger.calls[-1]["prompt"], AutotagConfig.TEMPLATE)
+        self.assertEqual(
+            self.tagger.calls[-1]["prompt"],
+            AutotagConfig.default_instructions_text("gguf"),
+        )
+        # #431: a blank prompt falls back to the request engine's own default.
+        saved = (AutotagConfig.INSTRUCTIONS, AutotagConfig.DEFAULT_INSTRUCTIONS)
+        self.addCleanup(
+            lambda: (
+                setattr(AutotagConfig, "INSTRUCTIONS", saved[0]),
+                setattr(AutotagConfig, "DEFAULT_INSTRUCTIONS", saved[1]),
+            )
+        )
+        AutotagConfig.INSTRUCTIONS = (
+            {"id": "0123456789ab", "name": "Photo", "text": "Photo tags."},
+        )
+        AutotagConfig.DEFAULT_INSTRUCTIONS = {"gguf": "builtin", "hf": "0123456789ab"}
+        for model_type, expected in (
+            ("hf", "Photo tags."),
+            ("gguf", AutotagConfig.default_instructions_text("gguf")),
+        ):
+            self.image(f"{model_type}.png", (3, 3, len(model_type)))
+            await self.relist()
+            await self.legacy(f"model_type={model_type}&prompt=%20&skip_tagged=false")
+            self.assertEqual(self.tagger.calls[-1]["prompt"], expected, model_type)
         self.assertEqual(self.tagger.custom_prompt, "legacy prompt")
 
     async def test_a_missing_backend_package_is_one_error_frame(self):

@@ -54,13 +54,24 @@ _SETTINGS_FILE_KEYS = {
     "AUTOTAG_EXISTING": ("autotag", "defaults", "existing"),
     "AUTOTAG_GENERAL_THRESHOLD": ("autotag", "defaults", "general_threshold"),
     "AUTOTAG_CHARACTER_THRESHOLD": ("autotag", "defaults", "character_threshold"),
-    "AUTOTAG_TEMPLATE": ("autotag", "defaults", "template"),
     "AUTOTAG_SUGGESTION_LIMIT": ("autotag", "defaults", "suggestion_limit"),
     "AUTOTAG_SKIPPED_TAGS": ("autotag", "defaults", "skipped_tags"),
+    # #431: the saved instructions and each engine's default, always written
+    # together (server-side pairing).
+    "AUTOTAG_INSTRUCTIONS": ("autotag", "defaults", "instructions"),
+    "AUTOTAG_DEFAULT_INSTRUCTIONS": ("autotag", "defaults", "default_instructions"),
 }
+# The old single template: written only as the GGUF default's mirror for a
+# downgrade (#431 B1.1), deleted when that default is Built-in.
+_TEMPLATE_MIRROR_KEY = ("autotag", "defaults", "template")
+TEMPLATE_REPLACED_ERROR = (
+    "LLM tag template was replaced by Saved instructions. Reload the page."
+)
 # Whole-list settings (#431): a save without ``expected_revision`` would merge
 # a stale copy over a list changed elsewhere, so it is refused.
-_REVISION_REQUIRED = frozenset({"autotag_skipped_tags"})
+_REVISION_REQUIRED = frozenset(
+    {"autotag_skipped_tags", "autotag_instructions", "autotag_default_instructions"}
+)
 REVISION_REQUIRED_ERROR = "Reload the page and try again."
 # The thumbnail settings a running Convert outdated job fixes (#317).
 _THUMBNAIL_SETTINGS = ("THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY", "THUMBNAIL_EDGE")
@@ -142,13 +153,20 @@ def _settings_mutation(updates, new_roots):
     """The config commit for a settings save: only the submitted keys change.
 
     Every other section and key (integrations and the CivitAI key, database,
-    unknown sections) is kept as it is on disk.
+    unknown sections) is kept as it is on disk. A save of the instructions
+    also writes the old ``template`` key as the GGUF default's mirror.
     """
 
     def mutate(config):
         for name, value in updates.items():
             *sections, key = _SETTINGS_FILE_KEYS[name]
-            _set_nested(config, sections, key, value)
+            _set_nested(config, sections, key, _jsonable(value))
+        if "AUTOTAG_INSTRUCTIONS" in updates:
+            *sections, key = _TEMPLATE_MIRROR_KEY
+            mirror = _mirror_text(
+                updates["AUTOTAG_INSTRUCTIONS"], updates["AUTOTAG_DEFAULT_INSTRUCTIONS"]
+            )
+            _set_nested(config, sections, key, _DELETE if mirror is None else mirror)
         if new_roots is not None:
             gallery = _section(config, "gallery")
             monitoring = _section(gallery, "monitoring")
@@ -160,10 +178,37 @@ def _settings_mutation(updates, new_roots):
     return mutate
 
 
+# ``_set_nested``'s value that removes the key instead of setting it.
+_DELETE = object()
+
+
+def _jsonable(value):
+    """A runtime value as config.json holds it (tuples become lists)."""
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _mirror_text(entries, defaults):
+    """The GGUF default's text, or None when it is Built-in (#431 B1.1)."""
+    from ..tagging_defaults import BUILTIN_INSTRUCTIONS_ID
+
+    for item in entries:
+        if item["id"] == defaults["gguf"] != BUILTIN_INSTRUCTIONS_ID:
+            return item["text"]
+    return None
+
+
 def _set_nested(config, sections, key, value):
-    """``config[s1][s2]...[key] = value``, each section a fresh dict."""
+    """``config[s1][s2]...[key] = value``, each section a fresh dict;
+    ``_DELETE`` removes the key."""
     if not sections:
-        config[key] = value
+        if value is _DELETE:
+            config.pop(key, None)
+        else:
+            config[key] = value
         return
     merged = _section(config, sections[0])
     _set_nested(merged, sections[1:], key, value)
@@ -182,7 +227,6 @@ def _validate_autotag_settings(data):
         MODEL_TYPES,
         validate_saved_threshold,
         validate_skipped_tags,
-        validate_template,
     )
 
     updates = {}
@@ -211,12 +255,7 @@ def _validate_autotag_settings(data):
                 raise ValueError(f"{error}.") from None
             updates[key.upper()] = value
     if "autotag_template" in data:
-        try:
-            updates["AUTOTAG_TEMPLATE"] = validate_template(
-                data["autotag_template"], "LLM tag template"
-            )
-        except ValueError as error:
-            raise ValueError(f"{error}.") from None
+        raise ValueError(TEMPLATE_REPLACED_ERROR)
     if "autotag_suggestion_limit" in data:
         value = data["autotag_suggestion_limit"]
         if type(value) is not int or not 1 <= value <= MAX_SUGGESTION_LIMIT:
@@ -229,7 +268,35 @@ def _validate_autotag_settings(data):
         updates["AUTOTAG_SKIPPED_TAGS"] = tuple(
             validate_skipped_tags(data["autotag_skipped_tags"])
         )
+    updates.update(_validate_instruction_settings(data))
     return updates
+
+
+def _validate_instruction_settings(data):
+    """Server-side pairing (#431): a save that carries either instruction key
+    gets the other from the running configuration (which holds the migrated
+    list), the defaults are checked against the merged list, and both are
+    written. Empty when the save carries neither."""
+    from ..config import AutotagConfig
+    from ..tagging_defaults import (
+        validate_default_instructions,
+        validate_instructions,
+    )
+
+    if not {"autotag_instructions", "autotag_default_instructions"} & set(data):
+        return {}
+    if "autotag_instructions" in data:
+        entries = validate_instructions(data["autotag_instructions"])
+    else:
+        entries = [dict(item) for item in AutotagConfig.INSTRUCTIONS]
+    defaults = data.get(
+        "autotag_default_instructions", dict(AutotagConfig.DEFAULT_INSTRUCTIONS)
+    )
+    defaults = validate_default_instructions(defaults, entries)
+    return {
+        "AUTOTAG_INSTRUCTIONS": tuple(entries),
+        "AUTOTAG_DEFAULT_INSTRUCTIONS": defaults,
+    }
 
 
 async def _read_json(request):
@@ -259,6 +326,7 @@ class SettingsRoutesMixin:
         """Get current settings."""
         try:
             from ..config import AutotagConfig, PromptManagerConfig, GalleryConfig
+            from ..tagging_defaults import DEFAULT_TAG_TEMPLATE
 
             root_paths = [
                 self._public_path(d) for d in GalleryConfig.MONITORING_DIRECTORIES
@@ -291,7 +359,19 @@ class SettingsRoutesMixin:
                         "autotag_character_threshold": (
                             AutotagConfig.CHARACTER_THRESHOLD
                         ),
-                        "autotag_template": AutotagConfig.TEMPLATE,
+                        # Read-only for one release (#431): a page cached
+                        # from before the upgrade still renders.
+                        "autotag_template": AutotagConfig.default_instructions_text(
+                            "gguf"
+                        ),
+                        "autotag_instructions": [
+                            dict(item) for item in AutotagConfig.INSTRUCTIONS
+                        ],
+                        "autotag_default_instructions": dict(
+                            AutotagConfig.DEFAULT_INSTRUCTIONS
+                        ),
+                        # Built-in's text, which System shows read-only.
+                        "autotag_builtin_instructions": DEFAULT_TAG_TEMPLATE,
                         "autotag_suggestion_limit": AutotagConfig.SUGGESTION_LIMIT,
                         "autotag_skipped_tags": list(AutotagConfig.SKIPPED_TAGS),
                         "cpu_count": PromptManagerConfig.max_worker_threads(),
@@ -525,6 +605,12 @@ class SettingsRoutesMixin:
         for name, value in updates.items():
             if name in _AUTOTAG_SETTINGS:
                 setattr(AutotagConfig, name[len(_AUTOTAG_PREFIX) :], value)
+                continue
+        if "AUTOTAG_INSTRUCTIONS" in updates:
+            # What config.json now holds as the old key (the mirror).
+            AutotagConfig._LEGACY_TEMPLATE = AutotagConfig.mirror_template()
+        for name, value in updates.items():
+            if name in _AUTOTAG_SETTINGS:
                 continue
             owner = GalleryConfig if name in _GALLERY_SETTINGS else PromptManagerConfig
             setattr(owner, name, value)

@@ -513,15 +513,40 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     .skip-add { max-width: none; /* D202 */ }
 }
 
+/* D203 (#431): "Saved instructions": the list (Built-in first, its chips) beside the Name/Text editor, stacked under
+   it below 700px, and the note a deleted default leaves under the two default rows. */
+.instructions-layout { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 18px; margin-top: 12px; /* D203 */ }
+.instruction-list { border: 1px solid var(--line); border-radius: 6px; background: var(--ca-field); max-height: 300px; overflow: auto; /* D203 */ }
+.instruction-list [role="option"] { display: flex; flex-direction: column; gap: 4px; padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--line); font-size: 12px; /* D203 */ }
+.instruction-list [role="option"]:last-child { border-bottom: 0; /* D203 */ }
+.instruction-list [role="option"][aria-selected="true"] { background: var(--soft-blue); box-shadow: inset 3px 0 0 var(--ca-accent); /* D203 */ }
+.instruction-list .badges { display: flex; flex-wrap: wrap; gap: 4px; /* D203 */ }
+.instruction-actions { margin-top: 10px; flex-wrap: wrap; /* D203 */ }
+.instruction-editor .field:first-child { margin-top: 0; /* D203 */ }
+.instruction-editor input[readonly], .instruction-editor textarea[readonly] { color: var(--ca-muted); /* D203 */ }
+.instruction-editor label { display: flex; justify-content: space-between; gap: 8px; /* D203 */ }
+.instruction-reset { color: var(--warning); margin: 0 0 14px; /* D203 */ }
+.instruction-reset:empty { display: none; /* D203 */ }
+@media (max-width: 700px) {
+    .instructions-layout { grid-template-columns: 1fr; /* D203 */ }
+}
+
+/* D204 (#431): the one-off edit's note under "Tagging instructions" in the Tag image and Auto-tag selected dialogs. */
+.tag-model-panel .instructions-edited { margin: -6px 0 12px; /* D204 */ }
+.tag-model-panel .instructions-edited[hidden] { display: none; /* D204 */ }
+
 /* D132: at phone width the concept's 120px cap cuts every engine label ("WD14 SwinV2 · ~400 MB"); the Tagging model
    select alone keeps its natural width there (its widest engine label) and, with no room beside the row text, wraps
    under it. Existing tags (#398) never shrinks for its row text and, past the cap, keeps its natural width beside the
    text ("Replace after review"), bounded by its row like the engine select. */
 .setting-row #tag-existing { flex-shrink: 0; /* D132 */ }
+/* D203: the default-instructions selects show their chosen name whole, as Existing tags does (#398). */
+.setting-row #instruction-default-gguf, .setting-row #instruction-default-hf { flex-shrink: 0; /* D203 */ }
 @media (max-width: 700px) {
   #workspace-main .setting-row:has(> #tag-model) { flex-wrap: wrap; /* D132 */ }
   #workspace-main .setting-row #tag-model { flex-shrink: 0; max-width: 100% !important; /* D132 */ }
   #workspace-main .setting-row #tag-existing { max-width: 100% !important; /* D132 */ }
+  #workspace-main .setting-row #instruction-default-gguf, #workspace-main .setting-row #instruction-default-hf { max-width: 100% !important; /* D203 */ }
 }
 
 /* D109: System › Diagnostics & logs' added Lines field sits in the concept's toolbar like its Level select, and a value

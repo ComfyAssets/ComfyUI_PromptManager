@@ -64,11 +64,31 @@ function measureMaintenance(mainSelector) {
     };
 }
 
-/** D102: the Metadata cache row says why its review is unavailable and its button is aria-disabled (D93's dimmed style). */
-function mapMaintenanceConcept(reference) {
+/**
+ * D192 (#550, beyond the concept): Database adds "Pair category and tags" after "Unused prompt components", shaped like
+ * the concept's plain Review plan row (Optimize database's).
+ */
+function mapPairRow(reference) {
     return {
         ...reference,
-        surfaces: reference.surfaces.map(surface => ({ ...surface, rows: surface.rows.map(row => row.title !== 'Metadata cache' ? row : {
+        surfaces: reference.surfaces.map(surface => {
+            const plain = surface.rows.find(row => row.title === 'Optimize database');
+            const at = surface.rows.findIndex(row => row.title === 'Unused prompt components');
+            if (!plain || at < 0) return surface;
+            return { ...surface, tree: [...surface.tree, 'div.operation'], rows: [...surface.rows.slice(0, at + 1),
+                { ...plain, title: 'Pair category and tags', description: 'Fill an empty category or tags on prompts older ' +
+                    'Pair node runs saved, from their saved pairs. Only empty fields of never-edited prompts.' },
+                ...surface.rows.slice(at + 1)] };
+        }),
+    };
+}
+
+/** D102: the Metadata cache row says why its review is unavailable and its button is aria-disabled (D93's dimmed style). */
+function mapMaintenanceConcept(reference) {
+    const mapped = mapPairRow(reference);
+    return {
+        ...mapped,
+        surfaces: mapped.surfaces.map(surface => ({ ...surface, rows: surface.rows.map(row => row.title !== 'Metadata cache' ? row : {
             ...row, description: `${row.description} Nothing is cached in this browser.`,
             actions: row.actions.map(action => ({ ...action, opacity: '0.55', cursor: 'not-allowed' })) }) })),
     };
@@ -209,8 +229,8 @@ test('maintenance comparison detects mutations', async ({ page, request }) => {
     const expected = mapMaintenanceConcept(concept);
     const production = await productionMaintenance(page, 'dark');
     expect(diffInventory(expected, production)).toEqual([]);
-    // Unmapped, the section differs only on the D102 row.
-    expect(diffInventory(concept, production).map(item => item.path).sort()).toEqual([
+    // Mapped only for the D192 row, the section differs only on the D102 row.
+    expect(diffInventory(mapPairRow(concept), production).map(item => item.path).sort()).toEqual([
         'surfaces.1.rows.3.actions.0.cursor', 'surfaces.1.rows.3.actions.0.opacity', 'surfaces.1.rows.3.description']);
     const measure = () => page.evaluate(measureMaintenance, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);

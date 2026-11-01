@@ -31,6 +31,26 @@ const SOURCES = new Set(['images', 'library', 'review', 'tags', 'bulk']);
 const OPTION_KEYS = new Set(['general_threshold', 'character_threshold', 'instructions', 'suggestion_limit']);
 const DEFAULTS = Object.freeze({general_threshold: 0.35, character_threshold: 0.85, instructions: '', suggestion_limit: 10});
 const MAX_SUGGESTIONS = 100;
+/**
+ * #431: Built-in's text (`DEFAULT_TAG_TEMPLATE` in py/tagging_defaults.py, pinned equal by
+ * tests/test_saved_instructions.py), for when `/autotag/models` cannot be read.
+ */
+export const BUILTIN_INSTRUCTIONS = 'Generate only comma-separated Danbooru tags (lowercase_underscores, no spaces).\n'
+    + 'Include: subject_count (1girl/1boy/etc), gender, ethnicity (asian, caucasian, etc), age_approx (teen, young_woman), '
+    + 'body_attributes, face_features, hairstyle, appearance, clothing, accessories, pose, expression, action, camera_angle, '
+    + 'camera_shot, scene_composition (wide_shot, long_shot, dutch_angle), environment, background_elements, lighting, mood.\n'
+    + 'Prioritize visual accuracy.\n'
+    + 'No sentences, no commentary, no captions. Only tags. Keep length short but descriptive.';
+export const BUILTIN_ID = 'builtin';
+/** The saved instructions when the server cannot say (D204): Built-in only, the default of both engines. */
+const FALLBACK_CHOICES = Object.freeze({
+    entries: Object.freeze([Object.freeze({id: BUILTIN_ID, name: 'Built-in', text: BUILTIN_INSTRUCTIONS})]),
+    defaults: Object.freeze({gguf: BUILTIN_ID, hf: BUILTIN_ID}),
+});
+/** The value and label of the select's extra option while the text differs from the chosen entry (D204). */
+export const EDITED_VALUE = 'edited';
+export const EDITED_LABEL = 'Edited for this run';
+export const EDITED_NOTE = 'Edits apply to this run only. Manage saved instructions in System › Auto-tagging.';
 const MAX_INSTRUCTION_CHARS = 4000;
 const EDITABLE = new Set(['ready', 'generate-error', 'write-error', 'conflict']);
 // Answers after which only a fresh observation can save (the capture or epoch is gone); Retry observes again (D116).
@@ -182,27 +202,54 @@ function validateReceipt(value) {
     return value;
 }
 
+/** #431: the saved instructions of `/autotag/models` (Built-in first) and each engine's default, else Built-in only. */
+export function readChoices(value) {
+    const entries = Array.isArray(value?.instructions) ? value.instructions.filter(entry => object(entry)
+        && typeof entry.id === 'string' && typeof entry.name === 'string' && typeof entry.text === 'string') : [];
+    if (entries[0]?.id !== BUILTIN_ID) return FALLBACK_CHOICES;
+    const ids = new Set(entries.map(entry => entry.id));
+    const defaults = Object.fromEntries(['gguf', 'hf'].map(engine => {
+        const id = value?.default_instructions?.[engine];
+        return [engine, ids.has(id) ? id : BUILTIN_ID];
+    }));
+    return Object.freeze({entries: Object.freeze(entries.map(entry => Object.freeze({...entry}))), defaults: Object.freeze(defaults)});
+}
+
+/** The language-model engine whose default a model reads (GGUF for a WD14 model, which takes none). */
+const engineOf = model => (model === 'hf' ? 'hf' : 'gguf');
+/** The default entry of `model`'s engine. */
+export const engineDefault = (choices, model) => choices.entries.find(entry => entry.id === choices.defaults[engineOf(model)])
+    ?? choices.entries[0];
+/** The entry to show for `text` (a preset): the one with that text, else the engine's default. */
+const entryFor = (choices, model, text) => choices.entries.find(entry => entry.text === text) ?? engineDefault(choices, model);
+/** What the instruction fields hold for `model` with its engine's default (#431). */
+const instructionsFor = (choices, model) => {
+    const entry = engineDefault(choices, model);
+    return {instructionId: entry.id, text: entry.text};
+};
+
 /**
  * Thresholds, instructions and suggestion count from the server, else the documented defaults, the models'
- * download status (`models`, null when unknown) and the saved tagging model (`model`, null when unknown; #328).
+ * download status (`models`, null when unknown), the saved tagging model (`model`, null when unknown; #328) and the
+ * saved instructions (`choices`, #431).
  */
 async function readDefaults(api, signal) {
     try {
         const value = await api.get(MODELS_URL, {signal, cache: 'no-store'});
-        if (!object(value)) return {defaults: DEFAULTS, models: null, model: null};
+        if (!object(value)) return {defaults: DEFAULTS, models: null, model: null, choices: FALLBACK_CHOICES};
         return {
+            choices: readChoices(value),
             model: typeof value.model_type === 'string' && modelOf(value.model_type) ? value.model_type : null,
             defaults: {
                 general_threshold: unit(value.wd14_general_threshold) ? value.wd14_general_threshold : DEFAULTS.general_threshold,
                 character_threshold: unit(value.wd14_character_threshold) ? value.wd14_character_threshold : DEFAULTS.character_threshold,
-                instructions: typeof value.default_prompt === 'string' ? value.default_prompt : DEFAULTS.instructions,
                 suggestion_limit: limit(value.suggestion_limit) ? value.suggestion_limit : DEFAULTS.suggestion_limit,
             },
             models: object(value.models) ? value.models : null,
         };
     } catch {
         // The defaults keep the dialog usable; Generate reports a real failure itself.
-        return {defaults: DEFAULTS, models: null, model: null};
+        return {defaults: DEFAULTS, models: null, model: null, choices: FALLBACK_CHOICES};
     }
 }
 
@@ -258,6 +305,8 @@ function initialState(source, preset) {
         model: preset?.model ?? MODEL_OPTIONS[0].id, options: {...DEFAULTS, ...preset?.options}, generated: false, suggestions: [],
         suggestionsText: COPY.modelChanged, statusText: '', generateSupported: false, generateReason: null, toast: null,
         skippedCount: 0,
+        // #431 (D204): the saved instructions, each engine's default and the entry the select shows.
+        instructionChoices: FALLBACK_CHOICES, instructionId: BUILTIN_ID,
         // Bumped whenever the controller itself rewrites the option fields or the manual draft, never while typing.
         optionsRevision: 0, draftRevision: 0,
     };
@@ -269,6 +318,13 @@ export function skippedNote(count) {
     return count === 1 ? ' 1 skipped tag was not suggested.' : ` ${count.toLocaleString('en-US')} skipped tags were not suggested.`;
 }
 
+/** D204: whether a language model's instructions differ from the chosen saved entry's text (a one-off edit). */
+export function instructionsEdited(state) {
+    if (modelOf(state.model)?.classifier !== false) return false;
+    const entry = state.instructionChoices?.entries.find(item => item.id === state.instructionId);
+    return !entry || entry.text !== state.options.instructions;
+}
+
 /** Derived labels and permissions; never stored independently of the fields they follow. */
 function derive(state) {
     const editable = EDITABLE.has(state.phase);
@@ -277,6 +333,7 @@ function derive(state) {
         primaryLabel: state.generated ? 'Approve selected tags' : 'Save manual tags',
         countText: state.generated ? `${state.suggestions.length} ${noun(state.suggestions.length, 'suggestion')}` : 'Not generated',
         chipHint: state.suggestions.length ? COPY.chipHint + skippedNote(state.skippedCount) : '',
+        instructionsEdited: instructionsEdited(state),
         canSave: editable,
         canGenerate: editable && state.generateSupported,
         canRetry: RETRYABLE.has(state.phase),
@@ -394,6 +451,10 @@ export function createImageTaggingController({api, target, source = 'images', on
         if (closed || serial !== openSerial) return;
         // The saved model (System › Auto-tagging) unless a preset or the user already chose one (#328).
         const savedModel = !chosen && !modelPicked && read.model ? {model: read.model} : {};
+        // #431: the instructions start from the model's engine default; a preset's text wins (D204).
+        const model = savedModel.model ?? state.model;
+        const presetText = chosen?.options.instructions;
+        const entry = presetText === undefined ? engineDefault(read.choices, model) : entryFor(read.choices, model, presetText);
         observedOnce = true;
         const {width, height, media_type: mediaType, preview_url: previewUrl, generate} = value.capture;
         // The draft is read now, so text typed while observing is kept (#515). A kept draft stays as typed unless
@@ -410,7 +471,8 @@ export function createImageTaggingController({api, target, source = 'images', on
             savedTags: value.tags.slice(), tagRevision: value.tag_revision,
             manual: draft === null ? value.tags.join(', ') : changed || unseen ? mergeCurrent(value.tags, draft) : draft,
             draftRevision: state.draftRevision + 1,
-            ...savedModel, options: {...defaults, ...chosen?.options}, optionsRevision: state.optionsRevision + 1,
+            ...savedModel, options: {...defaults, instructions: entry.text, ...chosen?.options}, optionsRevision: state.optionsRevision + 1,
+            instructionChoices: read.choices, instructionId: entry.id,
             generateSupported: generate.supported, generateReason: generate.reason,
             statusText: changed ? `${COPY.changedElsewhere} ${savedNow(value.tags)}${reason ? ` ${reason}` : ''}` : reason,
         });
@@ -428,13 +490,24 @@ export function createImageTaggingController({api, target, source = 'images', on
         if (id === state.model) return;
         stopGenerating();
         const phase = state.phase === 'generating' || state.phase === 'generate-error' ? 'ready' : state.phase;
+        const {instructionId, text} = instructionsFor(state.instructionChoices, id);
         set({
             phase, model: id, generated: false, suggestions: [], suggestionsText: COPY.modelChanged, statusText: reasonText(),
             optionsRevision: state.optionsRevision + 1,
-            // Like the mock, a model change re-renders its fields with the defaults; the count is kept (D91).
+            // Like the mock, a model change re-renders its fields with the defaults; the count is kept (D91). The
+            // instructions start from the new engine's default, dropping a one-off edit (D204).
             options: {...state.options, general_threshold: defaults.general_threshold,
-                character_threshold: defaults.character_threshold, instructions: defaults.instructions},
+                character_threshold: defaults.character_threshold, instructions: text},
+            instructionId,
         });
+    }
+
+    /** D204: choose a saved entry; its text replaces the instructions (and a one-off edit). */
+    function pickInstructions(id) {
+        if (closed) return;
+        const entry = state.instructionChoices.entries.find(item => item.id === id);
+        if (!entry) return;
+        set({instructionId: id, options: {...state.options, instructions: entry.text}, optionsRevision: state.optionsRevision + 1});
     }
 
     function setOption(key, value) {
@@ -593,7 +666,7 @@ export function createImageTaggingController({api, target, source = 'images', on
     return {
         get state() {return state;},
         get target() {return imageTarget;},
-        subscribe, open, setManual, setModel, setOption, generate, remove, save, retry, retarget, cancel, dispose,
+        subscribe, open, setManual, setModel, setOption, pickInstructions, generate, remove, save, retry, retarget, cancel, dispose,
     };
 }
 
@@ -612,8 +685,9 @@ export function createTaggingOptionsController({api} = {}) {
     let abort = null;
     let modelPicked = false;
     const deriveOptions = value => ({...value, canGenerate: false, unavailable: modelUnavailable(models, value.model),
-        canStart: value.phase === 'ready' && !modelUnavailable(models, value.model)});
-    let state = freeze(deriveOptions({phase: 'loading', model: MODEL_OPTIONS[0].id, options: {...DEFAULTS}, optionsRevision: 0}));
+        canStart: value.phase === 'ready' && !modelUnavailable(models, value.model), instructionsEdited: instructionsEdited(value)});
+    let state = freeze(deriveOptions({phase: 'loading', model: MODEL_OPTIONS[0].id, options: {...DEFAULTS}, optionsRevision: 0,
+        instructionChoices: FALLBACK_CHOICES, instructionId: BUILTIN_ID}));
 
     function set(patch) {
         if (closed) return;
@@ -628,17 +702,28 @@ export function createTaggingOptionsController({api} = {}) {
         ({defaults, models} = read);
         // The saved model (System › Auto-tagging) unless the user already chose one (#328).
         const savedModel = !modelPicked && read.model ? {model: read.model} : {};
-        set({phase: 'ready', ...savedModel, options: {...defaults}, optionsRevision: state.optionsRevision + 1});
+        const {instructionId, text} = instructionsFor(read.choices, savedModel.model ?? state.model);
+        set({phase: 'ready', ...savedModel, options: {...defaults, instructions: text}, optionsRevision: state.optionsRevision + 1,
+            instructionChoices: read.choices, instructionId});
     }
     function setModel(id) {
         requireValue(modelOf(id), 'Unknown tagging model');
         if (closed) return;
         modelPicked = true;
         if (id === state.model) return;
-        // As in the Tag image dialog: the model's fields start from the defaults again; the count is kept (D91).
-        set({model: id, optionsRevision: state.optionsRevision + 1,
+        // As in the Tag image dialog: the model's fields start from the defaults again; the count is kept (D91), and
+        // the instructions from the new engine's default (D204).
+        const {instructionId, text} = instructionsFor(state.instructionChoices, id);
+        set({model: id, optionsRevision: state.optionsRevision + 1, instructionId,
             options: {...state.options, general_threshold: defaults.general_threshold,
-                character_threshold: defaults.character_threshold, instructions: defaults.instructions}});
+                character_threshold: defaults.character_threshold, instructions: text}});
+    }
+    /** D204: choose a saved entry; its text replaces the instructions. */
+    function pickInstructions(id) {
+        if (closed) return;
+        const entry = state.instructionChoices.entries.find(item => item.id === id);
+        if (!entry) return;
+        set({instructionId: id, options: {...state.options, instructions: entry.text}, optionsRevision: state.optionsRevision + 1});
     }
     function setOption(key, value) {
         requireValue(OPTION_KEYS.has(key), 'Unknown tagging option');
@@ -661,6 +746,6 @@ export function createTaggingOptionsController({api} = {}) {
     }
     return {
         get state() {return state;},
-        subscribe, open, setModel, setOption, request, dispose,
+        subscribe, open, setModel, setOption, pickInstructions, request, dispose,
     };
 }
