@@ -74,6 +74,16 @@ export function freeName(base, entries) {
     for (let n = 2; ; n += 1) if (!taken.has(fold(`${base} (${n})`))) return `${base} (${n})`;
 }
 
+/** "<name> copy" (then "(2)"…), the name cut so the whole stays within the 60-character limit. */
+export function copyName(name, entries) {
+    for (let room = MAX_NAME_CHARS - ' copy'.length; room > 0; room -= 1) {
+        const base = [...String(name ?? '').trim()].slice(0, room).join('').trimEnd();
+        const candidate = freeName(INSTRUCTIONS_COPY.copyName(base), entries);
+        if (characters(candidate) <= MAX_NAME_CHARS) return candidate;
+    }
+    return freeName(INSTRUCTIONS_COPY.copyName(BUILTIN_NAME), entries);
+}
+
 /** A new entry id: 12 lowercase hex characters from `random` (crypto.getRandomValues), never one already used. */
 export function newId(entries, random = bytes => globalThis.crypto.getRandomValues(bytes)) {
     const used = new Set(entries.map(entry => entry.id));
@@ -249,6 +259,7 @@ export function savedInstructionsBlock({ scope, drafts, random }) {
         list.replaceChildren(...entries.map(entry => {
             const option = el('div');
             option.id = `instruction-option-${entry.id}`;
+            option.dataset.id = entry.id;
             option.setAttribute('role', 'option');
             option.setAttribute('aria-selected', String(entry.id === selectedId));
             option.append(el('span', entry.name));
@@ -258,13 +269,14 @@ export function savedInstructionsBlock({ scope, drafts, random }) {
                 if (chosen[engine] === entry.id) badges.append(el('span', INSTRUCTIONS_COPY.defaultFor(short), 'chip blue'));
             }
             if (badges.children.length) option.append(badges);
-            scope.listen(option, 'click', () => select(entry.id));
             return option;
         }));
         list.setAttribute('aria-activedescendant', `instruction-option-${selectedId}`);
     }
 
     function repaint() {
+        // The note a deleted default left goes once the defaults are saved (or set back).
+        if (!Object.hasOwn(drafts.changes('host'), DEFAULTS_KEY)) reset.textContent = '';
         const loaded = ready();
         for (const control of [create, duplicate, remove, nameInput, textArea, ...selects.map(item => item.select)]) {
             control.disabled = !loaded;
@@ -310,9 +322,15 @@ export function savedInstructionsBlock({ scope, drafts, random }) {
     scope.listen(duplicate, 'click', () => {
         const entries = allEntries(values());
         const source = selected();
-        add({ id: newId(entries, random), name: freeName(INSTRUCTIONS_COPY.copyName(source.name), entries), text: source.text });
+        add({ id: newId(entries, random), name: copyName(source.name, entries), text: source.text });
     });
     scope.listen(remove, 'click', deleteSelected);
+    // One listener for every option, however often the list is rebuilt.
+    scope.listen(list, 'click', event => {
+        let node = event.target;
+        while (node && node !== list && node.getAttribute?.('role') !== 'option') node = node.parentNode;
+        if (node && node !== list) select(node.dataset.id);
+    });
     scope.listen(nameInput, 'input', () => edit('name', nameInput.value));
     scope.listen(textArea, 'input', () => edit('text', textArea.value));
     scope.listen(list, 'keydown', event => {

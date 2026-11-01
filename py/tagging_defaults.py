@@ -314,7 +314,7 @@ def validate_default_instructions(value: Any, entries) -> Dict[str, str]:
         raise ValueError("Default instructions must name GGUF and HuggingFace.")
     ids = {BUILTIN_INSTRUCTIONS_ID} | {item["id"] for item in entries}
     for engine in INSTRUCTION_ENGINES:
-        if value[engine] not in ids:
+        if not isinstance(value[engine], str) or value[engine] not in ids:
             raise ValueError(
                 f"Default for {ENGINE_LABELS[engine]} must be one of the saved "
                 "instructions."

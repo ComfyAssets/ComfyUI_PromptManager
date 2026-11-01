@@ -775,17 +775,23 @@ class AutotagConfig:
                     f"autotag.defaults.template {error}; using the built-in one"
                 )
         entries: List[Dict[str, str]] = []
+        damaged = False
         if "instructions" in defaults:
             try:
                 entries = validate_instructions(defaults["instructions"])
             except ValueError as error:
+                damaged = True
                 config_logger.warning(
                     f"autotag.defaults.instructions {_reason(error)}; "
                     "using Built-in only"
                 )
         chosen = {engine: BUILTIN_INSTRUCTIONS_ID for engine in INSTRUCTION_ENGINES}
         stored = defaults.get("default_instructions")
-        if "default_instructions" in defaults and (
+        if damaged:
+            # Both defaults fall back with the list (its one warning says so);
+            # the old template is migrated as on a first upgrade.
+            pass
+        elif "default_instructions" in defaults and (
             not isinstance(stored, dict) or set(stored) != set(INSTRUCTION_ENGINES)
         ):
             config_logger.warning(
@@ -795,8 +801,11 @@ class AutotagConfig:
         elif isinstance(stored, dict):
             ids = {item["id"] for item in entries}
             for engine in INSTRUCTION_ENGINES:
-                if stored[engine] == BUILTIN_INSTRUCTIONS_ID or stored[engine] in ids:
-                    chosen[engine] = stored[engine]
+                value = stored[engine]
+                if isinstance(value, str) and (
+                    value == BUILTIN_INSTRUCTIONS_ID or value in ids
+                ):
+                    chosen[engine] = value
                 else:
                     config_logger.warning(
                         f"autotag.defaults.default_instructions.{engine} names no "
@@ -805,8 +814,8 @@ class AutotagConfig:
         cls._migrate_template(
             entries,
             chosen,
-            first="instructions" not in defaults,
-            keep_defaults="default_instructions" in defaults,
+            first=damaged or "instructions" not in defaults,
+            keep_defaults=not damaged and "default_instructions" in defaults,
         )
         cls.INSTRUCTIONS = tuple(entries)
         cls.DEFAULT_INSTRUCTIONS = chosen

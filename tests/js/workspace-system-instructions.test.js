@@ -83,7 +83,9 @@ async function mounted({ host = HOST } = {}) {
     const options = () => byId('instruction-list').children.map(option => [option.children[0].textContent,
         option.children[1]?.children.map(badge => badge.textContent) ?? [], option.getAttribute('aria-selected')]);
     const click = id => byId(id).dispatch('click');
-    const pick = name => byId('instruction-list').children.find(option => option.children[0].textContent === name).dispatch('click');
+    // A click on an option reaches the list's one listener (as it bubbles in a browser).
+    const pick = name => byId('instruction-list').dispatch('click', { target: byId('instruction-list').children
+        .find(option => option.children[0].textContent === name).children[0] });
     return { dom, drafts, scope, block, byId, options, click, pick, root };
 }
 
@@ -221,4 +223,35 @@ test('arrow keys move the selection; before the read everything is disabled', as
         assert.equal(unread.byId('instruction-new').disabled, true);
         assert.equal(unread.byId('instruction-default-gguf').disabled, true);
     } finally { unread.scope.dispose(); unread.dom.restore(); }
+});
+
+test('the reset note goes once the defaults are saved; a long name is cut to fit its copy suffix', async () => {
+    const view = await mounted();
+    try {
+        await view.pick('Custom template');
+        await view.click('instruction-delete');
+        assert.equal(view.byId('instruction-reset').textContent, 'GGUF and HuggingFace now use Built-in.');
+        await view.drafts.save();
+        assert.equal(view.byId('instruction-reset').textContent, '');
+        await view.pick('Anime');
+        view.byId('instruction-name').value = 'x'.repeat(60);
+        await view.byId('instruction-name').dispatch('input');
+        await view.click('instruction-duplicate');
+        const copy = view.drafts.get('host', 'autotag_instructions').at(-1).name;
+        assert.equal(copy, `${'x'.repeat(55)} copy`);
+        await view.click('instruction-duplicate');
+        assert.equal([...view.drafts.get('host', 'autotag_instructions').at(-1).name].length <= 60, true);
+    } finally { view.scope.dispose(); view.dom.restore(); }
+});
+
+test('option clicks are one listener on the list, not one per repaint', async () => {
+    const view = await mounted();
+    try {
+        const list = view.byId('instruction-list');
+        const before = list.listeners.length;
+        for (let i = 0; i < 5; i += 1) await view.pick('Anime');
+        assert.equal(list.listeners.length, before);
+        assert.equal(view.byId('instruction-list').children.every(option => option.listeners.length === 0), true);
+        assert.equal(view.byId('instruction-name').value, 'Anime');
+    } finally { view.scope.dispose(); view.dom.restore(); }
 });

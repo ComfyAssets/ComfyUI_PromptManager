@@ -128,6 +128,10 @@ class TestValidation(unittest.TestCase):
                 {"gguf": "builtin"},
                 "Default instructions must name GGUF and HuggingFace.",
             ),
+            (
+                {"gguf": [], "hf": "builtin"},
+                "Default for GGUF JoyCaption must be one of the saved instructions.",
+            ),
             ("builtin", "Default instructions must name GGUF and HuggingFace."),
         ):
             with self.subTest(value=value):
@@ -232,7 +236,7 @@ class TestLoad(ConfigTestCase):
                 ],
                 "default_instructions": {"gguf": "0123456789ab", "hf": "builtin"},
             },
-            warnings=2,
+            warnings=1,  # one warning; the defaults follow the list silently
         )
         self.assertEqual(self.state(), ([], {"gguf": "builtin", "hf": "builtin"}))
         self.assertEqual(
@@ -345,6 +349,30 @@ class TestGetConfig(ConfigTestCase):
         self.assertEqual(defaults["template"], "Photo tags.")
         AutotagConfig.DEFAULT_INSTRUCTIONS = {"gguf": "builtin", "hf": "0123456789ab"}
         self.assertNotIn("template", AutotagConfig.get_config()["defaults"])
+
+
+class TestDamagedValues(ConfigTestCase):
+    def test_a_non_text_default_falls_back_with_a_warning(self):
+        self.load({"default_instructions": {"gguf": [], "hf": "builtin"}}, warnings=1)
+        self.assertEqual(self.state(), ([], {"gguf": "builtin", "hf": "builtin"}))
+
+    def test_a_damaged_list_warns_once_and_migrates_the_template_afresh(self):
+        custom = "My own tags, please."
+        self.load(
+            {
+                "template": custom,
+                "instructions": "broken",
+                "default_instructions": {"gguf": "0123456789ab", "hf": "builtin"},
+            },
+            warnings=1,
+        )
+        self.assertEqual(
+            self.state(),
+            (
+                [entry(sha12(custom), "Custom template", custom)],
+                {"gguf": sha12(custom), "hf": sha12(custom)},
+            ),
+        )
 
 
 if __name__ == "__main__":
