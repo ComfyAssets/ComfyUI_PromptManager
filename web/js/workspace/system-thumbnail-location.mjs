@@ -109,7 +109,7 @@ export function reviewRows(plan) {
             + 'they are made again if it returns');
     }
     const oldCopies = plan.from?.mode === 'folder'
-        ? 'The thumbnail folders of these sources inside it. The folder itself is removed once empty if Prompt Manager created it.'
+        ? 'The thumbnail folders of these sources inside it. The folder itself is removed once empty if Prompt Manager created it'
         : 'The old copies in each source’s thumbnails folder';
     rows.push(['Removed after the move', [removed.length ? `${oldCopies}, and:` : `${oldCopies}.`, removed]]);
     if (totals.left_in_place > 0) {

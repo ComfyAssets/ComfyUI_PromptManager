@@ -80,6 +80,10 @@ test('the review of a move back names the folder and the removed sources', async
     assert.match(rows['Removed after the move'][0], /The folder itself is removed once empty/);
     assert.deepEqual(rows['Removed after the move'][1],
         ['1 source no longer listed: 240 thumbnails are removed; they are made again if it returns']);
+    // Nothing else removed: one full stop, never "created it.." (live test of #592).
+    const plain = Object.fromEntries(reviewRows({ ...PLAN, from: { mode: 'folder', path: '/data/thumbnails' },
+        to: { mode: 'source', path: null }, unlisted: [], totals: { sources: 1, files: 1, bytes: 10 } }));
+    assert.match(plain['Removed after the move'][0], /Prompt Manager created it\.$/);
     const fresh = Object.fromEntries(reviewRows({ ...PLAN, to: { mode: 'folder', path: '/d', default: true, will_create: true } }));
     assert.equal(fresh.To, '/d (new, next to your library)');
 });
