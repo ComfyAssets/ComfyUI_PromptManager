@@ -448,8 +448,11 @@ except Exception as e:
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
-# One startup line. ASCII only: a Windows console using a legacy code page
-# cannot print emoji, and a UnicodeEncodeError here would abort loading the node.
+# One startup line, printed at import on purpose: it is the package's banner on
+# stdout, as ComfyUI's other custom nodes print theirs. Not a log record: the
+# console log handler hides INFO by default, so a logger would drop it. ASCII
+# only: a Windows console using a legacy code page cannot print emoji, and a
+# UnicodeEncodeError here would abort loading the node.
 print(
     f"\033[94m[ComfyUI-PromptManager] Version:\033[0m {get_version()}"
     f" - {len(NODE_CLASS_MAPPINGS)} tools loaded"

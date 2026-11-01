@@ -113,7 +113,10 @@ def _start_daemon_observer(observer) -> None:
     def start() -> None:
         try:
             observer.start()
-        except BaseException as e:  # re-raised on the caller's thread
+        # BaseException on purpose: a KeyboardInterrupt or SystemExit raised
+        # by start() is not lost on this thread; _start_daemon_observer
+        # re-raises it on the caller's thread below.
+        except BaseException as e:
             raised.append(e)
 
     starter = threading.Thread(

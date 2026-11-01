@@ -255,7 +255,8 @@ test('All is offered only with two or more eligible nodes and is never selected 
 test('Apply to All previews every node first, then sends one after another in node id order',async()=>{
     const {createSendSession,ALL_NODES}=await source;const s=await allSession(createSendSession);
     s.session.selectTarget(ALL_NODES);await s.session.apply();
-    assert.deepEqual(order(s.calls),['preview 2','preview 9','preview 10','apply 2','preview 9','apply 9','preview 10','apply 10']);
+    // Each node takes a fresh ticket, the first too: the host keeps only its latest 100 (#593).
+    assert.deepEqual(order(s.calls),['preview 2','preview 9','preview 10','preview 2','apply 2','preview 9','apply 9','preview 10','apply 10']);
     assert.equal(s.session.state.phase,'success');assert.equal(s.session.state.message,'Sent to 3 of 3 nodes in Flow - ComfyUI.');
     await s.session.apply();assert.equal(s.calls.filter(call=>call[0]==='apply').length,3);s.session.dispose();
 });
@@ -362,4 +363,49 @@ test('a changed prepend or append after the review refuses that node',async()=>{
     s.session.selectTarget(ALL_NODES);await s.session.apply();
     assert.deepEqual(s.calls.filter(call=>call[0]==='apply').map(call=>call[1]),['2','10']);
     assert.match(s.session.state.message,/^Sent to 2 of 3 nodes in Flow - ComfyUI\. #9 Node 9: Its prompt changed since the preview\./);s.session.dispose();
+});
+
+// #593: Send to All through the real Toolkit bridge and the real adapter, as the review bot reproduced it.
+function realWindow(count) {
+    const listeners=new Set();
+    const channelFactory=()=>{const own=new Set();return{
+        addEventListener(type,listener){if(type==='message'){own.add(listener);listeners.add(listener);}},removeEventListener(type,listener){listeners.delete(listener);},
+        postMessage(data){for(const listener of [...listeners])if(!own.has(listener))queueMicrotask(()=>listener({data:structuredClone(data),origin:'https://comfy.example'}));},close(){},
+    };};
+    // Like LiteGraph, a widget write moves the version of the graph it is in.
+    const graph=()=>{const made={_version:1,setDirtyCanvas(){made._version++;}};made._nodes=Array.from({length:count},(_,index)=>{
+        const widgets=['text','prepend_text','append_text'].map(name=>({name,value:name==='text'?'old':'',inputEl:{value:name==='text'?'old':''}}));
+        return {id:index+1,type:'PromptManager',title:`Node ${index+1}`,widgets,widgets_values:widgets.map(widget=>widget.value),inputs:[],setDirtyCanvas(){}};
+    });return made;};
+    return {channelFactory,graph};
+}
+async function realSend(count,{afterFirstApply}={}) {
+    const {createSendSession,ALL_NODES}=await source;
+    const {createBridgeHost,createBridgeClient}=await import('../../web/js/shared/toolkit/prompt-bridge.js');
+    const {createPromptAdapter}=await import('../../web/js/prompt-bridge-adapter.js');
+    const win=realWindow(count);const app={graph:win.graph(),canvas:{}};
+    const adapter=createPromptAdapter(app,{runtime:{}});let applied=0;
+    const watched={...adapter,apply(snapshot){const result=adapter.apply(snapshot);if(++applied===1)afterFirstApply?.(app,win);return result;}};
+    const options={namespace:'/prompt_manager/',origin:'https://comfy.example',channelFactory:win.channelFactory};
+    const host=createBridgeHost({...options,label:'Flow - ComfyUI',adapter:watched});
+    const client=createBridgeClient(options);
+    const session=createSendSession({client,roles:{positive:'new'},onChange:()=>{}});
+    try {
+        await session.discover();session.selectTarget(ALL_NODES);await session.apply();
+        return {state:session.state,app};
+    } finally { session.dispose();host.dispose(); }
+}
+test('All refuses the later nodes when another workflow is loaded after the first send (#593)',async()=>{
+    let first;
+    const {state,app}=await realSend(3,{afterFirstApply:(target,win)=>{first=target.graph;target.graph=win.graph();target.graph._version=first._version;}});
+    // The new workflow has the same ids, text and composition, and even the same graph version: only node identity differs.
+    assert.equal(first._nodes[0].widgets[0].value,'new');
+    assert.deepEqual(app.graph._nodes.map(node=>node.widgets[0].value),['old','old','old']);
+    assert.equal(state.phase,'error');
+    assert.match(state.message,/^Sent to 1 of 3 nodes in Flow - ComfyUI\. #2 Node 2: The workflow changed since this window was found\./);
+});
+test('All sends to every node of a window with more than 100 of them (#593)',async()=>{
+    const {state,app}=await realSend(101);
+    assert.equal(state.message,'Sent to 101 of 101 nodes in Flow - ComfyUI.');
+    assert.ok(app.graph._nodes.every(node=>node.widgets[0].value==='new'));
 });

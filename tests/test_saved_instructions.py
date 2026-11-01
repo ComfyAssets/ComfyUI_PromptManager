@@ -153,7 +153,7 @@ class ConfigTestCase(unittest.TestCase):
             path = os.path.join(tmpdir, "config.json")
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump({"autotag": {"defaults": defaults}}, handle)
-            before = os.stat(path).st_mtime_ns, open(path, "rb").read()
+            before = os.stat(path).st_mtime_ns, self.read_bytes(path)
             if warnings:
                 with self.assertLogs("prompt_manager.config", level="WARNING") as logs:
                     PromptManagerConfig.load_from_file(path)
@@ -162,9 +162,13 @@ class ConfigTestCase(unittest.TestCase):
             else:
                 PromptManagerConfig.load_from_file(path)
             # Nothing is written at load.
-            self.assertEqual(
-                (os.stat(path).st_mtime_ns, open(path, "rb").read()), before
-            )
+            self.assertEqual((os.stat(path).st_mtime_ns, self.read_bytes(path)), before)
+
+    @staticmethod
+    def read_bytes(path):
+        # Closed at once: Windows cannot delete the temp dir with it open.
+        with open(path, "rb") as handle:
+            return handle.read()
 
     def state(self):
         return [dict(e) for e in AutotagConfig.INSTRUCTIONS], dict(
