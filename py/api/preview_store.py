@@ -69,6 +69,8 @@ _state_lock = threading.Lock()
 _parsed = preview_location.ParsedLocation()
 _available = True
 _problem = None
+# The newest check whose answer was published.
+_published_order = 0
 _keys = {}
 _key_cache = {}
 _clock = time.monotonic
@@ -167,10 +169,13 @@ def refresh():
     if parsed.mode != FOLDER_MODE or parsed.problem is not None:
         return parsed.mode == SOURCE_MODE
     try:
-        available, problem, marker = _probe.check(parsed.path, parsed.id)
+        (available, problem, marker), order = _probe.ordered_check(
+            parsed.path, parsed.id
+        )
     except (OSError, TimeoutError, RuntimeError):
         available, problem, marker = False, "unreachable", None
-    _set_state(parsed, available, problem, marker)
+        order = _probe.latest_order()
+    _set_state(parsed, available, problem, marker, order)
     return available
 
 
@@ -207,11 +212,16 @@ def mark_invalid():
         _available, _problem = False, "invalid"
 
 
-def _set_state(parsed, available, problem, marker):
-    global _available, _problem
+def _set_state(parsed, available, problem, marker, order):
+    """Publish a check's answer, unless a check that started later already
+    published (two callers can finish out of order, #611)."""
+    global _available, _problem, _published_order
     with _state_lock:
         if _parsed is not parsed:
             return  # the setting changed meanwhile
+        if order < _published_order:
+            return
+        _published_order = order
         _available, _problem = available, problem
         keys = dict((marker or {}).get("keys") or {})
         if keys != _keys:
@@ -261,14 +271,25 @@ class _Probe:
         self._stop = threading.Event()
         self._thread = None
         self._checking = None
+        self._order = 0
 
     def check(self, path, expected_id):
-        """``folder_state`` within IO_BUDGET; raises TimeoutError.
+        """``folder_state`` within IO_BUDGET; see :meth:`ordered_check`."""
+        return self.ordered_check(path, expected_id)[0]
 
-        The answer comes from a check that started after this call: one
-        already running may have looked before what the caller just did, so
-        it is waited for (never run twice at once; a stuck one times out here)
-        and followed by a new one."""
+    def latest_order(self):
+        """The order number of the check started last."""
+        with self._lock:
+            return self._order
+
+    def ordered_check(self, path, expected_id):
+        """``(folder_state, order)`` within IO_BUDGET; raises TimeoutError.
+
+        ``order`` grows with each check started, so answers can be published
+        in the order they looked. The answer comes from a check that started
+        after this call: one already running may have looked before what the
+        caller just did, so it is waited for (never run twice at once; a stuck
+        one times out here) and followed by a new one."""
         key = (path, expected_id)
         with self._lock:
             earlier = self._running(key)
@@ -284,7 +305,7 @@ class _Probe:
                 self._checking = None
         if "error" in pending[2]:
             raise pending[2]["error"]
-        return pending[2]["value"]
+        return pending[2]["value"], pending[2]["order"]
 
     def _running(self, key):
         """The check of *key* still running (lock held), else None."""
@@ -300,7 +321,8 @@ class _Probe:
 
     def _start_check(self, path, expected_id):
         """Start one check on its own thread (lock held)."""
-        result = {}
+        self._order += 1
+        result = {"order": self._order}
         done = threading.Event()
 
         def run():
