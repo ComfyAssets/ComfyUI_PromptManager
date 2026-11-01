@@ -1096,6 +1096,27 @@ def existing_media_thumbnail(output_path, rel_path):
     )
 
 
+def listing_thumbnail_url(output_path, rel_path):
+    """The thumbnail URL of an older listing (``_enrich_images``, the
+    auto-tag scan), or None. These run on the event loop: in folder mode
+    (#320) the store is never touched there, so the URL names the preview
+    as it is written now and the serve route finds or makes it off the loop
+    (None while the thumbnail folder is unavailable)."""
+    from .prompts import thumbnail_url_for
+
+    location = preview_store.current()
+    if location.mode == preview_store.FOLDER_MODE:
+        if not location.available:
+            return None
+        quoted = urllib.parse.quote(media_thumbnail_rel(rel_path), safe="/")
+        return f"/prompt_manager/images/serve/{quoted}"
+    existing = thumbnail_settings.existing_thumbnail(output_path, rel_path)
+    if existing is None:
+        return None
+    thumb_rel = thumbnail_settings.thumbnail_stem_rel(rel_path) + existing.suffix
+    return thumbnail_url_for(thumb_rel, existing)
+
+
 def media_thumbnail(output_path, rel_path, root_index, *, root_scope=None):
     """``(thumbnail_url, ready)`` for *rel_path* under *output_path* (a few
     blocking stats). The Images listing, the Needs review queue cards and the
@@ -2820,9 +2841,12 @@ class ImageRoutesMixin:
             )
             location = preview_store.current()
             if location.mode == preview_store.FOLDER_MODE:
-                if preview_parts is None and filepath.split("/", 1)[0] == "thumbnails":
+                if preview_parts is None and await self._run_image(
+                    self._in_source_thumbnails, output_dirs, filepath
+                ):
                     # Previews live in the thumbnail folder: anything else
-                    # under a source's thumbnails/ is a leftover (#320).
+                    # under a source's thumbnails/ is a leftover (#320), in
+                    # any case on a case-insensitive disk.
                     return _forbidden()
                 if preview_parts is not None:
                     # Store I/O never runs on the event loop (a share may
@@ -2881,6 +2905,27 @@ class ImageRoutesMixin:
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
             )
+
+    @staticmethod
+    def _in_source_thumbnails(output_dirs, filepath):
+        """Whether *filepath* lies in a source's ``thumbnails`` folder: its
+        first part is ``thumbnails`` exactly, or another case of it that is
+        the same folder (a case-insensitive disk). ``Thumbnails/`` media on
+        a case-sensitive disk is another folder and stays served."""
+        first = filepath.split("/", 1)[0]
+        if first == "thumbnails":
+            return True
+        if first.casefold() != "thumbnails":
+            return False
+        for output_path in output_dirs:
+            spelled = output_path / first
+            cache = preview_store.source_folder(output_path)
+            try:
+                if spelled.is_dir() and cache.is_dir() and spelled.samefile(cache):
+                    return True
+            except OSError:
+                continue
+        return False
 
     @staticmethod
     def _find_preview(output_dirs, parts, location):
@@ -3594,7 +3639,11 @@ class ImageRoutesMixin:
             return 0
         for output_path in output_dirs:
             folder = preview_store.store_dir(output_path)
-            if folder is None or folder.is_symlink() or not folder.is_dir():
+            if (
+                folder is None
+                or preview_store.store_is_link(folder)
+                or not folder.is_dir()
+            ):
                 continue
             removed += sweep_stray_temps(folder)[0]
         if removed:
@@ -3619,7 +3668,7 @@ class ImageRoutesMixin:
                 continue
             container = preview_store.store_container(output_path)
             if (
-                thumbnails_dir.is_symlink()
+                preview_store.store_is_link(thumbnails_dir)
                 or not _is_within(thumbnails_dir, container)
                 or _canonical(thumbnails_dir) == _canonical(container)
             ):
@@ -3636,7 +3685,15 @@ class ImageRoutesMixin:
             temps, temp_bytes = sweep_stray_temps(thumbnails_dir, min_age=0)
             cleared_count += temps
             cleared_size += temp_bytes
-            for root, _dirs, files in os.walk(thumbnails_dir):
+            folder_mode = preview_store.current().mode == preview_store.FOLDER_MODE
+            for root, dirs, files in os.walk(thumbnails_dir):
+                if folder_mode:
+                    # Never into a junction or reparse point (#320).
+                    dirs[:] = [
+                        d
+                        for d in dirs
+                        if not preview_store.store_is_link(Path(root) / d)
+                    ]
                 for name in files:
                     path = Path(root) / name
                     if (
@@ -3644,6 +3701,7 @@ class ImageRoutesMixin:
                         or path.suffix.lower()
                         not in thumbnail_settings.THUMBNAIL_EXTENSIONS
                         or path.is_symlink()
+                        or not preview_store.may_write(path)
                     ):
                         continue
                     try:

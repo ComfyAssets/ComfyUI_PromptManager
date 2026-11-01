@@ -96,6 +96,10 @@ try:
     # The thumbnail location's startup check (#320), then the temp files of
     # preview writes a crash interrupted (#317), off the import path: the
     # walk may cover a large thumbnails folder.
+    # #320: the configured thumbnail location is in force before any request
+    # (no I/O); the thread below checks it.
+    api.use_preview_location()
+
     def _preview_startup():
         api.start_preview_location()
         api.sweep_thumbnail_temps()

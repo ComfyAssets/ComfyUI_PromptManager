@@ -22,6 +22,7 @@ A source key is a readable slug plus a short hash of the source's identity
 import errno
 import hashlib
 import json
+import logging
 import ntpath
 import os
 import posixpath
@@ -37,10 +38,16 @@ try:
 except ImportError:  # tests import the package top-level
     from utils import library_location
 
+logger = logging.getLogger("prompt_manager.thumbnails")
+
 SOURCE_MODE = "source"
 FOLDER_MODE = "folder"
 MARKER_NAME = ".promptmanager-thumbnails.json"
 MARKER_VERSION = 1
+# A source key: one folder name, a slug and a 8-16 hex hash (``source_key``).
+KEY_PATTERN = re.compile(r"^[a-z0-9_-]{1,24}-[0-9a-f]{8,16}$")
+# A marker is a few keys; anything larger is not ours.
+MAX_MARKER_BYTES = 4 * 2**20
 # OS metadata files a folder may hold and still count as empty.
 OS_METADATA = frozenset({"thumbs.db", "desktop.ini", ".ds_store"})
 KEY_HASH_LENGTHS = (8, 12, 16)
@@ -336,6 +343,7 @@ def file_identity(path):
 def find_key(keys, spelling, identity, dev_ino):
     """The marker key of a source: the same configured spelling, then the
     same identity text, then the same file id; or None."""
+    keys = {k: v for k, v in keys.items() if valid_key(k) and isinstance(v, dict)}
     for key, entry in keys.items():
         if entry.get("path") == spelling:
             return key
@@ -361,16 +369,43 @@ def read_marker(folder):
     ours). OSError other than "not found" propagates (an unreachable share)."""
     try:
         with open(marker_path(folder), "r", encoding="utf-8") as handle:
-            data = json.load(handle)
+            text = handle.read(MAX_MARKER_BYTES + 1)
     except FileNotFoundError:
         return None
     except (ValueError, UnicodeDecodeError):
         return None
+    if len(text) > MAX_MARKER_BYTES:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
     if not isinstance(data, dict) or not isinstance(data.get("id"), str):
         return None
-    if not isinstance(data.get("keys"), dict):
-        data["keys"] = {}
+    data["keys"] = valid_keys(data.get("keys"))
     return data
+
+
+def valid_key(key):
+    """Whether *key* can name a source's folder: one folder name of the
+    ``source_key`` form, never a separator, ``..`` or a drive."""
+    return isinstance(key, str) and KEY_PATTERN.fullmatch(key) is not None
+
+
+def valid_keys(keys):
+    """The marker's keys that are safe to join onto the folder; a hand-edited
+    or foreign entry that is not is dropped (and logged), never followed."""
+    if not isinstance(keys, dict):
+        return {}
+    kept = {}
+    for key, entry in keys.items():
+        if valid_key(key) and isinstance(entry, dict):
+            kept[key] = entry
+        else:
+            logger.warning(
+                "Ignoring a thumbnail folder marker entry that is not a source " "key"
+            )
+    return kept
 
 
 def write_marker(folder, mutate):
@@ -400,8 +435,8 @@ def write_marker(folder, mutate):
     finally:
         try:
             os.unlink(temp)
-        except FileNotFoundError:
-            pass
+        except OSError:
+            pass  # gone with the rename; a leftover is swept with the temps
     return marker
 
 

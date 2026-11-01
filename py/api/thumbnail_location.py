@@ -98,9 +98,26 @@ class ThumbnailLocationMixin:
             ),
         )
 
+    def use_preview_location(self):
+        """Put the configured location in force at once, unchecked (the
+        package's import, before any request): folder mode is unavailable
+        until ``start_preview_location`` has checked it, so nothing is ever
+        written to the sources meanwhile. No filesystem access."""
+        from ..config import PromptManagerConfig
+
+        try:
+            return preview_store.configure(
+                PromptManagerConfig.THUMBNAIL_LOCATION, check=False
+            )
+        except Exception:
+            self.logger.warning("The thumbnail location is unusable", exc_info=True)
+            preview_store.mark_invalid()
+            return preview_store.current()
+
     def start_preview_location(self):
         """Parse and check the configured location once (startup thread);
-        the probe takes over. Never raises."""
+        the probe takes over. Never raises; a check that fails leaves a
+        folder location unavailable (``invalid``), never the sources."""
         from ..config import PromptManagerConfig
 
         try:
@@ -112,7 +129,14 @@ class ThumbnailLocationMixin:
             location = preview_store.configure(value, context=context)
         except Exception:
             self.logger.warning("The thumbnail location check failed", exc_info=True)
-            return None
+            if (
+                preview_location.parse_location(
+                    PromptManagerConfig.THUMBNAIL_LOCATION
+                ).mode
+                == preview_store.FOLDER_MODE
+            ):
+                preview_store.mark_invalid()
+            return preview_store.current()
         if location.mode == preview_store.FOLDER_MODE and not location.available:
             self.logger.warning(
                 "The thumbnail folder is unavailable "

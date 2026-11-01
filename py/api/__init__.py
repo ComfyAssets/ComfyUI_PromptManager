@@ -855,20 +855,11 @@ class PromptManagerAPI(
                         f"{url_quote(rel_path.as_posix(), safe='/')}"
                     )
 
-                    # Any preview the file owns, the current format first (#317)
-                    from . import thumbnail_settings
-                    from .prompts import thumbnail_url_for
+                    # Any preview the file owns, the current format first
+                    # (#317); no store I/O here in folder mode (#320).
+                    from .images import listing_thumbnail_url
 
-                    existing = thumbnail_settings.existing_thumbnail(
-                        output_path, rel_path
-                    )
-                    thumbnail_url = None
-                    if existing is not None:
-                        thumb_rel = (
-                            thumbnail_settings.thumbnail_stem_rel(rel_path)
-                            + existing.suffix
-                        )
-                        thumbnail_url = thumbnail_url_for(thumb_rel, existing)
+                    thumbnail_url = listing_thumbnail_url(output_path, rel_path)
                     if thumbnail_url:
                         image["thumbnail_url"] = thumbnail_url
                     break  # Found matching root, stop searching

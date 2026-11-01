@@ -29,7 +29,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import preview_location, thumbnail_settings
@@ -76,10 +76,16 @@ _clock = time.monotonic
 
 def current():
     """The thumbnail location now."""
-    parsed = _parsed
+    with _state_lock:
+        parsed, available, problem, generation_now = (
+            _parsed,
+            _available,
+            _problem,
+            _generation,
+        )
     if parsed.mode == SOURCE_MODE:
-        return Location(generation=_generation)
-    return Location(FOLDER_MODE, parsed.path, _available, _problem, _generation)
+        return Location(generation=generation_now)
+    return Location(FOLDER_MODE, parsed.path, available, problem, generation_now)
 
 
 def setting():
@@ -166,6 +172,32 @@ def refresh():
         available, problem, marker = False, "unreachable", None
     _set_state(parsed, available, problem, marker)
     return available
+
+
+def _set_keys(parsed, marker):
+    """Take the keys of a marker just written (availability unchanged)."""
+    with _state_lock:
+        if _parsed is not parsed:
+            return
+        keys = dict((marker or {}).get("keys") or {})
+        if keys != _keys:
+            _keys.clear()
+            _keys.update(keys)
+            _key_cache.clear()
+
+
+def mark_invalid():
+    """The setting cannot be used (a startup check that failed): folder
+    mode stays in force, unavailable, so nothing is written anywhere."""
+    global _parsed, _available, _problem
+    with _state_lock:
+        if _parsed.mode != FOLDER_MODE:
+            _parsed = preview_location.ParsedLocation(
+                mode=FOLDER_MODE, problem="invalid"
+            )
+        else:
+            _parsed = replace(_parsed, problem="invalid")
+        _available, _problem = False, "invalid"
 
 
 def _set_state(parsed, available, problem, marker):
@@ -263,19 +295,22 @@ class _Probe:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
-            self._stop.clear()
-            thread = threading.Thread(target=self._run, name=PROBE_THREAD, daemon=True)
+            # Each thread has its own stop: a stopped one never resumes.
+            stop = self._stop = threading.Event()
+            thread = threading.Thread(
+                target=self._run, args=(stop,), name=PROBE_THREAD, daemon=True
+            )
             try:
                 thread.start()
             except RuntimeError:
                 return  # refused at interpreter exit: no probe
             self._thread = thread
 
-    def _run(self):
-        while not self._stop.is_set():
+    def _run(self, stop):
+        while not stop.is_set():
             self._wake.wait(PROBE_INTERVAL)
             self._wake.clear()
-            if self._stop.is_set():
+            if stop.is_set():
                 return
             try:
                 refresh()
@@ -306,6 +341,12 @@ def stop_probe(timeout=2.0):
 
 
 # ── stores ───────────────────────────────────────────────────────────
+
+
+def source_folder(root):
+    """``<source>/thumbnails``: the store in source mode, a leftover in
+    folder mode."""
+    return Path(root) / PREVIEW_FOLDER
 
 
 def store_container(root, location=None):
@@ -349,7 +390,18 @@ def store_dir(root, location=None):
     if not location.available or not location.path:
         return None
     key = _lookup_key(root)
-    return None if key is None else Path(location.path) / key
+    return None if key is None else _key_folder(location.path, key)
+
+
+def _key_folder(folder, key):
+    """``<folder>/<key>``, only for a key that is one folder name directly
+    below the thumbnail folder (a marker is data, never a path)."""
+    if not preview_location.valid_key(key):
+        return None
+    store = Path(folder) / key
+    if store.parent != Path(folder) or store.name != key:
+        return None
+    return store
 
 
 def ensure_store(root, location=None, *, create=False):
@@ -385,6 +437,8 @@ def _assign_key(root, location):
     assigned = {}
 
     def add(marker):
+        if marker.get("id") != parsed.id:
+            raise ValueError("another folder's marker")  # marker-mismatch
         keys = marker["keys"]
         key = preview_location.find_key(keys, spelling, identity, dev_ino)
         if key is None:
@@ -399,39 +453,86 @@ def _assign_key(root, location):
         assigned["key"] = key
 
     try:
-        with store_io(), write_lock:
+        with write_lock, store_io():
             marker = preview_location.write_marker(location.path, add)
     except (OSError, ValueError):
         return None
-    _set_state(parsed, True, None, marker)
-    return Path(location.path) / assigned["key"]
+    _set_keys(parsed, marker)
+    return _key_folder(location.path, assigned["key"])
+
+
+def may_write(path, location=None):
+    """The one ownership check every preview write and delete passes.
+
+    Source mode: True (the callers' own root rules apply, as before). Folder
+    mode: *path* lies below a source key folder of the thumbnail folder,
+    lexically and resolved, and no link, junction or reparse point sits
+    anywhere from the key folder down to it (the file itself included).
+    """
+    location = location or current()
+    if location.mode == SOURCE_MODE:
+        return True
+    if not location.path:
+        return False
+    folder = Path(os.path.abspath(location.path))
+    path = Path(os.path.abspath(path))
+    try:
+        relative = path.relative_to(folder)
+    except ValueError:
+        return False
+    if len(relative.parts) < 2 or ".." in relative.parts:
+        return False
+    store = _key_folder(folder, relative.parts[0])
+    if store is None or not _within(path, folder):
+        return False
+    try:
+        return _no_link_below(store, path)
+    except OSError:
+        note_failure()
+        return False
 
 
 def make_parent(dst, location=None):
     """Make the folders a preview *dst* is written into. In folder mode only
-    folders below the thumbnail folder are made, never the folder itself (a
-    missing folder raises FileNotFoundError: it may be an unplugged drive)."""
+    folders below the thumbnail folder are made, never the folder itself,
+    and only while it holds this install's marker (an unplugged drive or an
+    unmounted mount point raises FileNotFoundError); a *dst* that does not
+    pass ``may_write`` raises PermissionError."""
     location = location or current()
     dst = Path(dst)
     if location.mode == SOURCE_MODE or not location.path:
+        if location.mode != SOURCE_MODE:
+            raise FileNotFoundError(errno.ENOENT, "thumbnail folder unavailable")
         dst.parent.mkdir(parents=True, exist_ok=True)
         return
-    folder = Path(location.path)
-    try:
-        relative = dst.parent.relative_to(folder)
-    except ValueError:
-        dst.parent.mkdir(parents=True, exist_ok=True)  # a store given by a test
-        return
+    folder = Path(os.path.abspath(location.path))
     with store_io():
         if not location.available or not folder.is_dir():
             raise FileNotFoundError(errno.ENOENT, "thumbnail folder unavailable")
+        marker = preview_location.read_marker(str(folder))
+        if marker is None or marker.get("id") != _parsed.id:
+            note_failure()
+            raise FileNotFoundError(errno.ENOENT, "thumbnail folder unavailable")
+        if not may_write(dst, location):
+            raise PermissionError(errno.EACCES, "outside the thumbnail folder")
         current_folder = folder
-        for part in relative.parts:
+        for part in Path(os.path.abspath(dst.parent)).relative_to(folder).parts:
             current_folder = current_folder / part
             try:
                 os.mkdir(current_folder)
             except FileExistsError:
                 pass
+            if preview_location.is_link_like(current_folder):
+                raise PermissionError(errno.EACCES, "a link in the thumbnail folder")
+
+
+def store_is_link(store, location=None):
+    """Whether a store folder is a link (a junction or reparse point too in
+    folder mode): it is skipped by sweeps and refused by clears."""
+    location = location or current()
+    if location.mode == SOURCE_MODE:
+        return Path(store).is_symlink()
+    return preview_location.is_link_like(store)
 
 
 def given_store(root, store):
@@ -505,11 +606,7 @@ def owns(root, path, location=None):
         return False
     if location.mode == SOURCE_MODE:
         return True
-    try:
-        return _no_link_below(store, path)
-    except OSError:
-        note_failure()
-        return False
+    return may_write(path, location)
 
 
 # ── preview text ─────────────────────────────────────────────────────

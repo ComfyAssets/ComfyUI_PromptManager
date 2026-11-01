@@ -19,8 +19,8 @@ from .jobs import (
 )
 
 from .maintenance import disk_plan
-from .prompts import thumbnail_url_for
-from . import preview_store, thumbnail_settings
+from .images import listing_thumbnail_url
+from . import preview_store
 from .. import model_gate
 
 try:
@@ -1371,24 +1371,21 @@ class AutotagRoutesMixin:
             files = await self._run_in_executor(
                 self._without_removed, output_path, files
             )
-            store = preview_store.store_dir(output_path)
-            has_thumbnails = store is not None and store.is_dir()
+            location = preview_store.current()
+            if location.mode == preview_store.FOLDER_MODE:
+                has_thumbnails = location.available  # no store I/O here (#320)
+            else:
+                store = preview_store.store_dir(output_path)
+                has_thumbnails = store is not None and store.is_dir()
 
             images = []
             for image_path in files:
                 rel_path = image_path.relative_to(output_path)
                 thumbnail_url = None
                 if has_thumbnails:
-                    # Any preview the file owns, the current format first (#317)
-                    existing = thumbnail_settings.existing_thumbnail(
-                        output_path, rel_path
-                    )
-                    if existing is not None:
-                        thumb_rel = (
-                            thumbnail_settings.thumbnail_stem_rel(rel_path)
-                            + existing.suffix
-                        )
-                        thumbnail_url = thumbnail_url_for(thumb_rel, existing)
+                    # Any preview the file owns, the current format first
+                    # (#317); in folder mode without store I/O (#320).
+                    thumbnail_url = listing_thumbnail_url(output_path, rel_path)
                 images.append(
                     {
                         "filename": image_path.name,

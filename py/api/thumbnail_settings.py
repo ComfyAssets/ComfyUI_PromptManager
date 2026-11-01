@@ -224,9 +224,10 @@ def _owned(root, rel_path, preferred):
     found = owned_in_folder(stem.parent, stem.name, rel_path.suffix, preferred)
     if preview_store.current().mode == preview_store.SOURCE_MODE:
         return found
-    # Folder mode: timed, so a stalled share marks the folder unreachable.
+    # Folder mode: timed, so a stalled share marks the folder unreachable,
+    # and only previews no link takes out of the key folder (deletes use it).
     with preview_store.store_io():
-        return iter(list(found))
+        return iter([path for path in found if preview_store.may_write(path)])
 
 
 def owned_thumbnails(root, rel_path, preferred=None):

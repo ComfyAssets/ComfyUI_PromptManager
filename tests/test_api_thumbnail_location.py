@@ -145,14 +145,18 @@ class TestSourceKeys(unittest.TestCase):
 
     def test_lookup_by_spelling_identity_then_file_id(self):
         keys = {
-            "out-1": {"path": "D:\\Out", "identity": "d:\\out", "dev_ino": [1, 2]},
-            "lib-2": {"path": "E:\\Lib", "identity": "e:\\lib", "dev_ino": None},
+            "out-0123abcd": {
+                "path": "D:\\Out",
+                "identity": "d:\\out",
+                "dev_ino": [1, 2],
+            },
+            "lib-0123abcd": {"path": "E:\\Lib", "identity": "e:\\lib", "dev_ino": None},
         }
-        self.assertEqual(pl.find_key(keys, "D:\\Out", "x", None), "out-1")
-        self.assertEqual(pl.find_key(keys, "Z:\\Out", "d:\\out", None), "out-1")
+        self.assertEqual(pl.find_key(keys, "D:\\Out", "x", None), "out-0123abcd")
+        self.assertEqual(pl.find_key(keys, "Z:\\Out", "d:\\out", None), "out-0123abcd")
         # A letter spelling and its UNC spelling: the same file id.
         self.assertEqual(
-            pl.find_key(keys, "\\\\nas\\out", "\\\\nas\\out", (1, 2)), "out-1"
+            pl.find_key(keys, "\\\\nas\\out", "\\\\nas\\out", (1, 2)), "out-0123abcd"
         )
         self.assertIsNone(pl.find_key(keys, "F:\\New", "f:\\new", (9, 9)))
 
@@ -173,9 +177,15 @@ class TestMarker(unittest.TestCase):
 
     def test_writes_merge_what_another_writer_added(self):
         pl.init_folder(self.folder)
-        pl.write_marker(self.folder, lambda m: m["keys"].update(a={"install": "1"}))
-        pl.write_marker(self.folder, lambda m: m["keys"].update(b={"install": "2"}))
-        self.assertEqual(sorted(pl.read_marker(self.folder)["keys"]), ["a", "b"])
+        pl.write_marker(
+            self.folder, lambda m: m["keys"].update({"a-0123abcd": {"install": "1"}})
+        )
+        pl.write_marker(
+            self.folder, lambda m: m["keys"].update({"b-0123abcd": {"install": "2"}})
+        )
+        self.assertEqual(
+            sorted(pl.read_marker(self.folder)["keys"]), ["a-0123abcd", "b-0123abcd"]
+        )
         # No temp file is left beside it.
         self.assertEqual(os.listdir(self.folder), [pl.MARKER_NAME])
 

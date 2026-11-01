@@ -360,3 +360,180 @@ class TestSharedFolders(FolderModeCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHostileMarker(FolderModeCase):
+    """A hand-edited or foreign marker never takes a write or a delete out of
+    the thumbnail folder (shared and UNC folders can be edited by others)."""
+
+    def plant(self, keys):
+        marker = self.marker()
+        marker["keys"] = keys
+        (self.folder / preview_location.MARKER_NAME).write_text(
+            json.dumps(marker), encoding="utf-8"
+        )
+        self.assertTrue(preview_store.refresh())
+
+    def outside_files(self):
+        return sorted(
+            p.relative_to(self.comfy_dir).as_posix()
+            for p in self.comfy_dir.rglob("*")
+            if p.is_file()
+            and not p.is_relative_to(self.folder)
+            and not p.is_relative_to(self.output_dir)
+            and p.suffix in (".webp", ".jpg", ".png")
+        )
+
+    async def test_keys_that_are_not_one_folder_name_are_dropped(self):
+        entry = {"path": str(self.output_dir), "identity": "x", "install": "i"}
+        self.plant(
+            {
+                "../escape-0123abcd": entry,
+                str(self.comfy_dir / "abs-0123abcd"): entry,
+                "a/b-0123abcd": entry,
+                "a\\b-0123abcd": entry,
+                "Upper-0123abcd": entry,
+                "nohash": entry,
+                "fine-0123abcd": "not a dict",
+            }
+        )
+        self.assertEqual(preview_location.read_marker(str(self.folder))["keys"], {})
+        store = self.key_folder()
+        self.assertEqual(store.parent, self.folder)
+        make_png(self.output_dir / "p.png", size=(640, 480))
+        resp = await self.client.get(SERVE + "thumbnails/p_thumb.webp?root=0")
+        self.assertEqual(resp.status, 200)
+        self.assertTrue((store / "p_thumb.webp").is_file())
+        self.assertEqual(self.outside_files(), [])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    async def test_a_key_folder_that_is_a_link_is_never_written_or_cleared(self):
+        outside = self.comfy_dir / "outside"
+        outside.mkdir()
+        victim = outside / "q_thumb.webp"
+        victim.write_bytes(b"keep me")
+        store = self.key_folder()
+        store.rmdir()
+        try:
+            store.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted")
+        make_png(self.output_dir / "q.png", size=(640, 480))
+        from py.api.admin import _remove_thumbnail
+
+        self.assertFalse(_remove_thumbnail(self.output_dir, Path("q.png")))
+        resp = await self.client.post("/prompt_manager/images/clear-thumbnails")
+        self.assertIn(resp.status, (200, 400))
+        resp = await self.client.get(SERVE + "thumbnails/q_thumb.webp?root=0")
+        self.assertIn(resp.status, (200, 403))
+        self.assertEqual(victim.read_bytes(), b"keep me")
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), ["q_thumb.webp"])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    async def test_a_linked_folder_below_a_key_is_never_deleted_through(self):
+        outside = self.comfy_dir / "outside"
+        outside.mkdir()
+        victim = outside / "r_thumb.webp"
+        victim.write_bytes(b"keep me")
+        try:
+            (self.key_folder() / "sub").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted")
+        make_png(self.output_dir / "sub" / "r.png", size=(64, 64))
+        from py.api.admin import _remove_thumbnail
+
+        self.assertFalse(_remove_thumbnail(self.output_dir, Path("sub/r.png")))
+        resp = await self.client.post("/prompt_manager/images/clear-thumbnails")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(victim.read_bytes(), b"keep me")
+
+    @unittest.skipUnless(os.name == "nt", "junctions are Windows only")
+    async def test_a_key_folder_that_is_a_junction_is_never_written_or_cleared(self):
+        import _winapi
+
+        outside = self.comfy_dir / "outside"
+        outside.mkdir()
+        victim = outside / "v_thumb.webp"
+        victim.write_bytes(b"keep me")
+        store = self.key_folder()
+        store.rmdir()
+        _winapi.CreateJunction(str(outside), str(store))
+        make_png(self.output_dir / "v.png", size=(640, 480))
+        from py.api.admin import _remove_thumbnail
+
+        self.assertFalse(_remove_thumbnail(self.output_dir, Path("v.png")))
+        resp = await self.client.post("/prompt_manager/images/clear-thumbnails")
+        self.assertIn(resp.status, (200, 400))
+        resp = await self.client.get(SERVE + "thumbnails/v_thumb.webp?root=0")
+        self.assertIn(resp.status, (200, 403))
+        self.assertEqual(victim.read_bytes(), b"keep me")
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), ["v_thumb.webp"])
+
+    async def test_a_write_outside_the_folder_is_refused(self):
+        with self.assertRaises(OSError):
+            preview_store.make_parent(self.comfy_dir / "elsewhere" / "a_thumb.webp")
+        self.assertFalse((self.comfy_dir / "elsewhere").exists())
+
+    async def test_an_unmounted_folder_takes_no_write_before_the_next_check(self):
+        """An unmounted mount point is an empty folder: the flag may still
+        say available, but without the marker nothing is made there."""
+        store = self.key_folder()
+        store.rmdir()
+        (self.folder / preview_location.MARKER_NAME).unlink()
+        self.assertTrue(preview_store.current().available)  # not checked yet
+        with self.assertRaises(OSError):
+            preview_store.make_parent(store / "sub" / "s_thumb.webp")
+        self.assertEqual(list(self.folder.iterdir()), [])
+
+
+class TestStartupNeverFallsBackToTheSources(AutoThumbnailCase):
+    async def test_a_folder_setting_is_in_force_before_its_check(self):
+        self.addCleanup(preview_store.configure, None)
+        folder = self.comfy_dir / "thumbs"
+        value = {"mode": "folder", "path": str(folder), "id": "x"}
+        preview_store.configure(value, check=False)
+        location = preview_store.current()
+        self.assertEqual((location.mode, location.available), ("folder", False))
+        make_png(self.output_dir / "t.png", size=(640, 480))
+        resp = await self.client.get(SERVE + "thumbnails/t_thumb.webp?root=0")
+        self.assertEqual(resp.status, 200)
+        self.assertFalse((self.output_dir / "thumbnails").exists())
+
+    async def test_a_failed_startup_check_leaves_the_folder_invalid(self):
+        from py.config import PromptManagerConfig
+
+        self.addCleanup(preview_store.configure, None)
+        value = {"mode": "folder", "path": str(self.comfy_dir / "thumbs"), "id": "x"}
+        with (
+            patch.object(PromptManagerConfig, "THUMBNAIL_LOCATION", value),
+            patch.object(
+                type(self.api),
+                "_thumbnail_location_context",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            self.api.start_preview_location()
+        location = preview_store.current()
+        self.assertEqual(
+            (location.mode, location.available, location.problem),
+            ("folder", False, "invalid"),
+        )
+
+
+class TestNoStoreIoOnTheEventLoop(FolderModeCase):
+    async def test_legacy_listings_do_not_stat_the_folder(self):
+        make_png(self.output_dir / "u.png", size=(64, 64))
+        self.preview("u.png").write_bytes(b"x")
+        calls = []
+        real = thumbnail_settings.owned_in_folder
+        with patch.object(
+            thumbnail_settings,
+            "owned_in_folder",
+            lambda *a, **k: calls.append(threading.current_thread().name)
+            or real(*a, **k),
+        ):
+            images = self.api._enrich_images(
+                [{"image_path": str(self.output_dir / "u.png")}]
+            )
+        self.assertEqual(calls, [])
+        self.assertEqual(images[0]["thumbnail_url"], SERVE + "thumbnails/u_thumb.webp")
