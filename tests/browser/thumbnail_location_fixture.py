@@ -52,7 +52,10 @@ def register_thumbnail_location_commands(
             section.pop("location", None)
         return config
 
+    real_free = thumbnail_move_plan._free
+
     def reset() -> None:
+        thumbnail_move_plan._free = real_free
         preview_store.configure(None)
         PromptManagerConfig.THUMBNAIL_LOCATION = None
         store = get_config_store()
@@ -156,6 +159,12 @@ def register_thumbnail_location_commands(
     @routes.post("/__test__/thumbnail-folder/unlisted")
     async def unlisted_source(_request: web.Request) -> web.Response:
         await api._run_in_executor(unlisted)
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/thumbnail-space/full")
+    async def space_full(_request: web.Request) -> web.Response:
+        """Every target disk reports 1 byte free until the next reset."""
+        thumbnail_move_plan._free = lambda _path: 1
         return web.json_response({"success": True})
 
     return reset

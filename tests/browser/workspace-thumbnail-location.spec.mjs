@@ -162,6 +162,18 @@ test('Overview shows the notice and Change location opens the row', async ({ pag
     await expect(block(page).locator('#location-path')).toBeFocused();
 });
 
+test('Overview’s Use this folder takes the folder and the notice goes', async ({ page, request }) => {
+    await expect(await request.post('/__test__/thumbnail-location', { data: { mode: 'folder' } })).toBeOK();
+    await expect(await request.post('/__test__/thumbnail-folder/foreign')).toBeOK();
+    await page.goto(`${workspace}#/system/overview`);
+    const notice = page.locator('#unavailable-notice');
+    await expect(notice).toContainText('holds another thumbnail folder');
+    const adopted = page.waitForResponse(response => response.url().endsWith('/location/adopt'));
+    await notice.getByRole('button', { name: 'Use this folder' }).click();
+    expect((await adopted).status()).toBe(200);
+    await expect(notice).toHaveCount(0);
+});
+
 test('Thumbnail maintenance removes the thumbnails of removed sources in folder mode', async ({ page, request }) => {
     await expect(await request.post('/__test__/thumbnail-location', { data: { mode: 'folder' } })).toBeOK();
     await expect(await request.post('/__test__/thumbnail-folder/unlisted')).toBeOK();
@@ -182,4 +194,19 @@ test('Thumbnail maintenance removes the thumbnails of removed sources in folder 
     await dialog(page).getByRole('button', { name: 'Start' }).click();
     await expect(page.locator('#workspace-main h1')).toHaveText('Remove thumbnails of removed sources');
     await expect(page.locator('#workspace-main')).toContainText('1 thumbnails removed');
+});
+
+test('a disk without the space shows the review but cannot move', async ({ page, request }) => {
+    await expect(await request.post('/__test__/thumbnail-space/full')).toBeOK();
+    await openSources(page);
+    const row = block(page);
+    await row.getByRole('radio', { name: /One folder/ }).check();
+    const planned = page.waitForResponse(response => response.url().endsWith('/images/thumbnails/plan'));
+    await row.getByRole('button', { name: 'Review move…' }).click();
+    expect((await planned).status()).toBe(507);
+    const review = dialog(page);
+    await expect(review.locator('.review-refusal')).toHaveText(/^There is not enough space for the thumbnails: 1 B free/);
+    await expect(review.getByRole('button', { name: 'Move thumbnails' })).toHaveAttribute('aria-disabled', 'true');
+    await review.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog(page)).toHaveCount(0);
 });

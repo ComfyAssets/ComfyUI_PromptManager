@@ -110,6 +110,10 @@ test('a move and a prune show their own tiles in Activity', async () => {
     assert.match(movePhase({ ...move, scope: { mode: 'move', phase: 'remove' } }), /Removing the old copies/);
     assert.match(movePhase({ ...move, state: 'finished' }), /1 file that is not a thumbnail was left in place/);
     assert.match(movePhase({ ...move, state: 'cancelled' }), /^Nothing changed/);
+    assert.match(movePhase({ ...move, state: 'finished', counters: { moved: 3, left: 2 } }),
+        /2 files that are not thumbnails were left in place\.$/);
+    assert.equal(movePhase({ ...move, state: 'finished', counters: undefined }), 'Thumbnails are now read from the new location.');
+    assert.match(movePhase({ ...move, scope: { mode: 'move', from: 'folder' } }), /read from the old folder until the switch/);
     const done = { ...move, state: 'finished', status_line: 'Thumbnails moved to E:\\T: 3 moved · old copies removed.' };
     assert.equal(finishToast(done), done.status_line);
     const prune = { kind: 'thumbnails', state: 'running', cancellable: true, scope: { mode: 'prune' },
@@ -123,6 +127,8 @@ test('a move and a prune show their own tiles in Activity', async () => {
     const pruned = { ...prune, state: 'finished', status_line: '1 thumbnails removed' };
     assert.equal(viewOf(prune).line(prune), '');
     assert.equal(viewOf(pruned).line(pruned), '1 thumbnails removed');
+    assert.equal(viewOf(pruned).line({ ...pruned, status_line: null }), '');
+    assert.equal(viewOf(done).line({ ...done, status_line: null }), '');
     assert.equal(finishToast(pruned), '1 thumbnails removed');
     assert.equal(viewOf(prune).kept(prune), '1 removed');
     assert.match(finishToast({ ...prune, state: 'finished', status_line: '', title: 'Remove thumbnails of removed sources' }),
@@ -138,6 +144,17 @@ test('the prune scope reads its plan line from the server', async () => {
     assert.equal(planText({ mode: 'prune', line: '2 sources no longer listed: 1,240 thumbnails (85.2 MB) are removed.' }),
         '2 sources no longer listed: 1,240 thumbnails (85.2 MB) are removed.');
     assert.equal(planText({ mode: 'prune' }), PLAN_FAILED);
+});
+
+test('the prune review names the folder and each removed source', async () => {
+    const { pruneText, pruneEntries } = await reviewModule;
+    assert.match(pruneText({ folder: 'E:\\Thumbs' }), /^Only Prompt Manager’s thumbnails in their folders inside E:\\Thumbs are /);
+    assert.match(pruneText({}), /inside the thumbnail folder are removed\. If a source comes back/);
+    assert.deepEqual(pruneEntries({ sources: [{ key: 'gone-0123abcd', files: 1240, bytes: 85.2 * 1024 * 1024 },
+        { key: 'one-0123abcd', files: 1, bytes: 512 }] }),
+    [['gone-0123abcd', '1,240 thumbnails · 85.2 MB'], ['one-0123abcd', '1 thumbnail · 512 B']]);
+    assert.deepEqual(pruneEntries(null), []);
+    assert.deepEqual(pruneEntries({ sources: 'x' }), []);
 });
 
 test('Move library says where thumbnails kept in one folder stay', async () => {

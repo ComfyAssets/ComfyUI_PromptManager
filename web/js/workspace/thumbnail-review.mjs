@@ -48,6 +48,19 @@ export function settingsText(plan) {
     return `Previews are written as ${label} · quality ${plan.quality} · ${count(plan.size)} px. Change this in System › Appearance.`;
 }
 
+/** D200: what a prune removes, in `plan.folder` (the thumbnail folder). */
+export function pruneText(plan) {
+    return `Only Prompt Manager’s thumbnails in their folders inside ${plan?.folder || 'the thumbnail folder'} are `
+        + 'removed. If a source comes back, its thumbnails are made again as you browse.';
+}
+
+/** D200: one `[key, "N thumbnails · size"]` per removed source of a prune plan. */
+export function pruneEntries(plan) {
+    const sources = Array.isArray(plan?.sources) ? plan.sources : [];
+    return sources.map(source => [source.key, `${count(source.files)} ${noun(source.files, 'thumbnail')} · `
+        + `${sizeText(source.bytes)}`]);
+}
+
 /** D99: the plan line for the server's `{mode, targets, fresh, remaining}`; an answer without counts failed. */
 export function planText(plan) {
     if (plan?.mode === 'prune') return typeof plan.line === 'string' && plan.line ? plan.line : PLAN_FAILED;
@@ -138,14 +151,13 @@ export function openThumbnailReview({ api, store, scope, trigger = null, mode: i
         line.textContent = planText(plan);
         const prune = chosen === 'prune';
         settings.hidden = prune;
-        pruneDetail.hidden = pruneGrid.hidden = !prune || !plan?.sources?.length;
+        const entries = pruneEntries(plan);
+        pruneDetail.hidden = pruneGrid.hidden = !prune || !entries.length;
         if (prune) {
-            pruneDetail.textContent = `Only Prompt Manager’s thumbnails in their folders inside ${plan?.folder ?? 'the thumbnail '
-                + 'folder'} are removed. If a source comes back, its thumbnails are made again as you browse.`;
-            pruneGrid.replaceChildren(...(plan?.sources ?? []).map(source => {
+            pruneDetail.textContent = pruneText(plan);
+            pruneGrid.replaceChildren(...entries.map(([key, text]) => {
                 const entry = el('div');
-                entry.append(el('dt', source.key), el('dd', `${count(source.files)} ${noun(source.files, 'thumbnail')} · `
-                    + `${sizeText(source.bytes)}`));
+                entry.append(el('dt', key), el('dd', text));
                 return entry;
             }));
         } else {

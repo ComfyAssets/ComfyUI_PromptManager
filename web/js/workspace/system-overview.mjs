@@ -407,7 +407,7 @@ function overviewNodes(overview, { api, activity, notify, scope, navigate, openS
  * `counts` is the shell's sidebar counts (`{get(id), subscribe(listener), freshen(ids)}`, index.mjs): the Images metric
  * shows its `images` count and follows it, and a visit re-reads it as the workspace Overview does (#555).
  */
-export function mountOverview(container, { api, activity, scope, counts = null, drafts = null, navigate = navigateTo,
+export function mountOverview(container, { api, activity, scope, drafts, counts = null, navigate = navigateTo,
     notify = showWorkspaceToast, latestOnly = window.ApiClient.latestOnly, STALE = window.ApiClient.STALE }) {
     const overviewRead = latestOnly({ lifetime: scope.signal });
     const statisticsRead = latestOnly({ lifetime: scope.signal });
@@ -468,7 +468,7 @@ export function mountOverview(container, { api, activity, scope, counts = null, 
             const { nodes, thumbnails, backup, metrics } = overviewNodes(overview, { api, activity, notify, scope, navigate,
                 openStatistics, images: imagesCount(),
                 openThumbnails: trigger => openThumbnailReview({ api, store: activity, scope, trigger, navigate,
-                    location: drafts?.get('host', 'thumbnail_location') }) });
+                    location: drafts.get('host', 'thumbnail_location') }) });
             imagesValue = metrics.children[2].querySelector('strong');
             thumbnailRow = thumbnails;
             backupRow = backup;
@@ -525,9 +525,8 @@ export function mountOverview(container, { api, activity, scope, counts = null, 
     loadThumbnails();
     loadBackup();
     // #320 D199: the unavailable thumbnail folder's notice, first on the page while it lasts.
-    if (!drafts) return first;
     const unavailable = noticeSlot({ api, scope, notify, location: () => drafts.get('host', 'thumbnail_location'),
-        onChange: () => navigate('#/system/sources'), onDone: () => drafts.reloadHost?.() });
+        onChange: () => navigate('#/system/sources'), onDone: () => drafts.reloadHost() });
     scope.cleanup(drafts.subscribe(() => unavailable.paint()));
     // The anchor goes in first, so the notice (inserted after it) leads the section once the anchor is mounted.
     unavailable.paint();
