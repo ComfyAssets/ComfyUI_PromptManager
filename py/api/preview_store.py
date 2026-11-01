@@ -414,7 +414,9 @@ def _key_folder(folder, key):
 def ensure_store(root, location=None, *, create=False):
     """``store_dir`` for a writer: in folder mode a source without a key gets
     one (recorded in the marker); with *create* its key folder is made (never
-    the thumbnail folder itself). None while the folder is unavailable."""
+    the thumbnail folder itself). None while the folder is unavailable, and
+    for a key folder that is a link, junction or reparse point: nothing is
+    planned, written or removed through it."""
     location = location or current()
     store = store_dir(root, location)
     if location.mode == SOURCE_MODE or (store is None and not location.available):
@@ -423,6 +425,14 @@ def ensure_store(root, location=None, *, create=False):
         store = _assign_key(root, location)
         if store is None:
             return None
+    try:
+        with store_io():
+            linked = preview_location.is_link_like(store)
+    except OSError:
+        return None
+    if linked:
+        logger.warning(f"Skipping the thumbnail folder {store}: it is a link")
+        return None
     if create:
         try:
             with store_io():

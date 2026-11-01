@@ -44,7 +44,7 @@ import os
 import time
 from pathlib import Path
 
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
 from .thumbnail_encode import ThumbnailVerifyError, verify_thumbnail, writer_settings
 from .admin import _plural, _scan_location, _scan_roots, _scan_status_line
 from .images import _thumbnail_is_fresh, _worker_threads, _thumbnail_batch_size
@@ -393,6 +393,12 @@ class ThumbnailConvertMixin:
         removed, with no bytes (another run or a sibling removed it)."""
         removed, kept = 0, []
         for path, size in old:
+            if not preview_store.may_write(path):
+                # Folder mode: never a file outside a key folder, or one
+                # reached through a link (checked at the moment of the delete).
+                self.logger.warning(f"Not removing {path}: outside the thumbnails")
+                kept.append(path)
+                continue
             try:
                 os.remove(path)
             except FileNotFoundError:

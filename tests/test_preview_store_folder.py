@@ -469,6 +469,33 @@ class TestHostileMarker(FolderModeCase):
         self.assertEqual(victim.read_bytes(), b"keep me")
         self.assertEqual(sorted(p.name for p in outside.iterdir()), ["v_thumb.webp"])
 
+    def link_key_folder_outside(self):
+        """The source's key folder replaced by a link to a folder outside."""
+        outside = self.comfy_dir / "outside"
+        outside.mkdir()
+        store = self.key_folder()
+        store.rmdir()
+        try:
+            store.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted")
+        return outside
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    async def test_convert_never_plans_or_deletes_through_a_linked_key_folder(self):
+        outside = self.link_key_folder_outside()
+        old = outside / "c_thumb.png"
+        old.write_bytes(b"keep me")
+        make_png(self.output_dir / "c.png", size=(640, 480))
+        # A linked store is refused before any planning (bot review, P1).
+        self.assertIsNone(preview_store.ensure_store(self.output_dir))
+        plan = self.api._plan_gallery_thumbnails([self.output_dir], mode="convert")
+        self.assertEqual(plan["targets"], [])
+        # And every delete passes the ownership check at the moment it runs.
+        removed, kept = self.api._remove_old_previews([(old, 7)])
+        self.assertEqual((removed, kept), (0, [old]))
+        self.assertEqual(old.read_bytes(), b"keep me")
+
     async def test_a_write_outside_the_folder_is_refused(self):
         with self.assertRaises(OSError):
             preview_store.make_parent(self.comfy_dir / "elsewhere" / "a_thumb.webp")
