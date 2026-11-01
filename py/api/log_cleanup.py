@@ -68,6 +68,23 @@ def _count(count, singular, plural):
     return f"{count} {singular if count == 1 else plural}"
 
 
+# Each kept entry's row in the job (#586), in the review's "Kept: ..." words.
+KEPT_DETAILS = {
+    "active": "Kept: the active log",
+    "link": "Kept: a link",
+    "other": "Kept: another file",
+}
+
+
+def _kept_files(rows):
+    """``{name, kind}`` of each entry the cleanup keeps, in folder order."""
+    return [
+        {"name": row["name"], "kind": row["kind"]}
+        for row in rows
+        if row["kind"] in KEPT_DETAILS
+    ]
+
+
 def _protected_reasons(rows):
     """The plan's Protected reasons: what the cleanup keeps, zero counts left out."""
     active = sum(1 for row in rows if row["kind"] == "active")
@@ -129,7 +146,7 @@ class LogCleanupMixin:
             token = store.issue(
                 ROTATED_LOGS,
                 json.dumps(files, sort_keys=True),
-                {"files": files, "protected": protected},
+                {"files": files, "protected": protected, "kept": _kept_files(rows)},
                 (),
             )
         except ScopeTooLarge:
@@ -198,7 +215,11 @@ class LogCleanupMixin:
             job.record(
                 "errors", {"path": name, "detail": detail}, f"! {name} · {detail}"
             )
-        job.record_counted("protected", plan.payload["protected"])
+        kept = [
+            {"path": row["name"], "detail": KEPT_DETAILS[row["kind"]]}
+            for row in plan.payload["kept"]
+        ]
+        job.record_counted("protected", len(kept), kept, complete=True)
         removed, failed = len(result["removed"]), len(result["failed"])
         line = f"Deleted {_count(removed, 'rotated log copy', 'rotated log copies')}"
         if failed:

@@ -506,6 +506,20 @@ class TestJobOutcomesAndLog(unittest.TestCase):
         self.assertFalse(report["changed"]["truncated"])
         self.assertEqual(report["errors"], {"count": 0, "rows": [], "truncated": False})
 
+    def test_record_into_a_complete_group_keeps_the_row_for_the_report(self):
+        # #586: a group kept whole stays whole when later rows are recorded.
+        job = Job("duplicate_cleanup", "Remove", groups=("kept",))
+        rows = [
+            {"path": f"f{i}.png", "detail": "Kept"} for i in range(MAX_OUTCOME_ROWS)
+        ]
+        job.record_counted("kept", len(rows), rows, complete=True)
+        job.record("kept", {"path": "late.png", "detail": "Kept copy"}, "= late.png")
+        self.assertEqual(len(job.outcomes["kept"]), MAX_OUTCOME_ROWS)
+        report = job.report()["outcomes"]["kept"]
+        self.assertEqual(report["count"], MAX_OUTCOME_ROWS + 1)
+        self.assertEqual(report["rows"][-1]["path"], "late.png")
+        self.assertFalse(report["truncated"])
+
     def test_thumbnail_job_groups(self):
         self.assertEqual(
             jobs_module.THUMBNAIL_GROUP_NAMES, ("generated", "skipped", "errors")

@@ -266,6 +266,30 @@ class TestApply(LogCleanupTestCase):
         report = json.dumps(job.report())
         self.assertNotIn(self.tmpdir, report)
 
+    async def test_apply_lists_each_kept_file(self):
+        linked = self.seed()
+        plan = await self.preview()
+        _summary, job = await self.run_apply(plan)
+        expected = [
+            ("prompt_manager.log", "Kept: the active log"),
+            ("prompt_manager.log.9", "Kept: another file"),
+            ("prompt_manager.log.bak", "Kept: another file"),
+        ]
+        if linked:
+            expected.append(("prompt_manager.log.4", "Kept: a link"))
+        rows = job.outcomes["protected"]
+        self.assertEqual(
+            sorted((row["path"], row["detail"]) for row in rows), sorted(expected)
+        )
+        self.assertEqual(
+            {(row["root"], row["root_index"]) for row in rows}, {("", None)}
+        )
+        report = job.report()["outcomes"]["protected"]
+        self.assertEqual(
+            (report["count"], len(report["rows"]), report["truncated"]),
+            (plan["protected"]["count"], len(expected), False),
+        )
+
     async def test_apply_rows_name_each_file(self):
         self.seed()
         plan = await self.preview()

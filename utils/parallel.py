@@ -165,10 +165,12 @@ def _collect(func, items, futures):
     and wait for its running ones, as the old per-call pool's exit did."""
     try:
         return _run_rest(func, items, futures)
-    except BaseException:
-        for future in futures:
-            future.cancel()
-        wait(futures)
+    except BaseException:  # re-raised below, after the running items stop
+        # Wait only for what could not be cancelled (running or done). A
+        # future ``shutdown(cancel_futures=True)`` already cancelled stays
+        # CANCELLED, never notified, and ``wait`` would block on it forever
+        # (#593); ``cancel()`` is True for those as well.
+        wait([future for future in futures if not future.cancel()])
         raise
 
 

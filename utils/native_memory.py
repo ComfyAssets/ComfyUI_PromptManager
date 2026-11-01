@@ -16,8 +16,9 @@ import sys
 import threading
 
 _lock = threading.Lock()
-_trim = None
-_looked_up = False
+# Not looked up yet; after the lookup, the function or None.
+_NOT_LOOKED_UP = object()
+_trim = _NOT_LOOKED_UP
 
 
 def _glibc() -> bool:
@@ -33,10 +34,9 @@ def _glibc() -> bool:
 
 def _malloc_trim():
     """glibc's ``malloc_trim``, looked up once; None where there is none."""
-    global _trim, _looked_up
+    global _trim
     with _lock:
-        if not _looked_up:
-            _looked_up = True
+        if _trim is _NOT_LOOKED_UP:
             _trim = _lookup()
         return _trim
 

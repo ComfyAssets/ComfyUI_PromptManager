@@ -63,15 +63,19 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
         const target=host.targets.find(item=>item.id===state.targetId);
         return target ? [target] : [];
     }
-    // checkRevision is off only for a later node of "All", whose revision our own earlier write may have moved.
-    async function fetchPreview(request,hostId,target,checkRevision=true) {
+    // The adapter's revision is "<node identity>:<graph version>". Loading a workflow makes new node objects, so a new
+    // identity; our own write moves only the graph version. A string without the separator is all identity.
+    const nodeIdentity = revision => typeof revision==='string' && revision.includes(':') ? revision.slice(0,revision.indexOf(':')) : revision;
+    // graphMayMove is on only for a later node of "All", whose graph version our own earlier write may have moved; the node
+    // identity is still checked, so a write never lands in another workflow loaded in between (#593).
+    async function fetchPreview(request,hostId,target,graphMayMove=false) {
         const preview=await client.preview(hostId,target.id,roles,{signal:request.signal});
         if (!current(request)) return null;
         const fields=preview?.fields;
         if(typeof preview?.ticket!=='string' || !preview.ticket || preview.target?.id!==target.id || !Array.isArray(fields) || fields.length!==Object.keys(roles).length || new Set(fields.map(field=>field?.role)).size!==fields.length || Array.from(fields).some(field=>!field || !Object.hasOwn(roles,field.role) || typeof field.before!=='string' || field.after!==roles[field.role])) throw Error('ComfyUI returned an unexpected preview. Find the destination and preview again.');
         // Undefined on a tab still running older code, which has nothing to compare.
         const found=target.revision;
-        if(checkRevision && found!==undefined && preview.revision!==found) throw Error('The workflow changed since this window was found. Nothing was sent. Find windows again.');
+        if(found!==undefined && (graphMayMove ? nodeIdentity(preview.revision)!==nodeIdentity(found) : preview.revision!==found)) throw Error('The workflow changed since this window was found. Nothing was sent. Find windows again.');
         return preview;
     }
     function checkAcknowledgement(acknowledgement,targetId) {
@@ -95,25 +99,21 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
         return reviewed;
     }
     /**
-     * Sends the reviewed nodes one after another, best effort past refusals. Only the first node of a pass taken in this
-     * click keeps its ticket: a held review may have expired at the host (30 s), and our own writes may make later
-     * tickets stale, so every other node takes a fresh ticket that must show exactly the reviewed text.
+     * Sends the reviewed nodes one after another, best effort past refusals. Every node takes a fresh ticket that must
+     * show exactly the reviewed text: a held review may have expired at the host (30 s), our own writes make later
+     * tickets stale, and the host keeps only its latest 100 tickets, so a pass over more nodes has evicted the first (#593).
      */
-    async function applyEach(request,hostId,reviewed,where,held) {
+    async function applyEach(request,hostId,reviewed,where) {
         const sent=[],refused=[];let written=false;
         for (const [index,{target,preview}] of reviewed.entries()) {
             let posted=false;
             try {
-                let ticket=preview.ticket;
-                if (index>0 || held) {
-                    // Until something was posted the revision is still the discovered one; after that our own write may move it.
-                    const fresh=await fetchPreview(request,hostId,target,!written);
-                    if (!fresh) return;
-                    if (!sameChanges(preview,fresh)) throw Error('Its prompt changed since the preview. Preview again.');
-                    ticket=fresh.ticket;
-                }
+                // Until something was posted the revision is still the discovered one; after that our own write may move it.
+                const fresh=await fetchPreview(request,hostId,target,written);
+                if (!fresh) return;
+                if (!sameChanges(preview,fresh)) throw Error('Its prompt changed since the preview. Preview again.');
                 posted=written=true;
-                const acknowledgement=await client.apply(hostId,ticket,{signal:request.signal});
+                const acknowledgement=await client.apply(hostId,fresh.ticket,{signal:request.signal});
                 if (!current(request)) return;
                 checkAcknowledgement(acknowledgement,target.id);
                 sent.push(target);
@@ -191,7 +191,7 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
                 let reviewed;
                 try { reviewed=held?.length ? held : await previewEach(request,hostId,targets); }
                 catch(error) { if(current(request)) emit({phase:'error',message:error.message}); return; }
-                if (reviewed) await applyEach(request,hostId,reviewed,windowLabel,Boolean(held?.length));
+                if (reviewed) await applyEach(request,hostId,reviewed,windowLabel);
                 return;
             }
             const [target]=targets;
