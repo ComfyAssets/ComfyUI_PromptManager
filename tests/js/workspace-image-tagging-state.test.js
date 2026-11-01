@@ -53,8 +53,12 @@ function observed(overrides = {}, capture = {}) {
         ...overrides,
     };
 }
+// #431: the saved instructions; the fixture's entry is the default of both engines.
+const SAVED_ENTRY = { id: '0123456789ab', name: 'Saved', text: DEFAULT_PROMPT };
 const models = (overrides = {}) => ({
-    success: true, models: { 'wd14-swinv2': { downloaded: true } }, default_prompt: DEFAULT_PROMPT,
+    success: true, models: { 'wd14-swinv2': { downloaded: true } },
+    instructions: [{ id: 'builtin', name: 'Built-in', text: 'Built-in text.' }, SAVED_ENTRY],
+    default_instructions: { gguf: SAVED_ENTRY.id, hf: SAVED_ENTRY.id },
     wd14_general_threshold: 0.35, wd14_character_threshold: 0.85, suggestion_limit: 10, ...overrides,
 });
 const SANDSTONE = [
@@ -244,10 +248,13 @@ test('dialog starts on the saved model unless a preset or the user chose one', a
 });
 
 test('an unreadable or malformed models read falls back to the documented defaults', async () => {
-    for (const route of [() => fail(500, null), () => response(200, models({ default_prompt: 4, suggestion_limit: 0, wd14_general_threshold: 2, wd14_character_threshold: 'x' }))]) {
+    for (const route of [() => fail(500, null), () => response(200, models({ instructions: 4, suggestion_limit: 0, wd14_general_threshold: 2, wd14_character_threshold: 'x' }))]) {
         const { c } = await opened({ [`GET ${MODELS}`]: route });
         assert.equal(c.state.phase, 'ready');
-        assert.deepEqual({ ...c.state.options }, { general_threshold: 0.35, character_threshold: 0.85, instructions: '', suggestion_limit: 10 });
+        // #431: the client's Built-in copy (D204's read failure).
+        const { BUILTIN_INSTRUCTIONS } = await load();
+        assert.deepEqual({ ...c.state.options }, { general_threshold: 0.35, character_threshold: 0.85, instructions: BUILTIN_INSTRUCTIONS,
+            suggestion_limit: 10 });
     }
 });
 
@@ -949,4 +956,86 @@ test('the chip hint says how many skipped tags were not suggested (#431)', async
         await c.generate();
         assert.equal(c.state.chipHint, hint, String(skipped));
     }
+});
+
+// D204 (#431): the Saved instructions picker of both dialogs.
+const PHOTO_ENTRY = { id: '0123456789ac', name: 'Photo', text: 'Photo tags.' };
+const picker = (overrides = {}) => ({ [`GET ${MODELS}`]: () => response(200, models({ model_type: 'gguf',
+    instructions: [{ id: 'builtin', name: 'Built-in', text: 'Built-in text.' }, SAVED_ENTRY, PHOTO_ENTRY],
+    default_instructions: { gguf: SAVED_ENTRY.id, hf: PHOTO_ENTRY.id }, ...overrides })) });
+
+test('the picker starts at the engine default; a pick replaces the text and an edit is one-off (D204)', async () => {
+    const { c } = await opened(picker());
+    assert.deepEqual([c.state.instructionId, c.state.options.instructions, c.state.instructionsEdited], [SAVED_ENTRY.id, DEFAULT_PROMPT, false]);
+    const revision = c.state.optionsRevision;
+    c.pickInstructions(PHOTO_ENTRY.id);
+    assert.deepEqual([c.state.instructionId, c.state.options.instructions, c.state.instructionsEdited], [PHOTO_ENTRY.id, 'Photo tags.', false]);
+    assert.equal(c.state.optionsRevision, revision + 1, 'a pick re-renders the textarea');
+    c.setOption('instructions', 'Photo tags, please.');
+    assert.equal(c.state.instructionsEdited, true);
+    assert.equal(c.state.optionsRevision, revision + 1, 'typing never re-renders');
+    // Choosing an entry again replaces the edit without asking; an unknown id changes nothing.
+    c.pickInstructions(PHOTO_ENTRY.id);
+    assert.deepEqual([c.state.options.instructions, c.state.instructionsEdited], ['Photo tags.', false]);
+    c.pickInstructions('nope');
+    assert.equal(c.state.instructionId, PHOTO_ENTRY.id);
+    // Switching engines resets to the new engine's default and drops a one-off edit; WD14 is never "edited".
+    c.setOption('instructions', 'edited');
+    c.setModel('hf');
+    assert.deepEqual([c.state.instructionId, c.state.options.instructions, c.state.instructionsEdited], [PHOTO_ENTRY.id, 'Photo tags.', false]);
+    c.setModel('wd14-vit');
+    assert.equal(c.state.instructionsEdited, false);
+    c.setModel('gguf');
+    assert.deepEqual([c.state.instructionId, c.state.options.instructions], [SAVED_ENTRY.id, DEFAULT_PROMPT]);
+    c.dispose();
+});
+
+test('a preset shows the entry with its text, else "Edited for this run" (D204)', async () => {
+    const { c } = await opened(picker(), { preset: { model: 'hf', options: { instructions: DEFAULT_PROMPT } } });
+    assert.deepEqual([c.state.instructionId, c.state.instructionsEdited], [SAVED_ENTRY.id, false]);
+    const { c: other } = await opened(picker(), { preset: { model: 'hf', options: { instructions: 'Something else' } } });
+    assert.deepEqual([other.state.instructionId, other.state.options.instructions, other.state.instructionsEdited],
+        [PHOTO_ENTRY.id, 'Something else', true]);
+    for (const controller of [c, other]) controller.dispose();
+});
+
+test('a models read without instructions offers Built-in only with the client copy (D204)', async () => {
+    const { BUILTIN_INSTRUCTIONS, readChoices } = await load();
+    assert.equal(BUILTIN_INSTRUCTIONS.startsWith('Generate only comma-separated Danbooru tags'), true);
+    for (const value of [null, {}, { instructions: [] }, { instructions: [{ id: 'x', name: 'X', text: 'y' }] }]) {
+        assert.deepEqual(readChoices(value).entries.map(entry => entry.id), ['builtin'], JSON.stringify(value));
+    }
+    // A default naming no entry is Built-in.
+    assert.deepEqual({ ...readChoices({ instructions: [{ id: 'builtin', name: 'Built-in', text: 't' }], default_instructions: { gguf: 'gone' } }).defaults },
+        { gguf: 'builtin', hf: 'builtin' });
+    const { c } = await opened(picker({ instructions: 'broken' }));
+    assert.deepEqual([c.state.instructionId, c.state.options.instructions], ['builtin', BUILTIN_INSTRUCTIONS]);
+    c.dispose();
+});
+
+test('the bulk options pick and reset like the Tag image dialog (D204)', async () => {
+    const { createTaggingOptionsController } = await load();
+    const options = createTaggingOptionsController({ api: harness(defaultRoutes(picker())).api });
+    await options.open();
+    assert.deepEqual([options.state.model, options.state.instructionId, options.state.options.instructions], ['gguf', SAVED_ENTRY.id, DEFAULT_PROMPT]);
+    options.pickInstructions(PHOTO_ENTRY.id);
+    assert.equal(options.request().options.instructions, 'Photo tags.');
+    options.setOption('instructions', 'One-off.');
+    assert.equal(options.state.instructionsEdited, true);
+    assert.equal(options.request().options.instructions, 'One-off.');
+    options.setModel('hf');
+    assert.deepEqual([options.state.instructionId, options.state.instructionsEdited], [PHOTO_ENTRY.id, false]);
+    options.pickInstructions('nope');
+    options.dispose();
+    options.pickInstructions(SAVED_ENTRY.id);
+    assert.equal(options.state.instructionId, PHOTO_ENTRY.id);
+});
+
+test('the client Built-in copy equals the server DEFAULT_TAG_TEMPLATE (#431)', async () => {
+    const { BUILTIN_INSTRUCTIONS } = await load();
+    const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../py/tagging_defaults.py'), 'utf8');
+    const block = source.slice(source.indexOf('DEFAULT_TAG_TEMPLATE = ('), source.indexOf('\n)\n', source.indexOf('DEFAULT_TAG_TEMPLATE = (')));
+    const text = [...block.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(([, part]) => JSON.parse(`"${part}"`)).join('');
+    assert.ok(text.length > 100);
+    assert.equal(BUILTIN_INSTRUCTIONS, text);
 });

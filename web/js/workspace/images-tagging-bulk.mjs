@@ -167,7 +167,8 @@ export function openAutoTag({api, scope, store, images, trigger, onTagged = () =
     const options = createTaggingOptionsController({api});
     // D85: the Tag image dialog's model panel without Generate; its Suggestions field is the job's count (D91).
     const {element: panel, validate} = renderModelPanel({scope: local, controller: options,
-        heading: `Auto-tag ${countOf(filter ? count : listed.length, 'image')}`, generate: false}); // D118
+        heading: `Auto-tag ${countOf(filter ? count : listed.length, 'image')}`, generate: false, // D118
+        pickId: 'bulk-tag-instructions-pick'}); // D204
     let choice = APPLY_CHOICES[0];
     const actions = el('div', undefined, 'dialog-actions');
     const cancel = createButton('Cancel');

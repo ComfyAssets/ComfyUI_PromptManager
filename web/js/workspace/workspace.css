@@ -528,6 +528,10 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     .instructions-layout { grid-template-columns: 1fr; /* D203 */ }
 }
 
+/* D204 (#431): the one-off edit's note under "Tagging instructions" in the Tag image and Auto-tag selected dialogs. */
+.tag-model-panel .instructions-edited { margin: -6px 0 12px; /* D204 */ }
+.tag-model-panel .instructions-edited[hidden] { display: none; /* D204 */ }
+
 /* D132: at phone width the concept's 120px cap cuts every engine label ("WD14 SwinV2 · ~400 MB"); the Tagging model
    select alone keeps its natural width there (its widest engine label) and, with no room beside the row text, wraps
    under it. Existing tags (#398) never shrinks for its row text and, past the cap, keeps its natural width beside the
