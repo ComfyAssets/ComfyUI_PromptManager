@@ -92,6 +92,8 @@ export function cardActionsInventory(card) {
     };
 }
 
+// #431: the fixture's saved "Describe the image" entry, the default of both engines (workspace_tagging_fixture.py).
+export const FIXTURE_INSTRUCTIONS_ID='d35c71be0a1e';
 // D84 (plan D61): the legacy engines' values, labels and sizes, GGUF JoyCaption in the concept's Ollama slot.
 const MODEL_LABELS=Object.freeze({'wd14-swinv2':['wd14-swinv2','WD14 SwinV2 · ~400 MB'],'wd14-vit':['wd14-vit','WD14 ViT · ~400 MB'],
     ollama:['gguf','GGUF JoyCaption (Recommended) · ~4.5 GB'],huggingface:['hf','HuggingFace JoyCaption · ~16 GB']});
@@ -106,17 +108,24 @@ const CONCEPT_LABELS=Object.freeze({'WD14 SwinV2 · fast classifier':'WD14 SwinV
  *   (`chip`: a concept `.chip` inventory, the heading's size chip) around the row's own text (12px) in the checked
  *   row's colours (accent border, `--soft-blue`);
  * - D84 (plan D61): the legacy engine labels and values, and the server's default instructions (`instructions`);
+ * - D204 (#431): a "Saved instructions" select (`picker`: its value and options) before the instructions, on the
+ *   concept's select field tokens;
  * - D91 (plan D68): a Suggestions count field after the model's own fields, on the concept's number field tokens
  *   (`numberField`: the concept's General confidence field) with the configured count (`limit`);
  * - D29: the prototype's "Sample suggestions from …" status reads "Suggestions from …".
  * The opened state is compared unmapped: both show the concept's on-screen "Generate suggestions with the selected
  * model before approving." (its renderTagModelOptions, a1062–1076, replaces the markup's sentence at once).
  */
-export function mapConceptTagging(reference,{instructions,limit=10,chip,numberField}) {
+export function mapConceptTagging(reference,{instructions,limit=10,chip,numberField,
+    picker={value:FIXTURE_INSTRUCTIONS_ID,options:[['builtin','Built-in'],[FIXTURE_INSTRUCTIONS_ID,`${instructions} · default`]]}}) {
     const [select,...own]=reference.modelPanel.fields;
+    // D204 (#431): a "Saved instructions" select on the concept's select field, before the instructions.
+    const pickField={...select,label:'Saved instructions',control:{...select.control,id:'image-tag-instructions-pick',
+        value:picker.value,options:picker.options}};
     const suggestionsField={...numberField,label:'Suggestions',control:{...numberField.control,id:'image-suggestion-limit',
         value:String(limit),min:'1',max:'100',step:'1'}};
-    const mappedOwn=own.map(field=>field.control.id==='image-tag-instructions'?{...field,control:{...field.control,value:instructions}}:field);
+    const mappedOwn=own.flatMap(field=>field.control.id==='image-tag-instructions'
+        ?[pickField,{...field,control:{...field.control,value:instructions}}]:[field]);
     const rows=reference.suggestions.rows.map(row=>({...row,
         control:row.control?.kind==='checkbox'&&row.control.checked?{kind:'remove',label:`Remove ${row.name}`}:row.control,
         borderTopLeftRadius:chip.borderTopLeftRadius}));

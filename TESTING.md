@@ -1886,8 +1886,8 @@ Inspect plan keeps D60–D66 (plan D60 → D83, D61 → D84, D65 → D88, D68 �
   engines in the mock's order with legacy labels and sizes (`WD14 SwinV2 · ~400
   MB`, `WD14 ViT · ~400 MB`, `GGUF JoyCaption (Recommended) · ~4.5 GB` in the
   mock's Ollama slot, `HuggingFace JoyCaption · ~16 GB`); the instructions start
-  from the server's `default_prompt` (since #431 the saved engine's default
-  instructions, GGUF's for a WD14 engine).
+  from the chosen engine's default saved instructions (#431, D204; before, the
+  server's `default_prompt`).
 - **D91** (plan D68, ruling T3-bulk): a **Suggestions** number field (1–100) for
   every model, prefilled from `autotag.defaults.suggestion_limit` (10); a model
   change keeps it.
@@ -4678,6 +4678,26 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   tokens, the two rows on the concept's select row) and `saved instructions: new, edit,
   per-engine default, delete, save and reload (D203)`, `a refused instructions save names
   the entry and highlights the block (D203)` (workspace-system-tagging.spec).
+- **D204** (Tag image and Auto-tag selected dialogs, #431, beyond the concept): for a
+  language-model engine a "Saved instructions" select (`#image-tag-instructions-pick`,
+  `#bulk-tag-instructions-pick`) sits above "Tagging instructions" (the mock's state 3),
+  on the concept's select field: Built-in, then the saved entries (`GET /autotag/models`
+  `instructions`, full text), the engine's default marked "<name> · default". It starts
+  at that default; a pick replaces the text. The text stays editable for the run: while
+  it differs from the picked entry the select shows a disabled "Edited for this run" and
+  a muted line under the textarea reads "Edits apply to this run only. Manage saved
+  instructions in System › Auto-tagging." Choosing an entry again replaces the edit.
+  Switching between GGUF and HF starts from the new engine's default and drops an edit;
+  WD14 hides both. A preset (Preview tagging review, the bulk review) shows the entry
+  with its text, else "Edited for this run". When the read fails the select holds only
+  Built-in with the client's copy (`BUILTIN_INSTRUCTIONS`, pinned equal to
+  `DEFAULT_TAG_TEMPLATE` by workspace-image-tagging-state.test). Request bodies are
+  unchanged (`options.instructions` is the textarea's text); there is no "Save as new".
+  The workspace no longer reads `default_prompt`. Pinned by the tagging comparison's
+  mapping (tagging-canonical-comparison.mjs: the select before the instructions),
+  `the saved instructions picker fills, edits one-off and resets per engine (D204)`
+  (workspace-tagging.spec) and `Auto-tag selected picks saved instructions and sends the
+  text shown (D204)` (workspace-tagging-bulk.spec).
 - **D205** (Auto-tagging, #431; amends D134): for a language-model engine the batch
   review adds a read-only "Instructions" row with the drafted engine default's name
   before "Settings", which reads "Up to L tags per image"; the batch and Preview tagging

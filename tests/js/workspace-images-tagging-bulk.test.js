@@ -180,7 +180,9 @@ test('the bulk options start from the server defaults and wait for them before S
     assert.equal(options.state.canStart, false);
     assert.equal(options.state.canGenerate, false);
     const opening = options.open();
-    answer({ wd14_general_threshold: 0.5, wd14_character_threshold: 0.9, default_prompt: 'Say it', suggestion_limit: 7,
+    answer({ wd14_general_threshold: 0.5, wd14_character_threshold: 0.9, suggestion_limit: 7,
+        instructions: [{ id: 'builtin', name: 'Built-in', text: 'Built-in text.' }, { id: '0123456789ab', name: 'Say', text: 'Say it' }],
+        default_instructions: { gguf: '0123456789ab', hf: 'builtin' },
         models: { 'wd14-swinv2': { downloaded: true }, 'wd14-vit': { downloaded: false }, gguf: { downloaded: true } } });
     await opening;
     assert.equal(options.state.canStart, true);

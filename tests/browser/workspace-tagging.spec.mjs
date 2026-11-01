@@ -4,7 +4,7 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
 import { saveImageTags } from './concept-inventory.mjs';
-import { taggingInventory } from './tagging-canonical-comparison.mjs';
+import { FIXTURE_INSTRUCTIONS_ID, taggingInventory } from './tagging-canonical-comparison.mjs';
 
 const images = '/prompt_manager/workspace#/images';
 const MODULE = '/prompt_manager/js/workspace/image-tagging.mjs';
@@ -860,4 +860,50 @@ test('suggestions omit skipped tags and say how many were hidden', async ({ page
     expect(answer.skipped).toBe(2);
     await expect(chips(page).locator(':scope > span:first-child')).toHaveText(['sandstone', 'arch', 'sky', 'dune']);
     await expect(dialog(page).locator('#tag-suggestions > p.small')).toHaveText(`${CHIP_HINT} 2 skipped tags were not suggested.`);
+});
+
+// D204 (#431): the Saved instructions select above Tagging instructions: the engine default, a pick, a one-off edit
+// ("Edited for this run" and the muted note), an engine switch resets, WD14 hides both; Generate sends the text shown.
+test('the saved instructions picker fills, edits one-off and resets per engine (D204)', async ({ page, request }) => {
+    const settings = await (await request.get('/prompt_manager/settings')).json();
+    const builtin = settings.settings.autotag_builtin_instructions;
+    await openTag(page);
+    const options = dialog(page).locator('#image-tag-model-options');
+    const pick = options.getByRole('combobox', { name: 'Saved instructions', exact: true });
+    const text = options.getByRole('textbox', { name: 'Tagging instructions', exact: true });
+    const note = options.locator('.instructions-edited');
+    await expect(pick).toHaveCount(0);
+    await model(page).selectOption('gguf');
+    await expect(pick.locator('option')).toHaveText(['Built-in', 'Describe the image · default']);
+    await expect(pick).toHaveAttribute('id', 'image-tag-instructions-pick');
+    await expect(text).toHaveValue('Describe the image');
+    await expect(note).toBeHidden();
+    // A keyboard pick (the select focused) keeps focus on the select the fields are re-rendered with.
+    await pick.focus();
+    await pick.selectOption('builtin');
+    await expect(text).toHaveValue(builtin);
+    await expect(pick).toBeFocused();
+    await text.fill('Only the sky.');
+    await expect(text).toHaveAttribute('aria-describedby', 'image-tag-instructions-pick-note');
+    await expect(pick.locator('option:checked')).toHaveText('Edited for this run');
+    await expect(pick.locator('option[value="edited"]')).toBeDisabled();
+    await expect(note).toHaveText('Edits apply to this run only. Manage saved instructions in System › Auto-tagging.');
+    await expect(text).toBeFocused();
+    // Generate sends the edited text; the saved entries are unchanged.
+    const sent = page.waitForRequest(item => item.url().endsWith('/image-annotations/suggest'));
+    await generate(page).click();
+    expect((await sent).postDataJSON().options.instructions).toBe('Only the sky.');
+    // Choosing an entry replaces the edit; switching engines starts from the new engine's default.
+    await pick.selectOption('builtin');
+    await expect(text).toHaveValue(builtin);
+    await expect(note).toBeHidden();
+    await text.fill('Edited again.');
+    await model(page).selectOption('hf');
+    await expect(text).toHaveValue('Describe the image');
+    await expect(pick).toHaveValue(FIXTURE_INSTRUCTIONS_ID);
+    await model(page).selectOption('wd14-vit');
+    await expect(pick).toHaveCount(0);
+    await expect(text).toHaveCount(0);
+    expect((await (await request.get('/prompt_manager/settings')).json()).settings.autotag_instructions)
+        .toEqual(settings.settings.autotag_instructions);
 });
