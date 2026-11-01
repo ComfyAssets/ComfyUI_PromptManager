@@ -391,10 +391,15 @@ DOWNLOAD_HOLD_LIMIT_S = 60
 DEFAULTS = (0.35, 0.85, 10)
 
 
+# The saved "Describe the image" entry's id (#431).
+FIXTURE_INSTRUCTIONS_ID = "d35c71be0a1e"
+
+
 def _set_defaults(model, values) -> None:
     """Set the saved tagging defaults (``AutotagConfig``, #328); a reset also
-    puts back the saved model, batch policy and template (the fake model's
-    short instructions, which the concept comparisons show)."""
+    puts back the saved model, batch policy, skipped tags and instructions
+    (the fake model's short instructions, which the concept comparisons
+    show)."""
     from py.config import AutotagConfig
 
     general, character, limit = values
@@ -404,7 +409,21 @@ def _set_defaults(model, values) -> None:
     if values == DEFAULTS:
         AutotagConfig.MODEL_TYPE = "wd14-swinv2"
         AutotagConfig.EXISTING = "skip"
-        AutotagConfig.TEMPLATE = model.default_prompt
+        # #431: Built-in is always the shipped text, so the fake model's short
+        # instructions are a saved entry, the default of both engines (the
+        # concept comparisons show it).
+        AutotagConfig.INSTRUCTIONS = (
+            {
+                "id": FIXTURE_INSTRUCTIONS_ID,
+                "name": model.default_prompt,
+                "text": model.default_prompt,
+            },
+        )
+        AutotagConfig.DEFAULT_INSTRUCTIONS = {
+            "gguf": FIXTURE_INSTRUCTIONS_ID,
+            "hf": FIXTURE_INSTRUCTIONS_ID,
+        }
+        AutotagConfig._LEGACY_TEMPLATE = None
         AutotagConfig.SKIPPED_TAGS = ()
 
 

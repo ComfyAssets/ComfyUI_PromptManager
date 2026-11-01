@@ -1023,16 +1023,17 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
         "EXISTING",
         "GENERAL_THRESHOLD",
         "CHARACTER_THRESHOLD",
-        "TEMPLATE",
         "SUGGESTION_LIMIT",
         "SKIPPED_TAGS",
+        "INSTRUCTIONS",
+        "DEFAULT_INSTRUCTIONS",
+        "_LEGACY_TEMPLATE",
     )
     SAVED = {
         "autotag_model_type": "gguf",
         "autotag_existing": "merge",
         "autotag_general_threshold": 0.4,
         "autotag_character_threshold": 0.8,
-        "autotag_template": "Tags only.",
         "autotag_suggestion_limit": 15,
     }
 
@@ -1068,9 +1069,11 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
                 "EXISTING": "merge",
                 "GENERAL_THRESHOLD": 0.4,
                 "CHARACTER_THRESHOLD": 0.8,
-                "TEMPLATE": "Tags only.",
                 "SUGGESTION_LIMIT": 15,
                 "SKIPPED_TAGS": (),
+                "INSTRUCTIONS": (),
+                "DEFAULT_INSTRUCTIONS": {"gguf": "builtin", "hf": "builtin"},
+                "_LEGACY_TEMPLATE": None,
             },
         )
         settings = (await self._get())["settings"]
@@ -1141,11 +1144,11 @@ class TestAutotagDefaultsSettings(SourcesTestCase):
                 "replace",
                 "Existing tags must be skip, merge or replace_after_review.",
             ),
-            ("autotag_template", " ", "LLM tag template must be non-empty text."),
+            # #431: the old template is refused whatever it holds.
             (
                 "autotag_template",
-                "x" * 4001,
-                "LLM tag template must be at most 4000 characters.",
+                "Tags only.",
+                "LLM tag template was replaced by Saved instructions. Reload the page.",
             ),
             (
                 "autotag_suggestion_limit",

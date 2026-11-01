@@ -78,6 +78,12 @@ MODEL_DOWNLOAD_BODY_MAX = 1024
 _download_titles = {}
 
 
+def _instruction_engine(model_type: str) -> str:
+    """The language-model engine whose default instructions ``model_type``
+    reads: itself, or GGUF for a WD14 engine (which takes none)."""
+    return model_type if model_type in ("gguf", "hf") else "gguf"
+
+
 def _holder_label(holder: Optional[str]) -> str:
     if not holder:
         return ANOTHER_OPERATION
@@ -294,7 +300,15 @@ class AutotagRoutesMixin:
                     "success": True,
                     "models": public_models(status, loaded_type),
                     # The saved tagging defaults (#328, System › Auto-tagging).
-                    "default_prompt": AutotagConfig.TEMPLATE,
+                    # The saved engine's default instructions (GGUF for a
+                    # WD14 engine); kept one release for cached pages (#431).
+                    "default_prompt": AutotagConfig.default_instructions_text(
+                        _instruction_engine(AutotagConfig.MODEL_TYPE)
+                    ),
+                    # #431: Built-in first, with every text, and each
+                    # language-model engine's default.
+                    "instructions": AutotagConfig.all_instructions(),
+                    "default_instructions": dict(AutotagConfig.DEFAULT_INSTRUCTIONS),
                     "model_loaded": loaded,
                     "loaded_model_type": loaded_type,
                     "wd14_general_threshold": AutotagConfig.GENERAL_THRESHOLD,
@@ -549,7 +563,10 @@ class AutotagRoutesMixin:
         else:
             prompt = params.get("prompt")
             template = prompt if isinstance(prompt, str) and prompt.strip() else None
-            options = {"instructions": template or AutotagConfig.TEMPLATE}
+            options = {
+                "instructions": template
+                or AutotagConfig.default_instructions_text(model_type)
+            }
         try:
             _model, options = validate_options(
                 model_type,
@@ -1092,7 +1109,10 @@ class AutotagRoutesMixin:
         else:
             prompt = data.get("prompt")
             template = prompt if isinstance(prompt, str) and prompt.strip() else None
-            options = {"instructions": template or AutotagConfig.TEMPLATE}
+            options = {
+                "instructions": template
+                or AutotagConfig.default_instructions_text(model_type)
+            }
         use_gpu = data.get("use_gpu", True)
         options["use_gpu"] = use_gpu if isinstance(use_gpu, bool) else True
         return validate_options(

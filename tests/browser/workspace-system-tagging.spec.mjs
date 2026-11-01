@@ -112,13 +112,14 @@ test('model options are the four real engines with size and the description show
     await expect(status(page)).toHaveText('Unsaved changes.');
     // The other rows keep the concept's copy and the saved values (D133 adds Suggestions per image).
     expect(await surface(page).locator(':scope > .setting-row label').allTextContents()).toEqual(['Tagging model', 'Existing tags',
-        'General-tag confidence', 'Character-tag confidence', 'Suggestions per image']);
+        'General-tag confidence', 'Character-tag confidence', 'Suggestions per image', 'Default for GGUF JoyCaption',
+        'Default for HuggingFace JoyCaption']);
     await expect(page.locator('#tag-existing')).toHaveValue('skip');
     await expect(page.locator('#threshold-general')).toHaveValue('0.35');
     await expect(page.locator('#threshold-character')).toHaveValue('0.85');
     await expect(page.locator('#tag-suggestions')).toHaveValue('10');
-    const settings = await serverJson(request, SETTINGS_URL);
-    await expect(page.locator('#tag-template')).toHaveValue(settings.settings.autotag_template);
+    // D203 (#431): Saved instructions replace the template field.
+    await expect(page.locator('#tag-template')).toHaveCount(0);
     // Unload is offered only while a model is loaded (none is).
     await expect(actionOf(page, 'Unload')).toBeDisabled();
 });
@@ -499,4 +500,75 @@ test('skipped tags preview checks library tags only without a label list, and a 
     await expect(status(page)).toHaveText('Skipped tags: entry 1 is empty.');
     await expect(skippedBlock(page)).toHaveAttribute('aria-invalid', 'true');
     await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
+// D203 (#431): Saved instructions: Built-in read-only, New, edit, per-engine defaults, Delete resets a default, Save
+// preferences and a reload; the server pairs the two keys. D205: the batch review names the engine's default.
+const instructionOption = (page, name) => page.locator('#instruction-list [role="option"]').filter({ has: page.locator(`span:text-is("${name}")`) });
+
+test('saved instructions: new, edit, per-engine default, delete, save and reload (D203)', async ({ page, request }) => {
+    await openTagging(page);
+    const settings = (await serverJson(request, SETTINGS_URL)).settings;
+    await expect(page.locator('#instructions-count')).toHaveText('1 of 20 saved · Built\u2011in is not counted.');
+    await expect(page.locator('#instruction-list [role="option"] > span:first-child')).toHaveText(['Built-in', 'Describe the image']);
+    await expect(page.locator('#instruction-name')).toHaveValue('Built-in');
+    await expect(page.locator('#instruction-text')).toHaveValue(settings.autotag_builtin_instructions);
+    await expect(page.locator('#instruction-text')).toHaveAttribute('readonly', '');
+    await expect(page.locator('#instruction-delete')).toBeDisabled();
+    await expect(page.locator('#instruction-default-gguf')).toHaveValue(settings.autotag_instructions[0].id);
+    // + New, then name and text it, and make it HuggingFace's default.
+    await page.locator('#instruction-new').click();
+    await expect(page.locator('#instruction-name')).toHaveValue('New instructions');
+    await expect(page.locator('#instruction-note')).toHaveText('The text must not be empty.');
+    await page.locator('#instruction-name').fill('Photo realism');
+    await page.locator('#instruction-text').fill('Tag camera angle and lighting.');
+    await expect(page.locator('#instruction-text').locator('xpath=..').locator('label .muted')).toHaveText('30 of 4,000 characters');
+    await page.locator('#instruction-default-hf').selectOption({ label: 'Photo realism' });
+    await expect(instructionOption(page, 'Photo realism').locator('.chip')).toHaveText(['Default for HuggingFace']);
+    await expect(status(page)).toHaveText('Unsaved changes.');
+    await save(page).click();
+    await expect(status(page)).toHaveText('Saved to the server configuration.');
+    let saved = (await serverJson(request, SETTINGS_URL)).settings;
+    expect(saved.autotag_instructions.map(entry => [entry.name, entry.text])).toEqual([['Describe the image', 'Describe the image'],
+        ['Photo realism', 'Tag camera angle and lighting.']]);
+    expect(saved.autotag_default_instructions.hf).toBe(saved.autotag_instructions[1].id);
+    // A reload shows the saved list; deleting GGUF's default resets it to Built-in and says so.
+    await openTagging(page);
+    await instructionOption(page, 'Describe the image').click();
+    await page.locator('#instruction-delete').click();
+    await expect(page.locator('#instruction-reset')).toHaveText('GGUF now uses Built-in.');
+    await expect(page.locator('#instruction-default-gguf')).toHaveValue('builtin');
+    await save(page).click();
+    await expect(status(page)).toHaveText('Saved to the server configuration.');
+    saved = (await serverJson(request, SETTINGS_URL)).settings;
+    expect(saved.autotag_instructions.map(entry => entry.name)).toEqual(['Photo realism']);
+    expect(saved.autotag_default_instructions.gguf).toBe('builtin');
+    expect(saved.autotag_template).toBe(saved.autotag_builtin_instructions);
+});
+
+test('a refused instructions save names the entry and highlights the block (D203)', async ({ page }) => {
+    await openTagging(page);
+    await page.locator('#instruction-duplicate').click();
+    await page.locator('#instruction-name').fill('describe the IMAGE');
+    await expect(page.locator('#instruction-note')).toHaveText('The name “describe the IMAGE” is already used.');
+    await save(page).click();
+    await expect(status(page)).toHaveText('Saved instructions: entry 2 name “describe the IMAGE” is already used.');
+    await expect(surface(page).locator('.setting-block[data-setting="tag-instructions"]')).toHaveAttribute('aria-invalid', 'true');
+});
+
+test('the batch review names the language model\'s default instructions (D205)', async ({ page }) => {
+    await openTagging(page);
+    await page.locator('#tag-model').selectOption('gguf');
+    await page.locator('#tag-existing').selectOption('merge');
+    const answer = page.waitForResponse(item => item.url().endsWith(PREVIEW_URL));
+    await reviewButton(page).click();
+    await answer;
+    await expect(dialog(page).locator('#modal-title')).toHaveText('Review tag output images');
+    const grid = await gridOf(page);
+    expect(grid.slice(-3)).toEqual([['Instructions', 'Describe the image'], ['Settings', 'Up to 10 tags per image'],
+        grid.at(-1)]);
+    // The batch sends the default's text.
+    const start = page.waitForRequest(item => item.url().endsWith('/prompt_manager/jobs/autotag'));
+    await dialog(page).getByRole('button', { name: 'Start tagging', exact: true }).click();
+    expect((await start).postDataJSON().options).toEqual({ instructions: 'Describe the image' });
 });
