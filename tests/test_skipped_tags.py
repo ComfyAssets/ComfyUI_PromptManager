@@ -5,6 +5,7 @@ reader and the filter in ``AutoTagService.generate_tag_suggestions``. No model
 is loaded: ``_scored_tags`` is replaced by a fixed list.
 """
 
+import csv
 import os
 import tempfile
 import unicodedata
@@ -189,6 +190,15 @@ class TestWd14Labels(unittest.TestCase):
             os.utime(self.path, ns=(1, 2))
             self.assertEqual(wd14_label_names(self.path), ("blurry", "sky"))
             self.assertEqual(reader.call_count, 2)
+
+    def test_a_damaged_list_is_a_value_error_for_the_caller_to_skip(self):
+        # A field over the csv module's size limit raises csv.Error.
+        big = "x" * (csv.field_size_limit() + 1)
+        self.path.write_text(
+            f"tag_id,name,category,count\n1,{big},0,1\n", encoding="utf-8"
+        )
+        with self.assertRaises(ValueError):
+            wd14_label_names(self.path)
 
     def test_a_missing_list_raises_for_the_caller_to_skip(self):
         with self.assertRaises(OSError):

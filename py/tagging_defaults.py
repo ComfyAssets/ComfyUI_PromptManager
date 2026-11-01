@@ -204,8 +204,8 @@ def read_wd14_label_rows(path) -> List[Dict[str, str]]:
 
 def wd14_label_names(path) -> Tuple[str, ...]:
     """The names a WD14 label list can suggest (categories 0 and 4), cached
-    by ``(mtime_ns, size)``. OSError and ValueError propagate (the caller
-    skips a missing or unreadable list)."""
+    by ``(mtime_ns, size)``. OSError (missing) and ValueError (unreadable)
+    propagate; the caller skips that list."""
     key = os.fspath(path)
     stat = os.stat(key)
     stamp = (stat.st_mtime_ns, stat.st_size)
@@ -213,9 +213,13 @@ def wd14_label_names(path) -> Tuple[str, ...]:
         cached = _label_cache.get(key)
     if cached is not None and cached[0] == stamp:
         return cached[1]
+    try:
+        rows = read_wd14_label_rows(key)
+    except csv.Error as exc:  # a damaged list (a NUL byte, an oversized field)
+        raise ValueError(f"unreadable label list: {exc}") from None
     names = tuple(
         name
-        for row in read_wd14_label_rows(key)
+        for row in rows
         if row.get("category", "0") in WD14_SUGGESTED_CATEGORIES
         and (name := (row.get("name") or "").strip())
     )

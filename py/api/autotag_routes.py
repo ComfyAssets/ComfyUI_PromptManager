@@ -44,6 +44,8 @@ BATCH_JOB_BODY_MAX = 32 * 1024
 SKIPPED_PREVIEW_BODY_MAX = 64 * 1024
 SKIPPED_PREVIEW_LEASE = "Skipped tags preview"
 SKIPPED_PREVIEW_SAMPLE = 12
+# WD14 label lists the preview found missing or unreadable (logged once each).
+_MISSING_LABEL_LISTS = set()
 REVIEW_REQUIRED = (
     "Replacing tags needs a review of each image. Use Preview tagging review, "
     "or choose Skip or Merge for a batch run."
@@ -760,8 +762,11 @@ class AutotagRoutesMixin:
             try:
                 names = wd14_label_names(path)
             except (OSError, ValueError) as exc:
-                self.logger.debug(f"No WD14 label list for {model_type}: {exc}")
+                if path not in _MISSING_LABEL_LISTS:  # logged once per list
+                    _MISSING_LABEL_LISTS.add(path)
+                    self.logger.debug(f"No WD14 label list for {model_type}: {exc}")
                 continue
+            _MISSING_LABEL_LISTS.discard(path)
             lists.append(MODELS[model_type]["name"])
             for name in names:
                 known.setdefault(name.casefold(), (1, name))

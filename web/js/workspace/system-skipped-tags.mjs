@@ -107,7 +107,6 @@ export function skippedTagsBlock({ api, scope, drafts, delay = PREVIEW_DELAY_MS 
     input.id = 'tag-skipped-input';
     input.autocomplete = 'off';
     input.placeholder = SKIPPED_COPY.placeholder;
-    input.maxLength = MAX_ENTRY_CHARS + 10;
     input.setAttribute('aria-describedby', 'tag-skipped-problem');
     const add = createButton(SKIPPED_COPY.add);
     add.id = 'tag-skipped-add';
@@ -116,6 +115,7 @@ export function skippedTagsBlock({ api, scope, drafts, delay = PREVIEW_DELAY_MS 
     problem.id = 'tag-skipped-problem';
     problem.setAttribute('role', 'alert');
     const chips = el('div', undefined, 'tags skip-chips');
+    chips.setAttribute('role', 'group');
     chips.setAttribute('aria-label', SKIPPED_COPY.chips);
     const preview = el('p', '', 'small skip-preview');
     preview.setAttribute('role', 'status');
