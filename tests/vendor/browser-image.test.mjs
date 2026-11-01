@@ -8,6 +8,8 @@ import { readFileSync } from 'node:fs';
 const workflow = readFileSync(new URL('../../.github/workflows/viewerjs-check.yml', import.meta.url), 'utf8');
 const lock = JSON.parse(readFileSync(new URL('../../tools/vendor/package-lock.json', import.meta.url), 'utf8'));
 const version = lock.packages['node_modules/@playwright/test'].version;
+// The tag alone is not a pin: v1.64.1-noble was re-pushed with Node 26 (#609). The digest fixes the image's contents.
+const pinnedImage = `^    container:\\n      image: mcr\\.microsoft\\.com/playwright:v${version.replaceAll('.', '\\.')}-noble@sha256:[0-9a-f]{64}$`;
 
 function job(name) {
     const match = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:\\n|(?![\\s\\S]))`, 'm'));
@@ -18,7 +20,7 @@ function job(name) {
 for (const name of ['frontend-coverage', 'browser-workflows']) {
     test(`${name} runs in the pinned Playwright image matching @playwright/test`, () => {
         const body = job(name);
-        assert.match(body, new RegExp(`^    container:\\n      image: mcr\\.microsoft\\.com/playwright:v${version.replaceAll('.', '\\.')}-noble$`, 'm'));
+        assert.match(body, new RegExp(pinnedImage, 'm'));
         assert.doesNotMatch(body, /playwright install/, 'browsers and their fonts come from the image, not a runner install');
         // Toolcache interpreters are the runner's own builds: their entry points name host paths that do not exist in
         // the container (setup-python failed with `spawn .../bin/pip ENOENT`). Use the image's Python and Node.
@@ -39,7 +41,7 @@ test('real ComfyUI compatibility runs in the pinned Playwright image on the revi
     const match = testWorkflow.match(/^ {2}comfyui:\n([\s\S]*?)(?=^ {2}[a-z][a-z-]*:\n|(?![\s\S]))/m);
     assert.ok(match, 'comfyui job exists');
     const body = match[1];
-    assert.match(body, new RegExp(`^    container:\\n      image: mcr\\.microsoft\\.com/playwright:v${version.replaceAll('.', '\\.')}-noble$`, 'm'));
+    assert.match(body, new RegExp(pinnedImage, 'm'));
     assert.doesNotMatch(body, /playwright install/, 'Chromium and its system libraries come from the image, not apt');
     assert.doesNotMatch(body, /apt-get|actions\/setup-(python|node)@/);
     assert.match(body, /python3 -m venv --without-pip /, 'a user-space venv on the image Python');
