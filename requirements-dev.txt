@@ -4,7 +4,7 @@ Pillow>=10.1.0
 aiohttp>=3.11.8
 
 # Tests and coverage
-coverage>=7.16.2
+coverage>=7.17.0
 numpy>=1.25.0  # WD14 engine tests
 
 # Code quality
