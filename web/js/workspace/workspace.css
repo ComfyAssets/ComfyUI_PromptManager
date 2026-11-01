@@ -576,3 +576,32 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 .review-panel { position: sticky; inset-block-start: 20px; }
 @media (max-width: 700px) { .review-panel { position: static; } }
 @media (min-width: 701px) and (max-height: 720px) { .review-panel { max-block-size: calc(100dvh - 40px); overflow: auto; } }
+
+/* #320 D196: Thumbnail location, a setting wider than a .setting-row column. */
+.setting-block { padding: 17px 0; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+.setting-block-text .setting-block-label { font-size: 12px; font-weight: 500; display: block; }
+.setting-block-text p { font-size: 11px; color: var(--ca-muted); margin-top: 4px; max-width: 640px; }
+.location-choice { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 12px; }
+.location-choice label { display: inline-flex; gap: 6px; align-items: baseline; }
+.location-choice .small { color: var(--ca-muted); }
+.location-path { max-width: 640px; margin: 0; }
+.location-path input { width: 100%; min-width: 0; font-family: var(--ca-mono, ui-monospace, monospace); font-size: 12px; }
+.location-path input:disabled { color: var(--ca-muted); }
+.location-path[aria-invalid="true"] input { border-color: var(--red); }
+.location-problem { color: var(--red); margin-top: 6px; }
+.location-problem:empty { display: none; }
+.location-status { margin: 0; overflow-wrap: anywhere; }
+.setting-block .row-actions { justify-content: flex-start; }
+
+/* #320 D197: the move review's lists and confirmation. */
+.review-list { margin: 4px 0 0; padding-inline-start: 18px; font-size: 11px; color: var(--ca-muted); }
+.review-list li { overflow-wrap: anywhere; }
+.review-confirm { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; margin: 12px 0 0;
+    padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--ca-field); }
+.review-confirm input { margin-top: 2px; flex-shrink: 0; }
+.review-refusal { color: var(--red); }
+.meta-grid dd { overflow-wrap: anywhere; }
+
+@media (max-width: 700px) {
+    .location-choice { flex-direction: column; }
+}

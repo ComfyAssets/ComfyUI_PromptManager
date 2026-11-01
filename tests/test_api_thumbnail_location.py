@@ -302,7 +302,7 @@ class TestValidation(unittest.TestCase):
     def test_every_code_has_a_message_without_a_path(self):
         for code, (status, text) in pl.MESSAGES.items():
             with self.subTest(code=code):
-                self.assertIn(status, (400, 409))
+                self.assertIn(status, (400, 409, 507))
                 self.assertTrue(text.endswith("."))
 
 

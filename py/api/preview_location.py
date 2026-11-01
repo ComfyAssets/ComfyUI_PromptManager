@@ -119,6 +119,11 @@ MESSAGES = {
         400,
         "This path is too long for Windows. Choose a shorter folder path.",
     ),
+    "insufficient-space": (
+        507,
+        "There is not enough space for the thumbnails. Free some space or choose "
+        "another folder.",
+    ),
     "location-needs-move": (
         409,
         "Use Move thumbnails in System › Sources & scans.",

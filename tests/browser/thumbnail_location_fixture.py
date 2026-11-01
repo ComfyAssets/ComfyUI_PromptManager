@@ -31,12 +31,40 @@ def register_thumbnail_location_commands(
 ) -> Callable[[], None]:
     """Register the commands; returns the reset every reset runs."""
     from py.api import preview_location, preview_store
+    from py.api import thumbnail_location, thumbnail_move_plan
+    from py.config import PromptManagerConfig
+    from py.config_store import get_config_store
 
     folder = root / FOLDER_NAME
+    default = root / "default-thumbs"
+    custom = root / "custom-thumbs"  # a folder a page types in
+    journal = root / "data" / "thumbnail-move.json"
+    # The move's journal and default folder live in this server's root, never
+    # in the checkout's data folder.
+    thumbnail_move_plan.journal_path = lambda: str(journal)
+    thumbnail_move_plan.default_path = lambda: str(default)
+    thumbnail_location.default_path = lambda: str(default)
+    api.recover_thumbnail_move()
+
+    def forget_config(config: dict) -> dict:
+        section = config.get("thumbnails")
+        if isinstance(section, dict):
+            section.pop("location", None)
+        return config
 
     def reset() -> None:
         preview_store.configure(None)
-        shutil.rmtree(folder, ignore_errors=True)
+        PromptManagerConfig.THUMBNAIL_LOCATION = None
+        store = get_config_store()
+        config, _revision = store.read()
+        if (
+            isinstance(config.get("thumbnails"), dict)
+            and "location" in config["thumbnails"]
+        ):
+            store.commit(forget_config, expected_revision=None)
+        for path in (folder, default, custom):
+            shutil.rmtree(path, ignore_errors=True)
+        journal.unlink(missing_ok=True)
 
     def use(mode: str) -> dict:
         reset()
@@ -63,14 +91,18 @@ def register_thumbnail_location_commands(
         return web.json_response(await api._run_in_executor(use, mode))
 
     def files() -> dict:
+        setting = preview_store.setting()
+        where = Path(setting.path) if setting.path else folder
         previews = sorted(
-            path.relative_to(folder).as_posix()
-            for path in folder.rglob("*_thumb.*")
+            path.relative_to(where).as_posix()
+            for path in where.rglob("*_thumb.*")
             if path.is_file()
         )
         sources = [str(path) for path in api._get_all_output_dirs()]
         return {
             "folder": previews,
+            "folder_exists": folder.exists() or default.exists() or custom.exists(),
+            "custom_path": str(custom),
             "source_thumbnails": any(
                 (Path(source) / "thumbnails").exists() for source in sources
             ),
@@ -81,12 +113,27 @@ def register_thumbnail_location_commands(
         return web.json_response(await api._run_in_executor(files))
 
     def remove() -> bool:
-        shutil.rmtree(folder, ignore_errors=True)
+        setting = preview_store.setting()
+        shutil.rmtree(setting.path or folder, ignore_errors=True)
         return preview_store.refresh()
 
     @routes.post("/__test__/thumbnail-folder/remove")
     async def remove_folder(_request: web.Request) -> web.Response:
         available = await api._run_in_executor(remove)
         return web.json_response({"available": available})
+
+    def foreign() -> bool:
+        """Another install recreated the folder: its marker has another id."""
+        setting = preview_store.setting()
+
+        def other(marker: dict) -> None:
+            marker["id"] = "another-install"
+
+        preview_location.write_marker(setting.path, other)
+        return preview_store.refresh()
+
+    @routes.post("/__test__/thumbnail-folder/foreign")
+    async def foreign_folder(_request: web.Request) -> web.Response:
+        return web.json_response({"available": await api._run_in_executor(foreign)})
 
     return reset

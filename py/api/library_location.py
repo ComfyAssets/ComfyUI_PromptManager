@@ -75,6 +75,14 @@ def _failure(message, status, code):
     )
 
 
+def _thumbnail_folder():
+    """The thumbnail folder in use, or None (previews inside each source)."""
+    from . import preview_store
+
+    setting = preview_store.setting()
+    return setting.path if setting.mode == preview_store.FOLDER_MODE else None
+
+
 def _inside_thumbnail_folder(path):
     """Whether *path* lies in the thumbnail folder in use (#320)."""
     from . import preview_store
@@ -236,6 +244,8 @@ class LibraryLocationRoutesMixin:
             ),
             "problem": location.problem or self._node_folder_risk(location),
             "size_bytes": size,
+            # #320 D201: thumbnails kept in one folder stay there (D8A).
+            "thumbnails_folder": _thumbnail_folder(),
         }
 
     # The node folder (tests point it at a temp tree).

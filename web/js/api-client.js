@@ -62,6 +62,13 @@
                 (typeof job.title === "string" && job.title.length > 0 && job.title.length <= 200))) {
                 this.job = { id: job.id, title: job.title };
             }
+            // A move refused for space (#320) carries its review, so the page
+            // can show what would have moved and why it cannot start.
+            this.plan = null;
+            if (this.code === "insufficient-space" && current && current.plan &&
+                typeof current.plan === "object" && !Array.isArray(current.plan)) {
+                this.plan = current.plan;
+            }
             this.source = null;
             if (this.code === "invalid-source" && current && typeof current.source === "string" &&
                 current.source.length > 0 && current.source.length <= 4096) {

@@ -86,7 +86,9 @@ export function systemDrafts(api) {
                 api.get(LORA_STATUS_URL, { cache: 'no-store' }).catch(() => null)]);
             // The store reads a missing value as none and a missing revision as unreadable (no host save). #317: which
             // thumbnail formats the server can write rides along as a read-only value (never drafted or sent).
-            return { values: { ...result.settings, thumbnail_encoders: result.thumbnail_encoders, ...(lora ? loraValues(lora) : {}) },
+            // #320: where previews live rides along the same way (read-only; only Move thumbnails changes it).
+            return { values: { ...result.settings, thumbnail_encoders: result.thumbnail_encoders,
+                thumbnail_location: result.thumbnail_location, ...(lora ? loraValues(lora) : {}) },
                 revision: result.revision };
         },
         async writeHost(changes, { expected_revision }) {

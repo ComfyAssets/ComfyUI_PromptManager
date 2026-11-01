@@ -128,6 +128,18 @@ class ThumbnailMoveMixin:
             )
             self.logger.warning(f"Move thumbnails could not start: {error}")
             return
+        left = [
+            {
+                "path": "/".join(item),
+                "root": s.label,
+                "detail": "Not a thumbnail; left in place",
+            }
+            for s in plan.sources
+            if s.scan is not None
+            for item in s.scan.left
+        ]
+        if left:
+            job.record_counted("left", len(left), left)
         items = [
             (source, item)
             for source in plan.sources

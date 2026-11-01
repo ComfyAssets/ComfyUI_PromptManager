@@ -91,6 +91,8 @@ class TestLocationRoute(LibraryAPITestCase):
                 "size_bytes": os.path.getsize(self.api.db.model.db_path),
                 "target_source": "default",
                 "config_moves": True,
+                # #320 D201: previews kept inside each source (no folder).
+                "thumbnails_folder": None,
             },
         )
 

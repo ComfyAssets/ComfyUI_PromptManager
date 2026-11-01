@@ -51,6 +51,26 @@ export const removedOf = job => counted(job, 'removed', 'removed');
 /** "12 imported" (System S10: the LoRA reference import). */
 export const importedOf = job => counted(job, 'imported', 'imported');
 
+/** #320 D198: the step a Move thumbnails job is in, and what it means meanwhile (under the progress bar). */
+export function movePhase(job) {
+    const from = job.scope?.from === 'folder' ? 'the old folder' : 'inside each source';
+    if (job.state === 'running') {
+        if (job.scope?.phase === 'remove') return 'Removing the old copies a move left. Thumbnails are read from the new location.';
+        if (job.cancellable !== false) {
+            return `Step 1 of 3: copying. Thumbnails are still read from ${from} until the switch. New thumbnails are not `
+                + 'written until the move ends; originals are shown instead.';
+        }
+        return 'Step 2 and 3 of 3: switching, then removing the old copies. This can no longer be cancelled.';
+    }
+    if (job.state === 'finished') {
+        const left = job.counters?.left ?? 0;
+        return left ? `Thumbnails are now read from the new location. ${number(left)} ${noun(left, 'file')} that `
+            + `${left === 1 ? 'is' : 'are'} not ${left === 1 ? 'a thumbnail was' : 'thumbnails were'} left in place.`
+            : 'Thumbnails are now read from the new location.';
+    }
+    return 'Nothing changed: thumbnails are read from where they were.';
+}
+
 /** "2 output folders": what a scan or a thumbnail job walks. */
 function foldersOf(job) {
     const folders = job.scope?.output_folders;
@@ -159,6 +179,32 @@ export const KINDS = Object.freeze({
         outcomes: tiles([['generated', 'Generated'], ['errors', 'Errors'], ['skipped', 'Skipped']]),
         openable: groups('generated', 'skipped'),
     }),
+    // #320 D198: Move thumbnails, a `thumbnails` job with `scope.mode` "move": Moved (green), Already there, Left in
+    // place and Errors (red); Cancel only until the switch (the server says so through `cancellable`).
+    'thumbnails:move': Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Moving thumbnails',
+        finishToast: job => (job.status_line && job.state !== 'running' ? job.status_line : titleFinished(job)),
+        line: job => (job.state === 'running' ? '' : job.status_line || ''),
+        kept: job => counted(job, 'moved', 'moved'),
+        tiles: tiles([['moved', 'Moved', 'added'], ['skipped', 'Already there', ''], ['left', 'Left in place', ''],
+            ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['moved', 'Moved'], ['errors', 'Errors'], ['skipped', 'Already there'], ['left', 'Left in place']]),
+        log: 'Move log',
+        phase: movePhase,
+        cancelLabel: 'Cancel move',
+        cancel: 'Cancel move',
+    }),
+    // #320 D200: Remove thumbnails of removed sources (`scope.mode` "prune"): Removed, Left in place and Errors.
+    'thumbnails:prune': Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Removing thumbnails',
+        finishToast: job => (job.status_line && job.state !== 'running' ? job.status_line : titleFinished(job)),
+        line: job => (job.state === 'running' ? '' : job.status_line || ''),
+        kept: removedOf,
+        tiles: tiles([['removed', 'Removed', 'added'], ['left', 'Left in place', ''], ['errors', 'Errors', 'bad']]),
+        outcomes: tiles([['removed', 'Removed'], ['errors', 'Errors'], ['left', 'Left in place']]),
+    }),
     // System S7: a reviewed maintenance plan's apply, titled after its operation; it runs without a known total.
     maintenance: Object.freeze({
         ...GENERIC,
@@ -243,7 +289,9 @@ export const held = job => job.cancellable === false && Object.keys(countsOf(job
  */
 export function viewOf(job) {
     if (held(job)) return GENERIC;
-    const view = kindOf(job.kind);
+    // #320 D198: a thumbnails job chooses its tiles by its scope's mode (move, prune).
+    const mode = job.kind === 'thumbnails' ? job.scope?.mode : null;
+    const view = (mode === 'move' || mode === 'prune') ? KINDS[`thumbnails:${mode}`] : kindOf(job.kind);
     const counts = countsOf(job);
     const has = ([group]) => Object.hasOwn(counts, group);
     if (view.tiles.every(has) && view.outcomes.every(has)) return view;

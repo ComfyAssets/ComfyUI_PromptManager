@@ -23,6 +23,7 @@ import { busyToast } from './activity-scan.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { navigateTo } from './state.mjs';
 import { noun } from './plural.mjs';
+import { sizeText } from './system-thumbnail-location.mjs';
 
 export const THUMBNAIL_PLAN_URL = '/prompt_manager/images/thumbnails/plan';
 export const THUMBNAILS_KIND = 'thumbnails';
@@ -33,7 +34,9 @@ export const PLAN_FAILED = 'The previews could not be counted.';
 export const START_FAILED = 'Thumbnail generation could not start. Try again.';
 export const SETTINGS_UNKNOWN = 'Previews follow the thumbnail settings in System › Appearance.';
 const FORMAT_LABELS = Object.freeze({ webp: 'WebP', jxl: 'JPEG XL', jpeg: 'JPEG' });
-const MODES = new Set(SCOPE_OPTIONS.map(([value]) => value));
+// #320 D200: offered only while previews are kept in one folder (31A).
+export const PRUNE_OPTION = Object.freeze(['prune', 'Remove thumbnails of removed sources']);
+const MODES = new Set([...SCOPE_OPTIONS.map(([value]) => value), PRUNE_OPTION[0]]);
 
 const count = value => value.toLocaleString('en-US');
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
@@ -47,6 +50,7 @@ export function settingsText(plan) {
 
 /** D99: the plan line for the server's `{mode, targets, fresh, remaining}`; an answer without counts failed. */
 export function planText(plan) {
+    if (plan?.mode === 'prune') return typeof plan.line === 'string' && plan.line ? plan.line : PLAN_FAILED;
     if (!plan || !MODES.has(plan.mode) || ![plan.targets, plan.fresh, plan.remaining].every(isCount)) {
         return PLAN_FAILED;
     }
@@ -101,11 +105,18 @@ function select(options, value) {
  * Activity store; `trigger` gets focus back when the dialog closes.
  */
 export function openThumbnailReview({ api, store, scope, trigger = null, mode: initial = 'missing', notify = showWorkspaceToast,
-    navigate = navigateTo }) {
-    const mode = select(SCOPE_OPTIONS, MODES.has(initial) ? initial : 'missing');
+    navigate = navigateTo, location = null }) {
+    const folderMode = location?.mode === 'folder';
+    const options = folderMode ? [...SCOPE_OPTIONS, PRUNE_OPTION] : SCOPE_OPTIONS;
+    const allowed = new Set(options.map(([value]) => value));
+    const mode = select(options, allowed.has(initial) ? initial : 'missing');
     const line = el('p', PLAN_LOADING, 'small');
     line.setAttribute('role', 'status');
     const settings = el('p', SETTINGS_UNKNOWN, 'small');
+    // D200: what the prune removes, under the plan line.
+    const pruneDetail = el('p', '', 'small');
+    const pruneGrid = el('dl', undefined, 'meta-grid');
+    pruneDetail.hidden = pruneGrid.hidden = true;
     const cancel = createButton('Cancel');
     const start = createButton('Start', 'ca-primary');
     const actions = el('div', undefined, 'dialog-actions');
@@ -125,7 +136,21 @@ export function openThumbnailReview({ api, store, scope, trigger = null, mode: i
         // A later choice painted its own line meanwhile, or the dialog closed.
         if (!open || scope.signal.aborted || mode.value !== chosen) return;
         line.textContent = planText(plan);
-        settings.textContent = settingsText(plan);
+        const prune = chosen === 'prune';
+        settings.hidden = prune;
+        pruneDetail.hidden = pruneGrid.hidden = !prune || !plan?.sources?.length;
+        if (prune) {
+            pruneDetail.textContent = `Only Prompt Manager’s thumbnails in their folders inside ${plan?.folder ?? 'the thumbnail '
+                + 'folder'} are removed. If a source comes back, its thumbnails are made again as you browse.`;
+            pruneGrid.replaceChildren(...(plan?.sources ?? []).map(source => {
+                const entry = el('div');
+                entry.append(el('dt', source.key), el('dd', `${count(source.files)} ${noun(source.files, 'thumbnail')} · `
+                    + `${sizeText(source.bytes)}`));
+                return entry;
+            }));
+        } else {
+            settings.textContent = settingsText(plan);
+        }
     }
 
     scope.listen(mode, 'change', paint);
@@ -136,7 +161,7 @@ export function openThumbnailReview({ api, store, scope, trigger = null, mode: i
         startThumbnails({ store, scope, options, notify, navigate });
     });
     openContentDialog({ scope, title: 'Thumbnail maintenance', trigger,
-        nodes: [field('Scope', mode, 'thumb-mode'), line, settings, actions],
+        nodes: [field('Scope', mode, 'thumb-mode'), line, settings, ...(folderMode ? [pruneDetail, pruneGrid] : []), actions],
         onClose: () => { open = false; } });
     paint();
 }

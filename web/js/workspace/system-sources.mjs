@@ -35,6 +35,7 @@ import { createButton } from '../shared/toolkit/core.js';
 import { closeWorkspaceDialog, field, openContentDialog } from './workspace-dialogs.mjs';
 import { openMetadataScan } from './activity-scan.mjs';
 import { openThumbnailReview } from './thumbnail-review.mjs';
+import { locationBlock, noticeSlot } from './system-thumbnail-location.mjs';
 import { settingRow, operationRow } from './system-controls.mjs';
 import { HOST_UNAVAILABLE } from './system-appearance.mjs';
 import { showWorkspaceToast } from './toast.mjs';
@@ -234,6 +235,19 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         nodes.push(notice);
     }
 
+    // #320 D199: the unavailable thumbnail folder's notice, first on the page while it lasts.
+    const thumbnailLocation = () => drafts.get('host', 'thumbnail_location');
+    const location = locationBlock({ api, store: activity, scope, location: thumbnailLocation, notify });
+    const unavailable = noticeSlot({ api, scope, location: thumbnailLocation, notify, onChange: () => location.focus(),
+        onDone: () => drafts.reloadHost?.() });
+    const paintLocation = () => {
+        location.paint();
+        unavailable.paint();
+    };
+    scope.cleanup(drafts.subscribe(paintLocation));
+    nodes.push(unavailable.anchor);
+    paintLocation();
+
     const surface = el('section', undefined, 'surface');
     const heading = el('div', undefined, 'panel-heading');
     const addButton = createButton('+ Add source');
@@ -266,7 +280,10 @@ export function mountSources(container, { api, activity, scope, drafts, notify =
         operationRow({ scope, title: 'Enrich existing metadata', description: 'Resolve both prompts, deduplicate recipes, preserve uncertain links.',
             label: 'Review scan', onClick: scanAll }),
         operationRow({ scope, title: 'Thumbnail generation', description: 'Generate missing previews; rebuilding all is a separate explicit option.',
-            label: 'Review options', onClick: trigger => openThumbnailReview({ api, store: activity, scope, trigger }) }),
+            label: 'Review options', onClick: trigger => openThumbnailReview({ api, store: activity, scope, trigger,
+                location: thumbnailLocation() }) }),
+        // #320 D196: where previews are kept; never a draft (Move thumbnails is its only writer).
+        location.node,
         // D98: the legacy gallery's Refresh, which rereads every source's file list.
         operationRow({ scope, title: 'Refresh files', description: 'Read every source again to find files added or removed outside ComfyUI.',
             label: 'Refresh', onClick: refresh }));

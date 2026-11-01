@@ -460,9 +460,13 @@ export function backupNotice({ copy, onBackup }) {
     return notice;
 }
 
+/** A grid value: text, or (#320) `[lead, items]`, a lead sentence and the list under it. */
+const gridValue = value => typeof value === 'string' || (Array.isArray(value) && value.length === 2
+    && typeof value[0] === 'string' && Array.isArray(value[1]) && value[1].every(item => typeof item === 'string'));
+
 function requireGrid(grid) {
     if (!Array.isArray(grid) || grid.length === 0 || grid.some(row => !Array.isArray(row) || row.length !== 2 ||
-        typeof row[0] !== 'string' || !row[0] || typeof row[1] !== 'string')) {
+        typeof row[0] !== 'string' || !row[0] || !gridValue(row[1]))) {
         throw new TypeError('The review needs its [term, value] grid');
     }
 }
@@ -495,7 +499,12 @@ export function openReviewDialog({ scope, title, heading = null, grid, options =
         values.clear();
         list.replaceChildren(...rows.map(([term, value]) => {
             const entry = el('div');
-            const dd = el('dd', value);
+            const dd = el('dd', typeof value === 'string' ? value : value[0]);
+            if (typeof value !== 'string' && value[1].length) {
+                const items = el('ul', undefined, 'review-list');
+                items.append(...value[1].map(item => el('li', item)));
+                dd.append(items);
+            }
             values.set(term, dd);
             entry.append(el('dt', term), dd);
             return entry;

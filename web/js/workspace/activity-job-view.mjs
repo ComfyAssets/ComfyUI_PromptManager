@@ -170,7 +170,10 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     bar.max = 100;
     const stats = element('dl', undefined, 'stat-row');
     const tileValues = new Map();
-    progressPart.node.append(bar, stats);
+    // #320 D198: a kind with phases (Move thumbnails) says which one runs and what it means, under the bar.
+    const phase = element('p', '', 'small');
+    phase.id = 'job-phase';
+    progressPart.node.append(bar, phase, stats);
 
     const resultsPart = section('Results', 'job-results-title');
     const search = element('label', undefined, 'search-field');
@@ -228,6 +231,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     function layout(job) {
         view = viewOf(job);
         if (!view.tiles.length) stats.remove();
+        if (typeof view.phase !== 'function') phase.remove();
         for (const [group, label, tone] of view.tiles) {
             const tile = element('div', undefined, tone ? `stat ${tone}` : 'stat');
             const value = element('dd', '0');
@@ -341,6 +345,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
             cancel.remove();
         }
         status.textContent = progressLine(job);
+        if (typeof view?.phase === 'function') phase.textContent = view.phase(job);
         // D111: no value while the total is unknown; a job that ended with nothing counted shows how it ended.
         showProgress(bar, job.total > 0 || job.state !== 'finished' ? job : { ...job, progress: 100 });
         bar.setAttribute('aria-label', scan ? 'Scan progress' : `${job.title} progress`);
