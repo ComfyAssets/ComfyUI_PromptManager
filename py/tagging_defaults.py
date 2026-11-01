@@ -226,3 +226,97 @@ def wd14_label_names(path) -> Tuple[str, ...]:
     with _label_cache_lock:
         _label_cache[key] = (stamp, names)
     return names
+
+
+# Saved instructions (#431): named language-model instructions with a default
+# per engine. Built-in is never stored; readers put it first.
+BUILTIN_INSTRUCTIONS_ID = "builtin"
+BUILTIN_INSTRUCTIONS_NAME = "Built-in"
+MAX_SAVED_INSTRUCTIONS = 20
+MAX_INSTRUCTION_NAME_CHARS = 60
+INSTRUCTION_ENGINES = ("gguf", "hf")
+ENGINE_LABELS = {"gguf": "GGUF JoyCaption", "hf": "HuggingFace JoyCaption"}
+_INSTRUCTION_ID = re.compile(r"[0-9a-f]{12}")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
+
+
+def builtin_instructions() -> Dict[str, str]:
+    """The read-only Built-in entry, always the shipped template."""
+    return {
+        "id": BUILTIN_INSTRUCTIONS_ID,
+        "name": BUILTIN_INSTRUCTIONS_NAME,
+        "text": DEFAULT_TAG_TEMPLATE,
+    }
+
+
+def _instruction_entry(raw: Any, number: int) -> Dict[str, str]:
+    prefix = f"Saved instructions: entry {number}"
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"id", "name", "text"}
+        or not isinstance(raw["id"], str)
+        or _INSTRUCTION_ID.fullmatch(raw["id"]) is None
+    ):
+        raise ValueError(f"{prefix} has an invalid id.")
+    name = raw["name"].strip() if isinstance(raw["name"], str) else ""
+    if not name:
+        raise ValueError(f"{prefix} needs a name.")
+    if len(name) > MAX_INSTRUCTION_NAME_CHARS:
+        raise ValueError(
+            f"{prefix} name must be at most {MAX_INSTRUCTION_NAME_CHARS} characters."
+        )
+    if _CONTROL.search(name):
+        raise ValueError(f"{prefix} name must not contain a line break.")
+    if name.casefold() == BUILTIN_INSTRUCTIONS_NAME.casefold():
+        raise ValueError("Saved instructions: the name “Built-in” is reserved.")
+    try:
+        text = validate_template(raw["text"], f"{prefix} text")
+    except ValueError as error:
+        raise ValueError(f"{error}.") from None
+    return {"id": raw["id"], "name": name, "text": text}
+
+
+def validate_instructions(value: Any) -> List[Dict[str, str]]:
+    """The saved entries ``[{id, name, text}]`` in order (names trimmed), or
+    ValueError with the sentence System shows (Built-in is not counted)."""
+    if not isinstance(value, list):
+        raise ValueError("Saved instructions must be a list.")
+    if len(value) > MAX_SAVED_INSTRUCTIONS:
+        raise ValueError(
+            f"Saved instructions: at most {MAX_SAVED_INSTRUCTIONS} entries besides "
+            "Built-in."
+        )
+    entries: List[Dict[str, str]] = []
+    ids: Dict[str, int] = {}
+    names: Dict[str, int] = {}
+    for number, raw in enumerate(value, 1):
+        item = _instruction_entry(raw, number)
+        if item["id"] in ids:
+            raise ValueError(
+                f"Saved instructions: entry {number} repeats the id of entry "
+                f"{ids[item['id']]}."
+            )
+        key = item["name"].casefold()
+        if key in names:
+            raise ValueError(
+                f"Saved instructions: entry {number} name “{item['name']}” is "
+                "already used."
+            )
+        ids[item["id"]] = number
+        names[key] = number
+        entries.append(item)
+    return entries
+
+
+def validate_default_instructions(value: Any, entries) -> Dict[str, str]:
+    """``{gguf: id, hf: id}``, each Built-in or an id of ``entries``."""
+    if not isinstance(value, dict) or set(value) != set(INSTRUCTION_ENGINES):
+        raise ValueError("Default instructions must name GGUF and HuggingFace.")
+    ids = {BUILTIN_INSTRUCTIONS_ID} | {item["id"] for item in entries}
+    for engine in INSTRUCTION_ENGINES:
+        if not isinstance(value[engine], str) or value[engine] not in ids:
+            raise ValueError(
+                f"Default for {ENGINE_LABELS[engine]} must be one of the saved "
+                "instructions."
+            )
+    return {engine: value[engine] for engine in INSTRUCTION_ENGINES}

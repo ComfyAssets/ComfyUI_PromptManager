@@ -442,9 +442,11 @@ class TestAutotagConfig(unittest.TestCase):
                 "EXISTING",
                 "GENERAL_THRESHOLD",
                 "CHARACTER_THRESHOLD",
-                "TEMPLATE",
                 "SUGGESTION_LIMIT",
                 "SKIPPED_TAGS",
+                "INSTRUCTIONS",
+                "DEFAULT_INSTRUCTIONS",
+                "_LEGACY_TEMPLATE",
             )
         }
 
@@ -489,16 +491,13 @@ class TestAutotagConfig(unittest.TestCase):
                     "character_threshold": 0.85,
                     "suggestion_limit": 10,
                     "skipped_tags": [],
+                    "instructions": [],
+                    "default_instructions": {"gguf": "builtin", "hf": "builtin"},
                 }
             },
         )
-        # The built-in template is not written; a saved one is.
-        self.config_class.TEMPLATE = "Saved."
-        self.assertEqual(
-            PromptManagerConfig.get_config()["autotag"]["defaults"]["template"],
-            "Saved.",
-        )
-        self.config_class.TEMPLATE = config_module.DEFAULT_TAG_TEMPLATE
+        # #431: the old template key is written only as the GGUF default's
+        # mirror (test_saved_instructions covers it).
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "config.json")
             PromptManagerConfig.update_config(
@@ -526,7 +525,6 @@ class TestAutotagConfig(unittest.TestCase):
             "existing": "merge",
             "general_threshold": 0.4,
             "character_threshold": 0.7,
-            "template": "Tags only.",
             "suggestion_limit": 15,
             "skipped_tags": ("blurry", "closed eyes"),
         }
@@ -535,7 +533,6 @@ class TestAutotagConfig(unittest.TestCase):
             "existing": "skip",
             "general_threshold": 0.35,
             "character_threshold": 0.85,
-            "template": config_module.DEFAULT_TAG_TEMPLATE,
             "suggestion_limit": 10,
             "skipped_tags": (),
         }
@@ -569,7 +566,12 @@ class TestAutotagConfig(unittest.TestCase):
                         k: getattr(self.config_class, attr)
                         for k, (attr, _v, _d) in self.config_class._KEYS.items()
                     }
-                    self.assertEqual(loaded, dict(good, **{key: fallback[key]}))
+                    # The old template is no attribute any more (#431): a bad
+                    # one is only warned about and imports nothing.
+                    expected = (
+                        dict(good, **{key: fallback[key]}) if key in fallback else good
+                    )
+                    self.assertEqual(loaded, expected)
 
     def test_skipped_tags_load_trimmed_and_warn_once_when_damaged(self):
         """#431: the list is kept as typed (trimmed); a damaged list is

@@ -35,6 +35,8 @@ const MODEL_OPTIONS = ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF Jo
 const SUGGESTIONS = 'From 1 to 100: the most suggestions Generate shows for one image.';
 const SKIPPED_DESCRIPTION = 'Suggested tags that contain one of these words are hidden. Words are separated by spaces, _ or -; '
     + 'other characters such as ( ) belong to the word.';
+const DEFAULT_DESCRIPTION = 'The Tag image dialog and batches start from this.';
+const INSTRUCTIONS_DESCRIPTION = 'Instructions for the language-model engines. Built-in can’t be changed; duplicate it to make your own.';
 const BATCH = 'Tag each output image from its own pixels with the model above. Prompts are not changed. Review the scope first.';
 
 /** Runs in the page: Auto-tagging's surface under `mainSelector`: rows, field, actions, operation, geometry and tokens. */
@@ -64,7 +66,7 @@ function measureTagging(mainSelector) {
             text: [...row.firstElementChild.children].map(node => [name(node), text(node), node.localName === 'label' ? node.htmlFor : null]),
             control: control(row), flexWrap: getComputedStyle(row).flexWrap,
             controlBelow: row.lastElementChild.getBoundingClientRect().top >= row.firstElementChild.getBoundingClientRect().bottom - 0.5 })),
-        field: { tree: [...field.children].map(name), label: [text(field.querySelector('label')), field.querySelector('label').htmlFor],
+        field: field && { tree: [...field.children].map(name), label: [text(field.querySelector('label')), field.querySelector('label').htmlFor],
             textarea: { id: field.querySelector('textarea').id, value: field.querySelector('textarea').value,
                 ...css(field.querySelector('textarea'), 'fontSize', 'minHeight', 'backgroundColor', 'color', 'borderTopColor') },
             ...css(field, 'display', 'rowGap', 'fontSize', 'marginTop', 'marginBottom') },
@@ -81,7 +83,22 @@ function measureTagging(mainSelector) {
             label: css(block.querySelector('label'), 'fontSize', 'fontWeight', 'color'),
             description: css(block.querySelector('.setting-block-text p'), 'fontSize', 'color', 'marginTop'),
             input: css(block.querySelector('input'), 'fontSize', 'backgroundColor', 'color', 'borderTopColor') })(
-            surface.querySelector(':scope > .setting-block')),
+            surface.querySelector(':scope > .setting-block[data-setting="tag-skipped"]')),
+        // D203 (#431): Saved instructions (the concept has a template field instead).
+        instructions: (block => block && { tree: [...block.children].map(name), key: block.dataset.key,
+            text: [...block.firstElementChild.children].map(node => [node.localName, text(node)]),
+            list: [...block.querySelectorAll('[role="option"]')].map(option => [text(option.firstElementChild),
+                [...option.querySelectorAll('.badges > .chip')].map(chip => [text(chip), chip.className]), option.getAttribute('aria-selected')]),
+            listRole: block.querySelector('.instruction-list').getAttribute('role'),
+            actions: [...block.querySelectorAll('.instruction-actions > button')].map(item => [text(item), item.className, item.disabled]),
+            editor: [...block.querySelectorAll('.instruction-editor .field')].map(item => [text(item.querySelector('label > span')),
+                item.querySelector('input, textarea').value, item.querySelector('input, textarea').readOnly]),
+            note: text(block.querySelector('#instruction-note')),
+            layout: getComputedStyle(block.querySelector('.instructions-layout')).gridTemplateColumns.split(' ').length,
+            ...css(block, 'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderTopColor'),
+            label: css(block.querySelector('label'), 'fontSize', 'fontWeight', 'color'),
+            textarea: css(block.querySelector('textarea'), 'fontSize', 'backgroundColor', 'borderTopColor') })(
+            surface.querySelector(':scope > .setting-block[data-setting="tag-instructions"]')),
         operations: [...surface.querySelectorAll(':scope > .operation')].map(row => ({ tree: [...row.children].map(name),
             title: text(row.querySelector('h3')), description: text(row.querySelector('p')),
             actions: [...row.querySelectorAll('.row-actions > button')].map(item => [text(item), item.className]) })),
@@ -115,14 +132,21 @@ function measureTagging(mainSelector) {
  * The concept's Auto-tagging with the recorded deviations applied, for the fixture (all engines on disk, none loaded).
  * `phone` is a viewport at the concept's 700px breakpoint or below.
  */
-function mapTaggingConcept(reference, { template, phone }) {
+function mapTaggingConcept(reference, { builtin, saved, phone }) {
     const [model, existing, general, character] = reference.rows;
     const [preview] = reference.actions.buttons;
+    // D203: Built-in first, then the saved entries, in each default select.
+    const names = ['Built-in', ...saved.map(entry => entry.name)];
+    const defaultRow = (engine, long) => ({ ...existing,
+        text: [['label', `Default for ${long}`, `instruction-default-${engine}`], ['p', DEFAULT_DESCRIPTION, null]],
+        control: { ...existing.control, id: `instruction-default-${engine}`, options: names.map(label => [label, false]),
+            selected: names[1] } });
     return {
         ...reference,
-        // D133 adds a row after the thresholds, D202 the Skipped tags block after it; D134 adds the operation after the
-        // actions.
-        tree: [...reference.tree.slice(0, 6), 'div.setting-row', 'div.setting-block', ...reference.tree.slice(6), 'div.operation'],
+        // D133 adds a row after the thresholds, D202 the Skipped tags block after it; D203 replaces the template field
+        // with Saved instructions, the two default rows and their note; D134 adds the operation after the actions.
+        tree: [...reference.tree.slice(0, 6), 'div.setting-row', 'div.setting-block', 'div.setting-block', 'div.setting-row',
+            'div.setting-row', 'p.instruction-reset.small', reference.tree[7], 'div.operation'],
         rows: [
             // D132 (OQ5, OQ6): the four real engines with their download size, and the chosen one's live status.
             { ...model, text: [model.text[0], ['p', 'Downloaded. Not loaded.', null]],
@@ -133,7 +157,26 @@ function mapTaggingConcept(reference, { template, phone }) {
             // D133: the persisted suggestion count, on the concept's number row.
             { ...general, text: [['label', 'Suggestions per image', 'tag-suggestions'], ['p', SUGGESTIONS, null]],
                 control: { ...general.control, id: 'tag-suggestions', value: '10' } },
+            // D203: the default of each language-model engine (the fixture's saved entry is both), on the concept's
+            // select row.
+            defaultRow('gguf', 'GGUF JoyCaption'), defaultRow('hf', 'HuggingFace JoyCaption'),
         ],
+        // D203: Saved instructions in the concept's setting-row tokens (as D202), Built-in selected and read-only.
+        instructions: { tree: ['div.setting-block-text', 'div.instructions-layout'], key: 'autotag_instructions',
+            text: [['label', 'Saved instructions'], ['p', `${INSTRUCTIONS_DESCRIPTION} ${saved.length} of 20 saved · Built\u2011in is not counted.`]],
+            list: [['Built-in', [['Read-only', 'chip']], 'true'],
+                ...saved.map((entry, index) => [entry.name, index === 0
+                    ? [['Default for GGUF', 'chip blue'], ['Default for HuggingFace', 'chip blue']] : [], 'false'])],
+            listRole: 'listbox',
+            actions: [['+ New', '', false], ['Duplicate', '', false], ['Delete', 'danger', true]],
+            editor: [['Name', 'Built-in', true], ['Text', builtin, true]],
+            note: 'Built-in instructions can’t be changed. Duplicate them to make your own.',
+            layout: phone ? 1 : 2,
+            paddingTop: reference.row.paddingTop, paddingBottom: reference.row.paddingBottom,
+            borderTopWidth: reference.row.borderTopWidth, borderTopColor: reference.row.borderTopColor,
+            label: reference.label,
+            textarea: { fontSize: reference.field.textarea.fontSize, backgroundColor: reference.field.textarea.backgroundColor,
+                borderTopColor: reference.field.textarea.borderTopColor } },
         // D202 (#431): the Skipped tags block in the concept's setting-row tokens: its label and description as a row's,
         // the row's padding and rule above, the concept's field input; an empty list says so.
         skipped: { tree: ['div.setting-block-text', 'div.skip-add', 'p.skip-problem.small', 'div.skip-chips.tags', 'p.skip-preview.small'],
@@ -148,15 +191,15 @@ function mapTaggingConcept(reference, { template, phone }) {
                 marginTop: reference.description.marginTop },
             input: { fontSize: '12px', backgroundColor: reference.field.textarea.backgroundColor, color: reference.field.textarea.color,
                 borderTopColor: reference.field.textarea.borderTopColor } },
-        // The saved template (the server's default until one is saved) replaces the concept's sample text.
-        field: { ...reference.field, textarea: { ...reference.field.textarea, value: template } },
+        // D203: no template field.
+        field: null,
         // D132: Download (for an engine already on disk, "Download again") and Unload replace the two simulated jobs.
         actions: { ...reference.actions, buttons: [preview, ['Download again', ''], ['Unload', '']] },
         // D134: the prompt-tag batch, reviewed first.
         operations: [{ tree: ['div', 'div.row-actions'], title: 'Tag output images', description: BATCH, actions: [['Review', '']] }],
         // D132 (#398): every select shows its whole chosen option at every width (at 390 the concept's 120px cap cuts
         // them; production lets each grow past it).
-        selectsFit: reference.selectsFit.map(() => true),
+        selectsFit: [...reference.selectsFit, true, true].map(() => true),
     };
 }
 
@@ -180,7 +223,9 @@ async function productionTagging(page, theme) {
 async function savedTemplate(request, page) {
     const response = await request.get('/prompt_manager/settings');
     await expect(response).toBeOK();
-    return { template: (await response.json()).settings.autotag_template, phone: page.viewportSize().width <= 700 };
+    const { settings } = await response.json();
+    return { builtin: settings.autotag_builtin_instructions, saved: settings.autotag_instructions,
+        phone: page.viewportSize().width <= 700 };
 }
 
 for (const theme of THEMES) for (const [width, height] of SIZES) {
@@ -204,14 +249,15 @@ for (const theme of THEMES) for (const width of [390, 320]) {
         await page.locator('#workspace-main #tag-existing').selectOption('replace_after_review');
         await page.locator('#workspace-main section.surface').screenshot({ path: testInfo.outputPath(`production-tagging-selects-${theme}-${width}.png`) });
         const selects = page.locator('#workspace-main section.surface > .setting-row > select');
-        await expect(selects).toHaveCount(2);
-        for (let index = 0; index < 2; index += 1) {
+        // D203 adds the two per-engine default selects.
+        await expect(selects).toHaveCount(4);
+        for (let index = 0; index < 4; index += 1) {
             const select = selects.nth(index);
             const values = await select.evaluate(node => [...node.options].map(option => option.value));
             for (const value of values) {
                 await select.selectOption(value);
                 const measured = await page.evaluate(measureTagging, '#workspace-main');
-                expect(measured.selectsFit, `${await select.getAttribute('id')}=${value}`).toEqual([true, true]);
+                expect(measured.selectsFit, `${await select.getAttribute('id')}=${value}`).toEqual([true, true, true, true]);
                 expect(measured.pageScroll, value).toBe(false);
             }
         }
@@ -225,15 +271,16 @@ test('auto-tagging comparison detects mutations', async ({ page, request }) => {
     const expected = mapTaggingConcept(concept, saved);
     const production = await productionTagging(page, 'dark');
     expect(diffInventory(expected, production)).toEqual([]);
-    // Unmapped, the section differs only where D132, D133, D134 and D202 are recorded (and the saved template's text).
+    // Unmapped, the section differs only where D132, D133, D134, D202 and D203 are recorded (and the saved template's text).
     // (The concept has no Skipped tags block, so every path under it is one D202 difference.)
-    expect(diffInventory(concept, production).map(item => (item.path.startsWith('skipped') ? 'skipped'
+    expect(diffInventory(concept, production).map(item => (/^(skipped|instructions|field)\b/.test(item.path) ? item.path.split('.')[0]
         : item.path.split('.').slice(0, 3).join('.')))
         .filter((path, index, all) => all.indexOf(path) === index).sort()).toEqual([
-        'actions.buttons.1', 'actions.buttons.2', 'field.textarea.value', 'operations.0.actions', 'operations.0.description',
-        'operations.0.title', 'operations.0.tree', 'operations.length', 'rows.0.control', 'rows.0.text', 'rows.4.control', 'rows.4.controlBelow',
-        'rows.4.flexWrap', 'rows.4.text', 'rows.4.tree', 'rows.length', 'skipped', 'tree.6', 'tree.7', 'tree.8', 'tree.9', 'tree.10',
-        'tree.length'].sort());
+        'actions.buttons.1', 'actions.buttons.2', 'field', 'instructions', 'operations.0.actions', 'operations.0.description',
+        'operations.0.title', 'operations.0.tree', 'operations.length', 'rows.0.control', 'rows.0.text',
+        ...[4, 5, 6].flatMap(row => ['control', 'controlBelow', 'flexWrap', 'text', 'tree'].map(key => `rows.${row}.${key}`)),
+        'rows.length', 'selectsFit.2', 'selectsFit.3', 'selectsFit.length', 'skipped',
+        ...Array.from({ length: 8 }, (_, index) => `tree.${index + 6}`), 'tree.length'].sort());
     const measure = () => page.evaluate(measureTagging, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);
     // A removed row.
@@ -284,8 +331,8 @@ test('auto-tagging at 390 wraps only the engine row', async ({ page, request }) 
     const concept = await conceptTagging(page, 'dark');
     const production = await productionTagging(page, 'dark');
     expect(diffInventory(mapTaggingConcept(concept, await savedTemplate(request, page)), production)).toEqual([]);
-    expect(production.rows.map(row => row.flexWrap)).toEqual(['wrap', 'nowrap', 'nowrap', 'nowrap', 'nowrap']);
-    expect(production.selectsFit).toEqual([true, true]);
+    expect(production.rows.map(row => row.flexWrap)).toEqual(['wrap', 'nowrap', 'nowrap', 'nowrap', 'nowrap', 'nowrap', 'nowrap']);
+    expect(production.selectsFit).toEqual([true, true, true, true]);
 });
 
 /** Runs in the page: the open review dialog: its title, body and the concept's tokens. */

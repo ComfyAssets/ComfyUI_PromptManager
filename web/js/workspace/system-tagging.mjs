@@ -10,7 +10,8 @@
  *   verbatim (they state the shipped defaults); host keys `autotag_existing`, `autotag_general_threshold`,
  *   `autotag_character_threshold`. D133 adds "Suggestions per image" (`autotag_suggestion_limit`, 1–100) after them.
  * - D202 (#431): the "Skipped tags" block after it (system-skipped-tags.mjs, host key `autotag_skipped_tags`).
- * - The `.field` "LLM tag template" (`#tag-template`, `autotag_template`).
+ * - D203 (#431): "Saved instructions" and the two per-engine default rows (system-instructions.mjs, host keys
+ *   `autotag_instructions` and `autotag_default_instructions`) replace the concept's "LLM tag template" field.
  * - `.row-actions`: "Preview tagging review" (`ca-primary`) opens the Tag image dialog for the image selected in Images
  *   with the section's current model and values, aria-disabled without one (the D115 sentence) or with an invalid
  *   value (the toast names it). D132: the concept's two simulated job buttons are "Download" (or
@@ -37,6 +38,8 @@ import { NO_SELECTION } from './vocabulary.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { navigateTo } from './state.mjs';
 import { skippedTagsBlock } from './system-skipped-tags.mjs';
+import { BUILTIN_TEXT_KEY, DEFAULTS_KEY, INSTRUCTIONS_KEY, defaultEntry, listProblem, savedInstructionsBlock }
+    from './system-instructions.mjs';
 
 export const MODELS_URL = '/prompt_manager/autotag/models';
 export const UNLOAD_URL = '/prompt_manager/autotag/unload';
@@ -70,10 +73,10 @@ export const SETTING_KEYS = Object.freeze({
     'threshold-general': 'autotag_general_threshold',
     'threshold-character': 'autotag_character_threshold',
     'tag-suggestions': 'autotag_suggestion_limit',
-    'tag-template': 'autotag_template',
 });
+/** #431: the values the instruction readers take besides the rows' (D203, D205). */
+const INSTRUCTION_VALUES = Object.freeze([INSTRUCTIONS_KEY, DEFAULTS_KEY, BUILTIN_TEXT_KEY]);
 const NUMERIC = new Set(['autotag_general_threshold', 'autotag_character_threshold', 'autotag_suggestion_limit']);
-const MAX_TEMPLATE_CHARS = 4000;
 
 export const STATUS_COPY = Object.freeze({
     loading: 'Loading model status…',
@@ -93,9 +96,6 @@ export const SETTING_PROBLEMS = Object.freeze({
     autotag_general_threshold_step: 'General-tag confidence must be a multiple of 0.05.',
     autotag_character_threshold_step: 'Character-tag confidence must be a multiple of 0.05.',
     autotag_suggestion_limit: 'Suggestions per image must be a whole number from 1 to 100.',
-    // The server's two template sentences (`validate_template`), blank first.
-    autotag_template: 'LLM tag template must be non-empty text.',
-    autotag_template_length: `LLM tag template must be at most ${MAX_TEMPLATE_CHARS} characters.`,
 });
 /** Characters as Python's `len` counts them (code points), not UTF-16 units. */
 export const characters = text => [...String(text ?? '')].length;
@@ -193,20 +193,23 @@ const onStep = value => Math.abs(value * 20 - Math.round(value * 20)) <= 1e-12;
 // A threshold on the grid, handed on exactly as the server stores it (anything else is left for draftProblem to refuse).
 const snapped = value => (unit(value) && onStep(value) ? Math.round(value * 20) / 20 : value);
 
+/** #431 (D205): the drafted default instructions of the drafted language-model engine. */
+export const engineInstructions = values => defaultEntry(values, values.autotag_model_type === 'hf' ? 'hf' : 'gguf');
+
 /**
  * The first setting the chosen model would use that the section cannot send, as `{key, message}`, else null: WD14
- * reads both thresholds (0 to 1 in steps of 0.05, #369), the language models the template; Generate also reads the
- * suggestion count (`limit`).
+ * reads both thresholds (0 to 1 in steps of 0.05, #369), the language models the saved instructions (#431: the server's
+ * sentence for the first entry it would refuse); Generate also reads the suggestion count (`limit`).
  */
 export function draftProblem(values, { limit = true } = {}) {
     const model = values.autotag_model_type;
-    const keys = CLASSIFIERS.has(model) ? ['autotag_general_threshold', 'autotag_character_threshold'] : ['autotag_template'];
+    const keys = CLASSIFIERS.has(model) ? ['autotag_general_threshold', 'autotag_character_threshold'] : [INSTRUCTIONS_KEY];
     if (limit) keys.push('autotag_suggestion_limit');
     for (const key of keys) {
         const value = values[key];
-        if (key === 'autotag_template') {
-            if (typeof value !== 'string' || value.trim() === '') return { key, message: SETTING_PROBLEMS.autotag_template };
-            if (characters(value) > MAX_TEMPLATE_CHARS) return { key, message: SETTING_PROBLEMS.autotag_template_length };
+        if (key === INSTRUCTIONS_KEY) {
+            const message = listProblem(values);
+            if (message) return { key, message };
             continue;
         }
         const valid = key === 'autotag_suggestion_limit' ? Number.isInteger(value) && value >= 1 && value <= 100 : unit(value);
@@ -222,7 +225,7 @@ export function taggingPreset(values) {
     const options = CLASSIFIERS.has(model)
         ? { general_threshold: snapped(values.autotag_general_threshold),
             character_threshold: snapped(values.autotag_character_threshold) }
-        : { instructions: values.autotag_template };
+        : { instructions: engineInstructions(values).text };
     return { model, options: { ...options, suggestion_limit: values.autotag_suggestion_limit } };
 }
 
@@ -232,7 +235,7 @@ export function batchBody(values) {
     const options = CLASSIFIERS.has(model)
         ? { general_threshold: snapped(values.autotag_general_threshold),
             character_threshold: snapped(values.autotag_character_threshold) }
-        : { instructions: values.autotag_template };
+        : { instructions: engineInstructions(values).text };
     return { model_type: model, existing: values.autotag_existing, options };
 }
 
@@ -287,14 +290,20 @@ export function timeText(plan) {
     return durationText(Math.ceil(seconds / 60)) + (plan.estimate_device === 'gpu' ? TIME_ON_GPU : TIME_ON_CPU);
 }
 
-/** D134: the review's rows from the server's preview and the drafts it was made with (image counts, #379). */
+/**
+ * D134: the review's rows from the server's preview and the drafts it was made with (image counts, #379). D205 (#431):
+ * a language-model engine shows its default instructions by name in an "Instructions" row, and Settings reads "Up to L
+ * tags per image".
+ */
 export function batchGrid(plan, values) {
     const id = plan.model?.type ?? values.autotag_model_type;
-    let settings = CLASSIFIERS.has(id)
-        ? `General ${values.autotag_general_threshold} · Character ${values.autotag_character_threshold}`
-        : `Template of ${number(characters(values.autotag_template))} characters`;
+    const classifier = CLASSIFIERS.has(id);
     // The saved count the run uses (the preview's), not an unsaved draft.
-    if (Number.isSafeInteger(plan.suggestion_limit)) settings += ` · up to ${number(plan.suggestion_limit)} tags per image`;
+    const limit = Number.isSafeInteger(plan.suggestion_limit) ? `up to ${number(plan.suggestion_limit)} tags per image` : '';
+    const settings = classifier
+        ? `General ${values.autotag_general_threshold} · Character ${values.autotag_character_threshold}${limit ? ` · ${limit}` : ''}`
+        : limit.charAt(0).toUpperCase() + limit.slice(1);
+    const instructions = classifier ? [] : [['Instructions', defaultEntry(values, id === 'hf' ? 'hf' : 'gguf').name]];
     return [
         ['Model', `${modelLabel(id, plan.model)} · ${modelSize(id, plan.model)}`],
         ['Existing tags', existingLabel(plan.existing ?? values.autotag_existing)],
@@ -302,6 +311,7 @@ export function batchGrid(plan, values) {
         ['Already auto-tagged', number(plan.already_tagged)],
         ['Images to tag', `about ${number(plan.to_tag)}`],
         ['Time', timeText(plan)],
+        ...instructions,
         ['Settings', settings],
         ['Backup', backupText(plan.backup)],
     ];
@@ -416,16 +426,9 @@ export function mountTagging(container, { api, activity, scope, drafts, notify =
     const skipped = skippedTagsBlock({ api, scope, drafts });
     surface.append(skipped.node);
 
-    const field = el('div', undefined, 'field');
-    const templateLabel = el('label', 'LLM tag template');
-    templateLabel.htmlFor = 'tag-template';
-    const template = el('textarea');
-    template.id = 'tag-template';
-    template.dataset.setting = 'tag-template';
-    template.dataset.key = SETTING_KEYS['tag-template'];
-    field.append(templateLabel, template);
-    surface.append(field);
-    controls.push({ id: 'tag-template', key: SETTING_KEYS['tag-template'], input: template, text: null });
+    // D203 (#431): the saved instructions and each language-model engine's default replace the template field.
+    const instructions = savedInstructionsBlock({ scope, drafts });
+    surface.append(...instructions.nodes);
 
     for (const { key, input } of controls) {
         // Text controls draft while typing (the Save row follows at once); selects and numbers on change.
@@ -454,12 +457,14 @@ export function mountTagging(container, { api, activity, scope, drafts, notify =
     // The "could not be read" line under each row, while the server settings could not be read.
     const notes = new Map();
     const image = selected();
-    const current = () => Object.fromEntries(Object.values(SETTING_KEYS).map(key => [key, drafts.get('host', key)]));
+    const current = () => Object.fromEntries([...Object.values(SETTING_KEYS), ...INSTRUCTION_VALUES]
+        .map(key => [key, drafts.get('host', key)]));
     const chosen = () => drafts.get('host', 'autotag_model_type');
     const known = () => MODEL_IDS.includes(chosen());
 
     const repaint = () => {
         skipped.repaint();
+        instructions.repaint();
         const values = current();
         const unread = values.autotag_model_type === undefined;
         const failed = drafts.hostState?.() === 'failed' && unread;

@@ -1536,7 +1536,8 @@ class TestSavedTaggingDefaults(AutotagAPITestCase):
             "EXISTING",
             "GENERAL_THRESHOLD",
             "CHARACTER_THRESHOLD",
-            "TEMPLATE",
+            "INSTRUCTIONS",
+            "DEFAULT_INSTRUCTIONS",
             "SUGGESTION_LIMIT",
         ):
             self.addCleanup(setattr, AutotagConfig, attr, getattr(AutotagConfig, attr))
@@ -1557,7 +1558,11 @@ class TestSavedTaggingDefaults(AutotagAPITestCase):
         self.config.EXISTING = "replace_after_review"
         self.config.GENERAL_THRESHOLD = 0.4
         self.config.CHARACTER_THRESHOLD = 0.7
-        self.config.TEMPLATE = "Saved template"
+        # #431: the saved engine's default instructions.
+        self.config.INSTRUCTIONS = (
+            {"id": "0123456789ab", "name": "Saved", "text": "Saved template"},
+        )
+        self.config.DEFAULT_INSTRUCTIONS = {"gguf": "0123456789ab", "hf": "builtin"}
         self.config.SUGGESTION_LIMIT = 15
         data = await (await self.client.get("/prompt_manager/autotag/models")).json()
         self.assertEqual(
@@ -1581,6 +1586,27 @@ class TestSavedTaggingDefaults(AutotagAPITestCase):
                 "suggestion_limit": 15,
             },
         )
+        # Built-in first with every text, and each engine's default.
+        self.assertEqual(
+            data["instructions"],
+            [
+                {"id": "builtin", "name": "Built-in", "text": DEFAULT_TAG_TEMPLATE},
+                {"id": "0123456789ab", "name": "Saved", "text": "Saved template"},
+            ],
+        )
+        self.assertEqual(
+            data["default_instructions"], {"gguf": "0123456789ab", "hf": "builtin"}
+        )
+        # HF reads its own default; a WD14 engine reads GGUF's.
+        for model_type, prompt in (
+            ("hf", DEFAULT_TAG_TEMPLATE),
+            ("wd14-vit", "Saved template"),
+        ):
+            self.config.MODEL_TYPE = model_type
+            data = await (
+                await self.client.get("/prompt_manager/autotag/models")
+            ).json()
+            self.assertEqual(data["default_prompt"], prompt, model_type)
 
     async def test_single_without_thresholds_uses_saved_ones(self):
         image = self._make_image(self.output_dir)

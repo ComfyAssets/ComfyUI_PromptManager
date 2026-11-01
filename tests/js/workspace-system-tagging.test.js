@@ -42,6 +42,8 @@ function fakeDOM() {
                 this.children.push(node);
             }
         }
+        replaceChildren(...nodes) { this.children = []; this._text = ''; this.append(...nodes); }
+        focus() { global.document.activeElement = this; }
         remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; }
         setAttribute(name, value) { this.attributes[name] = String(value); }
         getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; }
@@ -65,7 +67,9 @@ function fakeDOM() {
 }
 
 const HOST = { autotag_model_type: 'wd14-swinv2', autotag_existing: 'skip', autotag_general_threshold: 0.35,
-    autotag_character_threshold: 0.85, autotag_suggestion_limit: 10, autotag_template: 'Describe the image as tags.' };
+    autotag_character_threshold: 0.85, autotag_suggestion_limit: 10, autotag_builtin_instructions: 'Built-in tags.',
+    autotag_instructions: [{ id: '0123456789ab', name: 'Describe', text: 'Describe the image as tags.' }],
+    autotag_default_instructions: { gguf: '0123456789ab', hf: 'builtin' } };
 const entry = (label, size, extra = {}) => ({ name: label, label, size_label: size, downloaded: true, loaded: false, ...extra });
 const MODELS = {
     success: true,
@@ -124,7 +128,8 @@ test('the section keeps the concept surface, rows, labels and actions in order',
     for (const option of ['Skip already tagged', 'Merge with existing', 'Replace after review']) assert.ok(body.includes(option) && SOURCE.includes(`'${option}'`));
     assert.ok(body.includes('<h2>Auto-tagging</h2>') && SOURCE.includes("'h2', 'Auto-tagging'"));
     assert.ok(body.includes('One tagging configuration for images and prompt-library actions. Every result can be reviewed before applying.'));
-    assert.ok(body.includes('LLM tag template') && SOURCE.includes("'LLM tag template'"));
+    // D203 (#431): Saved instructions replace the concept's template field.
+    assert.ok(body.includes('LLM tag template') && !SOURCE.includes("'LLM tag template'"));
     assert.ok(body.includes('"Preview tagging review", "tag-review", "", "ca-primary"'));
     // Prototype copy is never shipped.
     for (const sample of ['Simulate download', 'Simulate unload', 'Ollama']) assert.ok(!SOURCE.includes(sample), sample);
@@ -167,27 +172,25 @@ test('controls draft their host keys; numbers as numbers, other text as typed', 
     const { SETTING_KEYS, coerceNumber, draftValue } = await tagging;
     assert.deepEqual(SETTING_KEYS, { 'tag-model': 'autotag_model_type', 'tag-existing': 'autotag_existing',
         'threshold-general': 'autotag_general_threshold', 'threshold-character': 'autotag_character_threshold',
-        'tag-suggestions': 'autotag_suggestion_limit', 'tag-template': 'autotag_template' });
+        'tag-suggestions': 'autotag_suggestion_limit' });
     assert.deepEqual(['0.4', ' 1.5 ', '15', '', 'abc', '1e-1'].map(coerceNumber), [0.4, 1.5, 15, '', 'abc', 0.1]);
     assert.equal(draftValue('autotag_suggestion_limit', '15'), 15);
-    assert.equal(draftValue('autotag_template', ' 12 '), ' 12 ');
+    assert.equal(draftValue('autotag_existing', ' 12 '), ' 12 ');
     assert.equal(draftValue('autotag_existing', undefined), '');
     const { dom, drafts, scope, byId } = await mounted();
     try {
         assert.equal(byId('tag-model').value, 'wd14-swinv2');
         assert.equal(byId('threshold-general').value, '0.35');
-        assert.equal(byId('tag-template').value, HOST.autotag_template);
         assert.deepEqual([byId('threshold-general').min, byId('threshold-general').max, byId('threshold-general').step], ['0', '1', '0.05']);
         assert.deepEqual([byId('tag-suggestions').min, byId('tag-suggestions').max], ['1', '100']);
         byId('tag-existing').value = 'merge'; await byId('tag-existing').dispatch('change');
         byId('threshold-general').value = '0.4'; await byId('threshold-general').dispatch('change');
         byId('tag-suggestions').value = '15'; await byId('tag-suggestions').dispatch('change');
-        byId('tag-template').value = 'Tags only.'; await byId('tag-template').dispatch('input');
         assert.deepEqual(drafts.changes('host'), { autotag_existing: 'merge', autotag_general_threshold: 0.4,
-            autotag_suggestion_limit: 15, autotag_template: 'Tags only.' });
+            autotag_suggestion_limit: 15 });
         // Every control names its stored key, so a refused save highlights it (D92).
         for (const id of Object.keys(SETTING_KEYS)) assert.equal(byId(id).dataset.key, SETTING_KEYS[id]);
-        assert.equal(byId('tag-template').dataset.setting, 'tag-template');
+        assert.equal(byId('tag-template'), undefined);
     } finally { scope.dispose(); assert.equal(dom.listenerCount(), 0); dom.restore(); }
 });
 
@@ -201,7 +204,8 @@ test('opening the section reads the model status once; the select waits for it',
         assert.deepEqual(byId('tag-model').options.map(option => option.textContent),
             ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF JoyCaption · ~4.5 GB', 'HuggingFace JoyCaption · ~16 GB']);
         assert.deepEqual(surface.children.map(node => node.className),
-            ['', '', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-block', 'field', 'row-actions', 'operation']);
+            ['', '', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-block', 'setting-block', 'setting-row',
+            'setting-row', 'small instruction-reset', 'row-actions', 'operation']);
     } finally { scope.dispose(); dom.restore(); }
     const failed = await mounted({ modelsFail: true });
     try {
@@ -302,7 +306,9 @@ test('Preview tagging review opens the Tag image dialog with the section’s val
     assert.deepEqual(taggingPreset(HOST), { model: 'wd14-swinv2', options: { general_threshold: 0.35, character_threshold: 0.85,
         suggestion_limit: 10 } });
     assert.deepEqual(taggingPreset({ ...HOST, autotag_model_type: 'gguf' }), { model: 'gguf',
-        options: { instructions: HOST.autotag_template, suggestion_limit: 10 } });
+        options: { instructions: 'Describe the image as tags.', suggestion_limit: 10 } });
+    // D205 (#431): each language-model engine reads its own drafted default; Built-in's text comes from the server.
+    assert.deepEqual(taggingPreset({ ...HOST, autotag_model_type: 'hf' }).options.instructions, 'Built-in tags.');
     assert.equal(draftProblem(HOST), null);
     assert.deepEqual(draftProblem({ ...HOST, autotag_general_threshold: 1.5 }),
         { key: 'autotag_general_threshold', message: 'General-tag confidence must be between 0 and 1.' });
@@ -319,15 +325,17 @@ test('Preview tagging review opens the Tag image dialog with the section’s val
     assert.equal(taggingPreset({ ...HOST, autotag_general_threshold: 0.1 + 0.2 }).options.general_threshold, 0.3);
     assert.equal(draftProblem({ ...HOST, autotag_suggestion_limit: 2.5 }).key, 'autotag_suggestion_limit');
     assert.equal(draftProblem({ ...HOST, autotag_suggestion_limit: 0 }, { limit: false }), null);
-    assert.deepEqual(draftProblem({ ...HOST, autotag_model_type: 'hf', autotag_template: '  ' }),
-        { key: 'autotag_template', message: 'LLM tag template must be non-empty text.' });
-    assert.deepEqual(draftProblem({ ...HOST, autotag_model_type: 'hf', autotag_template: 'x'.repeat(4001) }),
-        { key: 'autotag_template', message: 'LLM tag template must be at most 4000 characters.' });
+    // #431: a saved entry the server would refuse holds back a language-model run, with the server's sentence.
+    const entries = list => ({ ...HOST, autotag_model_type: 'hf', autotag_instructions: list });
+    assert.deepEqual(draftProblem(entries([{ id: '0123456789ab', name: 'A', text: '  ' }])),
+        { key: 'autotag_instructions', message: 'Saved instructions: entry 1 text must be non-empty text.' });
+    assert.deepEqual(draftProblem(entries([{ id: '0123456789ab', name: 'A', text: 'x'.repeat(4001) }])),
+        { key: 'autotag_instructions', message: 'Saved instructions: entry 1 text must be at most 4000 characters.' });
     // Characters are code points, as Python's len counts them: 4000 emoji (8000 UTF-16 units) are allowed.
-    assert.equal(draftProblem({ ...HOST, autotag_model_type: 'hf', autotag_template: '🏜'.repeat(4000) }), null);
-    assert.equal(draftProblem({ ...HOST, autotag_model_type: 'hf', autotag_template: '🏜'.repeat(4001) }).key, 'autotag_template');
-    // A WD14 run never reads the template, nor a language model the thresholds.
-    assert.equal(draftProblem({ ...HOST, autotag_template: '' }), null);
+    assert.equal(draftProblem(entries([{ id: '0123456789ab', name: 'A', text: '🏜'.repeat(4000) }])), null);
+    assert.equal(draftProblem(entries([{ id: '0123456789ab', name: 'A', text: '🏜'.repeat(4001) }])).key, 'autotag_instructions');
+    // A WD14 run never reads the instructions, nor a language model the thresholds.
+    assert.equal(draftProblem({ ...HOST, autotag_instructions: [{ id: '0123456789ab', name: '', text: '' }] }), null);
     assert.equal(draftProblem({ ...HOST, autotag_model_type: 'gguf', autotag_general_threshold: 7 }), null);
 
     const none = await mounted({ image: null });
@@ -372,9 +380,12 @@ test('the batch review grid, body and Cancel-only reasons (D134, #379, CUJ 4–5
         ['Settings', 'General 0.35 · Character 0.85 · up to 10 tags per image'], ['Backup', 'Create and verify before changes']]);
     const llm = { ...HOST, autotag_model_type: 'gguf' };
     assert.deepEqual(batchGrid({ ...PLAN, model: { type: 'gguf' }, backup: { policy: 'off' }, estimate_seconds: null,
-        estimate_device: null, suggestion_limit: 4 }, llm).slice(-3),
+        estimate_device: null, suggestion_limit: 4 }, llm).slice(-4),
     [['Time', 'Language-model engines take longer per image. Activity shows the time left once tagging starts.'],
-        ['Settings', 'Template of 27 characters · up to 4 tags per image'], ['Backup', 'No safety backup (the policy is off)']]);
+        ['Instructions', 'Describe'], ['Settings', 'Up to 4 tags per image'], ['Backup', 'No safety backup (the policy is off)']]);
+    // D205 (#431): HF shows its own default by name.
+    assert.deepEqual(batchGrid({ ...PLAN, model: { type: 'hf' } }, { ...llm, autotag_model_type: 'hf' }).find(([term]) => term === 'Instructions'),
+        ['Instructions', 'Built-in']);
     assert.equal(batchGrid({}, HOST)[2][1], '0');
     assert.equal(batchGrid({}, HOST)[6][1], 'General 0.35 · Character 0.85');
     assert.equal(existingLabel('odd'), 'odd');
@@ -382,7 +393,7 @@ test('the batch review grid, body and Cancel-only reasons (D134, #379, CUJ 4–5
         options: { general_threshold: 0.35, character_threshold: 0.85 } });
     // #369: a threshold a hair off the grid is sent snapped to it.
     assert.equal(batchBody({ ...HOST, autotag_character_threshold: 0.1 + 0.2 }).options.character_threshold, 0.3);
-    assert.deepEqual(batchBody(llm), { model_type: 'gguf', existing: 'skip', options: { instructions: HOST.autotag_template } });
+    assert.deepEqual(batchBody(llm), { model_type: 'gguf', existing: 'skip', options: { instructions: 'Describe the image as tags.' } });
     assert.equal(batchCloseNote(PLAN), null);
     assert.equal(batchCloseNote({ ...PLAN, review_required: true }), REPLACE_NOTE);
     assert.equal(REPLACE_NOTE, 'Replacing tags needs a review of each image. Use Preview tagging review, or choose Skip or Merge for a batch run.');
