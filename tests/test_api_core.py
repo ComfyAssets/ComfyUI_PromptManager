@@ -796,6 +796,7 @@ class TestRevalidatedCachingBehindMiddlewares(CoreRoutesTestCase):
             self.assertEqual(resp.status, 200, path)
             self.assertEqual(resp.headers.get("Content-Encoding"), "gzip", path)
             self.assertEqual(resp.headers["Cache-Control"], "no-cache", path)
+            await resp.read()  # aiohttp before 3.11.11 hangs on an unread body
             again = await self.client.request(
                 "GET",
                 path,
@@ -806,6 +807,7 @@ class TestRevalidatedCachingBehindMiddlewares(CoreRoutesTestCase):
             )
             self.assertEqual(again.status, 304, path)
             self.assertEqual(again.headers["Cache-Control"], "no-cache", path)
+            await again.read()
 
 
 # ── instance helpers ──────────────────────────────────────────────────

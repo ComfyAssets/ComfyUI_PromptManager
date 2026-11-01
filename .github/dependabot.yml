@@ -17,6 +17,11 @@ updates:
       prefix: "deps(pip)"
       include: "scope"
     rebase-strategy: "auto"
+    # These floors follow ComfyUI's requirements.txt, never the newest release.
+    ignore:
+      - dependency-name: "Pillow"
+      - dependency-name: "aiohttp"
+      - dependency-name: "numpy"
     # Optional: group non-breaking updates to reduce PR noise
     groups:
       python-minor-and-patch:
