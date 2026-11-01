@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const workflow = readFileSync(new URL('../../.github/workflows/viewerjs-check.yml', import.meta.url), 'utf8');
-const PINNED_IMAGE = /^\s+image: mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble$/m;
+const PINNED_IMAGE = /^\s+image: mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/m;
 
 function jobs(text) {
     const lines = text.split('\n');
@@ -237,7 +237,7 @@ test('every npm ci restores the npm download cache keyed on the vendor lockfile 
         assert.match(jobSteps[cacheAt], /hashFiles\('tools\/vendor\/package-lock\.json'\)/, `${id} keys the cache on the lockfile`);
         assert.match(jobSteps[installAt], /npm ci --prefix tools\/vendor --ignore-scripts/, `${id} still installs without scripts`);
         // The key names the job's own pinned image, so an image bump starts a fresh cache.
-        const image = /^ {6}image: mcr\.microsoft\.com\/playwright:(v\d+\.\d+\.\d+)-noble$/m.exec(body)?.[1];
+        const image = /^ {6}image: mcr\.microsoft\.com\/playwright:(v\d+\.\d+\.\d+)-noble@sha256:[0-9a-f]{64}$/m.exec(body)?.[1];
         assert.ok(image, `${id} runs in the pinned Playwright image`);
         assert.match(jobSteps[cacheAt], new RegExp(`key: npm-\\$\\{\\{ runner\\.os \\}\\}-playwright-${image.replaceAll('.', '\\.')}-\\$\\{\\{ hashFiles`),
             `${id} keys the cache on its image ${image}`);

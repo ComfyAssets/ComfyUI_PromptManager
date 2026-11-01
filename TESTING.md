@@ -111,8 +111,11 @@ distributions, browser system dependencies may need manual installation. For a
 quick browser run, use `test:workflows -- --project chromium`.
 
 CI runs the browser jobs inside the pinned image
-`mcr.microsoft.com/playwright:v<@playwright/test version>-noble`
+`mcr.microsoft.com/playwright:v<@playwright/test version>-noble@sha256:<digest>`
 (`tests/vendor/browser-image.test.mjs` keeps the tag in step with the lockfile).
+The digest is part of the pin, because Microsoft re-pushes tags: `v1.64.1-noble`
+moved from Node 24 to Node 26 on 2026-11-01 (#609). To bump it, change the tag and
+digest together and check the new image's Node against the Node 24 guard.
 Concept comparisons measure geometry, and geometry follows the fonts a browser
 falls back to: the concept names Inter, which neither the image nor a stock
 runner ships. On a plain `ubuntu-latest` runner the fallback is DejaVu Sans,
