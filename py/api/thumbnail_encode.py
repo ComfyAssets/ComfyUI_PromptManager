@@ -46,7 +46,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import preview_store, thumbnail_settings
+from . import preview_location, preview_store, thumbnail_settings
 
 try:
     from ...utils.logging_config import get_logger
@@ -126,7 +126,10 @@ def sweep_stray_temps(folder, min_age=None):
     """Remove the temp files a crashed write left under *folder* (a preview
     folder, walked without following links); returns ``(count, bytes)``.
 
-    Only ``temp_sibling`` names are touched, never a link. With *min_age*
+    Only ``temp_sibling`` names are touched, never a link: a folder that is a
+    link, junction or reparse point is not walked into (Windows walks into a
+    junction even without ``followlinks``), and each file passes
+    ``preview_store.may_write`` before it goes. With *min_age*
     (seconds, the startup sweep) a temp younger than that, or one this
     process wrote since it started (it may still be writing it), is left;
     ``min_age=0`` (the clear, which holds every preview write) removes them
@@ -136,7 +139,14 @@ def sweep_stray_temps(folder, min_age=None):
     now = time.time()
     own = str(os.getpid())
     count = size = 0
-    for root, _dirs, files in os.walk(folder):
+    try:
+        if preview_location.is_link_like(folder):
+            return count, size
+    except OSError as exc:
+        logger.debug(f"Not sweeping {folder}: {exc}")
+        return count, size
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not _link_like(Path(root) / d)]
         for name in files:
             match = _TEMP_NAME.match(name)
             # A move's copy temp (#320): ``<name>.pm-move-<8 hex>.tmp``.
@@ -146,7 +156,12 @@ def sweep_stray_temps(folder, min_age=None):
             path = Path(root) / name
             try:
                 stat = path.lstat()
-                if path.is_symlink() or not path.is_file():
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or _link_like(path)
+                    or not preview_store.may_write(path)
+                ):
                     continue
                 if min_age and (
                     now - stat.st_mtime < min_age
@@ -166,6 +181,14 @@ def sweep_stray_temps(folder, min_age=None):
             count += 1
             size += stat.st_size
     return count, size
+
+
+def _link_like(path):
+    """``is_link_like``, with a path that cannot be checked counted as one."""
+    try:
+        return preview_location.is_link_like(path)
+    except OSError:
+        return True
 
 
 def _unlink_quietly(path):

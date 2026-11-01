@@ -496,6 +496,44 @@ class TestHostileMarker(FolderModeCase):
         self.assertEqual((removed, kept), (0, [old]))
         self.assertEqual(old.read_bytes(), b"keep me")
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    async def test_the_temp_sweep_never_walks_into_a_link(self):
+        from py.api import thumbnail_encode
+
+        outside = self.comfy_dir / "outside"
+        outside.mkdir()
+        victim = outside / ".v_thumb.part-1-1.webp"
+        victim.write_bytes(b"keep me")
+        os.utime(victim, (1, 1))
+        try:
+            (self.key_folder() / "sub").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted")
+        real_walk = os.walk
+
+        def windows_walk(top, *args, **kwargs):
+            # Windows walks into a junction even with followlinks=False.
+            kwargs["followlinks"] = True
+            return real_walk(top, *args, **kwargs)
+
+        with patch.object(thumbnail_encode.os, "walk", windows_walk):
+            self.assertEqual(self.api.sweep_thumbnail_temps(), 0)
+            thumbnail_encode.sweep_stray_temps(self.key_folder(), min_age=0)
+            resp = await self.client.post("/prompt_manager/images/clear-thumbnails")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(victim.read_bytes(), b"keep me")
+
+    def test_the_temp_sweep_leaves_a_temp_the_store_does_not_own(self):
+        from py.api import thumbnail_encode
+
+        temp = self.key_folder() / ".w_thumb.part-1-1.webp"
+        temp.write_bytes(b"x")
+        with patch.object(preview_store, "may_write", return_value=False):
+            self.assertEqual(
+                thumbnail_encode.sweep_stray_temps(self.key_folder(), min_age=0), (0, 0)
+            )
+        self.assertTrue(temp.exists())
+
     async def test_a_write_outside_the_folder_is_refused(self):
         with self.assertRaises(OSError):
             preview_store.make_parent(self.comfy_dir / "elsewhere" / "a_thumb.webp")
