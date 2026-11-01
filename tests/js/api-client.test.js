@@ -371,6 +371,16 @@ test("ApiError keeps the job that applied a used plan (plan-used, System S7)", (
     }
 });
 
+test("ApiError keeps a move refused for space with its review (#320)", () => {
+    const plan = { totals: { files: 3 }, insufficient: { text: "Not enough space" } };
+    assert.equal(new ApiError(507, "no space", "insufficient-space", null, { plan }).plan, plan);
+    for (const bad of [null, "x", [1], undefined]) {
+        assert.equal(new ApiError(507, "no space", "insufficient-space", null, { plan: bad }).plan, null);
+    }
+    assert.equal(new ApiError(409, "busy", "busy", null, { plan }).plan, null);
+    assert.equal(new ApiError(507, "no space", "insufficient-space").plan, null);
+});
+
 test("ApiError keeps a validated running job on busy and a validated source on invalid-source", () => {
     const body = { running: { id: "a".repeat(32), title: "Scan for metadata" }, source: "output/gone" };
     const busy = new ApiError(409, "busy", "busy", null, body);

@@ -147,3 +147,39 @@ test('another folder’s marker offers Use this folder', async ({ page, request 
     await expect(notice).toHaveCount(0);
     await expect(block(page).locator('#location-status')).toHaveText(/^Now: one folder, .*thumbs\.$/);
 });
+
+test('Overview shows the notice and Change location opens the row', async ({ page, request }) => {
+    await expect(await request.post('/__test__/thumbnail-location', { data: { mode: 'folder' } })).toBeOK();
+    await request.post('/__test__/thumbnail-folder/remove');
+    await page.goto(`${workspace}#/system/overview`);
+    const notice = page.locator('#unavailable-notice');
+    await expect(notice.locator('h2')).toHaveText('The thumbnail folder is unavailable');
+    await notice.getByRole('button', { name: 'Change location' }).click();
+    await expect(page).toHaveURL(/#\/system\/sources$/);
+    const sourcesNotice = page.locator('#unavailable-notice');
+    await sourcesNotice.getByRole('button', { name: 'Change location' }).click();
+    await expect(block(page).getByRole('radio', { name: /One folder/ })).toBeChecked();
+    await expect(block(page).locator('#location-path')).toBeFocused();
+});
+
+test('Thumbnail maintenance removes the thumbnails of removed sources in folder mode', async ({ page, request }) => {
+    await expect(await request.post('/__test__/thumbnail-location', { data: { mode: 'folder' } })).toBeOK();
+    await expect(await request.post('/__test__/thumbnail-folder/unlisted')).toBeOK();
+    await openSources(page);
+    const generation = page.locator('#workspace-main .operation').filter({ hasText: 'Thumbnail generation' });
+    await generation.getByRole('button', { name: 'Review options' }).click();
+    const scope = dialog(page).locator('#thumb-mode');
+    await expect(scope.locator('option')).toHaveText(['Missing thumbnails only', 'Rebuild all (explicit opt-in)',
+        'Convert outdated (removes older formats)', 'Remove thumbnails of removed sources']);
+    await scope.selectOption('prune');
+    await expect(dialog(page).locator('[role=status]')).toHaveText(
+        /^1 source no longer listed: 1 thumbnail \(.+\) are removed\.$/);
+    await expect(dialog(page).locator('dl.meta-grid dt')).toHaveText(['gone-0123abcd']);
+    await expect(dialog(page)).toContainText('If a source comes back, its thumbnails are made again as you browse.');
+    await scope.selectOption('missing');
+    await expect(dialog(page).locator('dl.meta-grid')).toBeHidden();
+    await scope.selectOption('prune');
+    await dialog(page).getByRole('button', { name: 'Start' }).click();
+    await expect(page.locator('#workspace-main h1')).toHaveText('Remove thumbnails of removed sources');
+    await expect(page.locator('#workspace-main')).toContainText('1 thumbnails removed');
+});

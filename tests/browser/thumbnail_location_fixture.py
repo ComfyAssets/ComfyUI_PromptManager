@@ -136,4 +136,26 @@ def register_thumbnail_location_commands(
     async def foreign_folder(_request: web.Request) -> web.Response:
         return web.json_response({"available": await api._run_in_executor(foreign)})
 
+    def unlisted() -> None:
+        """A source this install no longer lists left its thumbnails here."""
+        setting = preview_store.setting()
+
+        def add(marker: dict) -> None:
+            marker["keys"]["gone-0123abcd"] = {
+                "path": "/gone",
+                "identity": "/gone",
+                "install": setting.install,
+            }
+
+        preview_location.write_marker(setting.path, add)
+        gone = Path(setting.path) / "gone-0123abcd"
+        gone.mkdir()
+        (gone / "x_thumb.webp").write_bytes(b"preview")
+        preview_store.refresh()
+
+    @routes.post("/__test__/thumbnail-folder/unlisted")
+    async def unlisted_source(_request: web.Request) -> web.Response:
+        await api._run_in_executor(unlisted)
+        return web.json_response({"success": True})
+
     return reset

@@ -115,6 +115,18 @@ test('a move and a prune show their own tiles in Activity', async () => {
     const prune = { kind: 'thumbnails', state: 'running', cancellable: true, scope: { mode: 'prune' },
         counters: { removed: 1, left: 0, errors: 0 } };
     assert.deepEqual(viewOf(prune).tiles.map(([, label]) => label), ['Removed', 'Left in place', 'Errors']);
+    assert.equal(viewOf(move).line(move), '');
+    assert.equal(viewOf(done).line(done), done.status_line);
+    assert.equal(viewOf(move).kept(move), '3 moved');
+    assert.equal(finishToast({ ...move, state: 'cancelled', status_line: '' }), viewOf(move).finishToast({ ...move,
+        state: 'cancelled', status_line: '' }));
+    const pruned = { ...prune, state: 'finished', status_line: '1 thumbnails removed' };
+    assert.equal(viewOf(prune).line(prune), '');
+    assert.equal(viewOf(pruned).line(pruned), '1 thumbnails removed');
+    assert.equal(finishToast(pruned), '1 thumbnails removed');
+    assert.equal(viewOf(prune).kept(prune), '1 removed');
+    assert.match(finishToast({ ...prune, state: 'finished', status_line: '', title: 'Remove thumbnails of removed sources' }),
+        /Remove thumbnails of removed sources/);
     const generate = { kind: 'thumbnails', state: 'running', cancellable: true, scope: { mode: 'missing' },
         counters: { generated: 0, skipped: 0, errors: 0 } };
     assert.deepEqual(viewOf(generate).tiles.map(([, label]) => label), ['Generated', 'Skipped', 'Errors']);
