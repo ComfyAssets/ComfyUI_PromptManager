@@ -1061,16 +1061,77 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
             job = await self._failed_job()
         self.assertEqual(job.scope["failure"], "backup-failed")
 
-    async def test_cancel_right_after_the_start_writes_nothing(self):
+    async def test_cancel_while_it_stages_writes_nothing(self):
+        # #575: held at a download, so the cancel lands while it stages.
         self._two_loras()
         before = _snapshot(self.api.db)
-        resp, plan = await self._post(PREVIEW)
-        resp, body = await self._post(APPLY, {"token": plan["token"]})
-        job = self.api._jobs.get(body["job"]["id"])
-        self.api._jobs.cancel(job.id)  # at once, while it stages
+        self.gate = threading.Event()
+        _plan, job = await self._apply_reviewed()
+        loop = asyncio.get_running_loop()
+        self.assertTrue(await loop.run_in_executor(None, self.downloading.wait, 10))
+        self.assertTrue(self.api._jobs.cancel(job.id))
+        self.gate.set()
         await job.task
         self.assertEqual(job.state, "cancelled")
         self.assertEqual(_snapshot(self.api.db), before)
+
+    async def test_a_cancel_accepted_as_staging_ends_writes_nothing(self):
+        # #575: staging already passed its last cancel check and returned; a
+        # cancel accepted before the job resumes still stops it before the
+        # commit, so a request answered "cancellation_requested" holds.
+        self._two_loras()
+        before = _snapshot(self.api.db)
+        staged, release = threading.Event(), threading.Event()
+        real_stage = lora_import.stage
+
+        def held_stage(*args, **kwargs):
+            result = real_stage(*args, **kwargs)
+            staged.set()
+            release.wait(10)
+            return result
+
+        loop = asyncio.get_running_loop()
+        with patch.object(lora_import, "stage", held_stage):
+            _plan, job = await self._apply_reviewed()
+            try:
+                self.assertTrue(await loop.run_in_executor(None, staged.wait, 10))
+                self.assertTrue(self.api._jobs.cancel(job.id))
+            finally:
+                release.set()
+            await job.task
+        self.assertEqual(job.state, "cancelled", job.log)
+        self.assertEqual(_snapshot(self.api.db), before)
+
+    async def test_a_cancel_after_the_commit_point_is_refused(self):
+        # #575: once staging is done the job is no longer cancellable; a
+        # late cancel is refused (the route answers it as not requested) and
+        # the job truthfully ends "finished" with the import written.
+        self._two_loras()
+        before = _snapshot(self.api.db)
+        replacing, release = threading.Event(), threading.Event()
+        real_replace = self.api.db.replace_category_prompts
+
+        def held_replace(*args, **kwargs):
+            replacing.set()
+            release.wait(10)
+            return real_replace(*args, **kwargs)
+
+        loop = asyncio.get_running_loop()
+        with patch.object(self.api.db, "replace_category_prompts", held_replace):
+            _plan, job = await self._apply_reviewed()
+            try:
+                self.assertTrue(await loop.run_in_executor(None, replacing.wait, 10))
+                self.assertFalse(job.summary()["cancellable"])
+                resp = await self.client.request(
+                    "POST", f"/prompt_manager/jobs/{job.id}/cancel"
+                )
+                body = json.loads(await resp.text())
+            finally:
+                release.set()
+            await job.task
+        self.assertFalse(body["cancellation_requested"])
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertNotEqual(_snapshot(self.api.db), before)
 
 
 def plan_title():
