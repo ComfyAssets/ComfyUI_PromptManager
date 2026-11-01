@@ -15,6 +15,8 @@ KNOWN_FILE_READERS = frozenset(
         "images.py:os.open(",
         "__init__.py:Image.open(",
         "logging_routes.py:os.open(",
+        # The thumbnail folder's marker lock file (#320), never a media file.
+        "preview_location.py:os.open(",
         "thumbnail_auto.py:FileResponse(",
         "thumbnail_encode.py:Image.open(",
     }

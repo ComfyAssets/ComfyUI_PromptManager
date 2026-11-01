@@ -189,6 +189,62 @@ class TestMarker(unittest.TestCase):
         # No temp file is left beside it.
         self.assertEqual(os.listdir(self.folder), [pl.MARKER_NAME])
 
+    def test_two_processes_adding_keys_at_once_keep_every_key(self):
+        """Installs sharing one folder (bot review, P2): the read-modify-write
+        of the marker is locked across processes, so no writer drops another's
+        key. Each child widens the window by pausing inside ``mutate``."""
+        import subprocess
+
+        pl.init_folder(self.folder)
+        child = (
+            "import sys, time\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "from py.api import preview_location as pl\n"
+            "folder, tag, start = sys.argv[2], sys.argv[3], float(sys.argv[4])\n"
+            "while time.time() < start: time.sleep(0.001)\n"
+            "for n in range(8):\n"
+            "    def add(m, n=n):\n"
+            "        time.sleep(0.01)\n"
+            "        m['keys'][f'{tag}-{n:08x}'] = {'install': tag}\n"
+            "    pl.write_marker(folder, add)\n"
+        )
+        import time
+
+        start = str(time.time() + 1.0)
+        procs = [
+            subprocess.Popen(  # nosec B603 - this interpreter, fixed arguments
+                [sys.executable, "-c", child, str(REPO), self.folder, tag, start]
+            )
+            for tag in ("a", "b", "c")
+        ]
+        for proc in procs:
+            self.assertEqual(proc.wait(timeout=60), 0)
+        keys = pl.read_marker(self.folder)["keys"]
+        self.assertEqual(len(keys), 24, sorted(keys))
+        self.assertEqual(os.listdir(self.folder), [pl.MARKER_NAME])
+
+    def test_a_lock_left_by_a_crashed_writer_is_taken_over_when_stale(self):
+        pl.init_folder(self.folder)
+        lock = os.path.join(self.folder, pl.MARKER_LOCK_NAME)
+        with open(lock, "w", encoding="utf-8") as handle:
+            handle.write("crashed")
+        old = pl.time.time() - pl.MARKER_LOCK_STALE - 5
+        os.utime(lock, (old, old))
+        pl.write_marker(self.folder, lambda m: m["keys"].update({"a-0123abcd": {}}))
+        self.assertIn("a-0123abcd", pl.read_marker(self.folder)["keys"])
+        self.assertFalse(os.path.exists(lock))
+
+    def test_a_held_lock_times_out_without_writing(self):
+        pl.init_folder(self.folder)
+        lock = os.path.join(self.folder, pl.MARKER_LOCK_NAME)
+        with open(lock, "w", encoding="utf-8") as handle:
+            handle.write("held")
+        with patch.object(pl, "MARKER_LOCK_TIMEOUT", 0.05):
+            with self.assertRaises(TimeoutError):
+                pl.write_marker(self.folder, lambda m: m["keys"].update({"x": {}}))
+        self.assertTrue(os.path.exists(lock))  # never taken from its holder
+        self.assertEqual(pl.read_marker(self.folder)["keys"], {})
+
     def test_a_folder_without_the_marker_is_missing(self):
         self.assertEqual(pl.folder_state(self.folder, "x")[:2], (False, "missing"))
         missing = os.path.join(self.folder, "gone")

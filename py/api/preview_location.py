@@ -29,8 +29,10 @@ import posixpath
 import re
 import stat as stat_module
 import threading
+import time
 import unicodedata
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 try:
@@ -44,6 +46,11 @@ SOURCE_MODE = "source"
 FOLDER_MODE = "folder"
 MARKER_NAME = ".promptmanager-thumbnails.json"
 MARKER_VERSION = 1
+# Beside the marker while one process re-reads, changes and replaces it.
+MARKER_LOCK_NAME = ".promptmanager-thumbnails.lock"
+MARKER_LOCK_TIMEOUT = 1.5  # a writer waits this long (under preview_store.IO_BUDGET)
+MARKER_LOCK_STALE = 30.0  # a lock this old was left by a writer that died
+MARKER_LOCK_POLL = 0.02
 # A source key: one folder name, a slug and a 8-16 hex hash (``source_key``).
 KEY_PATTERN = re.compile(r"^[a-z0-9_-]{1,24}-[0-9a-f]{8,16}$")
 # A marker is a few keys; anything larger is not ours.
@@ -413,10 +420,70 @@ def valid_keys(keys):
     return kept
 
 
+@contextmanager
+def _marker_lock(folder):
+    """Hold the folder's marker lock: a file made with ``O_CREAT | O_EXCL``
+    (atomic on local disks and SMB/NFS shares, unlike ``flock``), so installs
+    sharing the folder change the marker one at a time. A lock older than
+    MARKER_LOCK_STALE was left by a writer that died and is taken over;
+    waiting longer than MARKER_LOCK_TIMEOUT raises TimeoutError."""
+    lock = os.path.join(folder, MARKER_LOCK_NAME)
+    deadline = time.monotonic() + MARKER_LOCK_TIMEOUT
+    while True:
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            _break_stale_lock(lock)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    errno.ETIMEDOUT, "the thumbnail folder marker is locked", lock
+                )
+            time.sleep(MARKER_LOCK_POLL)
+            continue
+        try:
+            os.write(handle, f"{os.getpid()}\n".encode("ascii"))
+        finally:
+            os.close(handle)  # closed before any unlink (Windows)
+        break
+    try:
+        yield
+    finally:
+        try:
+            os.unlink(lock)
+        except FileNotFoundError:
+            pass  # taken over as stale by another writer: nothing to release
+
+
+def _break_stale_lock(lock):
+    """Remove *lock* when it is older than MARKER_LOCK_STALE (its writer
+    died); a lock that changed since it was looked at is left alone."""
+    try:
+        before = os.stat(lock)
+    except FileNotFoundError:
+        return
+    if time.time() - before.st_mtime < MARKER_LOCK_STALE:
+        return
+    logger.warning(f"Taking over a stale thumbnail folder lock: {lock}")
+    try:
+        after = os.stat(lock)
+        if (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns):
+            os.unlink(lock)
+    except FileNotFoundError:
+        pass  # another writer took it over first
+
+
 def write_marker(folder, mutate):
     """Re-read the marker, apply ``mutate(marker)`` and write it atomically
-    (a temp sibling renamed over it). Callers hold ``preview_store.write_lock``.
-    Returns the marker written."""
+    (a temp sibling renamed over it), all under the folder's marker lock so a
+    second install sharing the folder never drops this one's change (and
+    the other way round). Callers hold ``preview_store.write_lock`` (threads
+    of this process). Returns the marker written; TimeoutError when another
+    writer holds the lock too long."""
+    with _marker_lock(folder):
+        return _write_marker_locked(folder, mutate)
+
+
+def _write_marker_locked(folder, mutate):
     current = read_marker(folder) or {}
     marker = {
         "version": MARKER_VERSION,
