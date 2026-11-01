@@ -191,14 +191,16 @@ class TestWritesAndTheSwitch(SourceModeCase):
             replace_unless_held(tmp, dst, preview_store.write_guard(lambda: False))
         self.assertFalse(dst.exists())
 
-    def test_a_switch_waits_for_a_rename_in_flight(self):
-        """The rename and the generation bump exclude each other: a bump that
-        starts during a rename completes after it (event-driven)."""
+    def test_the_check_and_the_rename_run_under_the_write_lock(self):
+        """The hold check and the rename hold ``write_lock``, the lock the
+        generation bump takes: a switch cannot fall between them."""
         tmp, dst = self._temp_and_dst()
         in_check = threading.Event()
         release = threading.Event()
+        seen = {}
 
         def slow_hold():
+            seen["locked"] = preview_store.write_lock.locked()
             in_check.set()
             release.wait(WAIT)
             return True
@@ -206,18 +208,17 @@ class TestWritesAndTheSwitch(SourceModeCase):
         guard = preview_store.write_guard(slow_hold)
         writer = threading.Thread(target=replace_unless_held, args=(tmp, dst, guard))
         writer.start()
-        self.assertTrue(in_check.wait(WAIT))
-        bumped = threading.Event()
-        bumper = threading.Thread(
-            target=lambda: (preview_store.bump_generation(), bumped.set())
-        )
-        bumper.start()
-        self.assertFalse(bumped.wait(0.05))  # blocked behind the rename
-        release.set()
-        writer.join(WAIT)
-        bumper.join(WAIT)
-        self.assertTrue(bumped.is_set())
+        try:
+            self.assertTrue(in_check.wait(WAIT))
+            self.assertTrue(seen["locked"])
+            self.assertTrue(preview_store.write_lock.locked())
+        finally:
+            release.set()
+            writer.join(WAIT)
+        self.assertFalse(preview_store.write_lock.locked())
         self.assertEqual(dst.read_bytes(), b"new")
+        bumped = preview_store.bump_generation()
+        self.assertEqual(preview_store.generation(), bumped)
 
 
 class TestOnlyTheResolverBuildsStorePaths(unittest.TestCase):
@@ -234,21 +235,25 @@ class TestOnlyTheResolverBuildsStorePaths(unittest.TestCase):
         r"""|joinpath\([^)]*["']thumbnails["']"""
         r"""|os\.path\.join\([^)]*["']thumbnails["']"""
         r"""|["']thumbnails/"""
+        r"""|/\s*PREVIEW_FOLDER|joinpath\([^)]*PREVIEW_FOLDER"""
+        r"""|Path\([^)]*,\s*["']thumbnails["']"""
     )
 
     def test_no_thumbnails_join_outside_the_resolver(self):
         offenders = []
+        files = sorted(REPO.glob("*.py"))
         for folder in ("py", "utils", "database"):
-            for path in sorted((REPO / folder).rglob("*.py")):
-                rel = path.relative_to(REPO)
-                if rel in self.ALLOWED:
-                    continue
-                for number, line in enumerate(
-                    path.read_text(encoding="utf-8").splitlines(), 1
-                ):
-                    code = line.split("#", 1)[0]
-                    if self.JOIN.search(code):
-                        offenders.append(f"{rel}:{number}: {line.strip()}")
+            files += sorted((REPO / folder).rglob("*.py"))
+        for path in files:
+            rel = path.relative_to(REPO)
+            if rel in self.ALLOWED:
+                continue
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                code = line.split("#", 1)[0]
+                if self.JOIN.search(code):
+                    offenders.append(f"{rel}:{number}: {line.strip()}")
         self.assertEqual(offenders, [])
 
 
@@ -316,6 +321,16 @@ class TestEveryCallerFollowsTheStore(RedirectedStoreCase):
         resp = await self.client.get(url)
         self.assertEqual(resp.status, 200)
         self.assertEqual(await resp.read(), preview.read_bytes())
+
+    async def test_a_legacy_upper_case_preview_is_served_from_the_store(self):
+        make_png(self.output_dir / "k.JPG", size=(64, 64))
+        legacy = self.store / "k_thumb.JPG"
+        legacy.write_bytes(b"legacy preview")
+        resp = await self.client.get(
+            "/prompt_manager/images/serve/thumbnails/k_thumb.JPG?root=0"
+        )
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(await resp.read(), b"legacy preview")
 
     async def test_a_missing_preview_is_made_in_the_store_on_first_view(self):
         make_png(self.output_dir / "sub" / "b.png", size=(640, 480))
@@ -408,6 +423,25 @@ class TestCaptureResolvesAtWriteTime(RedirectedStoreCase):
         self.store = moved  # the location changes before the worker runs
         thumbnailer._write_queued(thumbnailer._queue.popleft())
         self.assertEqual(written, [moved / "i_thumb.webp"])
+
+    def test_the_after_scan_queue_maps_each_target_to_its_own_root(self):
+        from py.api import thumbnail_auto as auto
+
+        nested = self.output_dir / "inner"
+        nested.mkdir()
+        src = nested / "j.png"
+        outer = auto._deferred(
+            [self.output_dir, nested], src, self._preview("inner/j.png")
+        )
+        inner = auto._deferred(
+            [self.output_dir, nested], src, nested / "thumbnails" / "j_thumb.webp"
+        )
+        self.assertEqual(
+            (outer.root, outer.rel), (self.output_dir, Path("inner/j.png"))
+        )
+        self.assertEqual((inner.root, inner.rel), (nested, Path("j.png")))
+        stray = self.comfy_dir / "x_thumb.webp"
+        self.assertEqual(auto._deferred([self.output_dir], src, stray), stray)
 
     def test_serve_and_history_share_one_flight_key(self):
         from py.api import thumbnail_auto as auto

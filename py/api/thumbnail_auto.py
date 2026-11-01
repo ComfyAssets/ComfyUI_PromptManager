@@ -163,18 +163,25 @@ class DeferredPreview:
     (#320): a queued capture follows the thumbnail location at write time,
     not the one when it was queued."""
 
-    __slots__ = ("root", "rel")
+    __slots__ = ("root", "rel", "strict")
 
-    def __init__(self, root, rel):
+    def __init__(self, root, rel, *, strict=True):
         self.root = Path(root)
         self.rel = Path(rel)
+        # A capture refuses a store linked out of its container (the serve
+        # route's rule); a planned target keeps the plan's rule: inside the
+        # store, as the thumbnail job writes it.
+        self.strict = strict
 
     def resolve(self):
         """The preview's path now, or None when nothing may be written."""
         dst = media_preview_path(self.root, self.rel)
-        if dst is None or not preview_store.owns(self.root, dst):
+        if dst is None:
             return None
-        return dst
+        if self.strict:
+            return dst if preview_store.owns(self.root, dst) else None
+        store = preview_store.store_dir(self.root)
+        return dst if _is_within(dst, store) else None
 
 
 def _resolved(dst):
@@ -325,7 +332,7 @@ def _deferred(roots, src, dst):
             continue
         rel = src.relative_to(root)
         if media_preview_path(root, rel) == Path(dst):
-            return DeferredPreview(root, rel)
+            return DeferredPreview(root, rel, strict=False)
     return dst
 
 

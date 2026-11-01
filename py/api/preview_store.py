@@ -16,7 +16,9 @@ under ``write_lock`` and only when the generation is unchanged and no hold
 applies (``thumbnail_encode.replace_unless_held``). Changing the location
 bumps the generation under the same lock, so no write that began before can
 land in the old store afterwards. Nothing reads or commits config while
-``write_lock`` is held.
+``write_lock`` is held. The hold check runs under it too, so hold checks take
+no lock (the job registry's ``running()`` is a lock-free snapshot) and
+``bump_generation`` is never called with a registry or config lock held.
 
 All functions are blocking: call them off the event loop.
 """
