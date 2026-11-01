@@ -94,7 +94,7 @@ def _remove(path):
     try:
         os.unlink(path)
     except FileNotFoundError:
-        pass
+        pass  # already gone: removing it is the goal
 
 
 def _is_network(path):

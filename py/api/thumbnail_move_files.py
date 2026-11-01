@@ -24,6 +24,7 @@ unlink (Windows).
 """
 
 import errno
+import logging
 import os
 import re
 import secrets
@@ -40,6 +41,8 @@ try:
     from ...utils.media_folders import in_trash_folder
 except ImportError:  # tests import the package top-level
     from utils.media_folders import in_trash_folder
+
+logger = logging.getLogger("prompt_manager.thumbnails")
 
 MOVE_TEMP = re.compile(r"\.pm-move-[0-9a-f]{8}\.tmp$")
 MOVE_TEMP_SUFFIX = ".pm-move-{token}.tmp"
@@ -206,7 +209,7 @@ def _make_folders(base, relative_dir, created):
             os.mkdir(current)
             created.append(str(current))
         except FileExistsError:
-            pass
+            pass  # already there: made by an earlier copy into this folder
         except OSError as error:
             if error.errno in (errno.ENOSPC, errno.EDQUOT, errno.EROFS):
                 raise FolderGone(str(error)) from error
@@ -263,10 +266,18 @@ def copy_one(source, destination, size, mtime_ns, created, *, long_paths=None):
 
 
 def _unlink(path):
+    """Remove a copy's temp file after a failed copy; True when it is gone.
+
+    One that cannot go (a Windows lock, permissions) is logged with its path;
+    the next start's temp sweep removes it (``.pm-move-*.tmp``)."""
     try:
         os.unlink(path)
-    except OSError:
-        pass
+        return True
+    except FileNotFoundError:
+        return True  # never written, or already renamed into place
+    except OSError as error:
+        logger.warning(f"Could not remove the move's temp file {path}: {error}")
+        return False
 
 
 # ── removing ─────────────────────────────────────────────────────────

@@ -82,7 +82,7 @@ class ThumbnailLocationMixin:
                 if folder:
                     contained.append(str(folder))
         except ImportError:
-            pass
+            pass  # folder_paths exists only inside ComfyUI (tests run without it)
         try:
             contained.append(library_location.config_location()[1])
         except Exception:  # no data folder can be decided

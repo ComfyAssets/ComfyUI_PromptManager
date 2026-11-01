@@ -288,7 +288,7 @@ class _Probe:
         def run():
             try:
                 result["value"] = preview_location.folder_state(path, expected_id)
-            except BaseException as error:  # handed to the caller
+            except BaseException as error:  # check() re-raises it in the caller
                 result["error"] = error
             finally:
                 done.set()
@@ -428,7 +428,7 @@ def ensure_store(root, location=None, *, create=False):
             with store_io():
                 os.mkdir(store)
         except FileExistsError:
-            pass
+            pass  # already there: another writer made the key folder
         except OSError:
             return None
     return store
@@ -528,7 +528,7 @@ def make_parent(dst, location=None):
             try:
                 os.mkdir(current_folder)
             except FileExistsError:
-                pass
+                pass  # already there: another writer made this folder
             if preview_location.is_link_like(current_folder):
                 raise PermissionError(errno.EACCES, "a link in the thumbnail folder")
 

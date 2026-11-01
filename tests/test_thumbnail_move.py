@@ -165,8 +165,10 @@ class TestMoveToAFolder(MoveCase):
         make_png(self.folder / "old-0123abcd" / "x_thumb.webp", size=(4, 4))
         preview_store.refresh()
         status, plan = await self.plan({"mode": "source"})
+        self.assertEqual(status, 200)
         self.assertEqual(plan["totals"]["unlisted_sources"], 1)
-        _plan, job = await self.move({"mode": "source"})
+        _, job = await self.move({"mode": "source"})
+        self.assertEqual(job.state, "finished", job.log)
         self.assertFalse(self.folder.exists())
 
     async def test_confirmation_and_a_stale_token(self):
@@ -296,6 +298,11 @@ class TestRestart(MoveCase):
             _plan, job = await self.move({"mode": "folder", "path": str(self.folder)})
         self.assertTrue(preview_store.setting().cleanup)
         self.assertTrue((self.old_store / "a_thumb.webp").exists())
+        # Each removal that failed is an error the job counts and lists by path.
+        rows = job.outcomes["errors"]
+        self.assertEqual(job.counters["errors"], len(rows))
+        self.assertIn("sub/b_thumb.webp", {row["path"] for row in rows})
+        self.assertTrue(all("next start" in row["detail"] for row in rows))
         job = await self.api.finish_thumbnail_move()
         await job.task
         self.assertEqual(job.title, "Move thumbnails (finishing)")
@@ -400,6 +407,14 @@ class TestFiles(unittest.TestCase):
     def test_long_windows_destinations_are_per_file_errors(self):
         self.assertTrue(files.too_long("D:\\" + "x" * 240, long_paths=False))
         self.assertFalse(files.too_long("D:\\x", long_paths=False))
+
+    def test_a_failed_copys_temp_that_cannot_go_is_logged(self):
+        with patch.object(files.os, "unlink", side_effect=PermissionError("held")):
+            with self.assertLogs("prompt_manager.thumbnails", "WARNING") as logs:
+                self.assertFalse(files._unlink("D:/thumbs/.pm-move-1.tmp"))
+        self.assertIn(".pm-move-1.tmp", logs.output[0])
+        with patch.object(files.os, "unlink", side_effect=FileNotFoundError()):
+            self.assertTrue(files._unlink("gone"))
 
     def test_a_held_open_file_is_retried_then_left(self):
         waits = []

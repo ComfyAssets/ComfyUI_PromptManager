@@ -531,7 +531,7 @@ def _timed(func, timeout):
     def run():
         try:
             result["value"] = func()
-        except BaseException as error:  # handed to the caller
+        except BaseException as error:  # _timed() re-raises it in the caller
             result["error"] = error
         finally:
             done.set()

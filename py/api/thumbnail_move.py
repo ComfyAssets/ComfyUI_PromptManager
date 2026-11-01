@@ -529,10 +529,23 @@ class ThumbnailMoveMixin:
                         removed += 1
                     else:
                         complete = False
+                        relative = path.relative_to(store).as_posix()
+                        self.logger.warning(
+                            f"Could not remove the old thumbnail {path}; it is "
+                            "removed at the next start"
+                        )
                         if job is not None:
-                            job.log_line(
-                                "In use by another program; removed at the next "
-                                f"start: {name}"
+                            # D10A: a removal that failed is an error the job lists.
+                            job.record(
+                                "errors",
+                                {
+                                    "path": relative,
+                                    "root": store.name,
+                                    "detail": "In use by another program; removed "
+                                    "at the next start",
+                                },
+                                f"In use by another program; removed at the next "
+                                f"start: {store.name}/{relative}",
                             )
         files.remove_empty_folders(store)
         if job is not None and removed:
