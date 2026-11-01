@@ -11,6 +11,13 @@ const linkedTo = (target,roles) => Object.keys(roles).filter(role=>Array.isArray
 const nodeLabel = target => `#${target.id} ${target.label}`;
 // A lost reply leaves the outcome unknown; anything else the host said is a refusal, and nothing was written.
 const LOST_REPLY = /timed out|aborted|disposed/i;
+const outcomeUnknown = (posted,error) => posted && (LOST_REPLY.test(error.message) || /unexpected acknowledgement/.test(error.message));
+const UNKNOWN_ADVICE = 'Check ComfyUI, then preview again.';
+/** The Destination node value that sends to every eligible node of the window (#542, D191). Node ids never take it. */
+export const ALL_NODES = '*';
+// "All" sends in node id order: 2 before 10, and a subgraph id "3:1" after "3".
+const byNodeId = (a,b) => a.id.localeCompare(b.id,'en',{numeric:true});
+const allMessage = (count,where) => `Sending to all ${count} eligible nodes in ${where}.`;
 
 /** Why nothing in the discovered windows can receive these roles, most specific first (D173). */
 function unavailableMessage(found,roles) {
@@ -40,22 +47,89 @@ function distinctLabels(items,suffix) {
 
 export function createSendSession({client, roles:rawRoles, onChange}) {
     const roles = Object.freeze(validateRoles(rawRoles));
-    let state = {phase:'idle',hosts:[],hostId:'',targetId:'',preview:null,outcomeUnknown:false,message:''};
+    // `previews` holds the reviewed nodes of "All", in send order; `preview` the one node otherwise.
+    let state = {phase:'idle',hosts:[],hostId:'',targetId:'',preview:null,previews:[],outcomeUnknown:false,message:''};
     let operation, generation = 0, disposed = false;
     const emit = patch => { if (!disposed) { state = Object.freeze({...state,...patch}); onChange(state); } };
     function invalidate() { generation++; operation?.abort(); operation = null; }
-    function begin(phase) { invalidate(); operation = new AbortController(); emit({phase,preview:null,outcomeUnknown:false,message:''}); return {signal:operation.signal,version:generation}; }
+    function begin(phase) { invalidate(); operation = new AbortController(); emit({phase,preview:null,previews:[],outcomeUnknown:false,message:''}); return {signal:operation.signal,version:generation}; }
     const current = request => !disposed && generation === request.version;
-    const selected = () => state.hosts.find(host=>host.hostId===state.hostId)?.targets.find(target=>target.id===state.targetId);
-    async function fetchPreview(request) {
-        const preview=await client.preview(state.hostId,state.targetId,roles,{signal:request.signal});
+    const chosenHost = () => state.hosts.find(host=>host.hostId===state.hostId);
+    /** The nodes the current choice sends to: one, every eligible node of the window for "All", or none. */
+    function chosen() {
+        const host=chosenHost();
+        if (!host) return [];
+        if (state.targetId===ALL_NODES) return host.targets.length>1 ? host.targets.toSorted(byNodeId) : [];
+        const target=host.targets.find(item=>item.id===state.targetId);
+        return target ? [target] : [];
+    }
+    // checkRevision is off only for a later node of "All", whose revision our own earlier write may have moved.
+    async function fetchPreview(request,hostId,target,checkRevision=true) {
+        const preview=await client.preview(hostId,target.id,roles,{signal:request.signal});
         if (!current(request)) return null;
         const fields=preview?.fields;
-        if(typeof preview?.ticket!=='string' || !preview.ticket || preview.target?.id!==state.targetId || !Array.isArray(fields) || fields.length!==Object.keys(roles).length || new Set(fields.map(field=>field?.role)).size!==fields.length || Array.from(fields).some(field=>!field || !Object.hasOwn(roles,field.role) || typeof field.before!=='string' || field.after!==roles[field.role])) throw Error('ComfyUI returned an unexpected preview. Find the destination and preview again.');
+        if(typeof preview?.ticket!=='string' || !preview.ticket || preview.target?.id!==target.id || !Array.isArray(fields) || fields.length!==Object.keys(roles).length || new Set(fields.map(field=>field?.role)).size!==fields.length || Array.from(fields).some(field=>!field || !Object.hasOwn(roles,field.role) || typeof field.before!=='string' || field.after!==roles[field.role])) throw Error('ComfyUI returned an unexpected preview. Find the destination and preview again.');
         // Undefined on a tab still running older code, which has nothing to compare.
-        const found=selected()?.revision;
-        if(found!==undefined && preview.revision!==found) throw Error('The workflow changed since this window was found. Nothing was sent. Find windows again.');
+        const found=target.revision;
+        if(checkRevision && found!==undefined && preview.revision!==found) throw Error('The workflow changed since this window was found. Nothing was sent. Find windows again.');
         return preview;
+    }
+    function checkAcknowledgement(acknowledgement,targetId) {
+        if(acknowledgement?.targetId!==targetId || !acknowledgement.values || Object.keys(acknowledgement.values).length!==Object.keys(roles).length || Object.keys(roles).some(role=>!Object.hasOwn(acknowledgement.values,role) || acknowledgement.values[role]!==roles[role])) throw Error('ComfyUI returned an unexpected acknowledgement.');
+    }
+    const reviewedText = change => JSON.stringify([change.fields.map(field=>[field.role,field.before]).sort(),change.composition ?? null]);
+    const sameChanges = (reviewed,fresh) => reviewedText(reviewed)===reviewedText(fresh);
+    /** Q542-2 C: every node of "All" previews before anything is written; the first refusal names its node. */
+    async function previewEach(request,hostId,targets) {
+        const reviewed=[];
+        for (const target of targets) {
+            try {
+                const preview=await fetchPreview(request,hostId,target);
+                if (!preview) return null;
+                reviewed.push({target,label:target.label,preview});
+            } catch(error) {
+                if (!current(request)) return null;
+                throw Error(`${target.label}: ${error.message}${/Nothing was sent/.test(error.message) ? '' : ' Nothing was sent.'}`);
+            }
+        }
+        return reviewed;
+    }
+    /**
+     * Sends the reviewed nodes one after another, best effort past refusals. Only the first node of a pass taken in this
+     * click keeps its ticket: a held review may have expired at the host (30 s), and our own writes may make later
+     * tickets stale, so every other node takes a fresh ticket that must show exactly the reviewed text.
+     */
+    async function applyEach(request,hostId,reviewed,where,held) {
+        const sent=[],refused=[];let written=false;
+        for (const [index,{target,preview}] of reviewed.entries()) {
+            let posted=false;
+            try {
+                let ticket=preview.ticket;
+                if (index>0 || held) {
+                    // Until something was posted the revision is still the discovered one; after that our own write may move it.
+                    const fresh=await fetchPreview(request,hostId,target,!written);
+                    if (!fresh) return;
+                    if (!sameChanges(preview,fresh)) throw Error('Its prompt changed since the preview. Preview again.');
+                    ticket=fresh.ticket;
+                }
+                posted=written=true;
+                const acknowledgement=await client.apply(hostId,ticket,{signal:request.signal});
+                if (!current(request)) return;
+                checkAcknowledgement(acknowledgement,target.id);
+                sent.push(target);
+            } catch(error) {
+                if (!current(request)) return;
+                const summary=[`Sent to ${sent.length} of ${reviewed.length} nodes in ${where}.`,...refused];
+                if (outcomeUnknown(posted,error)) {
+                    const unsent=reviewed.slice(index+1).map(item=>item.label);
+                    emit({phase:'error',outcomeUnknown:true,message:[...summary,`No confirmation received from ${target.label}; the update may have applied.`,...(unsent.length ? [`Not sent: ${unsent.join(', ')}.`] : []),UNKNOWN_ADVICE,error.message].join(' ')});
+                    return;
+                }
+                refused.push(`${target.label}: ${error.message}`);
+            }
+        }
+        const message=[`Sent to ${sent.length} of ${reviewed.length} nodes in ${where}.`,...refused].join(' ');
+        emit(refused.length ? {phase:'error',message} : {phase:'success',message});
     }
     function hostChoice(host) {
         if (host.targets.length>1) return {hostId:host.hostId,targetId:'',message:`Choose a destination node in ${host.label}.`};
@@ -79,38 +153,61 @@ export function createSendSession({client, roles:rawRoles, onChange}) {
                 else { const choice=hostChoice(hosts[0]); emit({phase:'select',hosts,...choice,message:choice.message+note}); }
             } catch (error) { if (current(request)) emit({phase:'error',message:error.message}); }
         },
-        selectHost(hostId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===hostId); emit({phase:'select',preview:null,outcomeUnknown:false,...(host ? hostChoice(host) : {hostId:'',targetId:'',message:'Choose a ComfyUI window.'})}); },
-        selectTarget(targetId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===state.hostId); const chosen=host?.targets.some(target=>target.id===targetId); emit({phase:'select',outcomeUnknown:false,targetId:chosen?targetId:'',preview:null,message:chosen?'Apply to send it, or preview the changes first.':'Choose a destination node, then preview changes.'}); },
+        selectHost(hostId) { if (disposed) return; invalidate(); const host=state.hosts.find(host=>host.hostId===hostId); emit({phase:'select',preview:null,previews:[],outcomeUnknown:false,...(host ? hostChoice(host) : {hostId:'',targetId:'',message:'Choose a ComfyUI window.'})}); },
+        selectTarget(targetId) {
+            if (disposed) return; invalidate(); const host=chosenHost();
+            // D173: "All" is a choice only where there are two or more nodes, and it is never made for you.
+            const all=targetId===ALL_NODES && host?.targets.length>1;
+            const chosenOne=all || Boolean(host?.targets.some(target=>target.id===targetId));
+            const message=all ? `${allMessage(host.targets.length,host.label)} Apply to send it, or preview the changes first.` : chosenOne ? 'Apply to send it, or preview the changes first.' : 'Choose a destination node, then preview changes.';
+            emit({phase:'select',outcomeUnknown:false,targetId:chosenOne?targetId:'',preview:null,previews:[],message});
+        },
         async preview() {
-            if (disposed || !selected() || ['previewing','applying'].includes(state.phase)) return;
+            const targets=chosen();
+            if (disposed || !targets.length || ['previewing','applying'].includes(state.phase)) return;
+            const all=state.targetId===ALL_NODES; const hostId=state.hostId; const windowLabel=chosenHost()?.label;
             const request=begin('previewing');
             try {
-                const preview=await fetchPreview(request);
+                if (all) {
+                    const previews=await previewEach(request,hostId,targets);
+                    if (previews) emit({phase:'ready',previews,message:`${allMessage(targets.length,windowLabel)} Review the complete changes, then apply.`});
+                    return;
+                }
+                const preview=await fetchPreview(request,hostId,targets[0]);
                 if (!preview) return;
-                const windowLabel=state.hosts.find(host=>host.hostId===state.hostId)?.label;
                 emit({phase:'ready',preview,message:`Sending to ${nodeLabel({id:preview.target.id,label:preview.target.label ?? ''})} in ${windowLabel}. Review the complete changes, then apply.`});
-            } catch(error) { if(current(request)) emit({phase:'error',preview:null,message:error.message}); }
+            } catch(error) { if(current(request)) emit({phase:'error',preview:null,previews:[],message:error.message}); }
         },
         async apply() {
             // Success stays closed: the second click of a double click must not send again.
-            if(disposed || !selected() || !['select','ready','error'].includes(state.phase) || state.outcomeUnknown) return;
-            const held=state.phase==='ready' ? state.preview : null;
-            const targetId=state.targetId; const hostId=state.hostId;
+            const targets=chosen();
+            if(disposed || !targets.length || !['select','ready','error'].includes(state.phase) || state.outcomeUnknown) return;
+            const all=state.targetId===ALL_NODES;
+            const held=state.phase==='ready' ? (all ? state.previews : state.preview) : null;
+            const hostId=state.hostId; const windowLabel=chosenHost()?.label;
             const request=begin('applying');
             emit({message:'Waiting for ComfyUI confirmation. Closing this dialog does not undo a sent update.'});
+            if (all) {
+                let reviewed;
+                try { reviewed=held?.length ? held : await previewEach(request,hostId,targets); }
+                catch(error) { if(current(request)) emit({phase:'error',message:error.message}); return; }
+                if (reviewed) await applyEach(request,hostId,reviewed,windowLabel,Boolean(held?.length));
+                return;
+            }
+            const [target]=targets;
             let posted=false;
             try {
-                const preview=held ?? await fetchPreview(request);
+                const preview=held ?? await fetchPreview(request,hostId,target);
                 if(!preview || !current(request)) return;
                 posted=true;
                 const acknowledgement=await client.apply(hostId,preview.ticket,{signal:request.signal});
                 if(!current(request)) return;
-                if(acknowledgement?.targetId!==targetId || !acknowledgement.values || Object.keys(acknowledgement.values).length!==Object.keys(roles).length || Object.keys(roles).some(role=>!Object.hasOwn(acknowledgement.values,role) || acknowledgement.values[role]!==roles[role])) throw Error('ComfyUI returned an unexpected acknowledgement.');
+                checkAcknowledgement(acknowledgement,target.id);
                 emit({phase:'success',message:'Sent to ComfyUI.'});
             } catch(error) {
                 if(!current(request)) return;
-                const unknown=posted && (LOST_REPLY.test(error.message) || /unexpected acknowledgement/.test(error.message));
-                emit({phase:'error',preview:null,outcomeUnknown:unknown,message:unknown ? `No confirmation received. The update may have applied. Check ComfyUI, then preview again. ${error.message}` : error.message});
+                const unknown=outcomeUnknown(posted,error);
+                emit({phase:'error',preview:null,outcomeUnknown:unknown,message:unknown ? `No confirmation received. The update may have applied. ${UNKNOWN_ADVICE} ${error.message}` : error.message});
             }
         },
         dispose() { if(disposed) return; disposed=true; invalidate(); client.dispose(); },
@@ -159,7 +256,7 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
         inspect.disabled=true;apply.disabled=true;
         const actions=element('footer',undefined,'prompt-sender-actions');actions.append(find,inspect,apply);
         dialog.append(header,description,controls,status,preview,actions);document.body.append(dialog);
-        let session,closed=false;
+        let session,closed=false,headingIds=0;
         function dispose() {
             if(closed) return;closed=true;local.dispose();session?.dispose();
             if(dialog.open) dialog.close();dialog.remove();
@@ -176,8 +273,8 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
         function options(select,placeholder,entries,value) {
             select.replaceChildren(...[["",placeholder],...entries].map(([value,label])=>{const option=element('option',label);option.value=value;return option;}));select.value=value;
         }
-        function textBlock(parent,label,value) {
-            parent.append(element('h4',label));const text=element('pre');text.tabIndex=0;text.append(element('code',value === '' ? '(empty)' : value));parent.append(text);
+        function textBlock(parent,label,value,level=4) {
+            parent.append(element(`h${Math.min(level,6)}`,label));const text=element('pre');text.tabIndex=0;text.append(element('code',value === '' ? '(empty)' : value));parent.append(text);
         }
         function render(state) {
             if(closed) return;
@@ -187,26 +284,41 @@ export function createPromptSender({scope,baseUrl=window.ApiClient.resolveUrl('/
             dialog.setAttribute('aria-busy',String(busy));
             options(host,'Choose a ComfyUI window',state.hosts.map(item=>[item.hostId,item.label]),state.hostId);
             const selected=state.hosts.find(item=>item.hostId===state.hostId);
-            options(target,'Choose a destination node',(selected?.targets || []).map(item=>[item.id,item.label]),state.targetId);
+            const nodes=(selected?.targets || []).map(item=>[item.id,item.label]);
+            // Q542-4 A: the last option sends to every eligible node of this window.
+            if(nodes.length>1) nodes.push([ALL_NODES,`All ${nodes.length} eligible nodes`]);
+            options(target,'Choose a destination node',nodes,state.targetId);
             host.disabled=busy;target.disabled=busy || !selected;
             find.disabled=busy;inspect.disabled=busy || !state.targetId;apply.disabled=busy || !state.targetId || state.phase==='success' || state.outcomeUnknown;
             preview.replaceChildren();
             if(state.preview) {
                 preview.append(element('h3','Review changes'));
-                for(const field of state.preview.fields || []) {
-                    const section=element('section',undefined,`prompt-sender-field prompt-role-${field.role}`);
-                    section.append(element('h3',field.role==='positive'?'Positive prompt':'Negative prompt'));
-                    textBlock(section,'Before',field.before);textBlock(section,'After',field.after);preview.append(section);
+                changes(preview,state.preview,3);
+            }
+            if(state.previews?.length) {
+                preview.append(element('h3','Review changes'));
+                // One section per node of "All", in the order they will be sent, named by its heading.
+                for(const item of state.previews) {
+                    const node=element('section',undefined,'prompt-sender-node');const heading=element('h4',item.label);
+                    heading.id=`prompt-sender-node-${++headingIds}`;node.setAttribute('aria-labelledby',heading.id);
+                    node.append(heading);changes(node,item.preview,5);preview.append(node);
                 }
-                const composition=state.preview.composition;
-                if(composition) {
-                    const section=element('section',undefined,'prompt-sender-composition');section.append(element('h3','Positive composition'));
-                    textBlock(section,'Prepend (preserved)',composition.prepend || '');textBlock(section,'Append (preserved)',composition.append || '');
-                    textBlock(section,'Combined before',composition.before ?? 'Resolved at execution from connected inputs.');
-                    textBlock(section,'Combined after',composition.after ?? 'Resolved at execution from connected inputs.');
-                    if(composition.prependConnected || composition.appendConnected) section.append(element('p','Connected prepend and append inputs are preserved and resolved when the workflow runs.'));
-                    preview.append(section);
-                }
+            }
+        }
+        function changes(parent,change,level) {
+            for(const field of change.fields || []) {
+                const section=element('section',undefined,`prompt-sender-field prompt-role-${field.role}`);
+                section.append(element(`h${level}`,field.role==='positive'?'Positive prompt':'Negative prompt'));
+                textBlock(section,'Before',field.before,level+1);textBlock(section,'After',field.after,level+1);parent.append(section);
+            }
+            const composition=change.composition;
+            if(composition) {
+                const section=element('section',undefined,'prompt-sender-composition');section.append(element(`h${level}`,'Positive composition'));
+                textBlock(section,'Prepend (preserved)',composition.prepend || '',level+1);textBlock(section,'Append (preserved)',composition.append || '',level+1);
+                textBlock(section,'Combined before',composition.before ?? 'Resolved at execution from connected inputs.',level+1);
+                textBlock(section,'Combined after',composition.after ?? 'Resolved at execution from connected inputs.',level+1);
+                if(composition.prependConnected || composition.appendConnected) section.append(element('p','Connected prepend and append inputs are preserved and resolved when the workflow runs.'));
+                parent.append(section);
             }
         }
         dialog.showModal();

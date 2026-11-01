@@ -131,11 +131,40 @@ test('native image inspector previews and sends a pair into real visible widgets
         const twinId=await page.evaluate(async()=>{const {app}=await import('/scripts/app.js');const node=LiteGraph.createNode('PromptManagerPair');app.graph.add(node);return node.id;});
         await find0.click();
         const targets=sender.getByRole('combobox',{name:'Destination node',exact:true});
-        await expect(targets.locator('option')).toHaveCount(3);
+        await expect(targets.locator('option')).toHaveCount(4);
         await expect(targets).toHaveValue('');
         await expect(apply).toBeDisabled();
         await expect(targets.locator('option').nth(2)).toHaveText(new RegExp(`^#${twinId} `));
-        await page.evaluate(async twinId=>{const {app}=await import('/scripts/app.js');app.graph.remove(app.graph.getNodeById(twinId));},twinId);
+        // #542 D191: "All 2 eligible nodes" writes both real nodes, one after another; a linked third node is not offered.
+        const linkedId=await page.evaluate(async()=>{
+            const {app}=await import('/scripts/app.js');const {convertToInput}=await import('/extensions/core/widgetInputs.js');
+            const node=LiteGraph.createNode('PromptManagerPair');app.graph.add(node);
+            const widget=node.widgets.find(widget=>widget.name==='text');
+            if(!node.inputs.some(input=>input.name==='text'))convertToInput(node,widget);
+            const source=LiteGraph.createNode('PrimitiveString');app.graph.add(source);
+            source.connect(0,node,node.inputs.findIndex(input=>input.name==='text'));
+            for(const each of app.graph._nodes.filter(item=>item.type==='PromptManagerPair')){const text=each.widgets.find(widget=>widget.name==='text');if(text)text.value=`Before all ${each.id}`;}
+            return node.id;
+        });
+        await find0.click();
+        await expect(targets.locator('option')).toHaveText(['Choose a destination node',new RegExp(`^#${id} `),new RegExp(`^#${twinId} `),'All 2 eligible nodes']);
+        await expect(sender.getByRole('status')).toContainText('1 other Prompt Manager node cannot receive this prompt.');
+        await targets.selectOption({label:'All 2 eligible nodes'});
+        await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
+        await expect(sender.locator('section.prompt-sender-node > h4')).toHaveText([new RegExp(`^#${id} `),new RegExp(`^#${twinId} `)]);
+        await apply.click();
+        // The tab title gains ComfyUI's unsaved mark once the workflow changed, so the window is matched loosely.
+        await expect(sender.getByRole('status')).toHaveText(/^Sent to 2 of 2 nodes in .*ComfyUI\.$/);
+        await expect(apply).toBeDisabled();
+        const all=await page.evaluate(async ids=>{
+            const {app}=await import('/scripts/app.js');const output=(await app.graphToPrompt()).output;
+            return ids.map(nodeId=>{const node=app.graph.getNodeById(nodeId);const serialized=node.serialize();const index=node.widgets.findIndex(widget=>widget.name==='negative_text');
+                return{prompt:output[String(nodeId)]?.inputs.negative_text,serialized:serialized.widgets_values[index],text:node.widgets.find(widget=>widget.name==='text')?.value};});
+        },[id,twinId,linkedId]);
+        expect(all.slice(0,2)).toEqual([{prompt:negative,serialized:negative,text:positive},{prompt:negative,serialized:negative,text:positive}]);
+        expect(all[2].text).toBe(`Before all ${linkedId}`);
+        expect(await page.evaluate(()=>window.senderEffects.queue-window.senderSendBaseline.queue)).toBe(0);
+        await page.evaluate(async ids=>{const {app}=await import('/scripts/app.js');for(const nodeId of ids)app.graph.remove(app.graph.getNodeById(nodeId));},[twinId,linkedId]);
         // #535: the status line says why a window cannot receive.
         const find=sender.getByRole('button',{name:'Find ComfyUI windows',exact:true});
         const preview=sender.getByRole('button',{name:'Preview changes',exact:true});

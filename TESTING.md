@@ -4382,6 +4382,23 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   choice. The host's checks still refuse a linked field or a changed workflow, and the
   sender also refuses if the destination's `revision` (node object plus graph version)
   moved since discovery; it is undefined on an older tab, which skips the comparison. A host error reads as a refusal, not "may have applied".
+- **D191** (#542, beyond the concept; maintainer 2026-10-31, Q542-1 A to 5 A): a window with two or more
+  eligible nodes adds a last Destination node option "All N eligible nodes" (`ALL_NODES` in
+  `prompt-sender.mjs`), never selected for you (D173). Eligible is D173's filter; the nodes it leaves out
+  stay counted in the discovery sentence. One window only. Preview stays optional (D175): Preview changes
+  shows one `section.prompt-sender-node` per node, headed "#<id> <title>", in send order (node id,
+  numeric). Apply previews every node first and writes nothing if any refuses ("#<id> <title>: <reason>
+  Nothing was sent."). Then it sends one node after another. Only the first node of a pass taken in that
+  click keeps its ticket; every other node, and every node of a held Preview (host tickets expire after
+  30 s), takes a fresh ticket that is refused unless its Before texts and composition equal the reviewed
+  ones. That fresh preview checks the discovered revision until something has been posted, and not after,
+  since our own write may move the graph version. Refusals are best effort: "Sent to 2 of 3 nodes in
+  <window>. #12 <title>: <host's refusal>."; Apply stays available and a retry sends to every node again
+  (rewriting the same text). A lost reply stops the run, names that node as unknown and lists the nodes
+  not sent. Closing the dialog stops after the current node. The review sections are labelled by their
+  `h4` node heading. Unit tests in `tests/js/prompt-sender.test.js`, a fake three-node host in
+  `tests/browser/prompt-inspector.spec.mjs`, real Classic and Nodes 2.0 widgets in
+  `tests/comfyui/prompt-sender.spec.mjs`.
 - **D106** (Integrations, S10, Q8): the send bridge always asks for the ComfyUI window
   and node, and the nodes always follow ComfyUI's own renderer, so "Default send
   destination" offers only "Ask each time" and "Host compatibility" only "Follow host

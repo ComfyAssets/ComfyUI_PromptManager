@@ -320,3 +320,44 @@ test('copy toast and fallback dialog',async({page})=>{
     await expect(fallback).toContainText('Automatic clipboard access requires a secure browser context.');
     await page.keyboard.press('Escape');await expect(fallback).toBeHidden();await expect(copy).toBeFocused();
 });
+
+// #542 D191: "All N eligible nodes" previews every node, sends one after another and names each refusal.
+test('All eligible nodes previews each node, sends in node id order and names a refusal',async({page,context},testInfo)=>{
+    const host=await context.newPage();await host.goto('/prompt_manager/workspace#/overview');
+    await host.evaluate(async()=>{
+        const {createBridgeHost}=await import('/prompt_manager/js/shared/toolkit/prompt-bridge.js');
+        const targets=['12','3','7'].map(id=>({id,label:id==='7'?'Edited in ComfyUI':'Prompt Manager (+/-)',type:'PromptManagerPair',roles:['positive','negative']}));
+        window.hostValues=Object.fromEntries(targets.map(target=>[target.id,{positive:`Existing ${target.id}`,negative:'Existing negative'}]));window.applied=[];
+        window.fixtureHost=createBridgeHost({origin:location.origin,namespace:'/',label:'Test ComfyUI',adapter:{
+            listTargets:()=>targets,
+            preview:(id,roles)=>{const target=targets.find(item=>item.id===id);return{preview:{target,fields:Object.entries(roles).map(([role,after])=>({role,before:window.hostValues[id][role],after}))},snapshot:{id,roles}};},
+            apply:({id,roles})=>{if(id==='7')throw new Error('Workflow or prompt changed. Preview again.');Object.assign(window.hostValues[id],roles);window.applied.push(id);return{targetId:id,values:roles};},
+        }});
+    });
+    try {
+        await page.goto(workspace);await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:/^Send prompt pair to ComfyUI: /}).click();
+        const sender=dialog(page);const nodes=sender.getByRole('combobox',{name:'Destination node',exact:true});
+        await sender.getByRole('combobox',{name:'ComfyUI window',exact:true}).selectOption({label:'Test ComfyUI'});
+        await expect(nodes.locator('option')).toHaveText(['Choose a destination node','#12 Prompt Manager (+/-)','#3 Prompt Manager (+/-)','#7 Edited in ComfyUI','All 3 eligible nodes']);
+        await expect(nodes).toHaveValue('');
+        await nodes.selectOption({label:'All 3 eligible nodes'});
+        await expect(sender.getByRole('status')).toHaveText('Sending to all 3 eligible nodes in Test ComfyUI. Apply to send it, or preview the changes first.');
+        await page.screenshot({path:testInfo.outputPath('send-all-option.png')});
+        await sender.getByRole('button',{name:'Preview changes',exact:true}).click();
+        const reviews=sender.locator('section.prompt-sender-node');
+        await expect(reviews.locator('> h4')).toHaveText(['#3 Prompt Manager (+/-)','#7 Edited in ComfyUI','#12 Prompt Manager (+/-)']);
+        await expect(sender.getByRole('region',{name:'#12 Prompt Manager (+/-)',exact:true})).toContainText('Existing 12');
+        expect(await host.evaluate(()=>window.applied)).toEqual([]);
+        await sender.getByRole('button',{name:'Apply to ComfyUI',exact:true}).click();
+        await expect(sender.getByRole('alert')).toHaveText('Sent to 2 of 3 nodes in Test ComfyUI. #7 Edited in ComfyUI: Workflow or prompt changed. Preview again.');
+        expect(await host.evaluate(()=>window.applied)).toEqual(['3','12']);
+        expect(await host.evaluate(()=>window.hostValues['7'].positive)).toBe('Existing 7');
+        await page.screenshot({path:testInfo.outputPath('send-all-result.png')});
+        await page.setViewportSize({width:390,height:844});
+        await sender.getByRole('button',{name:'Preview changes',exact:true}).click();await expect(reviews).toHaveCount(3);
+        await reviews.last().scrollIntoViewIfNeeded();
+        expect(await page.evaluate(()=>document.querySelector('dialog.prompt-sender').scrollWidth<=document.querySelector('dialog.prompt-sender').clientWidth+1)).toBe(true);
+        await page.screenshot({path:testInfo.outputPath('send-all-mobile.png')});
+        const apply=sender.getByRole('button',{name:'Apply to ComfyUI',exact:true});await apply.focus();await expect(apply).toBeFocused();
+    } finally {await host.evaluate(()=>window.fixtureHost.dispose());await host.close();}
+});
