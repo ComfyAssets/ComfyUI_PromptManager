@@ -199,6 +199,23 @@ def link_states(rows, roots, readable):
     check's ``missing_files`` and the maintenance missing-link plan both
     judge links this way, so their counts agree.
     """
+    for row, owner, state in _placed_links(rows, roots, readable):
+        if state is None:
+            state = "present" if os.path.exists(row[1]) else "missing"
+        yield row, owner, state
+
+
+def held_links(rows, roots, readable):
+    """``(row, owner, state)`` for each link ``link_states`` holds back
+    (``unavailable`` or ``outside``), without looking at any file (#586)."""
+    for row, owner, state in _placed_links(rows, roots, readable):
+        if state is not None:
+            yield row, owner, state
+
+
+def _placed_links(rows, roots, readable):
+    """``link_states`` before any file is looked at: state None means the
+    link lies under a readable source."""
     prefixes = [_root_prefix(root) for root in roots]
     for row in rows:
         owner = _image_owner(row[1], row[3], prefixes)
@@ -206,10 +223,8 @@ def link_states(rows, roots, readable):
             yield row, None, "outside"
         elif not readable[owner]:
             yield row, owner, "unavailable"
-        elif os.path.exists(row[1]):
-            yield row, owner, "present"
         else:
-            yield row, owner, "missing"
+            yield row, owner, None
 
 
 def _unavailable_line(unavailable, *, partial):

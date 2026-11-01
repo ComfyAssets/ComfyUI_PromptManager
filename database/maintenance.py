@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .execution_contexts import LIVE_HINT_CTES
-from .health import BATCH_ROWS, link_states, readable_roots, readonly_uri
+from .health import BATCH_ROWS, held_links, link_states, readable_roots, readonly_uri
 from .image_removal_schema import TABLE as MARKS_TABLE
 from .image_removal_schema import clear_marks, has_marks_table
 from .pairs import PairDependencyError
@@ -130,6 +130,17 @@ _UNLINKED_PROTECTIONS_SQL = (
     + "), 0) FROM prompts p WHERE NOT EXISTS "
     "(SELECT 1 FROM generated_images gi WHERE gi.prompt_id = p.id)"
 )
+# Each kept prompt no image links to, with which protections keep it (#586).
+_UNLINKED_KEPT_SQL = (
+    "WITH "
+    + LIVE_HINT_CTES
+    + " SELECT p.id, "
+    + ", ".join(f"({predicate})" for predicate, _many, _one in PROTECTIONS)
+    + " FROM prompts p WHERE NOT EXISTS "
+    "(SELECT 1 FROM generated_images gi WHERE gi.prompt_id = p.id) AND ("
+    + " OR ".join(f"({predicate})" for predicate, _many, _one in PROTECTIONS)
+    + ") ORDER BY p.id"
+)
 
 # Duplicate prompt groups, as the legacy cleanup finds them (case-insensitive
 # text; GROUP_CONCAT order is sorted by created_at afterwards).
@@ -159,6 +170,14 @@ _PROMPT_STATE_SQL = (
     "ORDER BY id",
 )
 
+# Why the missing-link cleanup holds a link back: (one, many) (#586).
+HELD_LINK_REASONS = {
+    "unavailable": (
+        "link under an unavailable source",
+        "links under unavailable sources",
+    ),
+    "outside": ("link outside the image sources", "links outside the image sources"),
+}
 NO_FILES_DELETED = "No image file is deleted."
 LINKS_ONLY = "Database links only; no image file is deleted."
 UNUSED_DETAIL = "No image, saved pair, Library state or recorded run uses it"
@@ -172,6 +191,7 @@ CONFLICT_REASONS = {
         "groups have their own Library titles",
     ),
 }
+PAIRED_DETAIL = "Kept: belongs to a saved pair"
 CONFLICT_DETAILS = {
     "collision": "Kept: two copies link the same image",
     "title": "Kept: a copy has its own Library title",
@@ -413,6 +433,38 @@ def _source_name(root, index):
     return os.path.basename(str(root).rstrip("\\/")) or f"Source {index + 1}"
 
 
+def _kept_duplicates(paired, conflicted):
+    """``{prompt_id, reasons}`` for each prompt of a group kept whole (#586).
+
+    The reasons are the review's details without "Kept: ".
+    """
+    held = [(ids, PAIRED_DETAIL) for ids in paired] + [
+        (ids, CONFLICT_DETAILS[reason]) for ids, reason in conflicted
+    ]
+    return [
+        {"prompt_id": prompt_id, "reasons": [detail.removeprefix("Kept: ")]}
+        for ids, detail in held
+        for prompt_id in ids
+    ]
+
+
+def _kept_unused(conn):
+    """``{prompt_id, reasons}`` for each prompt the unused prune keeps (#586).
+
+    The reasons are the review's, one per protection that applies, in the
+    order the plan names them.
+    """
+    return [
+        {
+            "prompt_id": row[0],
+            "reasons": [
+                one for flag, (_p, _many, one) in zip(row[1:], PROTECTIONS) if flag
+            ],
+        }
+        for row in conn.execute(_UNLINKED_KEPT_SQL)
+    ]
+
+
 class MaintenanceOperations:
     """Mixin for PromptDatabase: maintenance previews and their apply."""
 
@@ -592,7 +644,7 @@ class MaintenanceOperations:
             + [
                 {
                     "label": _excerpt(texts.get(group[0])),
-                    "detail": "Kept: belongs to a saved pair",
+                    "detail": PAIRED_DETAIL,
                 }
                 for group in paired
             ]
@@ -670,6 +722,24 @@ class MaintenanceOperations:
             ],
         )
 
+    def kept_links(self, roots):
+        """``{image_path, owner, reason}`` for each link the missing-link
+        cleanup holds back under ``roots`` (blocking, reads only, no file
+        opened); ``owner`` indexes ``roots`` (None outside every source).
+
+        ``reason`` is the review's (``HELD_LINK_REASONS``), one link each.
+        """
+        roots = [str(root) for root in roots]
+        rows = _read_snapshot(self.model.db_path, self._link_rows)
+        return [
+            {
+                "image_path": row[1],
+                "owner": owner,
+                "reason": HELD_LINK_REASONS[state][0],
+            }
+            for row, owner, state in held_links(rows, roots, readable_roots(roots))
+        ]
+
     @staticmethod
     def _links_fingerprint(candidates, stale=()):
         fingerprint = _Fingerprint("missing_links")
@@ -689,23 +759,11 @@ class MaintenanceOperations:
                 unavailable += 1
             elif state == "outside":
                 outside += 1
-        reasons = []
-        if unavailable:
-            reasons.append(
-                _plural(
-                    unavailable,
-                    "link under an unavailable source",
-                    "links under unavailable sources",
-                )
-            )
-        if outside:
-            reasons.append(
-                _plural(
-                    outside,
-                    "link outside the image sources",
-                    "links outside the image sources",
-                )
-            )
+        reasons = [
+            _plural(count, *HELD_LINK_REASONS[state])
+            for state, count in (("unavailable", unavailable), ("outside", outside))
+            if count
+        ]
         count = len(candidates)
         parts = []
         if count:
@@ -809,7 +867,10 @@ class MaintenanceOperations:
         (``{prompt_id[, kept_id]}`` or ``{image_path}``). ``marks`` are a
         missing-links plan's stale removal marks; that apply also returns
         ``marks``, how many it forgot. ``pair_metadata`` returns every filled
-        prompt, uncapped (its job keeps the complete record, #550).
+        prompt, uncapped (its job keeps the complete record, #550). The
+        prompt operations also return ``kept``: every prompt the plan keeps,
+        ``{prompt_id, reasons}`` in the review's wording (#550, #586); the
+        links a missing-links plan keeps are read by ``kept_links``.
         """
         if operation not in MAINTENANCE_OPERATIONS or operation == "workflow_storage":
             raise ValueError(f"Unknown maintenance operation {operation!r}")
@@ -835,10 +896,11 @@ class MaintenanceOperations:
             return appliers[operation](conn, fingerprint, targets, roots)
 
     def _apply_duplicate_prompts(self, conn, fingerprint, targets, _roots):
-        groups, _paired, _conflicted, current = self._duplicates_fingerprint(conn)
+        groups, paired, conflicted, current = self._duplicates_fingerprint(conn)
         if current != fingerprint or groups != targets:
             raise PlanChanged("duplicate_prompts")
         changed, rows = 0, []
+        kept = _kept_duplicates(paired, conflicted)
         for sorted_ids in groups:
             removed, _moved = self._merge_duplicate_group(conn, sorted_ids, strict=True)
             changed += removed
@@ -846,7 +908,7 @@ class MaintenanceOperations:
                 {"prompt_id": duplicate_id, "kept_id": sorted_ids[0]}
                 for duplicate_id in sorted_ids[1:]
             )
-        return {"changed": changed, "rows": rows[:MAX_RESULT_ROWS]}
+        return {"changed": changed, "rows": rows[:MAX_RESULT_ROWS], "kept": kept}
 
     def _apply_unused_components(self, conn, fingerprint, targets, _roots):
         ids, current = self._unused_fingerprint(conn)
@@ -858,7 +920,7 @@ class MaintenanceOperations:
             {"prompt_id": prompt_id, "text": _excerpt(texts.get(prompt_id))}
             for prompt_id in ids[:MAX_RESULT_ROWS]
         ]
-        return {"changed": changed, "rows": rows}
+        return {"changed": changed, "rows": rows, "kept": _kept_unused(conn)}
 
     def _apply_missing_links(self, conn, fingerprint, targets, roots, marks):
         rows = []

@@ -363,11 +363,11 @@ class TestWorkflowStorageOutcomes(WorkflowStorageTestCase):
         prompt_id = self.old_library(count=4)
         conn = self.api.db.model.get_connection()
         with conn:
-            conn.execute(
+            image_id = conn.execute(
                 "INSERT INTO generated_images (prompt_id, image_path, filename, "
                 "file_path, workflow_data) VALUES (?, '/x/b', 'b', '/x/b', x'00')",
                 (prompt_id,),
-            )
+            ).lastrowid
             store_text(conn, "a document no record references")
         _plan, _summary, job = await self.start()
         await self.finish(job)
@@ -377,6 +377,13 @@ class TestWorkflowStorageOutcomes(WorkflowStorageTestCase):
             "Rewrote 4 image records; 1 stored value not text, kept as is", log
         )
         self.assertIn("Removed 1 unused workflow document", log)
+        # #586: the kept value has its row, in the review's wording.
+        self.assertEqual(
+            [row["detail"] for row in job.outcomes["protected"]],
+            [f"Image record {image_id}: workflow, stored value not text; kept as is"],
+        )
+        report = job.report()["outcomes"]["protected"]
+        self.assertEqual((report["count"], report["truncated"]), (1, False))
 
     async def reclaim_with(self, **patches):
         self.old_library(count=4)

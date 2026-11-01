@@ -697,25 +697,60 @@ class MaintenanceRoutesMixin:
             rows,
             complete=plan.operation in COMPLETE_RECORD,
         )
-        if "kept" in result:
-            # #550: each kept record with its reason, like the changed ones.
-            kept = [
-                {
-                    "path": "",
-                    "detail": f"Prompt {item['prompt_id']}: kept, "
-                    + "; ".join(item["reasons"]),
-                }
-                for item in result["kept"]
-            ]
-            job.record_counted("protected", len(kept), kept, complete=True)
+        kept = await self._run_in_executor(self._kept_rows, db, plan, result)
+        if kept is None:
+            job.record_counted("protected", payload["protected"])  # none kept
         else:
-            job.record_counted("protected", payload["protected"])
+            # #550, #586: each kept record with its reason, like the changed
+            # ones, and every one of them in the report.
+            job.record_counted("protected", len(kept), kept, complete=True)
         line = _changed_line(
             plan.operation, result["changed"], result.get("marks", 0), result
         )
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
         return None
+
+    def _kept_rows(self, db, plan, result):
+        """Outcome rows for the records the apply kept (blocking), or None.
+
+        Prompts are records (no path); a missing-links plan's kept links
+        name their file, relative to its output root, so Activity can open
+        and locate it (#586); one under a source that is gone keeps its path
+        under that source's label. None for an operation that keeps nothing
+        (Optimize).
+        """
+        if plan.operation == "missing_links":
+            roots = _scan_roots(self._get_all_output_dirs())
+            judged = plan.payload["roots"]
+            rows = []
+            for item in db.kept_links(judged):
+                path, label, index = _scan_location(item["image_path"], roots)
+                if index is None and item["owner"] is not None:
+                    # A source that is gone is not listed: name the file
+                    # under it, with no listing index to open it by.
+                    source = judged[item["owner"]]
+                    where = [(os.path.abspath(source), self._public_path(source), None)]
+                    path, label, index = _scan_location(item["image_path"], where)
+                rows.append(
+                    {
+                        "path": path,
+                        "root": label,
+                        "root_index": index,
+                        "detail": f"Kept: {item['reason']}",
+                    }
+                )
+            return rows
+        if "kept" not in result:
+            return None
+        return [
+            {
+                "path": "",
+                "detail": f"Prompt {item['prompt_id']}: kept, "
+                + "; ".join(item["reasons"]),
+            }
+            for item in result["kept"]
+        ]
 
     def _maintenance_rows(self, operation, described):
         """Outcome rows for the changed records (root-relative paths only)."""

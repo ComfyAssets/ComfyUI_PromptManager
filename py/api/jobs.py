@@ -288,15 +288,16 @@ class Job:
         index = row.get("root_index")
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
             index = None
+        shaped = {
+            "path": path,
+            "root": str(row.get("root") or ""),
+            "root_index": index,
+            "detail": str(row.get("detail") or ""),
+        }
+        if group in self.complete:  # a group kept whole for the report (#586)
+            self.complete[group].append(dict(shaped))
         if len(rows) < MAX_OUTCOME_ROWS:
-            rows.append(
-                {
-                    "path": path,
-                    "root": str(row.get("root") or ""),
-                    "root_index": index,
-                    "detail": str(row.get("detail") or ""),
-                }
-            )
+            rows.append(shaped)
         self.log_line(log_line)
 
     def record_counted(self, group, count, rows=(), *, complete=False):

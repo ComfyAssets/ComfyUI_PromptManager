@@ -70,6 +70,18 @@ PROTECTED_REASONS = {
         "files kept: their kept copy changed or is gone",
     ),
 }
+# The job's row for a copy the review protected (#586): the review's reason.
+REVIEW_KEPT_DETAILS = {
+    MAYBE_SAME: "Kept: may be the same file reached through another mount or share",
+    NO_FILE_ID: "Kept: can't confirm this is a separate file on this drive",
+    SAME: "Kept: the same file as its kept copy",
+    OUTSIDE_SOURCE: "Kept: not inside a configured source",
+    LINK: "Kept: a link, not a regular file",
+    CHANGED_CONTENT: "Kept: changed since the search",
+    GONE: "Kept: no longer exists",
+    UNREADABLE: "Kept: could not be read",
+    KEEPER: "Kept: its kept copy changed or is gone",
+}
 # Job outcome rows (never an OS error text).
 CHANGED = "The file changed since the review; it was kept."
 KEEPER_CHANGED = "The kept copy changed or is gone; this file was kept."
