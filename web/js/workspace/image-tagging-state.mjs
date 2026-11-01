@@ -243,8 +243,6 @@ async function readDefaults(api, signal) {
             defaults: {
                 general_threshold: unit(value.wd14_general_threshold) ? value.wd14_general_threshold : DEFAULTS.general_threshold,
                 character_threshold: unit(value.wd14_character_threshold) ? value.wd14_character_threshold : DEFAULTS.character_threshold,
-                // #431: the instructions come from the saved entries (`choices`), not `default_prompt`.
-                instructions: DEFAULTS.instructions,
                 suggestion_limit: limit(value.suggestion_limit) ? value.suggestion_limit : DEFAULTS.suggestion_limit,
             },
             models: object(value.models) ? value.models : null,

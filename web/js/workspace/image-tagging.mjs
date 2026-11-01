@@ -150,6 +150,10 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
         }
         pick.value = state.instructionsEdited ? EDITED_VALUE : state.instructionId;
         editedNote.hidden = !state.instructionsEdited;
+        // The note describes the textarea while it shows.
+        const area = inputs.get('instructions');
+        if (state.instructionsEdited) area?.setAttribute('aria-describedby', editedNote.id);
+        else area?.removeAttribute('aria-describedby');
     }
 
     function renderOptions(state) {
@@ -174,6 +178,7 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
             inputs.set('instructions', area);
             rows.push(field('Tagging instructions', area, OPTION_IDS.instructions));
             editedNote = el('p', EDITED_NOTE, 'small instructions-edited');
+            editedNote.id = `${pickId}-note`;
             rows.push(editedNote);
             fillPick(state);
         }
@@ -195,7 +200,10 @@ export function renderModelPanel({scope, controller, heading = 'Auto-tag this im
             shownModel = state.model;
             shownOptions = state.optionsRevision;
             select.value = state.model;
+            // A pick re-renders the fields; keyboard focus stays on the select it was made with.
+            const picking = pick !== null && document.activeElement === pick;
             renderOptions(state);
+            if (picking) pick?.focus();
         } else if (pick && state.instructionsEdited !== shownEdited) {
             // Typing never re-renders the fields (I1): only the select and the note follow an edit.
             fillPick(state);

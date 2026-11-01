@@ -4,7 +4,7 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
 import { saveImageTags } from './concept-inventory.mjs';
-import { taggingInventory } from './tagging-canonical-comparison.mjs';
+import { FIXTURE_INSTRUCTIONS_ID, taggingInventory } from './tagging-canonical-comparison.mjs';
 
 const images = '/prompt_manager/workspace#/images';
 const MODULE = '/prompt_manager/js/workspace/image-tagging.mjs';
@@ -878,9 +878,13 @@ test('the saved instructions picker fills, edits one-off and resets per engine (
     await expect(pick).toHaveAttribute('id', 'image-tag-instructions-pick');
     await expect(text).toHaveValue('Describe the image');
     await expect(note).toBeHidden();
+    // A keyboard pick (the select focused) keeps focus on the select the fields are re-rendered with.
+    await pick.focus();
     await pick.selectOption('builtin');
     await expect(text).toHaveValue(builtin);
+    await expect(pick).toBeFocused();
     await text.fill('Only the sky.');
+    await expect(text).toHaveAttribute('aria-describedby', 'image-tag-instructions-pick-note');
     await expect(pick.locator('option:checked')).toHaveText('Edited for this run');
     await expect(pick.locator('option[value="edited"]')).toBeDisabled();
     await expect(note).toHaveText('Edits apply to this run only. Manage saved instructions in System › Auto-tagging.');
@@ -896,7 +900,7 @@ test('the saved instructions picker fills, edits one-off and resets per engine (
     await text.fill('Edited again.');
     await model(page).selectOption('hf');
     await expect(text).toHaveValue('Describe the image');
-    await expect(pick).toHaveValue('d35c71be0a1e');
+    await expect(pick).toHaveValue(FIXTURE_INSTRUCTIONS_ID);
     await model(page).selectOption('wd14-vit');
     await expect(pick).toHaveCount(0);
     await expect(text).toHaveCount(0);
