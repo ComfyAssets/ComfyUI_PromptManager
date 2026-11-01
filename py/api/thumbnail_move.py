@@ -148,7 +148,7 @@ class ThumbnailMoveMixin:
         ]
         total = len(items)
         job.update(total=total, processed=0, progress=0)
-        chunk = self._move_chunk(plan)
+        chunk = await self._run_in_executor(self._move_chunk, plan)
         workers = self._move_workers()
         done = 0
         for start in range(0, total, chunk):
@@ -172,6 +172,12 @@ class ThumbnailMoveMixin:
                     "failed",
                     "The new folder could not be reached or is full; nothing changed.",
                 )
+                return
+            except Exception:
+                # Anything else before the switch: undo, never half a move.
+                self.logger.exception("Move thumbnails failed while copying")
+                await self._run_in_executor(self._move_rollback, plan, state)
+                self._end_move(job, "failed", "The copy failed; nothing changed.")
                 return
             for (source, item), (outcome, detail) in zip(batch, results):
                 row = {
@@ -373,7 +379,14 @@ class ThumbnailMoveMixin:
                 for store in old_entry.get("stores") or []
                 if isinstance(store, str) and os.path.normcase(store) not in filled
             ]
-            cleanup.append({**old_entry, "stores": stores})
+            folder = old_entry.get("folder")
+            drop = [
+                key
+                for key in old_entry.get("drop_keys") or []
+                if not folder
+                or os.path.normcase(os.path.join(folder, key)) not in filled
+            ]
+            cleanup.append({**old_entry, "stores": stores, "drop_keys": drop})
         cleanup.append(entry)
         if plan.to_folder:
             value = {
@@ -403,8 +416,14 @@ class ThumbnailMoveMixin:
             preview_store.configure(value, check=False)
 
         get_config_store().commit(mutate, expected_revision=None, publish=publish)
-        preview_store.refresh()
-        _remove(move_plan.journal_path())
+        # The switch is made: what follows never undoes it.
+        try:
+            preview_store.refresh()
+            _remove(move_plan.journal_path())
+        except OSError as error:
+            self.logger.warning(
+                f"The thumbnail move journal stays until the next start: {error}"
+            )
 
     def _old_keys_to_drop(self, plan):
         if not plan.from_folder:
@@ -481,8 +500,14 @@ class ThumbnailMoveMixin:
     def _remove_store(self, store, folder, job):
         """Remove the previews and temps of one old store; True when done."""
         store = Path(store)
-        if folder and not preview_location.valid_key(store.name):
-            return True
+        if folder:
+            # A key folder directly in the old thumbnail folder, nothing else.
+            if not preview_location.valid_key(store.name) or os.path.normcase(
+                str(store.parent)
+            ) != os.path.normcase(str(folder)):
+                return True
+        elif store.name != "thumbnails":
+            return True  # a hand-edited entry never names another folder
         if not store.exists():
             return True
         if preview_location.is_link_like(store):
@@ -498,6 +523,8 @@ class ThumbnailMoveMixin:
                 if files.is_temp_name(name) or files._preview_parts(name):
                     if preview_location.is_link_like(path):
                         continue
+                    if exit_signal.requested():
+                        return False  # exiting: the next start finishes it
                     if files.remove_file(path):
                         removed += 1
                     else:

@@ -207,6 +207,12 @@ def _make_folders(base, relative_dir, created):
             created.append(str(current))
         except FileExistsError:
             pass
+        except OSError as error:
+            if error.errno in (errno.ENOSPC, errno.EDQUOT, errno.EROFS):
+                raise FolderGone(str(error)) from error
+            raise CopyFailed(
+                "Its folder could not be made; made again on view"
+            ) from error
         if preview_location.is_link_like(current):
             raise CopyFailed("a link in the destination")
 
@@ -295,11 +301,15 @@ def remove_empty_folders(top, *, keep_top=False):
     left = []
     if not top.is_dir() or preview_location.is_link_like(top):
         return left
-    for folder, dirs, _files in os.walk(top, topdown=False):
+    # Top-down, pruning every link, junction or reparse point, then bottom-up:
+    # never into a folder outside *top* (Windows junctions included).
+    folders = []
+    for folder, dirs, _files in os.walk(top):
         folder = Path(folder)
+        dirs[:] = [d for d in dirs if not preview_location.is_link_like(folder / d)]
+        folders.append(folder)
+    for folder in reversed(folders):
         if folder == top and keep_top:
-            continue
-        if preview_location.is_link_like(folder):
             continue
         try:
             names = os.listdir(folder)

@@ -412,3 +412,97 @@ class TestFiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewFindings(MoveCase):
+    async def test_moving_back_never_removes_previews_a_waiting_cleanup_named(self):
+        await self.move({"mode": "folder", "path": str(self.folder)})
+        other = Path(self.tmpdir) / "thumbs2"
+        # The old copies in the first folder cannot go yet (held open).
+        with patch.object(files, "remove_file", lambda path, **_k: False):
+            await self.move({"mode": "folder", "path": str(other)})
+        self.assertTrue(preview_store.setting().cleanup)
+        _plan, job = await self.move({"mode": "folder", "path": str(self.folder)})
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(len(self.key_files()), 2)  # the previews moved back stay
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    def test_empty_folder_removal_never_walks_through_a_link(self):
+        outside = Path(self.tmpdir) / "outside"
+        (outside / "empty").mkdir(parents=True)
+        (outside / "Thumbs.db").write_bytes(b"x")
+        store = Path(self.tmpdir) / "store"
+        store.mkdir()
+        try:
+            (store / "link").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted")
+        files.remove_empty_folders(store)
+        self.assertTrue((outside / "empty").is_dir())
+        self.assertTrue((outside / "Thumbs.db").exists())
+
+    @unittest.skipUnless(os.name == "nt", "junctions are Windows only")
+    def test_empty_folder_removal_never_walks_through_a_junction(self):
+        import _winapi
+
+        outside = Path(self.tmpdir) / "outside-j"
+        (outside / "empty").mkdir(parents=True)
+        (outside / "Thumbs.db").write_bytes(b"x")
+        store = Path(self.tmpdir) / "store-j"
+        store.mkdir()
+        _winapi.CreateJunction(str(outside), str(store / "junction"))
+        files.remove_empty_folders(store)
+        self.assertTrue((outside / "empty").is_dir())
+        self.assertTrue((outside / "Thumbs.db").exists())
+
+    async def test_an_unexpected_error_while_copying_changes_nothing(self):
+        def broken(*_args, **_kwargs):
+            raise PermissionError("denied")
+
+        with patch.object(files, "_make_folders", broken):
+            _plan, job = await self.move({"mode": "folder", "path": str(self.folder)})
+        self.assertEqual(job.state, "failed")
+        self.assertFalse(self.journal.exists())
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(preview_store.current().mode, "source")
+
+    async def test_a_journal_that_cannot_be_removed_never_undoes_the_switch(self):
+        from py.api import thumbnail_move
+
+        real = thumbnail_move._remove
+
+        def stuck(path):
+            if str(path) == str(self.journal):
+                raise PermissionError("in use")
+            return real(path)
+
+        with patch.object(thumbnail_move, "_remove", stuck):
+            _plan, job = await self.move({"mode": "folder", "path": str(self.folder)})
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertEqual(len(self.key_files()), 2)
+        self.assertEqual(preview_store.current().mode, "folder")
+
+    async def test_a_hostile_key_is_never_pruned(self):
+        await self.move({"mode": "folder", "path": str(self.folder)})
+        victim = Path(self.tmpdir) / "victim"
+        make_png(victim / "z_thumb.webp", size=(4, 4))
+        marker = preview_location.read_marker(str(self.folder))
+        marker["keys"]["../victim"] = {"identity": "/gone", "install": marker_install()}
+        (self.folder / preview_location.MARKER_NAME).write_text(
+            json.dumps(marker), encoding="utf-8"
+        )
+        preview_store.refresh()
+        resp = await self.client.post(START, json={"mode": "prune"})
+        job = self.api._jobs.get((await resp.json())["job"]["id"])
+        await job.task
+        self.assertTrue((victim / "z_thumb.webp").exists())
+
+    def test_a_hand_edited_source_store_must_be_a_thumbnails_folder(self):
+        elsewhere = Path(self.tmpdir) / "photos"
+        make_png(elsewhere / "keep_thumb.webp", size=(4, 4))
+        self.assertTrue(self.api._remove_store(elsewhere, None, None))
+        self.assertTrue((elsewhere / "keep_thumb.webp").exists())
+
+
+def marker_install():
+    return preview_store.setting().install

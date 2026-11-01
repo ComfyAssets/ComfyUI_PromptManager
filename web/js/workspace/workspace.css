@@ -600,7 +600,6 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
     padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--ca-field); }
 .review-confirm input { margin-top: 2px; flex-shrink: 0; }
 .review-refusal { color: var(--red); }
-.meta-grid dd { overflow-wrap: anywhere; }
 
 @media (max-width: 700px) {
     .location-choice { flex-direction: column; }

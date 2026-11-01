@@ -156,7 +156,8 @@ function radio(value, label, hint) {
 }
 
 /** Start the move with the plan's `token`; opens it in Activity, or says why not. */
-export async function startMove({ store, scope, token, confirmed, notify = showWorkspaceToast, navigate = navigateTo }) {
+export async function startMove({ store, scope, token, confirmed, notify = showWorkspaceToast, navigate = navigateTo,
+    onStale = null }) {
     try {
         const result = await store.start('thumbnails', { mode: 'move', token, confirmed });
         if (scope.signal.aborted) return null;
@@ -167,13 +168,19 @@ export async function startMove({ store, scope, token, confirmed, notify = showW
         navigate(`#/activity/${result.job.id}`);
         return result.job;
     } catch (error) {
-        if (!scope.signal.aborted) notify(typeof error?.code === 'string' && error.message ? error.message : START_FAILED);
+        if (scope.signal.aborted) return null;
+        // The sources or the location changed since the review: review again with what is there now.
+        if (error?.code === 'plan-stale' && onStale) {
+            onStale();
+            return null;
+        }
+        notify(typeof error?.code === 'string' && error.message ? error.message : START_FAILED);
         return null;
     }
 }
 
 /** Open the D197 review over `plan`; a plan the server refused for space keeps Move thumbnails unavailable. */
-export function openMoveReview({ scope, store, plan, refusal = null, trigger = null, notify, navigate }) {
+export function openMoveReview({ scope, store, plan, refusal = null, trigger = null, notify, navigate, onStale = null }) {
     const options = [];
     let box = null;
     if (plan.confirm_required && !refusal) {
@@ -187,7 +194,8 @@ export function openMoveReview({ scope, store, plan, refusal = null, trigger = n
     if (refusal) options.push(el('p', refusal, 'small review-refusal'));
     const review = openReviewDialog({ scope, trigger, title: 'Move thumbnails', grid: reviewRows(plan), options,
         sentence: refusal ? null : SENTENCE, cancelLabel: 'Cancel', primary: { label: 'Move thumbnails' },
-        onStart: () => { startMove({ store, scope, token: plan.token, confirmed: Boolean(box?.checked), notify, navigate }); } });
+        onStart: () => { startMove({ store, scope, token: plan.token, confirmed: Boolean(box?.checked), notify, navigate,
+            onStale }); } });
     const locked = () => Boolean(refusal) || (box !== null && !box.checked);
     review.setPrimary({ label: 'Move thumbnails', disabled: locked() });
     if (box) scope.listen(box, 'change', () => review.setPrimary({ label: 'Move thumbnails', disabled: locked() }));
@@ -235,6 +243,14 @@ export function locationBlock({ api, store, scope, location, notify = showWorksp
     const setProblem = message => {
         problem.textContent = message || '';
         pathField.setAttribute('aria-invalid', String(Boolean(message)));
+        // The field itself carries the state, so a screen reader announces it with the reason.
+        if (message) {
+            input.setAttribute('aria-invalid', 'true');
+            input.setAttribute('aria-describedby', 'location-problem');
+        } else {
+            input.removeAttribute('aria-invalid');
+            input.removeAttribute('aria-describedby');
+        }
     };
     const current = () => ({ mode: folder.input.checked ? 'folder' : 'source', path: input.value });
     const repaintButton = () => {
@@ -272,7 +288,9 @@ export function locationBlock({ api, store, scope, location, notify = showWorksp
         review.setAttribute('aria-disabled', 'true');
         try {
             const plan = await api.post(PLAN_URL, body, { signal: scope.signal });
-            if (!scope.signal.aborted) openMoveReview({ scope, store, plan, trigger: review, notify, navigate });
+            if (!scope.signal.aborted) {
+                openMoveReview({ scope, store, plan, trigger: review, notify, navigate, onStale: () => review.click() });
+            }
         } catch (error) {
             if (scope.signal.aborted) return;
             if (error?.status === 507 && error?.plan) {
@@ -377,20 +395,18 @@ export function noticeSlot({ api, scope, location, onChange, onDone, notify = sh
     const anchor = document.createComment('thumbnail-location-notice');
     let shownFor;
     let notice = null;
-    return {
-        anchor,
-        paint() {
-            const now = location();
-            // Not mounted yet: the next paint (a microtask, or the host read) places it.
-            if (!anchor.parentNode) {
-                queueMicrotask(() => { if (anchor.parentNode && !scope.signal.aborted) this.paint(); });
-                return;
-            }
-            if (now === shownFor) return;
-            shownFor = now;
-            notice?.remove();
-            notice = locationNotice({ api, scope, location: now, onChange, onDone, notify });
-            if (notice) anchor.after(notice);
-        },
+    const paint = () => {
+        const now = location();
+        // Not mounted yet: the next paint (a microtask, or the next host read) places it.
+        if (!anchor.parentNode) {
+            queueMicrotask(() => { if (anchor.parentNode && !scope.signal.aborted) paint(); });
+            return;
+        }
+        if (now === shownFor) return;
+        shownFor = now;
+        notice?.remove();
+        notice = locationNotice({ api, scope, location: now, onChange, onDone, notify });
+        if (notice) anchor.after(notice);
     };
+    return { anchor, paint };
 }

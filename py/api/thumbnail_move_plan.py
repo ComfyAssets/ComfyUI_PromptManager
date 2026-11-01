@@ -373,6 +373,8 @@ class ThumbnailMovePlanMixin:
         }
         found = []
         for key, entry in sorted(keys.items()):
+            if not preview_location.valid_key(key) or not isinstance(entry, dict):
+                continue  # a marker is data: never a path out of the folder
             if entry.get("install") not in (install, None):
                 continue
             if entry.get("identity") in listed:

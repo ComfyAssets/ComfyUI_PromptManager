@@ -93,7 +93,8 @@ test('a folder the server refuses is explained under the field', async ({ page }
     await row.getByRole('button', { name: 'Review move…' }).click();
     await expect(row.locator('#location-problem')).toHaveText(
         'Enter a full folder path, such as D:\\Thumbnails or /mnt/fast/thumbnails.');
-    await expect(row.locator('.location-path')).toHaveAttribute('aria-invalid', 'true');
+    await expect(row.locator('#location-path')).toHaveAttribute('aria-invalid', 'true');
+    await expect(row.locator('#location-path')).toHaveAttribute('aria-describedby', 'location-problem');
     await expect(dialog(page)).toHaveCount(0);
     await row.locator('#location-path').fill('/somewhere/else');
     await expect(row.locator('#location-problem')).toHaveText('');
