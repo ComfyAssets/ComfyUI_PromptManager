@@ -67,7 +67,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
 from .images import (
     in_trash_below_roots,
     MEDIA_EXTENSIONS,
@@ -78,7 +78,7 @@ from .images import (
     _thumbnail_is_fresh,
     _video_placeholder_image,
     _worker_threads,
-    media_thumbnail_rel,
+    media_preview_path,
 )
 from .jobs import (
     DUPLICATE_CLEANUP_JOB_KIND,
@@ -158,6 +158,29 @@ def _dst_key(dst):
     return flight_key(Path(dst).parent, (Path(dst).name,))
 
 
+class DeferredPreview:
+    """The preview of *rel* under *root*, resolved when its write starts
+    (#320): a queued capture follows the thumbnail location at write time,
+    not the one when it was queued."""
+
+    __slots__ = ("root", "rel")
+
+    def __init__(self, root, rel):
+        self.root = Path(root)
+        self.rel = Path(rel)
+
+    def resolve(self):
+        """The preview's path now, or None when nothing may be written."""
+        dst = media_preview_path(self.root, self.rel)
+        if dst is None or not preview_store.owns(self.root, dst):
+            return None
+        return dst
+
+
+def _resolved(dst):
+    return dst.resolve() if isinstance(dst, DeferredPreview) else Path(dst)
+
+
 @functools.lru_cache(maxsize=1)
 def video_placeholder_jpeg():
     """The placeholder frame as JPEG bytes (a video whose preview is missing)."""
@@ -215,10 +238,19 @@ def _candidates(parts):
 def _current_preview(root, parts):
     """The preview *parts* names, in the format written now (#317): a request
     for an older name (``_thumb.png`` before a conversion) is answered with
-    the current file."""
+    the current file. None when the store of *root* has no place for it."""
     _folder, base, _wanted = _candidates(parts)
     name = base + thumbnail_settings.THUMB_SUFFIX + writer_settings().extension
-    return Path(root).joinpath(*parts[:-1], name)
+    return preview_store.request_path(root, (*parts[:-1], name))
+
+
+def _request_key(root, parts):
+    """The flight key of the preview *parts* under *root*: the key of its
+    disk path (so the serve and history routes share one flight)."""
+    path = preview_store.request_path(root, parts)
+    if path is None:
+        return flight_key(root, parts)
+    return _dst_key(path)
 
 
 def _quick_source(root, parts):
@@ -259,12 +291,10 @@ def _thumbnail_source(root, parts):
     if in_trash_below_roots(found, [root]):
         return None
     rel = Path(*folder_parts, found.name)
-    dst = root / media_thumbnail_rel(rel)
-    if dst != _current_preview(root, parts):
+    dst = media_preview_path(root, rel)
+    if dst is None or dst != _current_preview(root, parts):
         return None
-    if not _is_within(root / "thumbnails", root) or not _is_within(
-        dst, root / "thumbnails"
-    ):
+    if not preview_store.owns(root, dst):
         dst = None
     return found, dst, found.suffix.lower() in VIDEO_EXTENSIONS
 
@@ -282,6 +312,21 @@ def _scan_folder(folder, base, extensions):
     except OSError:
         return None
     return None
+
+
+def _deferred(roots, src, dst):
+    """The ``DeferredPreview`` of a planned ``(src, dst)``: the root whose
+    store the plan wrote *dst* into (nested roots plan one each); *dst* as
+    planned when none matches."""
+    src = Path(src)
+    for root in roots:
+        root = Path(root)
+        if not src.is_relative_to(root):
+            continue
+        rel = src.relative_to(root)
+        if media_preview_path(root, rel) == Path(dst):
+            return DeferredPreview(root, rel)
+    return dst
 
 
 def _stop_stale_workers():
@@ -425,16 +470,23 @@ class AutoThumbnailer:
 
     def enqueue(self, src, dst, is_video):
         """Queue *dst*'s preview for the worker; False when already queued,
-        full, closed or its worker is refused at interpreter exit. Never
-        blocks on a write."""
-        key = _dst_key(dst)
+        full, closed, nowhere to write it or its worker is refused at
+        interpreter exit. Never blocks on a write. *dst* may be a
+        ``DeferredPreview``: its path is resolved again when the write
+        starts."""
+        now = _resolved(dst)
+        if now is None:
+            return False
+        key = _dst_key(now)
+        if not isinstance(dst, DeferredPreview):
+            dst = now
         with self._changed:
             if self._closed or key in self._queued:
                 return False
             if len(self._queue) >= self._max_queued:
                 return False
             self._queued.add(key)
-            self._queue.append((key, Path(src), Path(dst), bool(is_video)))
+            self._queue.append((key, Path(src), dst, bool(is_video)))
             self._busy = True
             started = True
             if self._start_worker and not self._worker_running:
@@ -514,6 +566,9 @@ class AutoThumbnailer:
     def _write_queued(self, item):
         _key, src, dst, is_video = item
         try:
+            dst = _resolved(dst)
+            if dst is None:
+                return  # nowhere to write it now: made on its first view
             self.ensure(src, dst, is_video)
         except Exception:  # one file never stops the worker
             self._logger.warning(
@@ -847,7 +902,7 @@ class AutoThumbnailMixin:
         for root in output_dirs:
             root = Path(root)
             outcome = await gate.run(
-                flight_key(root, parts),
+                _request_key(root, parts),
                 functools.partial(self._preview_on_demand, root, parts),
                 pool,
             )
@@ -860,7 +915,7 @@ class AutoThumbnailMixin:
                     continue
                 return self._preview_response(BUSY, quick[0], None, quick[1])
             dst = _current_preview(root, parts)
-            if outcome == READY:
+            if outcome == READY and dst is not None:
                 return self._file_response(dst)
             located = await gate.loop.run_in_executor(
                 pool, _thumbnail_source, root, parts
@@ -883,17 +938,31 @@ class AutoThumbnailMixin:
         """
         if self._auto_thumbnails_shut:
             return "skipped"
-        located = self._capture_target(image_path)
+        located = self._capture_source(image_path)
         if located is None:
             return "skipped"
-        src, dst, is_video = located
+        src, root, rel, is_video = located
+        dst = DeferredPreview(root, rel).resolve()
+        if dst is None:
+            return "skipped"
         if _thumbnail_is_fresh(src, dst):
             return "fresh"
-        if self._auto_thumbnails().enqueue(src, dst, is_video):
+        if self._auto_thumbnails().enqueue(src, DeferredPreview(root, rel), is_video):
             return "queued"
         return "skipped"
 
     def _capture_target(self, image_path):
+        """``(src, dst, is_video)`` of a new output's preview now, or None."""
+        located = self._capture_source(image_path)
+        if located is None:
+            return None
+        src, root, rel, is_video = located
+        dst = DeferredPreview(root, rel).resolve()
+        return None if dst is None else (src, dst, is_video)
+
+    def _capture_source(self, image_path):
+        """``(src, root, rel, is_video)`` of a media file under a current
+        root (not a preview, a link or in a trash folder), or None."""
         path = Path(os.path.abspath(str(image_path)))
         if path.suffix.lower() not in MEDIA_EXTENSIONS or not _regular_file(path):
             return None
@@ -906,12 +975,7 @@ class AutoThumbnailMixin:
             rel = Path(os.path.relpath(path, root))
             if "thumbnails" in rel.parts[:-1] or in_trash_below_roots(path, [root]):
                 return None
-            dst = root / media_thumbnail_rel(rel)
-            if not _is_within(root / "thumbnails", root) or not _is_within(
-                dst, root / "thumbnails"
-            ):
-                return None
-            return path, dst, path.suffix.lower() in VIDEO_EXTENSIONS
+            return path, root, rel, path.suffix.lower() in VIDEO_EXTENSIONS
         return None
 
     # ── after a scan ──────────────────────────────────────────────────
@@ -953,7 +1017,7 @@ class AutoThumbnailMixin:
             return "none"
         thumbnailer = self._auto_thumbnails()
         for src, dst, is_video in plan["targets"]:
-            thumbnailer.enqueue(src, dst, is_video)
+            thumbnailer.enqueue(src, _deferred(output_dirs, src, dst), is_video)
         self.logger.info(f"{missing:,} previews missing after the scan; queued")
         return "queued"
 

@@ -114,9 +114,16 @@ def validate_edge(value):
 # ── names ────────────────────────────────────────────────────────────
 
 
+def preview_stem(rel_path):
+    """``<rel without extension>_thumb`` (POSIX): a preview's name inside the
+    store of its source (``preview_store``)."""
+    return f"{Path(rel_path).with_suffix('').as_posix()}{THUMB_SUFFIX}"
+
+
 def thumbnail_stem_rel(rel_path):
-    """``thumbnails/<rel without extension>_thumb`` (POSIX)."""
-    return f"thumbnails/{Path(rel_path).with_suffix('').as_posix()}{THUMB_SUFFIX}"
+    """``thumbnails/<rel without extension>_thumb`` (POSIX): URL text only.
+    Where the preview is on disk is ``preview_store``'s answer."""
+    return f"thumbnails/{preview_stem(rel_path)}"
 
 
 def thumbnail_rel(rel_path, extension=None):
@@ -207,8 +214,13 @@ def owned_in_folder(folder, stem, source_extension, preferred=None):
 
 
 def _owned(root, rel_path, preferred):
+    from . import preview_store
+
     rel_path = Path(rel_path)
-    stem = Path(root) / thumbnail_stem_rel(rel_path)
+    store = preview_store.store_dir(root)
+    if store is None:
+        return iter(())
+    stem = store / preview_stem(rel_path)
     return owned_in_folder(stem.parent, stem.name, rel_path.suffix, preferred)
 
 

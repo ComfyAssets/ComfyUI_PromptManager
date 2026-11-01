@@ -34,7 +34,7 @@ from .gallery_listing import (
     WalkOutcome,
     walk_root,
 )
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
 from .thumbnail_encode import (
     PREVIEW_HELD,
     EncoderClosed,
@@ -1068,11 +1068,18 @@ def _iter_media_files(output_path, max_files):
 
 
 def media_thumbnail_rel(rel_path, settings=None):
-    """``thumbnails/<rel>_thumb<ext>`` (POSIX) for the media file *rel_path*:
-    the name the preview gets when it is written now (#317), images and
-    videos alike (``writer_settings``' extension)."""
+    """``thumbnails/<rel>_thumb<ext>`` (POSIX URL text) for the media file
+    *rel_path*: the name the preview gets when it is written now (#317),
+    images and videos alike (``writer_settings``' extension). Where it is on
+    disk is ``media_preview_path``."""
     settings = settings or writer_settings()
     return thumbnail_settings.thumbnail_rel(rel_path, settings.extension)
+
+
+def media_preview_path(output_path, rel_path, settings=None):
+    """Where the preview of *rel_path* is written now (``preview_store``)."""
+    settings = settings or writer_settings()
+    return preview_store.preview_path(output_path, rel_path, settings.extension)
 
 
 def existing_media_thumbnail(output_path, rel_path):
@@ -2798,13 +2805,32 @@ class ImageRoutesMixin:
                     output_dirs[0], filepath, int(root_param), len(outputs)
                 )
 
+            # Preview text is mapped by the resolver (#320); any other text,
+            # ``Thumbnails/...`` media on a case-sensitive disk included,
+            # keeps the plain join.
+            preview_parts = (
+                tuple(filepath.split("/"))
+                if preview_store.is_preview_text(filepath)
+                else None
+            )
             for output_path in output_dirs:
-                image_path = output_path / filepath
+                if preview_parts is None:
+                    image_path = output_path / filepath
+                else:
+                    image_path = preview_store.request_path(output_path, preview_parts)
+                    if image_path is None:
+                        continue
                 if not image_path.exists():
                     continue
-                # A symlink that points outside the root is a hard deny, not
-                # a fall-through to the next root.
-                if not _is_within(image_path, output_path):
+                # A symlink that points outside the root (a preview: outside
+                # the folder holding its store) is a hard deny, not a
+                # fall-through to the next root.
+                container = (
+                    output_path
+                    if preview_parts is None
+                    else preview_store.store_container(output_path)
+                )
+                if not _is_within(image_path, container):
                     return _forbidden()
                 if in_trash_below_roots(image_path, output_dirs):
                     return _file_not_found()
@@ -2988,6 +3014,7 @@ class ImageRoutesMixin:
         """Blocking thumbnail generation loop (run in executor)."""
         settings = writer_settings(settings)
         start = _time.monotonic()
+        thumbnails_dir = preview_store.given_store(output_path, thumbnails_dir)
         plan = self._plan_thumbnails(output_path, thumbnails_dir, settings=settings)
         payload = self._execute_thumbnail_plan(plan, settings, start)
         payload["thumbnails_path"] = _public_path(thumbnails_dir)
@@ -3000,7 +3027,8 @@ class ImageRoutesMixin:
         start = _time.monotonic()
         plan = self._plan_gallery_thumbnails(output_dirs, settings=settings)
         payload = self._execute_thumbnail_plan(plan, settings, start)
-        payload["thumbnails_path"] = _public_path(output_dirs[0] / "thumbnails")
+        store = preview_store.store_dir(output_dirs[0])
+        payload["thumbnails_path"] = None if store is None else _public_path(store)
         return payload
 
     def _execute_thumbnail_plan(self, plan: dict, settings, start: float) -> dict:
@@ -3043,9 +3071,12 @@ class ImageRoutesMixin:
             if stop is not None and stop():
                 break
             root = Path(root)
+            store = preview_store.store_dir(root)
+            if store is None:
+                continue
             plan = self._plan_thumbnails(
                 root,
-                root / "thumbnails",
+                store,
                 mode=mode,
                 stop=stop,
                 settings=settings,
@@ -3129,7 +3160,7 @@ class ImageRoutesMixin:
         """
         settings = writer_settings(settings)
         output_path = Path(output_path)
-        thumbnails_dir = Path(thumbnails_dir)
+        thumbnails_dir = preview_store.given_store(output_path, thumbnails_dir)
         plan = {key: 0 for key in _PLAN_COUNTS}
         plan.update(targets=[], fresh_files=[])
         folders = {}
@@ -3221,6 +3252,9 @@ class ImageRoutesMixin:
             "dir": src.parent.name,
             "type": "video" if is_video else "image",
         }
+        # Taken when the write starts: a thumbnail location switched since
+        # then drops the write at its rename (#320).
+        guard = preview_store.write_guard(guard)
         dst = Path(dst)
         if dst.suffix != settings.extension:
             dst = dst.with_suffix(settings.extension)
@@ -3501,8 +3535,8 @@ class ImageRoutesMixin:
             self.logger.debug(f"No roots to sweep for preview temp files: {exc}")
             return 0
         for output_path in output_dirs:
-            folder = Path(output_path) / "thumbnails"
-            if folder.is_symlink() or not folder.is_dir():
+            folder = preview_store.store_dir(output_path)
+            if folder is None or folder.is_symlink() or not folder.is_dir():
                 continue
             removed += sweep_stray_temps(folder)[0]
         if removed:
@@ -3520,13 +3554,16 @@ class ImageRoutesMixin:
         directories = []
         for output_path in output_dirs:
             output_path = Path(output_path)
-            thumbnails_dir = output_path / "thumbnails"
+            thumbnails_dir = preview_store.store_dir(output_path)
+            if thumbnails_dir is None:
+                continue
             if not thumbnails_dir.exists() and not thumbnails_dir.is_symlink():
                 continue
+            container = preview_store.store_container(output_path)
             if (
                 thumbnails_dir.is_symlink()
-                or not _is_within(thumbnails_dir, output_path)
-                or _canonical(thumbnails_dir) == _canonical(output_path)
+                or not _is_within(thumbnails_dir, container)
+                or _canonical(thumbnails_dir) == _canonical(container)
             ):
                 raise ValueError(
                     "Safety check failed: invalid thumbnails directory path"

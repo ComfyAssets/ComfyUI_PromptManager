@@ -46,7 +46,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
 
 try:
     from ...utils.logging_config import get_logger
@@ -101,10 +101,15 @@ def temp_sibling(dst, tag="part"):
 
 
 def replace_unless_held(tmp, dst, guard=None):
-    """Rename *tmp* over *dst*, unless ``guard()`` is false (PreviewWriteHeld)."""
-    if guard is not None and not guard():
-        raise PreviewWriteHeld(PREVIEW_HELD)
-    os.replace(tmp, dst)
+    """Rename *tmp* over *dst*, unless ``guard()`` is false (PreviewWriteHeld).
+
+    The check and the rename run under ``preview_store.write_lock`` (#320): a
+    guard from ``preview_store.write_guard`` also refuses a write that started
+    before the thumbnail location changed."""
+    with preview_store.committed(guard) as allowed:
+        if not allowed:
+            raise PreviewWriteHeld(PREVIEW_HELD)
+        os.replace(tmp, dst)
 
 
 # ``temp_sibling``'s names: ``.<stem>.<tag>-<pid>-<thread id><ext>``.

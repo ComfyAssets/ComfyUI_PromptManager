@@ -20,7 +20,7 @@ from .jobs import (
 
 from .maintenance import disk_plan
 from .prompts import thumbnail_url_for
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
 from .. import model_gate
 
 try:
@@ -1371,7 +1371,8 @@ class AutotagRoutesMixin:
             files = await self._run_in_executor(
                 self._without_removed, output_path, files
             )
-            has_thumbnails = (output_path / "thumbnails").is_dir()
+            store = preview_store.store_dir(output_path)
+            has_thumbnails = store is not None and store.is_dir()
 
             images = []
             for image_path in files:

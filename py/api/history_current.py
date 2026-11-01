@@ -15,10 +15,10 @@ from typing import BinaryIO
 
 from aiohttp import web
 
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
 from .images import _canonical, _public_path, SERVABLE_EXTENSIONS, VIDEO_EXTENSIONS
 from .images import in_trash_below_roots
-from .images import existing_media_thumbnail, media_thumbnail_rel
+from .images import existing_media_thumbnail, media_preview_path
 
 try:
     from ...utils.execution_outputs import (
@@ -326,12 +326,10 @@ class _OpenedCurrentMedia:
 
 
 def _preview_writable(root: Path, preview: Path) -> bool:
-    """A preview may be written: ``thumbnails`` and every link segment of the
-    preview's folder resolve inside *root* (the serve route's rule, #249)."""
-    folder = root / "thumbnails"
-    return _canonical(folder).is_relative_to(_canonical(root)) and _canonical(
-        preview
-    ).is_relative_to(_canonical(folder))
+    """A preview may be written: the store of *root* and every link segment
+    of the preview's folder resolve inside it (the serve route's rule, #249;
+    ``preview_store.owns``)."""
+    return preview_store.owns(root, preview)
 
 
 def _is_jxl(path) -> bool:
@@ -381,8 +379,12 @@ def _cover_target(resolved, ensure_preview, placeholder, accepts_jxl):
         return _canonical(preview)
     if preview is not None:
         return _canonical(preview)
-    preview = resolved.gallery_root / media_thumbnail_rel(relative)
-    if ensure_preview is not None and _preview_writable(resolved.gallery_root, preview):
+    preview = media_preview_path(resolved.gallery_root, relative)
+    if (
+        ensure_preview is not None
+        and preview is not None
+        and _preview_writable(resolved.gallery_root, preview)
+    ):
         ensure_preview(target, preview, is_video)
     if is_video and placeholder is not None:
         return _placeholder_media(placeholder)
