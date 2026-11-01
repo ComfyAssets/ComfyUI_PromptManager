@@ -402,11 +402,12 @@ test('a partial host save keeps what saved, adopts its revision and fails only t
     assert.equal(drafts.statusText(), 'missing can\'t be used: not found. Remove it or reconnect it, then save.');
     // The next save carries the revision the saved part produced: no false "changed elsewhere".
     domains.outcome.host = null;
-    drafts.set('host', 'gallery_root_paths', ['a']);
+    // (#431: a list equal to the saved one is no change, so a different one is drafted.)
+    drafts.set('host', 'gallery_root_paths', ['a', 'b']);
     const second = await drafts.save();
     assert.equal(second.host, 'saved');
     assert.equal(domains.calls.at(-1)[2].expected_revision, 'sha256:lora');
-    assert.deepEqual(domains.calls.at(-1)[1], { gallery_root_paths: ['a'] });
+    assert.deepEqual(domains.calls.at(-1)[1], { gallery_root_paths: ['a', 'b'] });
     // Without a server reason, the status says some were saved and the highlighted ones were not.
     domains.outcome.host = () => { throw Object.assign(new Error('boom'), { partial: { saved: ['x'], revision: 'sha256:three' } }); };
     drafts.set('host', 'x', 1);
@@ -428,4 +429,40 @@ test('runtime adapter maps config.level to runtime_level and back', async () => 
         { runtime_level: 'WARNING', console_logging: false });
     assert.deepEqual(runtimeBody({ runtime_level: 'WARNING' }), { level: 'WARNING' });
     assert.deepEqual(runtimeBody({ runtime_level: 'CRITICAL', console_logging: true }), { level: 'CRITICAL', console_logging: true });
+});
+
+test('sameDraft compares arrays and plain objects by value, keys in any order (#431)', async () => {
+    const { sameDraft } = await source;
+    assert.equal(sameDraft(1, 1), true);
+    assert.equal(sameDraft(Number.NaN, Number.NaN), true);
+    assert.equal(sameDraft(0, -0), false);
+    assert.equal(sameDraft(['a', 'b'], ['a', 'b']), true);
+    assert.equal(sameDraft(['a', 'b'], ['b', 'a']), false);
+    assert.equal(sameDraft([], []), true);
+    assert.equal(sameDraft([], {}), false);
+    assert.equal(sameDraft({ gguf: 'x', hf: 'y' }, { hf: 'y', gguf: 'x' }), true);
+    assert.equal(sameDraft([{ id: 'a', name: 'n' }], [{ name: 'n', id: 'a' }]), true);
+    assert.equal(sameDraft({ a: 1 }, { a: 2 }), false);
+    assert.equal(sameDraft('a', ['a']), false);
+    assert.equal(sameDraft(null, {}), false);
+    assert.equal(sameDraft(new Date(0), new Date(0)), false);
+});
+
+test('a list draft set back to the saved list is clean, and a save cleans it (#431)', async () => {
+    const domains = adapters({ host: { autotag_skipped_tags: ['blurry'] } });
+    const drafts = await loaded(domains);
+    drafts.set('host', 'autotag_skipped_tags', ['blurry', 'signature']);
+    assert.equal(drafts.dirty('host'), true);
+    // Removing the added chip builds a new array equal to the saved one.
+    drafts.set('host', 'autotag_skipped_tags', ['blurry']);
+    assert.equal(drafts.dirty('host'), false);
+    drafts.set('host', 'autotag_skipped_tags', ['signature']);
+    await drafts.save();
+    assert.equal(drafts.dirty('host'), false);
+    assert.deepEqual(drafts.saved('host').autotag_skipped_tags, ['signature']);
+    // A reload whose list equals the draft's (a new array) keeps nothing dirty.
+    drafts.set('host', 'autotag_skipped_tags', ['sky']);
+    domains.readHost = async () => ({ values: { autotag_skipped_tags: ['sky'] }, revision: 'sha256:three' });
+    await drafts.load('host');
+    assert.equal(drafts.dirty('host'), false);
 });

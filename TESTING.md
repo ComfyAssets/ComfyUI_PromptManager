@@ -4630,6 +4630,26 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   Cancel-only review matches the concept review shell` (system-tagging-concept.spec) and
   the batch tests of workspace-system-tagging.spec; the mutation check renames each grid
   label in turn.
+- **D202** (Auto-tagging, #431, beyond the concept): a "Skipped tags" block
+  (`.setting-block`, `data-setting="tag-skipped"`, `data-key="autotag_skipped_tags"`)
+  follows "Suggestions per image": the label and description in the concept's
+  setting-row tokens ("Suggested tags that contain one of these words are hidden.
+  Words are separated by spaces, _ or -; other characters such as ( ) belong to the
+  word."), an "Add a word or words" input (`#tag-skipped-input`) with Add (Enter adds
+  too), the entries as removable chips in the Tag image dialog's D83 chip markup (each
+  with its count, title "Hides N tags", or muted "none" with "Hides no known tag"), and
+  a `role="status"` preview line: "**Hides N tags from suggestions**: <up to 12>[ and K
+  more]. Tags already on images are not changed." ("Checked against library tags only;
+  no WD14 label list is downloaded." before the last sentence without a label list;
+  "No tags are skipped." for an empty list; "Checking…" while waiting; "The preview
+  could not be read." on failure). The client refuses an entry with "Enter a word.",
+  "No commas or line breaks.", "At most 50 characters.", "Already in the list." or "The
+  list is full (200)." under the input. The Tag image dialog's chip hint adds "N skipped
+  tags were not suggested." when the server hid any (the static mock's copy). Pinned by
+  the comparison's mapping (system-tagging-concept.spec: the block's tokens are the
+  concept row's), `skipped tags add, preview, remove, save and reload (D202)`, `skipped
+  tags preview checks library tags only …` (workspace-system-tagging.spec) and
+  `suggestions omit skipped tags and say how many were hidden` (workspace-tagging.spec).
 - **D158** (Sources, #247 D-Q4): the concept has no switch for prompts from workflows
   without a PromptManager node; the maintainer chose a visible switch over a config key.
   A `.setting-row` in the concept's toggle markup follows "Watch for new outputs":
@@ -5237,6 +5257,34 @@ the legacy `/autotag/single` only requires a number. `GET /autotag/models` repor
 saved values (`wd14_general_threshold`, `wd14_character_threshold`, `suggestion_limit`,
 `default_prompt`, `model_type`, `existing`), so the Tag image and Auto-tag selected
 dialogs start from them; a preset (the bulk review, Preview tagging review) wins.
+
+**Skipped tags** (#431, D202): `autotag.defaults.skipped_tags`, host draft
+`autotag_skipped_tags`, a list of at most 200 entries, each trimmed, 1–50 code points,
+no comma or control character, at least one word, no two with the same words (refused
+with "Skipped tags: at most 200 entries.", "Skipped tags: entry N is empty.", "… must be
+at most 50 characters.", "… must not contain a comma or a line break.", "… repeats entry
+M."); a save carrying it without `expected_revision` is refused ("Reload the page and try
+again."). A damaged saved list falls back to none with one warning. Words are the
+NFC, case-folded text split on runs of space, `_` and `-` (`tag_words`); an entry hides
+a suggested tag whose words contain the entry's words consecutively (`SkipMatcher`:
+`blurry` hides `very_blurry` and `blurry_background`, not `unblurry`; `(fate)` hides
+`saber_(fate)`, `fate` does not). `generate_tag_suggestions(skip=)` drops a match after
+the name check and before the dedupe and the limit, so skipped tags use up no slot
+(WD14 fills from lower scores; a language model may return fewer). Every path filters:
+`/image-annotations/suggest` (compiled per request; the answer adds `skipped`, the
+number of distinct names it hid), `/autotag/single`, and the `image-tags` (Auto-tag
+selected) and `autotag` (System batch, legacy `/autotag/start`) jobs, which snapshot the
+list at their start and log "Skipped tags: N entries" or "Skipped tags: none"; a save
+during a run does not change it. Hand-typed and stored tags are never filtered; the
+language models' hard-coded exclude list (`_parse_tags`) runs first. `POST
+/prompt_manager/autotag/skipped-tags/preview {entries}` (validated as a save) answers
+`count`, `sample` (12, library tags first, each part sorted case-folded),
+`sample_limit`, `per_entry [{entry, count}]` and `sources {library, wd14}` over the
+library's tags plus the category 0/4 names of each downloaded WD14 `selected_tags.csv`
+(read as UTF-8, cached by mtime and size; a missing list is skipped). It loads no model,
+opens no image, writes nothing and is `409 busy` while an exclusive job runs. Tests:
+`tests/test_skipped_tags.py`, `tests/test_skipped_tags_routes.py`, the settings and
+config tests, `tests/js/workspace-system-skipped-tags.test.js`.
 
 `GET /prompt_manager/autotag/models` reads the disk in the executor, never loads or
 downloads a model and carries no absolute path: per engine `name`, `label`,

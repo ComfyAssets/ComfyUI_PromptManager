@@ -30,9 +30,9 @@ except ImportError:
 # The tag template and thresholds live with the saved tagging defaults
 # (#328), so config.py never imports PIL.
 try:
-    from .tagging_defaults import DEFAULT_TAG_TEMPLATE
+    from .tagging_defaults import DEFAULT_TAG_TEMPLATE, read_wd14_label_rows
 except ImportError:
-    from py.tagging_defaults import DEFAULT_TAG_TEMPLATE
+    from py.tagging_defaults import DEFAULT_TAG_TEMPLATE, read_wd14_label_rows
 
 try:
     from ..utils import exit_signal
@@ -559,7 +559,6 @@ class AutoTagService:
         # A missing onnxruntime is refused by load_model before this runs
         # (#424); a ModuleNotFoundError here becomes the same refusal.
         import onnxruntime as ort
-        import csv
 
         config = MODELS[model_type]
         model_dir = self.models_dir / config["subdir"]
@@ -576,12 +575,8 @@ class AutoTagService:
 
         session = ort.InferenceSession(str(model_path), providers=providers)
 
-        # Read tag list from CSV
-        tags_list = []
-        with open(tags_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                tags_list.append(row)
+        # Read tag list from CSV (the reader the Skipped tags preview shares)
+        tags_list = read_wd14_label_rows(tags_path)
 
         self.logger.info(
             f"WD14 model loaded ({len(tags_list)} tags, "
@@ -992,6 +987,7 @@ class AutoTagService:
         prompt: Optional[str] = None,
         general_threshold: Optional[float] = None,
         character_threshold: Optional[float] = None,
+        skip: Any = None,
     ) -> List[Tuple[str, Optional[float]]]:
         """The top ``limit`` suggestions as ``(name, confidence)`` pairs.
 
@@ -1000,7 +996,9 @@ class AutoTagService:
         ``None``. Names are distinct case-insensitively (first one wins).
         A name Save would reject (over 50 characters, a control character
         such as a newline, a comma) is skipped before the dedupe and the
-        ``limit`` count. ``prompt`` is used for this call only;
+        ``limit`` count. A name ``skip`` matches (a ``SkipMatcher``, the
+        Skipped tags compiled for this request or job, #431) is dropped next,
+        so it uses up no slot. ``prompt`` is used for this call only;
         ``custom_prompt`` is never changed.
         """
         if type(limit) is not int or not 1 <= limit <= MAX_SUGGESTION_LIMIT:
@@ -1016,6 +1014,8 @@ class AutoTagService:
             try:
                 name = validate_vocabulary_tag_name(raw)
             except ValueError:
+                continue
+            if skip is not None and skip.matches(name):
                 continue
             key = name.casefold()
             if key in seen:

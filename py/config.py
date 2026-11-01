@@ -587,6 +587,7 @@ try:
         MODEL_TYPES,
         WD14_MODEL_TYPES,
         validate_saved_threshold,
+        validate_skipped_tags,
         validate_template,
         validate_threshold,
     )
@@ -600,6 +601,7 @@ except ImportError:
         MODEL_TYPES,
         WD14_MODEL_TYPES,
         validate_saved_threshold,
+        validate_skipped_tags,
         validate_template,
         validate_threshold,
     )
@@ -615,6 +617,20 @@ def _valid_existing(value: Any) -> str:
     if not isinstance(value, str) or value not in EXISTING_POLICIES:
         raise ValueError("must be one of " + ", ".join(EXISTING_POLICIES))
     return value
+
+
+def _valid_skipped_tags(value: Any) -> Tuple[str, ...]:
+    return tuple(validate_skipped_tags(value))
+
+
+def _fallback_warning(key: str, error: ValueError, default: Any) -> str:
+    """The one load warning of a saved tagging default that fails its check."""
+    if key == "template":
+        return f"autotag.defaults.template {error}; using the built-in one"
+    if key == "skipped_tags":
+        reason = str(error).removeprefix("Skipped tags").lstrip(": ").rstrip(".")
+        return f"autotag.defaults.skipped_tags {reason}; using no skipped tags"
+    return f"autotag.defaults.{key} {error}; using {default!r}"
 
 
 def _valid_suggestion_limit(value: Any) -> int:
@@ -639,6 +655,7 @@ class AutotagConfig:
     CHARACTER_THRESHOLD = 0.85
     TEMPLATE = DEFAULT_TAG_TEMPLATE
     SUGGESTION_LIMIT = DEFAULT_SUGGESTION_LIMIT
+    SKIPPED_TAGS: Tuple[str, ...] = ()
 
     # config.json key -> (attribute, validator, default)
     _KEYS = {
@@ -660,6 +677,8 @@ class AutotagConfig:
             _valid_suggestion_limit,
             DEFAULT_SUGGESTION_LIMIT,
         ),
+        # #431: words whose suggested tags are never offered.
+        "skipped_tags": ("SKIPPED_TAGS", _valid_skipped_tags, ()),
     }
 
     @classmethod
@@ -681,6 +700,7 @@ class AutotagConfig:
         }
         if defaults["template"] == DEFAULT_TAG_TEMPLATE:
             del defaults["template"]
+        defaults["skipped_tags"] = list(defaults["skipped_tags"])
         return {"defaults": defaults}
 
     @classmethod
@@ -698,11 +718,7 @@ class AutotagConfig:
             try:
                 setattr(cls, attr, validate(defaults[key]))
             except ValueError as error:
-                config_logger.warning(
-                    f"autotag.defaults.{key} {error}; using {default!r}"
-                    if key != "template"
-                    else f"autotag.defaults.template {error}; using the built-in one"
-                )
+                config_logger.warning(_fallback_warning(key, error, default))
                 setattr(cls, attr, default)
 
 

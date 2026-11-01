@@ -446,12 +446,12 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
    suggestions are removable chips, each the concept's `.chip` corner (4px; the later `.tag-suggestion` row rule would
    give 5px) around the row's 12px text in its checked suggestion row's tokens (`.tag-suggestion:has(input:checked)`,
    s1655): a name, the confidence and a × button. */
-#tag-suggestions .chip.tag-suggestion { display: inline-flex; gap: 6px; padding: 2px 2px 2px 8px; margin-bottom: 0; cursor: default; color: inherit; border-color: var(--ca-accent); background: var(--soft-blue); border-radius: 4px; /* D83 */ }
-#tag-suggestions .chip.tag-suggestion .tag-confidence { margin-inline-start: 0; /* D83 */ }
-.ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 24px; min-inline-size: 24px; padding: 0 6px; /* D83 */ }
+#tag-suggestions .chip.tag-suggestion, .skip-chips .chip.tag-suggestion { display: inline-flex; gap: 6px; padding: 2px 2px 2px 8px; margin-bottom: 0; cursor: default; color: inherit; border-color: var(--ca-accent); background: var(--soft-blue); border-radius: 4px; /* D83 */ }
+#tag-suggestions .chip.tag-suggestion .tag-confidence, .skip-chips .chip.tag-suggestion .tag-confidence { margin-inline-start: 0; /* D83 */ }
+.ca-tools #tag-suggestions .chip.tag-suggestion > button, .ca-tools .skip-chips .chip.tag-suggestion > button { min-block-size: 24px; min-inline-size: 24px; padding: 0 6px; /* D83 */ }
 @media (pointer: coarse) {
     /* D83: the chip's × keeps the concept's 40px coarse target. */
-    .ca-tools #tag-suggestions .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
+    .ca-tools #tag-suggestions .chip.tag-suggestion > button, .ca-tools .skip-chips .chip.tag-suggestion > button { min-block-size: 40px; min-inline-size: 40px; }
 }
 
 /* Needs review (#249 PR F): the concept's Metadata review page (app.js a749–760) in its own classes. */
@@ -495,6 +495,24 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 @media (max-width: 700px) {
   #workspace-main .setting-row :is(#send-destination, #renderer) { max-width: 160px !important; /* D106 */ }
 }
+/* D202 (#431): System › Auto-tagging "Skipped tags", a setting whose control (an add input, the chips and the preview
+   line) is wider than a `.setting-row` column: the row's label and description tokens over the full width, the chips
+   in the Tag image dialog's D83 chip markup (an entry that hides no known tag is muted). */
+.setting-block { padding: 17px 0; border-top: 1px solid var(--line); /* D202 */ }
+.setting-block-text label { font-size: 12px; font-weight: 500; display: block; /* D202 */ }
+.setting-block-text p { font-size: 11px; color: var(--ca-muted); margin-top: 4px; max-width: 640px; /* D202 */ }
+.setting-block[aria-invalid="true"] { box-shadow: inset 3px 0 0 var(--red); padding-inline-start: 12px; /* D202 */ }
+.skip-add { display: flex; gap: 8px; margin-top: 12px; max-width: 460px; /* D202 */ }
+.skip-add input { flex: 1; min-width: 0; font-size: 12px; /* D202 */ }
+.skip-problem { color: var(--red); margin-top: 6px; /* D202 */ }
+.skip-problem:empty, .skip-chips:empty { display: none; /* D202 */ }
+.skip-chips .chip.tag-suggestion.none { border-color: var(--line); background: var(--ca-field); color: var(--ca-muted); /* D202 */ }
+.skip-preview { margin-top: 12px; max-width: 760px; /* D202 */ }
+.skip-preview b { font-weight: 500; color: var(--ca-text); /* D202 */ }
+@media (max-width: 700px) {
+    .skip-add { max-width: none; /* D202 */ }
+}
+
 /* D132: at phone width the concept's 120px cap cuts every engine label ("WD14 SwinV2 · ~400 MB"); the Tagging model
    select alone keeps its natural width there (its widest engine label) and, with no room beside the row text, wraps
    under it. Existing tags (#398) never shrinks for its row text and, past the cap, keeps its natural width beside the

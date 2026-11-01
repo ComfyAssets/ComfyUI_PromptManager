@@ -54,6 +54,8 @@ class PerImageTagger(HookedTagger):
         names = self.by_bytes.get(self.read_bytes[-1])
         if names is None:
             return result
+        skip = kwargs.get("skip")  # as the engine does (#431)
+        names = [name for name in names if skip is None or not skip.matches(name)]
         return [(name, 0.9) for name in names][: kwargs["limit"]]
 
 

@@ -102,11 +102,14 @@ def model_refusal(status: dict, model_type: str, model_name: str):
     return None
 
 
-def run_suggestions(service, capture_path: str, model_type: str, options: dict):
+def run_suggestions(
+    service, capture_path: str, model_type: str, options: dict, skip=None
+):
     """Blocking: load (or swap to) *model_type*, then suggest for the capture.
 
     The caller holds the model gate for the whole call; nothing is ever
-    downloaded (``load_model`` refuses a model that is not on disk).
+    downloaded (``load_model`` refuses a model that is not on disk). ``skip``
+    is the request's or job's compiled Skipped tags (#431).
     """
     if not service.is_model_loaded() or service.get_loaded_model_type() != model_type:
         service.load_model(model_type, options["use_gpu"])
@@ -116,6 +119,7 @@ def run_suggestions(service, capture_path: str, model_type: str, options: dict):
         prompt=options.get("instructions"),
         general_threshold=options.get("general_threshold"),
         character_threshold=options.get("character_threshold"),
+        skip=skip,
     )
 
 

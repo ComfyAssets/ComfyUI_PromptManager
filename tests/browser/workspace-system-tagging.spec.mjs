@@ -418,3 +418,85 @@ test('a model that is not downloaded cannot be reviewed for a batch; the button 
     await expect(dialog(page)).toHaveCount(0);
     expect(page.modelCalls.filter(call => call.includes('/batch/preview'))).toEqual([]);
 });
+
+// D202 (#431): Skipped tags: add (button and Enter), the preview over the library's tags and the WD14 label list, the
+// per-chip counts, remove, Save preferences and a reload; a list the server refuses highlights the block.
+const SKIPPED_PREVIEW = '/prompt_manager/autotag/skipped-tags/preview';
+const skippedBlock = page => surface(page).locator(':scope > .setting-block[data-setting="tag-skipped"]');
+const skippedInput = page => page.locator('#tag-skipped-input');
+const skippedChips = page => skippedBlock(page).locator('.skip-chips .chip.tag-suggestion');
+const skippedPreview = page => skippedBlock(page).locator('.skip-preview');
+
+test('skipped tags add, preview, remove, save and reload (D202)', async ({ page, request }) => {
+    await openTagging(page);
+    await expect(skippedBlock(page).locator('label')).toHaveText('Skipped tags');
+    await expect(skippedBlock(page)).toHaveAttribute('data-key', 'autotag_skipped_tags');
+    await expect(skippedPreview(page)).toHaveText('No tags are skipped.');
+    await expect(skippedPreview(page)).toHaveAttribute('role', 'status');
+    // The label list on disk (blurry, blurry_background, signature, …) and the library tags (warm_light, …).
+    let answer = page.waitForResponse(item => item.url().endsWith(SKIPPED_PREVIEW));
+    await skippedInput(page).fill('blurry');
+    await skippedInput(page).press('Enter');
+    expect((await answer).status()).toBe(200);
+    await expect(skippedInput(page)).toHaveValue('');
+    await expect(skippedPreview(page)).toHaveText('Hides 2 tags from suggestions: blurry, blurry_background. '
+        + 'Tags already on images are not changed.');
+    answer = page.waitForResponse(item => item.url().endsWith(SKIPPED_PREVIEW));
+    await skippedInput(page).fill('light');
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await answer;
+    await expect(skippedPreview(page)).toHaveText('Hides 3 tags from suggestions: warm_light, blurry, blurry_background. '
+        + 'Tags already on images are not changed.');
+    await expect(skippedChips(page)).toHaveText(['blurry2×', 'light1×']);
+    await expect(skippedChips(page).first()).toHaveAttribute('title', 'Hides 2 tags');
+    // An entry that hides nothing is muted; a duplicate is not added and the line under the input says so.
+    answer = page.waitForResponse(item => item.url().endsWith(SKIPPED_PREVIEW));
+    await skippedInput(page).fill('zebra');
+    await skippedInput(page).press('Enter');
+    await answer;
+    await expect(skippedChips(page).last()).toHaveClass(/\bnone\b/);
+    await expect(skippedChips(page).last()).toHaveAttribute('title', 'Hides no known tag');
+    await skippedInput(page).fill('Blurry');
+    await skippedInput(page).press('Enter');
+    await expect(page.locator('#tag-skipped-problem')).toHaveText('Already in the list.');
+    await expect(skippedInput(page)).toHaveAttribute('aria-invalid', 'true');
+    await skippedInput(page).fill('a, b');
+    await skippedInput(page).press('Enter');
+    await expect(page.locator('#tag-skipped-problem')).toHaveText('No commas or line breaks.');
+    // Remove zebra, then save.
+    await skippedChips(page).last().getByRole('button', { name: 'Remove zebra', exact: true }).click();
+    await expect(skippedChips(page)).toHaveCount(2);
+    await expect(status(page)).toHaveText('Unsaved changes.');
+    await save(page).click();
+    await expect(status(page)).toHaveText('Saved to the server configuration.');
+    expect((await serverJson(request, SETTINGS_URL)).settings.autotag_skipped_tags).toEqual(['blurry', 'light']);
+    await openTagging(page);
+    await expect(skippedChips(page)).toHaveText(['blurry2×', 'light1×']);
+    // Removing a chip and adding it back is no change.
+    await skippedChips(page).last().getByRole('button', { name: 'Remove light', exact: true }).click();
+    await expect(status(page)).toHaveText('Unsaved changes.');
+    await skippedInput(page).fill('light');
+    await skippedInput(page).press('Enter');
+    await expect(status(page)).toHaveText('No unsaved changes.');
+});
+
+test('skipped tags preview checks library tags only without a label list, and a refused save highlights it', async ({ page, request }) => {
+    await expect(await request.post('/__test__/tagging/defaults', { data: { general: 0.35, character: 0.85, limit: 10,
+        labels: false } })).toBeOK();
+    await openTagging(page);
+    const answer = page.waitForResponse(item => item.url().endsWith(SKIPPED_PREVIEW));
+    await skippedInput(page).fill('blurry');
+    await skippedInput(page).press('Enter');
+    await answer;
+    await expect(skippedPreview(page)).toHaveText('Hides 0 tags from suggestions. Checked against library tags only; no WD14 '
+        + 'label list is downloaded. Tags already on images are not changed.');
+    // The server is the authority: a list it refuses keeps the draft, says why and highlights the block.
+    await page.route(`**${SETTINGS_URL}`, route => (route.request().method() === 'POST'
+        ? route.fulfill({ status: 400, contentType: 'application/json',
+            body: JSON.stringify({ success: false, error: 'Skipped tags: entry 1 is empty.' }) })
+        : route.fallback()));
+    await save(page).click();
+    await expect(status(page)).toHaveText('Skipped tags: entry 1 is empty.');
+    await expect(skippedBlock(page)).toHaveAttribute('aria-invalid', 'true');
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+});

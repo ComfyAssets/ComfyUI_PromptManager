@@ -201,7 +201,7 @@ test('opening the section reads the model status once; the select waits for it',
         assert.deepEqual(byId('tag-model').options.map(option => option.textContent),
             ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF JoyCaption · ~4.5 GB', 'HuggingFace JoyCaption · ~16 GB']);
         assert.deepEqual(surface.children.map(node => node.className),
-            ['', '', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'field', 'row-actions', 'operation']);
+            ['', '', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-row', 'setting-block', 'field', 'row-actions', 'operation']);
     } finally { scope.dispose(); dom.restore(); }
     const failed = await mounted({ modelsFail: true });
     try {

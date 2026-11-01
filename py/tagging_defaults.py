@@ -4,8 +4,13 @@ Server-free on purpose: ``py.api`` must import without ComfyUI's ``server``
 module, which ``py/config.py`` needs; config re-exports all of this.
 """
 
+import csv
 import math
-from typing import Any
+import os
+import re
+import threading
+import unicodedata
+from typing import Any, Dict, Iterable, List, Set, Tuple
 
 # The tagging engines (``py/autotag.py`` MODELS) and the options they take.
 WD14_MODEL_TYPES = frozenset({"wd14-swinv2", "wd14-vit"})
@@ -88,3 +93,136 @@ def validate_template(value: Any, name: str = "instructions") -> str:
     if len(encoded) > MAX_INSTRUCTION_BYTES:
         raise ValueError(f"{name} {'are' if name == 'instructions' else 'is'} too long")
     return value
+
+
+# Skipped tags (#431): words whose suggested tags are never offered.
+MAX_SKIPPED_TAGS = 200
+MAX_SKIPPED_TAG_CHARS = 50
+_WORD_SEPARATORS = re.compile(r"[ _-]+")
+_FORBIDDEN_IN_ENTRY = re.compile(r"[,\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def tag_words(text: str) -> Tuple[str, ...]:
+    """The words of a tag or a skipped entry: NFC, case-folded, split on runs
+    of space, ``_`` and ``-``. Every other character belongs to a word."""
+    folded = unicodedata.normalize("NFC", text).casefold()
+    return tuple(word for word in _WORD_SEPARATORS.split(folded) if word)
+
+
+def validate_skipped_tags(value: Any) -> List[str]:
+    """The Skipped tags list, each entry trimmed, or ValueError with the
+    sentence the System page shows (entries are numbered from 1)."""
+    if not isinstance(value, list):
+        raise ValueError("Skipped tags must be a list of words.")
+    if len(value) > MAX_SKIPPED_TAGS:
+        raise ValueError(f"Skipped tags: at most {MAX_SKIPPED_TAGS} entries.")
+    entries: List[str] = []
+    seen: Dict[Tuple[str, ...], int] = {}
+    for number, raw in enumerate(value, 1):
+        if not isinstance(raw, str):
+            raise ValueError(f"Skipped tags: entry {number} must be text.")
+        entry = raw.strip()
+        if not entry:
+            raise ValueError(f"Skipped tags: entry {number} is empty.")
+        if len(entry) > MAX_SKIPPED_TAG_CHARS:
+            raise ValueError(
+                f"Skipped tags: entry {number} must be at most "
+                f"{MAX_SKIPPED_TAG_CHARS} characters."
+            )
+        if _FORBIDDEN_IN_ENTRY.search(entry):
+            raise ValueError(
+                f"Skipped tags: entry {number} must not contain a comma "
+                "or a line break."
+            )
+        words = tag_words(entry)
+        if not words:
+            raise ValueError(f"Skipped tags: entry {number} is empty.")
+        if words in seen:
+            raise ValueError(
+                f"Skipped tags: entry {number} repeats entry {seen[words]}."
+            )
+        seen[words] = number
+        entries.append(entry)
+    return entries
+
+
+class SkipMatcher:
+    """Whether a suggested tag contains a skipped entry's words, consecutive
+    and whole (#431, 17B). Compiled once per request or job; the cost of a
+    check depends on the tag's words, not on the number of entries."""
+
+    def __init__(self, entries: Iterable[str] = ()):
+        self._entries = frozenset(filter(None, (tag_words(e) for e in entries)))
+        self._longest = max((len(words) for words in self._entries), default=0)
+
+    def __bool__(self) -> bool:
+        return bool(self._entries)
+
+    def matches(self, name: str) -> bool:
+        if not self._entries:
+            return False
+        words = tag_words(name)
+        for start in range(len(words)):
+            stop = min(len(words), start + self._longest)
+            for end in range(start + 1, stop + 1):
+                if words[start:end] in self._entries:
+                    return True
+        return False
+
+    def counting(self) -> "CountingSkip":
+        """A per-request view that also remembers which names it hid."""
+        return CountingSkip(self)
+
+
+class CountingSkip:
+    """A :class:`SkipMatcher` that records the distinct names it hid, so the
+    Tag image dialog can say how many skipped tags were not suggested."""
+
+    def __init__(self, matcher: SkipMatcher):
+        self._matcher = matcher
+        self.hidden: Set[str] = set()
+
+    def matches(self, name: str) -> bool:
+        if self._matcher.matches(name):
+            self.hidden.add(name.casefold())
+            return True
+        return False
+
+
+# A WD14 label list's tags the engine can suggest: general (0) and character (4).
+WD14_SUGGESTED_CATEGORIES = frozenset({"0", "4"})
+_label_cache: Dict[str, Tuple[Tuple[int, int], Tuple[str, ...]]] = {}
+_label_cache_lock = threading.Lock()
+
+
+def read_wd14_label_rows(path) -> List[Dict[str, str]]:
+    """Every row of a WD14 ``selected_tags.csv``, read as UTF-8 and closed
+    before returning (the handle never outlives the call, for Windows)."""
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def wd14_label_names(path) -> Tuple[str, ...]:
+    """The names a WD14 label list can suggest (categories 0 and 4), cached
+    by ``(mtime_ns, size)``. OSError (missing) and ValueError (unreadable)
+    propagate; the caller skips that list."""
+    key = os.fspath(path)
+    stat = os.stat(key)
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    with _label_cache_lock:
+        cached = _label_cache.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        rows = read_wd14_label_rows(key)
+    except csv.Error as exc:  # a damaged list (a NUL byte, an oversized field)
+        raise ValueError(f"unreadable label list: {exc}") from None
+    names = tuple(
+        name
+        for row in rows
+        if row.get("category", "0") in WD14_SUGGESTED_CATEGORIES
+        and (name := (row.get("name") or "").strip())
+    )
+    with _label_cache_lock:
+        _label_cache[key] = (stamp, names)
+    return names

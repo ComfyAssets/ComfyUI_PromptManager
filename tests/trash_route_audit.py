@@ -164,6 +164,7 @@ ROUTE_AUDIT = {
         "PATCH /prompt_manager/saved-views/{view_id}",
         "PATCH /prompt_manager/vocabulary/tags/{tag_id}",
         "POST /prompt_manager/autotag/download/{model_type}",
+        "POST /prompt_manager/autotag/skipped-tags/preview",
         "POST /prompt_manager/autotag/unload",
         "POST /prompt_manager/bulk/category",
         "POST /prompt_manager/bulk/delete",
