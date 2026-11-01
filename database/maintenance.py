@@ -2,7 +2,8 @@
 
 Four operations, each the native owner of a legacy ``/maintenance`` one and
 built on the same queries, so a preview counts what the legacy cleanup would
-change:
+change (``workflow_storage`` and #550's ``pair_metadata``, which fills old
+Pair prompts' empty category and tags, live in their own modules):
 
 - ``duplicate_prompts``: prompts whose text is equal ignoring case and outer
   spaces (``DUPLICATE_PROMPTS_SQL``, legacy ``cleanup_duplicates``); each
@@ -60,6 +61,9 @@ MAINTENANCE_OPERATIONS = (
     "missing_links",
     # Applied as its own batched job (database/workflow_storage.py).
     "workflow_storage",
+    # #550: fill old Pair prompts' empty category and tags
+    # (database/pair_metadata_repair.py).
+    "pair_metadata",
 )
 MAX_DETAILS = 50  # detail rows a plan lists
 MAX_RESULT_ROWS = 200  # changed records an apply describes (the job lists 200)
@@ -533,6 +537,10 @@ class MaintenanceOperations:
                 lambda conn: (self._link_rows(conn), _mark_rows(conn)),
             )
             return self._plan_missing_links(rows, roots, _stale_marks(marks, roots))
+        if operation == "pair_metadata":
+            from .pair_metadata_repair import plan_pair_metadata
+
+            return _read_snapshot(self.model.db_path, plan_pair_metadata)
         reader = (
             self._plan_duplicate_prompts
             if operation == "duplicate_prompts"
@@ -800,7 +808,8 @@ class MaintenanceOperations:
         records changed and up to ``MAX_RESULT_ROWS`` descriptions of them
         (``{prompt_id[, kept_id]}`` or ``{image_path}``). ``marks`` are a
         missing-links plan's stale removal marks; that apply also returns
-        ``marks``, how many it forgot.
+        ``marks``, how many it forgot. ``pair_metadata`` returns every filled
+        prompt, uncapped (its job keeps the complete record, #550).
         """
         if operation not in MAINTENANCE_OPERATIONS or operation == "workflow_storage":
             raise ValueError(f"Unknown maintenance operation {operation!r}")
@@ -815,6 +824,10 @@ class MaintenanceOperations:
             "unused_components": self._apply_unused_components,
         }
         with self._pair_transaction() as conn:
+            if operation == "pair_metadata":
+                from .pair_metadata_repair import apply_pair_metadata
+
+                return apply_pair_metadata(conn, fingerprint, targets)
             if operation == "missing_links":
                 return self._apply_missing_links(
                     conn, fingerprint, targets, roots, list(marks)

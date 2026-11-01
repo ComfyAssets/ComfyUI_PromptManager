@@ -2978,7 +2978,8 @@ change: ComfyUI needs a restart.
 A Pair save, by a run or the node's Save pair button, writes the category and tags to the positive prompt only when that
 save creates the prompt row (maintainer ruling). An existing prompt never changes on a run: empty, cleared or set by a person, including one first seen as
 another pair's negative. The negative stays empty, the saved pair keeps its own metadata, and `save_prompt_pair` writes
-no prompt metadata unless called with `fill_new_positive`. No backfill; optional repair is #550.
+no prompt metadata unless called with `fill_new_positive`. No backfill on a run; the opt-in repair for prompts older
+Pair runs saved is System › Maintenance › "Pair category and tags" (#550, "Pair category and tags repair" below).
 Tests: `tests/test_prompt_pair_node.py`, `tests/test_api_pairs.py`, `tests/comfyui/pair-node.spec.mjs`. A Python change: ComfyUI needs a restart.
 
 ### Delete… on the archived shelf (#492)
@@ -4307,6 +4308,12 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   primary stays the concept's plain button; the plan it opens has the primary.
   `duplicates dialog matches the concept` and `duplicates comparison detects mutations`
   (system-maintenance-concept.spec) pin the mapping.
+- **D192** (Maintenance, #550, beyond the concept): Database adds "Pair category and
+  tags" after "Unused prompt components", a plain Review plan row (no danger mark: it
+  deletes nothing) with the line "Fill an empty category or tags on prompts older Pair
+  node runs saved, from their saved pairs. Only empty fields of never-edited prompts."
+  `system-maintenance-concept.spec.mjs` maps it (`mapPairRow`) as a copy of Optimize
+  database's row.
 - **D102** (Maintenance, S7, Q5, #222): Metadata cache clears only the browser entries
   Prompt Manager owns as a cache (`web/js/cache-ownership.js`). The inventory of every
   storage writer has none (see "Browser cache ownership" below), so the row's line adds
@@ -4880,6 +4887,47 @@ replaced the database since the review; the plan is dropped). The job:
 3. counts the changed and protected records (outcome rows hold root-relative paths or
    prompt ids only), logs the backup by its file name, and prunes safety backups to the
    newest 10. With no backup the log and the status line say "No safety backup".
+
+#### Pair category and tags repair (#550)
+
+`pair_metadata` ("Pair category and tags", D192; `database/pair_metadata_repair.py`) fills
+the empty category and the empty tag set of prompts that Pair node runs before #546
+saved, from their saved pairs. It is reviewed and applied like the operations above and
+follows the safety backup policy like them (no forced backup). Rules
+(`docs/egm/post-3.4.1/550-design.md`):
+
+- Considered: prompts the Pair node created as a positive: their earliest pair (lowest
+  id, either role, archived included) has them as the positive and its `created_at` is
+  within 2 s of theirs. A prompt first saved by the PromptManager node, or first as a
+  negative, is out of scope and not counted.
+- Sources: the prompt's non-archived pairs where it is the positive; pairs with a blank
+  category or no tags are ignored for that field. Category values are trimmed and
+  case-sensitive, tag sets compared by tag id; a field fills when exactly one value is
+  left. A whitespace-only category counts as empty.
+- Kept, per field, in this order: archived prompt, edited prompt (`updated_at` not within
+  2 s of `created_at`; NULL or unreadable counts as edited), pairs that disagree, a tag
+  set over 20 tags. A prompt can fill one field and keep the other.
+- The plan lists protected rows first, then fills, then a "Record" row, within the 50
+  detail rows; at most 20,000 prompts per plan ("review again for the rest").
+- The fingerprint covers each considered prompt's computed result (values, tag ids and
+  names, source pair ids), never a pair's title, notes, rating, run count or use
+  stamps, so a Pair run between review and apply still applies.
+- The apply's writes are guarded (`category` still blank, no `prompt_tags` row) and a
+  guard that hits nothing rolls the whole transaction back as `plan-changed`. It never
+  writes `prompt_pairs`, `prompt_pair_tags`, `updated_at`, a tag or Library state.
+- The job lists 200 changed rows ("Prompt 12: category “night”; tags a, b"); its
+  Download report lists every one (`truncated: false`, `Job.record_counted(complete=True)`).
+  Protected lists one row per kept prompt in the review's wording and order ("Prompt 7:
+  kept, pairs disagree on category: Adult, asian"), also complete in the report.
+- Activity shows a row with no path as a record: its detail as plain text, never an open
+  or locate action, and the filter reads the detail. A maintenance job of records (every
+  operation but Missing-file links) says "No records in this group.", "No listed record
+  matches this filter." and "Filter records…" (`groupCopy`); file jobs keep "files".
+
+Tests: `tests/test_maintenance_pair_metadata.py`, `tests/test_api_maintenance_pair_metadata.py`,
+`tests/test_jobs.py`, `tests/js/workspace-system-maintenance.test.js`,
+`tests/browser/workspace-system-maintenance.spec.mjs` (hook `/__test__/system/pair-metadata`).
+A Python change: ComfyUI needs a restart.
 
 The legacy restore (`POST /prompt_manager/restore`) takes a backup of any size the disks
 have room for, so a real library's safety backup restores: the upload, its staged copy

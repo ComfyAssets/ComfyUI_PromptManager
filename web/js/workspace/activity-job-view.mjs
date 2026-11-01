@@ -11,6 +11,9 @@
  * - Results (`section.surface`): the outcome list (`button[aria-pressed]` with counts, in the mockup's order), a path
  *   filter, and the selected outcome's listed rows (at most 200 per outcome, so "Showing N of M"). Rows under Added and
  *   Already known open the file in the existing viewer through its listing identity (D57); the others are plain text.
+ * - #550: a row with no path is a record (a maintenance apply's "Prompt 12: category …"): its detail is shown as plain
+ *   text, never opened; the filter reads it. A maintenance plan of records (every operation but Missing-file links)
+ *   says "records" where a file job says "files" (`groupCopy`).
  * - Log: `details.term` "Scan log", collapsed, holding the raw timestamped lines in `pre[tabindex=0]`.
  * - D89: the tiles, the outcome list, the openable rows and the log and cancel labels are the job kind's (`jobView`):
  *   an image tagging job shows Tagged, Unchanged, Skipped and Errors, opens Tagged and Unchanged rows, and reads
@@ -44,6 +47,10 @@ export const DETAIL_INTERVAL_MS = 1000;
 export const NOT_FOUND = 'This job is not in this session’s Activity. Jobs are kept until ComfyUI restarts.';
 export const EMPTY_GROUP = 'No files in this group.';
 export const NO_MATCH = 'No listed file matches this filter.';
+export const EMPTY_RECORDS = 'No records in this group.';
+export const NO_RECORD_MATCH = 'No listed record matches this filter.';
+const FILE_FILTER = 'Filter by file path…';
+const RECORD_FILTER = 'Filter records…';
 export const VIEWER_HINT = 'each row opens the image in the viewer';
 export const FILE_GONE = 'This file is no longer in Images. Rescan from Import and try again.';
 export const OPEN_FAILED = 'The file could not be opened. Try again.';
@@ -68,10 +75,11 @@ export function parseDetail(raw) {
     const groups = raw.outcomes !== null && typeof raw.outcomes === 'object' ? raw.outcomes : {};
     for (const [group, rows] of Object.entries(groups)) {
         if (!Array.isArray(rows)) continue;
-        outcomes[group] = rows.filter(row => row && isText(row.path) && row.path)
+        // A file row has a path; a record row (#550) has none, only its detail.
+        outcomes[group] = rows.filter(row => row && isText(row.path) && (row.path || (isText(row.detail) && row.detail)))
             .map(row => ({ path: row.path, root: isText(row.root) ? row.root : '',
                 root_index: Number.isSafeInteger(row.root_index) && row.root_index >= 0 ? row.root_index : null,
-                detail: isText(row.detail) ? row.detail : '' }));
+                detail: isText(row.detail) ? row.detail : '', record: !row.path }));
     }
     const log = Array.isArray(raw.log) ? raw.log.filter(isText) : [];
     return { job, outcomes, log };
@@ -129,11 +137,23 @@ export function resultsNote(shown, total, openable) {
     return parts.length === 1 && openable && shown >= total ? `${text[0].toUpperCase()}${text.slice(1)}.` : text;
 }
 
-/** Rows whose path (or root label and path) holds the case-folded filter. */
+/** Rows whose path (or root label and path), or a record's detail (#550), holds the case-folded filter. */
 export function filterRows(rows, filter) {
     const wanted = filter.trim().toLocaleLowerCase();
     if (!wanted) return rows;
-    return rows.filter(row => `${row.root}/${row.path}`.toLocaleLowerCase().includes(wanted));
+    return rows.filter(row => (row.record ? row.detail : `${row.root}/${row.path}`).toLocaleLowerCase().includes(wanted));
+}
+
+/** #550: whether a job lists records (a maintenance plan of records), not files. */
+export function listsRecords(job) {
+    return job?.kind === 'maintenance' && job.scope?.operation !== 'missing_links';
+}
+
+/** The empty-group, no-match and filter copy: "records" for a records job, "files" otherwise (#550). */
+export function groupCopy(job) {
+    return listsRecords(job)
+        ? { empty: EMPTY_RECORDS, noMatch: NO_RECORD_MATCH, placeholder: RECORD_FILTER }
+        : { empty: EMPTY_GROUP, noMatch: NO_MATCH, placeholder: FILE_FILTER };
 }
 
 /** The first outcome with files, so a view opens on what happened; the first outcome when nothing has yet. */
@@ -176,7 +196,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const search = element('label', undefined, 'search-field');
     const input = element('input');
     input.type = 'search';
-    input.placeholder = 'Filter by file path…';
+    input.placeholder = FILE_FILTER;
     input.setAttribute('aria-label', 'Filter results');
     search.append(input);
     resultsPart.heading.append(search);
@@ -280,9 +300,13 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     // Listed rows only ever grow, so a row keeps its node across reads: a focused row (or the viewer's trigger) stays.
     let rowNodes = new Map();
     function rowNode(row, index, openable) {
-        const key = `${selected}\n${index}\n${row.root}\n${row.path}`;
+        const key = `${selected}\n${index}\n${row.root}\n${row.path}\n${row.record ? row.detail : ''}`;
         let node = rowNodes.get(key);
-        if (!node) {
+        if (!node && row.record) {
+            // #550: a record is its detail, plain text, with no open or locate action.
+            node = element('div', undefined, 'file-row record-row');
+            node.append(element('span', row.detail, 'why'));
+        } else if (!node) {
             node = openable ? createButton('', 'file-row') : element('div', undefined, 'file-row');
             node.append(element('span', row.path, 'path'), element('span', row.detail, 'why'));
             if (openable) node.row = row;
@@ -300,8 +324,11 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         const nodes = [...kept.values()];
         // The counter is exact; at most 200 of its files are listed, and the filter narrows those.
         const total = Math.max(job.counters[selected] ?? 0, rows.length);
-        if (!nodes.length) nodes.push(element('p', rows.length ? NO_MATCH : EMPTY_GROUP, 'empty-state'));
-        const note = wanted.length ? resultsNote(wanted.length, total, openable) : '';
+        const copy = groupCopy(job);
+        input.placeholder = copy.placeholder;
+        if (!nodes.length) nodes.push(element('p', rows.length ? copy.noMatch : copy.empty, 'empty-state'));
+        const opens = openable && wanted.some(row => !row.record);
+        const note = wanted.length ? resultsNote(wanted.length, total, opens) : '';
         if (note) nodes.push(element('p', note, 'small'));
         for (const child of [...files.children]) if (!nodes.includes(child)) child.remove();
         nodes.forEach((node, index) => {

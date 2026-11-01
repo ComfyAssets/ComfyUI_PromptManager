@@ -21,8 +21,23 @@ test('the section lists the concept rows in its order, labels and danger marks',
     assert.deepEqual(MAINTENANCE_SURFACES.map(([heading]) => heading), surfaces.map(text => text.replace('&amp;', '&')));
     const production = MAINTENANCE_SURFACES.flatMap(([, rows]) => rows.map(([title, description, label, , danger = false]) =>
         [title, description, label, danger]));
-    assert.deepEqual(production, concept.map(([title, ...rest]) => [title.replace('&amp;', '&'), ...rest]));
-    assert.equal(production.length, 8);
+    // D192 (#550, beyond the concept): "Pair category and tags" follows "Unused prompt components" in Database.
+    const expected = concept.map(([title, ...rest]) => [title.replace('&amp;', '&'), ...rest]);
+    expected.splice(expected.findIndex(([title]) => title === 'Unused prompt components') + 1, 0, PAIR_ROW);
+    assert.deepEqual(production, expected);
+    assert.equal(production.length, 9);
+});
+
+const PAIR_ROW = Object.freeze(['Pair category and tags', 'Fill an empty category or tags on prompts older Pair node runs ' +
+    'saved, from their saved pairs. Only empty fields of never-edited prompts.', 'Review plan', false]);
+
+test('D192: the Pair category and tags row reviews the pair_metadata plan under its title (#550)', async () => {
+    const { MAINTENANCE_SURFACES } = await maintenance;
+    const { OPERATION_TITLES } = await review;
+    const [, database] = MAINTENANCE_SURFACES[0];
+    const row = database.find(([title]) => title === PAIR_ROW[0]);
+    assert.deepEqual(row, [PAIR_ROW[0], PAIR_ROW[1], PAIR_ROW[2], 'pair_metadata']);
+    assert.equal(OPERATION_TITLES.pair_metadata, 'Pair category and tags');
 });
 
 const PLAN = Object.freeze({
@@ -209,4 +224,41 @@ test('a rotated-log cleanup the log overtook offers Review again (S12)', async (
     const { reviewAgainOf } = await jobView;
     assert.deepEqual(reviewAgainOf({ kind: 'maintenance', state: 'failed', scope: { operation: 'rotated_logs', failure: 'plan-changed' } }),
         { operation: 'rotated_logs' });
+});
+
+// #550 live test: a records operation's rows have no path, only a detail ("Prompt 12: category …").
+const RECORD_JOB = Object.freeze({
+    id: 'a'.repeat(32), kind: 'maintenance', title: 'Pair category and tags', state: 'finished',
+    admission: 'records', cancellable: false, progress: 100, processed: 0, total: 0, status_line: 'Filled 2 prompts',
+    scope: { operation: 'pair_metadata' }, counters: { changed: 2, protected: 0, errors: 0 },
+    started_at: 1, finished_at: 2,
+});
+
+test('#550: path-less record rows are kept with their detail; file rows are unchanged', async () => {
+    const { parseDetail, filterRows } = await jobView;
+    const parsed = parseDetail({ ...RECORD_JOB, outcomes: { changed: [
+        { path: '', root: '', root_index: null, detail: 'Prompt 2325: category “asian”; tags asian' },
+        { path: '', root: '', root_index: null, detail: '' },
+        { path: 'a/b.png', root: 'output', root_index: 0, detail: 'Link removed' },
+    ] }, log: [] });
+    assert.deepEqual(parsed.outcomes.changed, [
+        { path: '', root: '', root_index: null, detail: 'Prompt 2325: category “asian”; tags asian', record: true },
+        { path: 'a/b.png', root: 'output', root_index: 0, detail: 'Link removed', record: false },
+    ]);
+    // The filter reads a record's detail and a file's path.
+    assert.deepEqual(filterRows(parsed.outcomes.changed, 'asian').map(row => row.detail),
+        ['Prompt 2325: category “asian”; tags asian']);
+    assert.deepEqual(filterRows(parsed.outcomes.changed, 'a/b').map(row => row.path), ['a/b.png']);
+});
+
+test('#550: a records operation says records, not files, for an empty group and a filter', async () => {
+    const { groupCopy, EMPTY_GROUP, NO_MATCH } = await jobView;
+    assert.deepEqual(groupCopy(RECORD_JOB), { empty: 'No records in this group.', noMatch: 'No listed record matches this filter.',
+        placeholder: 'Filter records…' });
+    for (const operation of ['duplicate_prompts', 'unused_components']) {
+        assert.equal(groupCopy({ ...RECORD_JOB, scope: { operation } }).empty, 'No records in this group.');
+    }
+    const files = { empty: EMPTY_GROUP, noMatch: NO_MATCH, placeholder: 'Filter by file path…' };
+    assert.deepEqual(groupCopy({ ...RECORD_JOB, scope: { operation: 'missing_links' } }), files);
+    assert.deepEqual(groupCopy({ ...RECORD_JOB, kind: 'scan', scope: {} }), files);
 });
