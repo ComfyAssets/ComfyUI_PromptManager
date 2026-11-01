@@ -456,6 +456,25 @@ class TestReviewFindings(MoveCase):
         self.assertTrue((outside / "empty").is_dir())
         self.assertTrue((outside / "Thumbs.db").exists())
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    async def test_moving_back_never_copies_through_an_existing_linked_folder(self):
+        # Codex P1 on #592: an existing linked folder in the destination was
+        # followed, and a file outside the source was replaced.
+        await self.move({"mode": "folder", "path": str(self.folder)})
+        outside = Path(self.tmpdir) / "outside-p1"
+        outside.mkdir()
+        (outside / "b_thumb.webp").write_bytes(b"not ours")
+        if (self.old_store / "sub").exists():
+            (self.old_store / "sub").rmdir()
+        try:
+            (self.old_store / "sub").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted")
+        _plan, job = await self.move({"mode": "source", "path": None})
+        self.assertEqual((outside / "b_thumb.webp").read_bytes(), b"not ours")
+        self.assertEqual(job.counters["errors"], 1, job.log)
+        self.assertTrue((self.old_store / "a_thumb.webp").is_file())
+
     @unittest.skipUnless(os.name == "nt", "junctions are Windows only")
     def test_empty_folder_removal_never_walks_through_a_junction(self):
         import _winapi

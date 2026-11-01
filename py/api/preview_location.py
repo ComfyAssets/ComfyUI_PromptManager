@@ -103,6 +103,11 @@ MESSAGES = {
         "This folder contains an image source. Choose a folder beside it instead.",
     ),
     "location-same": (400, "Thumbnails are already stored here."),
+    "location-inside-current": (
+        400,
+        "This folder is inside the thumbnail folder in use. Choose a folder "
+        "outside it.",
+    ),
     "location-parent-missing": (
         400,
         "The folder that would hold it doesn't exist. Check the path and that its "
@@ -692,6 +697,14 @@ def _filesystem_problem(path, purpose, context, default):
         )
     ):
         return "location-same"
+    if (
+        purpose == "move"
+        and context.current_path
+        and _inside(path, [context.current_path])
+    ):
+        # The old key folders are removed after the move, and with them a
+        # target nested inside one of them.
+        return "location-inside-current"
     # Windows, or a test injecting its limit (``long_paths=False``).
     if os.name == "nt" or context.long_paths is False:
         if too_long_for_windows(path, context.long_paths):

@@ -153,7 +153,8 @@ class ThumbnailMoveMixin:
         done = 0
         for start in range(0, total, chunk):
             if job.cancelled:
-                return await self._move_cancelled(job, plan, state)
+                await self._move_cancelled(job, plan, state)
+                return
             batch = items[start : start + chunk]
             try:
                 results = await self._run_in_executor(
@@ -201,7 +202,8 @@ class ThumbnailMoveMixin:
             )
             job.publish({"type": "progress", "summary": job.summary()})
         if job.cancelled:
-            return await self._move_cancelled(job, plan, state)
+            await self._move_cancelled(job, plan, state)
+            return
         # The switch: not cancellable from here (an exit still stops between
         # files and leaves the cleanup to the next start).
         job.cancellable = False
@@ -318,6 +320,8 @@ class ThumbnailMoveMixin:
                 created = []
                 files._make_folders(base, relative[:-1], created)
                 state["created"].extend(created)
+            # Also when the folders already exist (Codex P1 on #592).
+            files.refuse_links(source.new_store, relative[:-1])
             outcome = files.copy_one(
                 Path(source.old_store).joinpath(*relative),
                 destination,

@@ -220,6 +220,17 @@ def _make_folders(base, relative_dir, created):
             raise CopyFailed("a link in the destination")
 
 
+def refuse_links(base, relative_dir):
+    """Raise CopyFailed when *base* or an existing folder on the way to
+    ``base/relative_dir`` is a link (never copy through one)."""
+    current = Path(base)
+    for part in (None, *relative_dir):
+        if part is not None:
+            current = current / part
+        if preview_location.is_link_like(current):
+            raise CopyFailed("a link in the destination")
+
+
 def copy_one(source, destination, size, mtime_ns, created, *, long_paths=None):
     """Copy one preview; returns ``"moved"`` or ``"skipped"`` (already
     there). Raises CopyFailed (this file) or FolderGone (the destination)."""

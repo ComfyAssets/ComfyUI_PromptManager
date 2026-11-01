@@ -319,6 +319,22 @@ class TestValidation(unittest.TestCase):
         os.mkdir(folder)
         self.assertEqual(self.problem(folder, current_path=folder), "location-same")
 
+    def test_a_folder_inside_the_folder_in_use_is_refused(self):
+        # Codex P2 on #592: the old key folders are removed after the move,
+        # and with them a target nested inside one of them.
+        folder = os.path.join(self.base, "thumbs")
+        os.mkdir(folder)
+        pl.init_folder(folder)
+        for nested in (
+            os.path.join(folder, "output-0123abcd", "nested"),
+            os.path.join(folder, "beside"),
+        ):
+            with self.subTest(nested=nested):
+                self.assertEqual(
+                    self.problem(nested, current_path=folder),
+                    "location-inside-current",
+                )
+
     def test_a_folder_with_other_files_is_not_empty_unless_it_is_ours(self):
         folder = os.path.join(self.base, "full")
         os.mkdir(folder)
