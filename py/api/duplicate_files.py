@@ -65,6 +65,7 @@ from .duplicate_review import (  # noqa: F401 (CHANGED, OUTSIDE_SOURCE: public)
     NOT_ATTEMPTED,
     OUTSIDE_SOURCE,
     RECORDS_FAILED,
+    REVIEW_KEPT_DETAILS,
     ROW_DETAILS,
     SAME_FILE,
     SOURCES_CHANGED,
@@ -434,6 +435,7 @@ class DuplicateFilesMixin:
             {
                 "targets": review["targets"],
                 "kept": review["kept"],
+                "held": review["held"],
                 "protected": review["public"]["protected"]["count"],
             },
         )
@@ -446,7 +448,7 @@ class DuplicateFilesMixin:
         job hashes each file again right before it unlinks it.
         """
         listed = self._listed_sources()
-        targets, kept, protected = [], [], {}
+        targets, kept, protected, held = [], [], {}, []
         for group, keepers in selection.values():
             removals = [r for r in group["files"] if r not in keepers]
             for record in removals:
@@ -467,6 +469,7 @@ class DuplicateFilesMixin:
                     problem = _bound_problem(record, group, keeper)
                 if problem:
                     protected[problem] = protected.get(problem, 0) + 1
+                    held.append(self._copy_row(record, REVIEW_KEPT_DETAILS[problem]))
                     continue
                 reviewed.append(self._target(group, record, keeper))
             if reviewed:
@@ -488,6 +491,7 @@ class DuplicateFilesMixin:
         return {
             "targets": targets,
             "kept": kept,
+            "held": held,
             "fingerprint": _fingerprint(targets),
             "public": _public_plan(targets, protected, records),
         }
@@ -584,6 +588,13 @@ class DuplicateFilesMixin:
 
     async def _remove_duplicates(self, job, db, plan, backup):
         targets = plan.payload["targets"]
+        # #586: every copy the review protected, with its reason, and the
+        # whole group in the report.
+        held = plan.payload["held"]
+        job.record_counted("kept", len(held), held, complete=True)
+        if held:
+            copies = _plural(len(held), "copy", "copies")
+            job.log_line(f"Kept {copies} the review protected")
         for row in plan.payload["kept"]:
             job.record("kept", row, f"= {row['root']}/{row['path']} · {KEPT_COPY}")
         job.update(total=len(targets), status_line="Removing duplicate files")

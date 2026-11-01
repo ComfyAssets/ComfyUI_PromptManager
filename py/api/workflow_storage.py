@@ -59,6 +59,9 @@ REWRITE_FAILED = (
 )
 RECLAIM_FAILED = "Reclaim space failed; the database is unchanged."
 ROW_KEPT = "could not be rewritten; it keeps its inline text and reads as before"
+# A protected value's row (#586), in the review's "not text; kept as is".
+VALUE_KEPT = "stored value not text; kept as is"
+KEPT_COLUMNS = {"workflow_data": "workflow", "prompt_metadata": "prompt graph"}
 
 
 NOTHING_LEFT = "Every image record already stores its workflow once"
@@ -177,7 +180,19 @@ class WorkflowStorageRoutesMixin:
             protected += batch["protected"]
             errors += len(batch["errors"])
             job.record_counted("changed", batch["rows"])
-            job.record_counted("protected", batch["protected"])
+            job.record_counted(
+                "protected",
+                batch["protected"],
+                [
+                    {
+                        "path": "",
+                        "detail": f"Image record {image_id}: "
+                        f"{KEPT_COLUMNS.get(column, column)}, {VALUE_KEPT}",
+                    }
+                    for image_id, column in batch["kept"]
+                ],
+                complete=True,
+            )
             for image_id in batch["errors"]:
                 job.record(
                     "errors",

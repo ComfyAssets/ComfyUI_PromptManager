@@ -112,20 +112,22 @@ QUERY_PLAN_STATEMENTS = {
 
 
 def _rewrite_row(conn, image_id, row, verified, checked):
-    """Store the row's inline texts as documents; returns (changed, protected, size).
+    """Store the row's inline texts as documents; returns (changed, kept, size).
+
+    ``kept`` names the columns whose value stays inline (not text).
 
     ``verified`` maps document ids already read back in this batch to their
     text, and ``checked`` holds the reused ids ``store_text`` already
     checked, so a document shared by many rows is decompressed once.
     """
-    changes, replaced = {}, []
-    protected = size = 0
+    changes, replaced, kept = {}, [], []
+    size = 0
     for index, (column, reference) in enumerate(TEXT_COLUMNS):
         value, current = row[index], row[index + len(TEXT_COLUMNS)]
         if value is None:
             continue
         if not storable(value):
-            protected += 1
+            kept.append(column)
             continue
         document_id = store_text(conn, value, checked)
         if document_id not in verified:
@@ -143,7 +145,7 @@ def _rewrite_row(conn, image_id, row, verified, checked):
             [*changes.values(), image_id],
         )
     release_documents(conn, replaced)
-    return bool(changes), protected, size
+    return bool(changes), kept, size
 
 
 def migrate_batch(
@@ -160,9 +162,10 @@ def migrate_batch(
     savepoint: a row that cannot be rewritten (``_row_error``) is rolled
     back alone, stays inline and is listed in ``errors``; anything else rolls
     the whole batch back and propagates. Returns ``{last_id, rows,
-    protected, errors, done}``: the last row looked at, rows rewritten,
-    inline values kept (not text), the ids kept by an error and whether
-    there was nothing left to look at.
+    protected, kept, errors, done}``: the last row looked at, rows
+    rewritten, inline values kept (not text) and each of them as ``(image
+    id, column)`` (#586), the ids kept by an error and whether there was
+    nothing left to look at.
     """
     if conn.in_transaction:
         raise RuntimeError("The migration needs its own transaction")
@@ -174,6 +177,7 @@ def migrate_batch(
             "last_id": after_id,
             "rows": 0,
             "protected": 0,
+            "kept": [],
             "errors": [],
             "done": not ids,
         }
@@ -182,7 +186,7 @@ def migrate_batch(
             conn.execute("SAVEPOINT workflow_row")
             try:
                 row = conn.execute(ROW_SQL, (image_id,)).fetchone()
-                changed, protected, row_size = _rewrite_row(
+                changed, kept, row_size = _rewrite_row(
                     conn, image_id, row, verified, checked
                 )
             except Exception as error:
@@ -194,11 +198,12 @@ def migrate_batch(
                 checked.clear()
                 logger.warning(f"Image record {image_id} kept inline: {error}")
                 result["errors"].append(image_id)
-                changed, protected, row_size = False, 0, 0
+                changed, kept, row_size = False, [], 0
             else:
                 conn.execute("RELEASE workflow_row")
             result["rows"] += int(changed)
-            result["protected"] += protected
+            result["protected"] += len(kept)
+            result["kept"].extend((image_id, column) for column in kept)
             result["last_id"] = image_id
             size += row_size
             if size >= max_bytes or _clock() - started >= max_seconds:

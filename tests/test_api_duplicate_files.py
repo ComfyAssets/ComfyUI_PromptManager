@@ -452,6 +452,40 @@ class TestReview(DuplicateFilesTestCase):
         )
 
 
+class TestReviewProtectedRows(DuplicateFilesTestCase):
+    async def test_cleanup_lists_each_copy_the_review_kept(self):
+        if not TestReview._can_symlink(self.tmpdir):  # pragma: no cover
+            self.skipTest("symlinks are not available")
+        self.trio()
+        job, group = await self.found_group()
+        # b.png becomes a link after the find: the review protects it (#586).
+        (self.output_dir / "b.png").unlink()
+        os.symlink(str(self.output_dir / "a.png"), str(self.output_dir / "b.png"))
+        plan = await self.review(job.id, [self.keep_of(group, "a.png")])
+        self.assertEqual(plan["protected"]["count"], 1)
+        body = await self.apply(plan["token"])
+        cleanup = self.api._jobs.get(body["job"]["id"])
+        await asyncio.wait_for(asyncio.shield(cleanup.task), DISK_BOUND_SECONDS)
+        self.assertEqual(cleanup.state, "finished", cleanup.log)
+        rows = {row["path"]: row for row in cleanup.outcomes["kept"]}
+        self.assertEqual(
+            rows["b.png"],
+            {
+                "path": "b.png",
+                "root": rows["a.png"]["root"],
+                "root_index": 0,
+                "detail": "Kept: a link, not a regular file",
+            },
+        )
+        self.assertEqual(rows["a.png"]["detail"], "Kept copy")
+        self.assertEqual(cleanup.counters, {"removed": 1, "kept": 2, "errors": 0})
+        report = cleanup.report()["outcomes"]["kept"]
+        self.assertEqual(
+            sorted(row["path"] for row in report["rows"]), ["a.png", "b.png"]
+        )
+        self.assertFalse(report["truncated"])
+
+
 class TestCleanupJob(DuplicateFilesTestCase):
     async def test_cleanup_is_a_records_job_with_a_safety_backup(self):
         self.trio()
