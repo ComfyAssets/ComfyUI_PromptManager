@@ -130,16 +130,15 @@ _UNLINKED_PROTECTIONS_SQL = (
     + "), 0) FROM prompts p WHERE NOT EXISTS "
     "(SELECT 1 FROM generated_images gi WHERE gi.prompt_id = p.id)"
 )
-# Each kept prompt no image links to, with which protections keep it (#586).
+# Each prompt no image links to, with which protections keep it (#586); the
+# ones with none are filtered out in Python, so each predicate runs once.
 _UNLINKED_KEPT_SQL = (
     "WITH "
     + LIVE_HINT_CTES
     + " SELECT p.id, "
     + ", ".join(f"({predicate})" for predicate, _many, _one in PROTECTIONS)
     + " FROM prompts p WHERE NOT EXISTS "
-    "(SELECT 1 FROM generated_images gi WHERE gi.prompt_id = p.id) AND ("
-    + " OR ".join(f"({predicate})" for predicate, _many, _one in PROTECTIONS)
-    + ") ORDER BY p.id"
+    "(SELECT 1 FROM generated_images gi WHERE gi.prompt_id = p.id) ORDER BY p.id"
 )
 
 # Duplicate prompt groups, as the legacy cleanup finds them (case-insensitive
@@ -454,15 +453,12 @@ def _kept_unused(conn):
     The reasons are the review's, one per protection that applies, in the
     order the plan names them.
     """
-    return [
-        {
-            "prompt_id": row[0],
-            "reasons": [
-                one for flag, (_p, _many, one) in zip(row[1:], PROTECTIONS) if flag
-            ],
-        }
-        for row in conn.execute(_UNLINKED_KEPT_SQL)
-    ]
+    kept = []
+    for row in conn.execute(_UNLINKED_KEPT_SQL):
+        reasons = [one for flag, (_p, _m, one) in zip(row[1:], PROTECTIONS) if flag]
+        if reasons:
+            kept.append({"prompt_id": row[0], "reasons": reasons})
+    return kept
 
 
 class MaintenanceOperations:
