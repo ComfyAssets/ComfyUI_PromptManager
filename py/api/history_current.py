@@ -244,19 +244,36 @@ def resolve_current_candidate(
         return _unavailable("temporary_unavailable", error=True)
 
 
+def _target_authorized(target, namespace, scope, store_root=None) -> bool:
+    """A preview in the thumbnail folder (#320, folder mode) is authorized by
+    the store of its source (``preview_store.owns``: inside the key folder,
+    no link); everything else by the output namespace and the roots."""
+    if (
+        store_root is not None
+        and preview_store.current().mode == preview_store.FOLDER_MODE
+    ):
+        return preview_store.owns(store_root, target)
+    return _authorized(target, namespace, scope)
+
+
 def _open_current_target(
-    target: Path, namespace: Path, scope: CurrentOutputScope, preview: bool = False
+    target: Path,
+    namespace: Path,
+    scope: CurrentOutputScope,
+    preview: bool = False,
+    store_root: Path | None = None,
 ) -> BinaryIO:
     """Open only the canonical target and verify authority against the actual handle.
 
-    A *preview* (a file under ``thumbnails/``) may also be JPEG XL (#317)."""
+    A *preview* (a file under ``thumbnails/``) may also be JPEG XL (#317); in
+    folder mode it is authorized by the store of *store_root* (#320)."""
     if _canonical(target) != target:
         raise CurrentLocationUnavailable("not_authorized", stale=True)
     if in_trash_below_roots(target, [namespace]):
         # Also at the open: the cover chooses its preview after the candidate
         # check, and a preview can be a link into a trash folder (#543).
         raise CurrentLocationUnavailable("missing")
-    if not _authorized(target, namespace, scope):
+    if not _target_authorized(target, namespace, scope, store_root):
         raise CurrentLocationUnavailable("not_authorized")
     suffix = target.suffix.lower()
     if suffix not in SERVABLE_EXTENSIONS and not (
@@ -289,7 +306,7 @@ def _open_current_target(
         if (
             _canonical(target) != target
             or (observed.st_dev, observed.st_ino) != (current.st_dev, current.st_ino)
-            or not _authorized(target, namespace, scope)
+            or not _target_authorized(target, namespace, scope, store_root)
         ):
             raise CurrentLocationUnavailable("not_authorized", stale=True)
         return os.fdopen(fd, "rb")
@@ -379,7 +396,7 @@ def _cover_target(resolved, ensure_preview, placeholder, accepts_jxl):
         return _canonical(preview)
     if preview is not None:
         return _canonical(preview)
-    preview = media_preview_path(resolved.gallery_root, relative)
+    preview = media_preview_path(resolved.gallery_root, relative, create=True)
     if (
         ensure_preview is not None
         and preview is not None
@@ -420,7 +437,13 @@ def _prepare_current_media(
             return chosen
         if chosen is not None:
             target, is_preview = chosen, True
-    handle = _open_current_target(target, resolved.namespace, scope, is_preview)
+    handle = _open_current_target(
+        target,
+        resolved.namespace,
+        scope,
+        is_preview,
+        resolved.gallery_root if is_preview else None,
+    )
     try:
         return _OpenedCurrentMedia(
             handle,

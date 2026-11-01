@@ -221,7 +221,12 @@ def _owned(root, rel_path, preferred):
     if store is None:
         return iter(())
     stem = store / preview_stem(rel_path)
-    return owned_in_folder(stem.parent, stem.name, rel_path.suffix, preferred)
+    found = owned_in_folder(stem.parent, stem.name, rel_path.suffix, preferred)
+    if preview_store.current().mode == preview_store.SOURCE_MODE:
+        return found
+    # Folder mode: timed, so a stalled share marks the folder unreachable.
+    with preview_store.store_io():
+        return iter(list(found))
 
 
 def owned_thumbnails(root, rel_path, preferred=None):

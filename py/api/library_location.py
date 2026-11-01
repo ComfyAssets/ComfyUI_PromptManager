@@ -50,6 +50,7 @@ _REFUSAL_STATUS = {
     "not-movable": 400,
     "same-folder": 400,
     "target-invalid": 400,
+    "data-dir-served": 400,
     "target-has-library": 409,
     "target-conflict": 409,
     "insufficient-space": 507,
@@ -72,6 +73,16 @@ def _failure(message, status, code):
     return web.json_response(
         {"success": False, "code": code, "error": message}, status=status
     )
+
+
+def _inside_thumbnail_folder(path):
+    """Whether *path* lies in the thumbnail folder in use (#320)."""
+    from . import preview_store
+
+    setting = preview_store.setting()
+    if setting.mode != preview_store.FOLDER_MODE or not setting.path:
+        return False
+    return ll._inside_any(path, [setting.path])
 
 
 def _plural(count, one, many=None):
@@ -272,6 +283,8 @@ class LibraryLocationRoutesMixin:
     def _plan_library_move(self):
         """The checked plan (blocking); raises MoveFailed."""
         plan = lm.plan_move(self._live_location())
+        if _inside_thumbnail_folder(plan.target_dir):
+            raise lm.MoveFailed("data-dir-served")
         if lm.space_problem(plan) is not None:
             raise lm.MoveFailed("insufficient-space")
         return plan

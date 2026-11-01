@@ -175,7 +175,7 @@ class DeferredPreview:
 
     def resolve(self):
         """The preview's path now, or None when nothing may be written."""
-        dst = media_preview_path(self.root, self.rel)
+        dst = media_preview_path(self.root, self.rel, create=True)
         if dst is None:
             return None
         if self.strict:
@@ -298,8 +298,12 @@ def _thumbnail_source(root, parts):
     if in_trash_below_roots(found, [root]):
         return None
     rel = Path(*folder_parts, found.name)
-    dst = media_preview_path(root, rel)
-    if dst is None or dst != _current_preview(root, parts):
+    dst = media_preview_path(root, rel, create=True)
+    if dst is None:
+        # Nowhere to write (the thumbnail folder is unavailable): the
+        # original is served and nothing is written.
+        return found, None, found.suffix.lower() in VIDEO_EXTENSIONS
+    if dst != _current_preview(root, parts):
         return None
     if not preview_store.owns(root, dst):
         dst = None
@@ -745,6 +749,8 @@ class AutoThumbnailMixin:
             pool.shutdown(wait=False, cancel_futures=True)
         if final:
             shutdown_encoders()  # kill JPEG XL / ffmpeg encoders still running
+            # The thumbnail folder's probe (#320), bounded like the rest.
+            closed = preview_store.stop_probe() and closed
         return closed
 
     def _auto_thumbnail_failures(self):

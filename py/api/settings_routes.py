@@ -30,6 +30,7 @@ from . import thumbnail_settings
 from .admin import _current_image_monitor
 from .job_routes import busy_response
 from .jobs import THUMBNAILS_JOB_KIND, JobBusy
+from .thumbnail_location import needs_move_response
 
 try:
     from ...utils.validators import validate_result_timeout, validate_worker_threads
@@ -264,6 +265,12 @@ class SettingsRoutesMixin:
                     "sources": source_status,
                     "monitor": monitor,
                     "thumbnail_encoders": encoders,
+                    # #320: the full path only here (D6A).
+                    "thumbnail_location": await self._run_in_executor(
+                        functools.partial(
+                            self._thumbnail_location_payload, with_path=True
+                        )
+                    ),
                     "settings": {
                         "monitoring_enabled": GalleryConfig.MONITORING_ENABLED,
                         "save_foreign_runs": GalleryConfig.SAVE_FOREIGN_RUNS,
@@ -377,6 +384,9 @@ class SettingsRoutesMixin:
             if error_response is not None:
                 return error_response
 
+            if "thumbnail_location" in data:
+                # #320: only the Move thumbnails job changes the location.
+                return needs_move_response()
             expected_revision = data.get("expected_revision")
             if expected_revision is not None and not isinstance(expected_revision, str):
                 return web.json_response(

@@ -92,10 +92,16 @@ try:
     routes = config.routes
     api = PromptManagerAPI()
     api.add_routes(routes)
-    # Temp files of preview writes a crash interrupted (#317), off the
-    # import path: the walk may cover a large thumbnails folder.
+
+    # The thumbnail location's startup check (#320), then the temp files of
+    # preview writes a crash interrupted (#317), off the import path: the
+    # walk may cover a large thumbnails folder.
+    def _preview_startup():
+        api.start_preview_location()
+        api.sweep_thumbnail_temps()
+
     threading.Thread(
-        target=api.sweep_thumbnail_temps,
+        target=_preview_startup,
         name="PromptManagerPreviewTempSweep",
         daemon=True,
     ).start()

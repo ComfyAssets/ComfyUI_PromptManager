@@ -212,6 +212,12 @@
     "thumbnail_encoders",
     "thumbnail_encoders.jpeg",
     "thumbnail_encoders.jxl",
-    "thumbnail_encoders.webp"
+    "thumbnail_encoders.webp",
+    "thumbnail_location",
+    "thumbnail_location.available",
+    "thumbnail_location.default_path",
+    "thumbnail_location.mode",
+    "thumbnail_location.path",
+    "thumbnail_location.problem"
   ]
 }

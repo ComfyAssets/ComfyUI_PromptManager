@@ -49,6 +49,7 @@ from .images import (
     _worker_threads,
 )
 from .job_routes import busy_response
+from .thumbnail_location import location_refusal
 from .jobs import THUMBNAIL_GROUP_NAMES, THUMBNAILS_JOB_KIND, JobBusy
 from .thumbnail_convert import CONVERT_JOB_TITLE
 from .thumbnail_encode import writer_settings
@@ -182,6 +183,9 @@ class ThumbnailJobsMixin:
         options, error = thumbnail_options(body)
         if error:
             return _invalid(error)
+        refused = location_refusal()
+        if refused is not None:
+            return refused
         try:
             job = self._start_thumbnail_job(options)
         except JobBusy as busy:
@@ -459,8 +463,12 @@ class ThumbnailJobsMixin:
         or attaches to the running thumbnail job, and streams its frames. A
         legacy hold (the blocking generate or clear) or a record-changing
         job refuses it with the stream's error frame. The job goes on when
-        the client goes away.
+        the client goes away. Refused (409) while the thumbnail folder is
+        unavailable (#320).
         """
+        refused = location_refusal()
+        if refused is not None:
+            return refused
         response = web.StreamResponse(
             status=200,
             headers={

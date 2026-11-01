@@ -22,6 +22,9 @@ from PIL.PngImagePlugin import PngInfo
 from tests.browser.folder_trash import close_trash, replace_folder
 from tests.browser.malloc_tuning import pin_mmap_threshold
 from tests.browser.request_hold import register_request_holds
+from tests.browser.thumbnail_location_fixture import (
+    register_thumbnail_location_commands,
+)
 from tests.browser import slow_reset_watch
 from tests.browser.fast_reset import SEED_ON_LIVE_ENV, ScratchSeeder
 from tests.browser.workspace_activity_fixture import register_activity_commands
@@ -240,6 +243,7 @@ def create_app(root: Path) -> web.Application:
     library_editor_commands = register_library_editor_commands(routes, api, root)
     register_vocabulary_commands(routes, api, root)
     restore_sources = register_source_change_commands(routes, api)
+    reset_thumbnail_location = register_thumbnail_location_commands(routes, api, root)
     register_tagging_commands(routes, api, root, model, on_reset=restore_sources)
     register_review_commands(routes, api, root)
     register_collections_commands(routes, api, root)
@@ -451,6 +455,8 @@ def create_app(root: Path) -> web.Application:
         restore_sources()
         # No preview queued by the last test may land in the new fixture.
         await api._run_in_executor(api.close_auto_thumbnails)
+        # Previews inside each source again (#320).
+        await api._run_in_executor(reset_thumbnail_location)
         library_editor_commands.reset()
         await api._run_in_executor(reset_logs)
         data = await request.json() if request.can_read_body else {}
@@ -595,6 +601,7 @@ def create_app(root: Path) -> web.Application:
         history_commands.reset()
         library_editor_commands.reset()
         reveal_stub.reset()
+        await api._run_in_executor(reset_thumbnail_location)
         history_fixture = None
         manifest = await api._run_in_executor(
             seeder.run,
