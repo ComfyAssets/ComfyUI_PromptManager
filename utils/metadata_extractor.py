@@ -37,6 +37,7 @@ from typing import Optional, Dict, Any
 from PIL import Image
 
 from .logging_config import get_logger
+from .png_text import png_text
 
 
 class ComfyUIMetadataExtractor:
@@ -88,12 +89,14 @@ class ComfyUIMetadataExtractor:
                 # Add basic file information
                 metadata["file_info"] = self.get_file_info(image_path, image)
 
-                # Extract ComfyUI-specific metadata from PNG text chunks
-                if hasattr(image, "text") and image.text:
+                # Extract ComfyUI-specific metadata from PNG text chunks,
+                # read without decoding the pixels (#523)
+                text = png_text(image)
+                if text:
                     # Look for ComfyUI workflow data
-                    if "workflow" in image.text:
+                    if "workflow" in text:
                         try:
-                            workflow_data = json.loads(image.text["workflow"])
+                            workflow_data = json.loads(text["workflow"])
                             metadata["workflow"] = workflow_data
 
                             # Extract text encoder nodes from workflow
@@ -107,9 +110,9 @@ class ComfyUIMetadataExtractor:
                             self.logger.warning(f"Failed to parse workflow JSON: {e}")
 
                     # Look for prompt data
-                    if "prompt" in image.text:
+                    if "prompt" in text:
                         try:
-                            prompt_data = json.loads(image.text["prompt"])
+                            prompt_data = json.loads(text["prompt"])
                             metadata["prompt"] = prompt_data
                         except json.JSONDecodeError as e:
                             self.logger.warning(f"Failed to parse prompt JSON: {e}")
@@ -129,13 +132,13 @@ class ComfyUIMetadataExtractor:
                     ]
 
                     for field in metadata_fields:
-                        if field in image.text:
+                        if field in text:
                             try:
                                 # Try to parse as JSON first
-                                metadata[field] = json.loads(image.text[field])
+                                metadata[field] = json.loads(text[field])
                             except (json.JSONDecodeError, TypeError):
                                 # Store as string if not valid JSON
-                                metadata[field] = image.text[field]
+                                metadata[field] = text[field]
 
                 return (
                     metadata
