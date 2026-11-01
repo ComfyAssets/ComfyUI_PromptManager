@@ -78,6 +78,10 @@ MESSAGES = {
     ),
     "same-folder": "The new folder is the node folder itself.",
     "target-invalid": "The new folder cannot hold the library.",
+    "data-dir-served": (
+        "The new folder is inside Prompt Manager's thumbnail folder. Nothing was "
+        "moved."
+    ),
     "target-has-library": (
         "The new folder already holds a Prompt Manager library. Nothing was moved."
     ),

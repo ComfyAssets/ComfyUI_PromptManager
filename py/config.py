@@ -940,6 +940,8 @@ class PromptManagerConfig:
     THUMBNAIL_QUALITY = 80
     THUMBNAIL_EDGE = 512
     THUMBNAIL_EDGE_RANGE = (128, 2048)
+    # #320 thumbnail location (config.json ``thumbnails.location``), as read.
+    THUMBNAIL_LOCATION = None
 
     @classmethod
     def max_worker_threads(cls) -> int:
@@ -1001,6 +1003,12 @@ class PromptManagerConfig:
                 "format": cls.THUMBNAIL_FORMAT,
                 "quality": cls.THUMBNAIL_QUALITY,
                 "edge": cls.THUMBNAIL_EDGE,
+                # #320: as read; only the Move thumbnails job writes it.
+                **(
+                    {"location": cls.THUMBNAIL_LOCATION}
+                    if cls.THUMBNAIL_LOCATION is not None
+                    else {}
+                ),
             },
             "gallery": GalleryConfig.get_config(),
             "integrations": IntegrationConfig.get_config(),
@@ -1175,6 +1183,11 @@ class PromptManagerConfig:
         low, high = cls.THUMBNAIL_EDGE_RANGE
         if type(edge) is int and low <= edge <= high:
             cls.THUMBNAIL_EDGE = edge
+        # #320: kept as read (``preview_location.parse_location`` checks it;
+        # a bad value becomes an unavailable ``invalid`` location, never a
+        # silent fall-back to the sources).
+        if "location" in section:
+            cls.THUMBNAIL_LOCATION = section["location"]
 
 
 # Load configuration on import

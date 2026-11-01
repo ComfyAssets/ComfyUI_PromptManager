@@ -261,3 +261,20 @@ test('prompt deletion requires confirmation and can retry after a network failur
         await expect(await request.get(url)).toBeOK();
     }
 });
+
+// #320: with previews in one folder, the legacy gallery still shows them, made
+// and served from that folder (the fixture's own previews inside the sources
+// are never served then).
+test('the legacy gallery shows thumbnails kept in one folder', async ({ page, request }) => {
+    await expect(await request.post('/__test__/thumbnail-location', { data: { mode: 'folder' } })).toBeOK();
+    const served = page.waitForResponse(response =>
+        response.url().includes('/prompt_manager/images/serve/thumbnails/') && response.status() === 200);
+    await page.goto('/prompt_manager/gallery');
+    await expect(page.locator('#galleryGrid .image-item')).toHaveCount(2);
+    const response = await served; // made in the folder before it was served
+    const name = decodeURIComponent(new URL(response.url()).pathname.split('/serve/thumbnails/')[1]);
+    const files = await (await request.get('/__test__/thumbnail-files')).json();
+    const stem = name.replace(/\.[^.]+$/, '');
+    expect(files.folder.some(file => /^[a-z0-9_-]+-[0-9a-f]{8}\//.test(file)
+        && file.slice(file.indexOf('/') + 1).replace(/\.[^.]+$/, '') === stem)).toBe(true);
+});

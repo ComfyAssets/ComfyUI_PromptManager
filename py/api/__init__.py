@@ -11,6 +11,7 @@ Split into domain-specific mixins for maintainability:
 - JobRoutesMixin: the session job registry behind Activity (py/api/jobs.py)
 - ImageTagJobsMixin: bulk Add tags / Auto-tag as image-tags jobs
 - ThumbnailJobsMixin: thumbnail plan, thumbnail job and the gallery stream on it
+- ThumbnailLocationMixin: the thumbnail location check and payloads (#320)
 - ThumbnailConvertMixin: Convert outdated thumbnails (#317), a thumbnail job mode
 - AutoThumbnailMixin: previews made on first view, on capture and after a scan
 - ReviewRoutesMixin: the Needs review queue, item detail and decisions
@@ -60,6 +61,11 @@ from .settings_routes import SettingsRoutesMixin
 from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
+from .thumbnail_location import ThumbnailLocationMixin
+from .thumbnail_move import ThumbnailMoveMixin
+from .thumbnail_move_plan import ThumbnailMovePlanMixin
+from .thumbnail_move_recovery import ThumbnailMoveRecoveryMixin
+from .thumbnail_prune import ThumbnailPruneMixin
 from .thumbnail_convert import ThumbnailConvertMixin
 from .thumbnail_auto import AutoThumbnailMixin
 from .system import SystemRoutesMixin
@@ -338,6 +344,11 @@ class PromptManagerAPI(
     JobRoutesMixin,
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
+    ThumbnailLocationMixin,
+    ThumbnailMovePlanMixin,
+    ThumbnailMoveMixin,
+    ThumbnailMoveRecoveryMixin,
+    ThumbnailPruneMixin,
     ThumbnailConvertMixin,
     AutoThumbnailMixin,
     SystemRoutesMixin,
@@ -716,6 +727,7 @@ class PromptManagerAPI(
         # ── Register domain-specific routes from mixins ───────────────
 
         self._register_pair_routes(routes)
+        self._register_thumbnail_move_routes(routes)
         self._register_library_routes(routes)
         self._register_library_delete_routes(routes)
         self._register_vocabulary_routes(routes)
@@ -852,20 +864,11 @@ class PromptManagerAPI(
                         f"{url_quote(rel_path.as_posix(), safe='/')}"
                     )
 
-                    # Any preview the file owns, the current format first (#317)
-                    from . import thumbnail_settings
-                    from .prompts import thumbnail_url_for
+                    # Any preview the file owns, the current format first
+                    # (#317); no store I/O here in folder mode (#320).
+                    from .images import listing_thumbnail_url
 
-                    existing = thumbnail_settings.existing_thumbnail(
-                        output_path, rel_path
-                    )
-                    thumbnail_url = None
-                    if existing is not None:
-                        thumb_rel = (
-                            thumbnail_settings.thumbnail_stem_rel(rel_path)
-                            + existing.suffix
-                        )
-                        thumbnail_url = thumbnail_url_for(thumb_rel, existing)
+                    thumbnail_url = listing_thumbnail_url(output_path, rel_path)
                     if thumbnail_url:
                         image["thumbnail_url"] = thumbnail_url
                     break  # Found matching root, stop searching

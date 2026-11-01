@@ -30,6 +30,8 @@ import ntpath
 import os
 import re
 
+from .preview_location import HOLDS_THUMBNAILS_REASON
+
 logger = logging.getLogger("prompt_manager.api")
 
 MAX_SOURCE_PATH = 4096  # characters
@@ -114,7 +116,26 @@ def source_problem(text):
     code = source_form_error(text)
     if code is not None:
         return code, FORM_REASONS[code]
-    return GalleryConfig.gallery_root_problem(text)
+    code, reason = GalleryConfig.gallery_root_problem(text)
+    if code is None and _holds_thumbnails(GalleryConfig.resolve_gallery_root(text)):
+        return "holds-thumbnails", HOLDS_THUMBNAILS_REASON
+    return code, reason
+
+
+def _holds_thumbnails(path):
+    """Whether *path* is inside or around the thumbnail folder in use (#320):
+    a source there would list Prompt Manager's own previews."""
+    from . import preview_store
+
+    try:
+        from ...utils.library_location import _inside_any
+    except ImportError:  # tests import the package top-level
+        from utils.library_location import _inside_any
+
+    setting = preview_store.setting()
+    if setting.mode != preview_store.FOLDER_MODE or not setting.path:
+        return False
+    return _inside_any(path, [setting.path]) or _inside_any(setting.path, [path])
 
 
 def public_spelling(text):

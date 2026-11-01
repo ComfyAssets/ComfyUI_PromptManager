@@ -92,10 +92,21 @@ try:
     routes = config.routes
     api = PromptManagerAPI()
     api.add_routes(routes)
-    # Temp files of preview writes a crash interrupted (#317), off the
-    # import path: the walk may cover a large thumbnails folder.
+
+    # The thumbnail location's startup check (#320), then the temp files of
+    # preview writes a crash interrupted (#317), off the import path: the
+    # walk may cover a large thumbnails folder.
+    # #320: the configured thumbnail location is in force before any request
+    # (no I/O); the thread below checks it.
+    api.use_preview_location()
+
+    def _preview_startup():
+        api.start_preview_location()
+        api.recover_thumbnail_move()  # an interrupted move, before the sweep
+        api.sweep_thumbnail_temps()
+
     threading.Thread(
-        target=api.sweep_thumbnail_temps,
+        target=_preview_startup,
         name="PromptManagerPreviewTempSweep",
         daemon=True,
     ).start()
@@ -108,6 +119,8 @@ try:
         # Build each output root's Images listing once the server's loop runs,
         # so the first open does not wait for the walk (#348).
         host_app.on_startup.append(api.warm_gallery_listings)
+        # #320: old thumbnails a move left to remove, once it is checked.
+        host_app.on_startup.append(api.finish_thumbnail_move)
     if host_app is not None and hasattr(host_app, "on_shutdown"):
         # Open Needs review change streams end before the server waits on them.
         host_app.on_shutdown.append(api.close_review_events)

@@ -46,7 +46,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import thumbnail_settings
+from . import preview_location, preview_store, thumbnail_settings
 
 try:
     from ...utils.logging_config import get_logger
@@ -101,14 +101,20 @@ def temp_sibling(dst, tag="part"):
 
 
 def replace_unless_held(tmp, dst, guard=None):
-    """Rename *tmp* over *dst*, unless ``guard()`` is false (PreviewWriteHeld)."""
-    if guard is not None and not guard():
-        raise PreviewWriteHeld(PREVIEW_HELD)
-    os.replace(tmp, dst)
+    """Rename *tmp* over *dst*, unless ``guard()`` is false (PreviewWriteHeld).
+
+    The check and the rename run under ``preview_store.write_lock`` (#320): a
+    guard from ``preview_store.write_guard`` also refuses a write that started
+    before the thumbnail location changed."""
+    with preview_store.committed(guard) as allowed:
+        if not allowed:
+            raise PreviewWriteHeld(PREVIEW_HELD)
+        os.replace(tmp, dst)
 
 
 # ``temp_sibling``'s names: ``.<stem>.<tag>-<pid>-<thread id><ext>``.
 _TEMP_NAME = re.compile(r"^\..+\.(?:part|src)-(\d+)-\d+\.[A-Za-z0-9]+$")
+_MOVE_TEMP_NAME = re.compile(r"\.pm-move-[0-9a-f]{8}\.tmp$")
 # A temp at least this old (seconds) outlived its write: no encode runs longer.
 STRAY_TEMP_AGE = 4 * ENCODE_TIMEOUT
 # When this process started (this module's import): a temp carrying its PID
@@ -120,7 +126,10 @@ def sweep_stray_temps(folder, min_age=None):
     """Remove the temp files a crashed write left under *folder* (a preview
     folder, walked without following links); returns ``(count, bytes)``.
 
-    Only ``temp_sibling`` names are touched, never a link. With *min_age*
+    Only ``temp_sibling`` names are touched, never a link: a folder that is a
+    link, junction or reparse point is not walked into (Windows walks into a
+    junction even without ``followlinks``), and each file passes
+    ``preview_store.may_write`` before it goes. With *min_age*
     (seconds, the startup sweep) a temp younger than that, or one this
     process wrote since it started (it may still be writing it), is left;
     ``min_age=0`` (the clear, which holds every preview write) removes them
@@ -130,19 +139,39 @@ def sweep_stray_temps(folder, min_age=None):
     now = time.time()
     own = str(os.getpid())
     count = size = 0
-    for root, _dirs, files in os.walk(folder):
+    try:
+        if preview_location.is_link_like(folder):
+            return count, size
+    except OSError as exc:
+        logger.debug(f"Not sweeping {folder}: {exc}")
+        return count, size
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not _link_like(Path(root) / d)]
         for name in files:
             match = _TEMP_NAME.match(name)
-            if match is None:
+            # A move's copy temp (#320): ``<name>.pm-move-<8 hex>.tmp``.
+            move_temp = match is None and _MOVE_TEMP_NAME.search(name)
+            if match is None and not move_temp:
                 continue
             path = Path(root) / name
             try:
                 stat = path.lstat()
-                if path.is_symlink() or not path.is_file():
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or _link_like(path)
+                    or not preview_store.may_write(path)
+                ):
                     continue
                 if min_age and (
                     now - stat.st_mtime < min_age
-                    or (match.group(1) == own and stat.st_mtime >= PROCESS_STARTED)
+                    or move_temp
+                    and stat.st_mtime >= PROCESS_STARTED
+                    or (
+                        match is not None
+                        and match.group(1) == own
+                        and stat.st_mtime >= PROCESS_STARTED
+                    )
                 ):
                     continue
                 path.unlink()
@@ -152,6 +181,14 @@ def sweep_stray_temps(folder, min_age=None):
             count += 1
             size += stat.st_size
     return count, size
+
+
+def _link_like(path):
+    """``is_link_like``, with a path that cannot be checked counted as one."""
+    try:
+        return preview_location.is_link_like(path)
+    except OSError:
+        return True
 
 
 def _unlink_quietly(path):

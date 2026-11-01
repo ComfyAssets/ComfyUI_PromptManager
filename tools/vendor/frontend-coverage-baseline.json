@@ -653,6 +653,12 @@
     "functions": 95,
     "statements": 98
   },
+  "workspace/system-thumbnail-location.mjs": {
+    "lines": 80,
+    "branches": 65,
+    "functions": 75,
+    "statements": 80
+  },
   "workspace/system-thumbnails.mjs": {
     "lines": 98,
     "branches": 95,

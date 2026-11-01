@@ -656,9 +656,10 @@ function mapSourcesConcept(reference, { settings, sources }) {
             // D113: the range ends at the server's core count (the concept's fixed 16) and shows the real worker count.
             return [{ ...row, control: { ...row.control, max: String(settings.cpu_count), value: String(settings.worker_threads) } }];
         }),
-        // D158: the inserted row after the first setting row; D98: "Refresh files" closes the surface.
+        // D158: the inserted row after the first setting row; D196 (#320): the Thumbnail location block after
+        // "Thumbnail generation"; D98: "Refresh files" closes the surface.
         surface: { ...reference.surface, tree: [...reference.surface.tree.slice(0, rowAt + 1), 'div.setting-row',
-            ...reference.surface.tree.slice(rowAt + 1), 'div.operation'] },
+            ...reference.surface.tree.slice(rowAt + 1), 'div.setting-block', 'div.operation'] },
         operations: [...reference.operations, { ...reference.operations[0], title: REFRESH_FILES.title,
             description: REFRESH_FILES.description, actions: [{ ...reference.operations[0].actions[0], text: REFRESH_FILES.label }] }],
     };

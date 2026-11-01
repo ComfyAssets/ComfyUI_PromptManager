@@ -34,7 +34,8 @@ from .gallery_listing import (
     WalkOutcome,
     walk_root,
 )
-from . import thumbnail_settings
+from . import preview_store, thumbnail_settings
+from .thumbnail_location import location_refusal
 from .thumbnail_encode import (
     PREVIEW_HELD,
     EncoderClosed,
@@ -1068,11 +1069,22 @@ def _iter_media_files(output_path, max_files):
 
 
 def media_thumbnail_rel(rel_path, settings=None):
-    """``thumbnails/<rel>_thumb<ext>`` (POSIX) for the media file *rel_path*:
-    the name the preview gets when it is written now (#317), images and
-    videos alike (``writer_settings``' extension)."""
+    """``thumbnails/<rel>_thumb<ext>`` (POSIX URL text) for the media file
+    *rel_path*: the name the preview gets when it is written now (#317),
+    images and videos alike (``writer_settings``' extension). Where it is on
+    disk is ``media_preview_path``."""
     settings = settings or writer_settings()
     return thumbnail_settings.thumbnail_rel(rel_path, settings.extension)
+
+
+def media_preview_path(output_path, rel_path, settings=None, *, create=False):
+    """Where the preview of *rel_path* is written now (``preview_store``);
+    *create* for a writer (a new source gets its key). None when nothing
+    may be written (the thumbnail folder is unavailable)."""
+    settings = settings or writer_settings()
+    return preview_store.preview_path(
+        output_path, rel_path, settings.extension, create=create
+    )
 
 
 def existing_media_thumbnail(output_path, rel_path):
@@ -1082,6 +1094,27 @@ def existing_media_thumbnail(output_path, rel_path):
     return thumbnail_settings.existing_thumbnail(
         output_path, rel_path, writer_settings().extension
     )
+
+
+def listing_thumbnail_url(output_path, rel_path):
+    """The thumbnail URL of an older listing (``_enrich_images``, the
+    auto-tag scan), or None. These run on the event loop: in folder mode
+    (#320) the store is never touched there, so the URL names the preview
+    as it is written now and the serve route finds or makes it off the loop
+    (None while the thumbnail folder is unavailable)."""
+    from .prompts import thumbnail_url_for
+
+    location = preview_store.current()
+    if location.mode == preview_store.FOLDER_MODE:
+        if not location.available:
+            return None
+        quoted = urllib.parse.quote(media_thumbnail_rel(rel_path), safe="/")
+        return f"/prompt_manager/images/serve/{quoted}"
+    existing = thumbnail_settings.existing_thumbnail(output_path, rel_path)
+    if existing is None:
+        return None
+    thumb_rel = thumbnail_settings.thumbnail_stem_rel(rel_path) + existing.suffix
+    return thumbnail_url_for(thumb_rel, existing)
 
 
 def media_thumbnail(output_path, rel_path, root_index, *, root_scope=None):
@@ -2798,13 +2831,56 @@ class ImageRoutesMixin:
                     output_dirs[0], filepath, int(root_param), len(outputs)
                 )
 
+            # Preview text is mapped by the resolver (#320); any other text,
+            # ``Thumbnails/...`` media on a case-sensitive disk included,
+            # keeps the plain join.
+            preview_parts = (
+                tuple(filepath.split("/"))
+                if preview_store.is_preview_text(filepath)
+                else None
+            )
+            location = preview_store.current()
+            if location.mode == preview_store.FOLDER_MODE:
+                if preview_parts is None and await self._run_image(
+                    self._in_source_thumbnails, output_dirs, filepath
+                ):
+                    # Previews live in the thumbnail folder: anything else
+                    # under a source's thumbnails/ is a leftover (#320), in
+                    # any case on a case-insensitive disk.
+                    return _forbidden()
+                if preview_parts is not None:
+                    # Store I/O never runs on the event loop (a share may
+                    # stall): the lookup runs on the image pool.
+                    found = await self._run_image(
+                        self._find_preview, output_dirs, preview_parts, location
+                    )
+                    if found == "forbidden":
+                        return _forbidden()
+                    if found is not None:
+                        return self._file_response(found)
             for output_path in output_dirs:
-                image_path = output_path / filepath
+                if (
+                    preview_parts is not None
+                    and location.mode == preview_store.FOLDER_MODE
+                ):
+                    break  # looked up above
+                if preview_parts is None:
+                    image_path = output_path / filepath
+                else:
+                    image_path = preview_store.request_path(output_path, preview_parts)
+                    if image_path is None:
+                        continue
                 if not image_path.exists():
                     continue
-                # A symlink that points outside the root is a hard deny, not
-                # a fall-through to the next root.
-                if not _is_within(image_path, output_path):
+                # A symlink that points outside the root (a preview: outside
+                # the folder holding its store) is a hard deny, not a
+                # fall-through to the next root.
+                container = (
+                    output_path
+                    if preview_parts is None
+                    else preview_store.store_container(output_path)
+                )
+                if not _is_within(image_path, container):
                     return _forbidden()
                 if in_trash_below_roots(image_path, output_dirs):
                     return _file_not_found()
@@ -2829,6 +2905,48 @@ class ImageRoutesMixin:
             return web.json_response(
                 {"success": False, "error": _safe_error(e)}, status=500
             )
+
+    @staticmethod
+    def _in_source_thumbnails(output_dirs, filepath):
+        """Whether *filepath* lies in a source's ``thumbnails`` folder: its
+        first part is ``thumbnails`` exactly, or another case of it that is
+        the same folder (a case-insensitive disk). ``Thumbnails/`` media on
+        a case-sensitive disk is another folder and stays served."""
+        first = filepath.split("/", 1)[0]
+        if first == "thumbnails":
+            return True
+        if first.casefold() != "thumbnails":
+            return False
+        for output_path in output_dirs:
+            spelled = output_path / first
+            cache = preview_store.source_folder(output_path)
+            try:
+                if spelled.is_dir() and cache.is_dir() and spelled.samefile(cache):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
+    def _find_preview(output_dirs, parts, location):
+        """The preview file *parts* names in folder mode, ``"forbidden"``
+        (it resolves out of its store or through a link) or None (blocking;
+        the first root whose store holds it, in ``_select_root`` order)."""
+        for output_path in output_dirs:
+            image_path = preview_store.request_path(output_path, parts, location)
+            if image_path is None:
+                continue
+            try:
+                with preview_store.store_io():
+                    if not os.path.lexists(image_path):
+                        continue
+                    if not preview_store.owns(output_path, image_path, location):
+                        return "forbidden"
+                    if image_path.is_file():
+                        return image_path
+            except OSError:
+                return None
+        return None
 
     def _is_recorded_media(self, path) -> bool:
         """Whether the database records ``path`` as a linked image.
@@ -2956,6 +3074,9 @@ class ImageRoutesMixin:
         data, error = await _json_body_or_error(request)
         if error is not None:
             return error
+        refused = location_refusal()
+        if refused is not None:
+            return refused
         return await self._run_held(
             THUMBNAILS_JOB_KIND,
             THUMBNAIL_GENERATION_TITLE,
@@ -2988,6 +3109,7 @@ class ImageRoutesMixin:
         """Blocking thumbnail generation loop (run in executor)."""
         settings = writer_settings(settings)
         start = _time.monotonic()
+        thumbnails_dir = preview_store.given_store(output_path, thumbnails_dir)
         plan = self._plan_thumbnails(output_path, thumbnails_dir, settings=settings)
         payload = self._execute_thumbnail_plan(plan, settings, start)
         payload["thumbnails_path"] = _public_path(thumbnails_dir)
@@ -3000,7 +3122,8 @@ class ImageRoutesMixin:
         start = _time.monotonic()
         plan = self._plan_gallery_thumbnails(output_dirs, settings=settings)
         payload = self._execute_thumbnail_plan(plan, settings, start)
-        payload["thumbnails_path"] = _public_path(output_dirs[0] / "thumbnails")
+        store = preview_store.store_dir(output_dirs[0])
+        payload["thumbnails_path"] = None if store is None else _public_path(store)
         return payload
 
     def _execute_thumbnail_plan(self, plan: dict, settings, start: float) -> dict:
@@ -3043,9 +3166,12 @@ class ImageRoutesMixin:
             if stop is not None and stop():
                 break
             root = Path(root)
+            store = preview_store.ensure_store(root)
+            if store is None:
+                continue  # the thumbnail folder is unavailable
             plan = self._plan_thumbnails(
                 root,
-                root / "thumbnails",
+                store,
                 mode=mode,
                 stop=stop,
                 settings=settings,
@@ -3084,6 +3210,8 @@ class ImageRoutesMixin:
                     "format": writer_settings().format,
                     # Files whose automatic preview failed this session (#249).
                     "failed": self._auto_thumbnail_failures(),
+                    # #320: where previews live (no path here, D6A).
+                    "location": self._thumbnail_location_payload(with_path=False),
                     "collection_id": hashlib.sha256(collection.encode()).hexdigest()[
                         :16
                     ],
@@ -3129,9 +3257,11 @@ class ImageRoutesMixin:
         """
         settings = writer_settings(settings)
         output_path = Path(output_path)
-        thumbnails_dir = Path(thumbnails_dir)
+        thumbnails_dir = preview_store.given_store(output_path, thumbnails_dir)
         plan = {key: 0 for key in _PLAN_COUNTS}
         plan.update(targets=[], fresh_files=[])
+        if thumbnails_dir is None:
+            return plan  # the thumbnail folder is unavailable
         folders = {}
         removed = self._removal_check_under(output_path)
         for src in _iter_media_files(output_path, MAX_GALLERY_FILES):
@@ -3221,6 +3351,9 @@ class ImageRoutesMixin:
             "dir": src.parent.name,
             "type": "video" if is_video else "image",
         }
+        # Taken when the write starts: a thumbnail location switched since
+        # then drops the write at its rename (#320).
+        guard = preview_store.write_guard(guard)
         dst = Path(dst)
         if dst.suffix != settings.extension:
             dst = dst.with_suffix(settings.extension)
@@ -3231,7 +3364,7 @@ class ImageRoutesMixin:
                 return {**result, "action": "error", "error": "File no longer exists"}
             if not rebuild and _thumbnail_is_fresh(src, dst):
                 return {**result, "action": "skipped", "path": str(dst)}
-            dst.parent.mkdir(parents=True, exist_ok=True)
+            preview_store.make_parent(dst)
             if is_video:
                 made = self._generate_video_thumbnail(
                     src,
@@ -3436,8 +3569,12 @@ class ImageRoutesMixin:
 
         Invalid thumbnail directories return 400; unavailable gallery roots
         return 404, and unexpected filesystem failures return 500. Holds the
-        registry as guarded work, like generation.
+        registry as guarded work, like generation. Refused (409) while the
+        thumbnail folder is unavailable (#320).
         """
+        refused = location_refusal()
+        if refused is not None:
+            return refused
         return await self._run_held(
             THUMBNAILS_JOB_KIND,
             THUMBNAIL_CLEAR_TITLE,
@@ -3501,8 +3638,12 @@ class ImageRoutesMixin:
             self.logger.debug(f"No roots to sweep for preview temp files: {exc}")
             return 0
         for output_path in output_dirs:
-            folder = Path(output_path) / "thumbnails"
-            if folder.is_symlink() or not folder.is_dir():
+            folder = preview_store.store_dir(output_path)
+            if (
+                folder is None
+                or preview_store.store_is_link(folder)
+                or not folder.is_dir()
+            ):
                 continue
             removed += sweep_stray_temps(folder)[0]
         if removed:
@@ -3520,13 +3661,16 @@ class ImageRoutesMixin:
         directories = []
         for output_path in output_dirs:
             output_path = Path(output_path)
-            thumbnails_dir = output_path / "thumbnails"
+            thumbnails_dir = preview_store.store_dir(output_path)
+            if thumbnails_dir is None:
+                continue
             if not thumbnails_dir.exists() and not thumbnails_dir.is_symlink():
                 continue
+            container = preview_store.store_container(output_path)
             if (
-                thumbnails_dir.is_symlink()
-                or not _is_within(thumbnails_dir, output_path)
-                or _canonical(thumbnails_dir) == _canonical(output_path)
+                preview_store.store_is_link(thumbnails_dir)
+                or not _is_within(thumbnails_dir, container)
+                or _canonical(thumbnails_dir) == _canonical(container)
             ):
                 raise ValueError(
                     "Safety check failed: invalid thumbnails directory path"
@@ -3541,7 +3685,15 @@ class ImageRoutesMixin:
             temps, temp_bytes = sweep_stray_temps(thumbnails_dir, min_age=0)
             cleared_count += temps
             cleared_size += temp_bytes
-            for root, _dirs, files in os.walk(thumbnails_dir):
+            folder_mode = preview_store.current().mode == preview_store.FOLDER_MODE
+            for root, dirs, files in os.walk(thumbnails_dir):
+                if folder_mode:
+                    # Never into a junction or reparse point (#320).
+                    dirs[:] = [
+                        d
+                        for d in dirs
+                        if not preview_store.store_is_link(Path(root) / d)
+                    ]
                 for name in files:
                     path = Path(root) / name
                     if (
@@ -3549,6 +3701,7 @@ class ImageRoutesMixin:
                         or path.suffix.lower()
                         not in thumbnail_settings.THUMBNAIL_EXTENSIONS
                         or path.is_symlink()
+                        or not preview_store.may_write(path)
                     ):
                         continue
                     try:

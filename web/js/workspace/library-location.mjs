@@ -97,6 +97,9 @@ export function reviewGrid(location) {
             ? 'The database backups (config.json stays where PROMPT_MANAGER_CONFIG_PATH names it)'
             : 'config.json and the database backups'],
         ['Old files', 'Renamed *.moved-to-…, never deleted'],
+        // #320 D201: previews kept in one folder do not move with the library (D8A).
+        ...(typeof location.thumbnails_folder === 'string' && location.thumbnails_folder
+            ? [['Thumbnails', `Stay in ${location.thumbnails_folder}. Move them in System › Sources & scans.`]] : []),
     ];
 }
 

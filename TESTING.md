@@ -5899,6 +5899,73 @@ are closed before `os.replace`; renames stay inside one folder; folder identity 
 folder are refused. The browser test server closes its own log handlers before its temp
 root (which now holds the logs) is removed.
 
+### Thumbnail location contract (#320)
+
+Previews live in each source's `thumbnails/` (the default) or in one folder, `<folder>/<source key>/…`. Every reader,
+writer and remover asks `py/api/preview_store.py`; `tests/test_preview_store.py` fails on a `thumbnails` path join
+anywhere else. The setting is `thumbnails.location` in config.json, and only the Move thumbnails job writes it: POST
+`/settings` answers 409 `location-needs-move`.
+
+- **Keys and marker.** A key is a slug plus a hash of the source's identity. The folder's
+  `.promptmanager-thumbnails.json` stores each key with its identity and install. Only a single `<slug>-<hex>` name
+  is ever joined onto the folder, and anything else in a marker is dropped. Every write and delete passes
+  `preview_store.may_write`: below a key folder, with no link, junction or reparse point on the way
+  (`tests/test_preview_store_folder.py`, including tampered markers).
+- **Unavailable.** A folder is unavailable when it is missing, is a link, holds no marker or holds another
+  folder's marker. A probe checks it every 5 s, and a store call that fails or stalls marks it at once. While it is
+  unavailable:
+  - originals are served and nothing is written anywhere;
+  - generate, convert, clear and prune answer 409 `location-unavailable`;
+  - the folder is never made again except by Recreate folder.
+
+  The configured location is in force before any request. A bad value is `invalid`, never a fall-back to the
+  sources.
+- **Move thumbnails.** The job is a `thumbnails` job with `scope.mode` `move` (`tests/test_thumbnail_move.py`). It
+  runs in this order:
+  1. The review answers `POST /images/thumbnails/plan`; not enough space answers 507.
+  2. A token starts the job.
+  3. Automatic previews are held.
+  4. Copies run on the job pool in chunks of 2 or 4 files, each with its size checked and its mtime rounded up to
+     2 s.
+  5. One config commit makes the switch and records the old stores under `cleanup`. The job cannot be cancelled
+     from here.
+  6. The old copies are removed.
+
+  If it fails or is cancelled before the switch, nothing changes. A crash leaves
+  `<data>/data/thumbnail-move.json`, which the next start undoes. Old copies still held open are removed by the
+  next start's "Move thumbnails (finishing)" job. Leaving a folder also removes the previews of this install's
+  sources that are no longer listed (Q320-8).
+- **Remove thumbnails of removed sources** (`scope.mode` `prune`). It is offered in Thumbnail maintenance only in
+  folder mode, and it touches only this install's keys.
+- **Page tests.** `tests/browser/workspace-thumbnail-location.spec.mjs` covers the row, both moves, the in-place
+  refusal, the confirmation, the notice with Recreate and with Use this folder. The legacy gallery runs once in
+  folder mode (`workflows.spec.mjs`). The hooks are `tests/browser/thumbnail_location_fixture.py`.
+
+Beyond the concept, against the approved static mock `docs/egm/post-3.4.1/320-mock`:
+
+- D196: the Thumbnail location row in System › Sources & scans, after Thumbnail generation.
+  - The status line is "Now: inside each source." or "Now: one folder, <path>.". It does not show the mock's
+    "(3 sources, 8,512 thumbnails)" counts, because counting means walking every preview on each view. It says
+    "Using the default folder next to your library." and names old copies that wait to be removed.
+- D197: the Move thumbnails review uses the shared review.
+  - A grid value may be a lead sentence with a list (`[lead, items]`).
+  - Sources no longer listed appear under "Removed after the move", where the mock has a "Not moved" row
+    (maintainer answer to Q320-8: remove).
+  - The Free space line is "<size> free", without naming the disk.
+- D198: Activity's view of `mode: move` and `mode: prune`.
+  - Tiles for a move: Moved, Already there, Left in place, Errors. Tiles for a prune: Removed, Left in place,
+    Errors.
+  - The step line under the bar is `#job-phase`.
+  - Cancel shows only until the switch.
+- D199: the unavailable notice on Overview and Sources & scans.
+  - Recreate folder appears for a missing folder, after a confirmation.
+  - Use this folder appears for another folder's marker.
+  - Change location focuses the row; on Overview it opens Sources & scans.
+- D200: Thumbnail maintenance's "Remove thumbnails of removed sources" scope, with the plan line and a grid of
+  key folders.
+- D201: Move library's review adds "Thumbnails: Stay in <path>. Move them in System › Sources & scans." in folder
+  mode.
+
 ### Backup and restore contract (#249 System S8)
 
 A restore is staged, then published (`database/restore_stage.py`). The upload is

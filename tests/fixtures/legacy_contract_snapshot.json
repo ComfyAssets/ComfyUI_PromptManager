@@ -126,6 +126,9 @@
     "POST /prompt_manager/images/removed/return",
     "POST /prompt_manager/images/rescope",
     "POST /prompt_manager/images/reveal",
+    "POST /prompt_manager/images/thumbnails/location/adopt",
+    "POST /prompt_manager/images/thumbnails/location/recreate",
+    "POST /prompt_manager/images/thumbnails/plan",
     "POST /prompt_manager/jobs/autotag",
     "POST /prompt_manager/jobs/duplicates",
     "POST /prompt_manager/jobs/image-tags",
@@ -217,6 +220,13 @@
     "thumbnail_encoders",
     "thumbnail_encoders.jpeg",
     "thumbnail_encoders.jxl",
-    "thumbnail_encoders.webp"
+    "thumbnail_encoders.webp",
+    "thumbnail_location",
+    "thumbnail_location.available",
+    "thumbnail_location.cleanup_pending",
+    "thumbnail_location.default_path",
+    "thumbnail_location.mode",
+    "thumbnail_location.path",
+    "thumbnail_location.problem"
   ]
 }

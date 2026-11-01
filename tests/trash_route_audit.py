@@ -15,6 +15,8 @@ KNOWN_FILE_READERS = frozenset(
         "images.py:os.open(",
         "__init__.py:Image.open(",
         "logging_routes.py:os.open(",
+        # The thumbnail folder's marker lock file (#320), never a media file.
+        "preview_location.py:os.open(",
         "thumbnail_auto.py:FileResponse(",
         "thumbnail_encode.py:Image.open(",
     }
@@ -77,6 +79,7 @@ ROUTE_AUDIT = {
         "POST /prompt_manager/jobs/autotag",
         "POST /prompt_manager/jobs/thumbnails",
         "GET /prompt_manager/images/thumbnails/plan",
+        "POST /prompt_manager/images/thumbnails/plan",
         "GET /prompt_manager/images/thumbnails/status",
         "POST /prompt_manager/images/generate-thumbnails",
         "POST /prompt_manager/images/generate-thumbnails/progress",
@@ -172,6 +175,8 @@ ROUTE_AUDIT = {
         "POST /prompt_manager/cleanup",
         "POST /prompt_manager/diagnostics/test-link",
         "POST /prompt_manager/images/clear-thumbnails",
+        "POST /prompt_manager/images/thumbnails/location/adopt",
+        "POST /prompt_manager/images/thumbnails/location/recreate",
         "POST /prompt_manager/jobs/model-download",
         "POST /prompt_manager/jobs/{job_id}/cancel",
         "POST /prompt_manager/library",
