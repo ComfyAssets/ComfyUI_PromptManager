@@ -84,6 +84,47 @@ class TestPairMetadataRoutes(PairMetadataAPITestCase):
         self.assertEqual(plan["protected"]["reasons"], ["1 where pairs disagree"])
         self.assertEqual(job.counters["protected"], 1)
         self.assertIsNone(self.category(prompt))
+        # Live test (#550): the count comes with its rows, in the review's wording.
+        self.assertEqual(
+            job.outcomes["protected"],
+            [
+                {
+                    "path": "",
+                    "root": "",
+                    "root_index": None,
+                    "detail": (
+                        f"Prompt {prompt}: kept, pairs disagree on category: x, y"
+                    ),
+                }
+            ],
+        )
+        report = job.report()["outcomes"]["protected"]
+        self.assertEqual((report["count"], report["truncated"]), (1, False))
+
+    async def test_report_lists_every_kept_prompt(self):
+        PromptManagerConfig.SAFETY_BACKUP = False
+        count = MAX_OUTCOME_ROWS + 5
+        for n in range(count):
+            _pair, prompt = self.pair(f"kept {n:03d}", category="portrait")
+            with self.api.db.model.get_connection() as conn:
+                conn.execute(
+                    "UPDATE prompts SET updated_at='2099-01-01T00:00:00+00:00' "
+                    "WHERE id=?",
+                    (prompt,),
+                )
+        _plan, _summary, job = await self.run_apply(OPERATION)
+        self.assertEqual(job.counters["protected"], count)
+        self.assertEqual(len(job.outcomes["protected"]), MAX_OUTCOME_ROWS)
+        protected = job.report()["outcomes"]["protected"]
+        self.assertEqual(
+            (len(protected["rows"]), protected["truncated"]), (count, False)
+        )
+        self.assertTrue(
+            protected["rows"][0]["detail"].endswith(
+                ": kept, edited after it was saved; its empty category or tags "
+                "may be intentional"
+            )
+        )
 
     async def test_policy_off_writes_without_a_backup(self):
         PromptManagerConfig.SAFETY_BACKUP = False

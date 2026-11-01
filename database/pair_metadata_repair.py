@@ -304,6 +304,25 @@ def _protected_detail(result, key):
     return "Kept: pairs disagree on tags"
 
 
+def _kept(results):
+    """One row per kept prompt, its review reasons without "Kept: " (#550)."""
+    rows = []
+    for result in results:
+        classes = set(_protected_classes(result))
+        if classes:
+            rows.append(
+                {
+                    "prompt_id": result["id"],
+                    "reasons": [
+                        _protected_detail(result, key).removeprefix("Kept: ")
+                        for key in DETAIL_ORDER
+                        if key in classes
+                    ],
+                }
+            )
+    return rows
+
+
 def _details(results, targets):
     rows = []
     for key in DETAIL_ORDER:
@@ -398,8 +417,10 @@ def _fill_tags(conn, fills, expected):
 def apply_pair_metadata(conn, fingerprint, targets):
     """Apply the reviewed fills on ``conn`` (inside BEGIN IMMEDIATE).
 
-    Returns ``{changed, categories, tag_sets, rows}``; ``rows`` lists every
-    filled prompt (``{prompt_id, category?, tags?}``), never capped.
+    Returns ``{changed, categories, tag_sets, rows, kept}``; ``rows`` lists
+    every filled prompt (``{prompt_id, category?, tags?}``) and ``kept`` every
+    prompt the plan keeps (``{prompt_id, reasons}``, in the review's wording
+    and order), both never capped.
     """
     results, current = _state(conn)
     if current != fingerprint or _targets(results) != targets:
@@ -427,4 +448,5 @@ def apply_pair_metadata(conn, fingerprint, targets):
         "categories": len(categories),
         "tag_sets": len(tags),
         "rows": rows,
+        "kept": _kept(results),
     }

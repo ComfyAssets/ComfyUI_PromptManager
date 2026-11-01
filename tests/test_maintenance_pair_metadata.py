@@ -401,6 +401,52 @@ class TestApply(PairMetadataCase):
         )
         self.assertEqual(self.sql("SELECT id, name FROM tags ORDER BY id"), tag_rows)
 
+    def test_apply_returns_one_kept_row_per_protected_prompt(self):
+        _a, conflict = self.pair("conflict", "n1", category="asian")
+        self.pair("conflict", "n2", category="Adult")
+        _b, edited = self.pair("edited", category="portrait")
+        self.edit_stamp(edited)
+        _c, both = self.pair(
+            "both", "n1", category="x", tags=[f"t{n}" for n in range(21)]
+        )
+        self.pair("both", "n2", category="y", tags=[f"t{n}" for n in range(21)])
+        _d, filled = self.pair("fill", category="portrait")
+        draft = self.preview()
+        result = self.apply(draft)
+        self.assertEqual(
+            result["kept"],
+            [
+                {
+                    "prompt_id": conflict,
+                    "reasons": ["pairs disagree on category: Adult, asian"],
+                },
+                {
+                    "prompt_id": edited,
+                    "reasons": [
+                        "edited after it was saved; its empty category or tags "
+                        "may be intentional"
+                    ],
+                },
+                {
+                    "prompt_id": both,
+                    "reasons": [
+                        "pairs disagree on category: x, y",
+                        "its pair has more than 20 tags",
+                    ],
+                },
+            ],
+        )
+        self.assertEqual(len(result["kept"]), draft.protected["count"])
+        self.assertEqual(self.category(filled), "portrait")
+
+    def test_kept_rows_are_never_capped(self):
+        for n in range(205):
+            _p, prompt = self.pair(f"kept {n:03d}", category="portrait")
+            self.edit_stamp(prompt)
+        result = self.apply(self.preview())
+        self.assertEqual(result["changed"], 0)
+        self.assertEqual(len(result["kept"]), 205)
+
     def test_second_run_finds_nothing_and_a_partial_fill_completes_later(self):
         _a, prompt = self.pair("partial", "n1", category="portrait", tags=["a"])
         p2, _same = self.pair("partial", "n2", category="portrait", tags=["c"])

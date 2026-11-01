@@ -225,8 +225,13 @@ test('D192: Pair category and tags reviews old Pair prompts, keeps an edited one
         expect(await records.first().evaluate(node => node.localName)).toBe('div');
         await expect(results.locator('.outcome-files button')).toHaveCount(0);
         await expect(results.getByRole('searchbox', { name: 'Filter results' })).toHaveAttribute('placeholder', 'Filter records…');
-        // Protected is counted, not listed: it says records, not files.
+        // Protected lists each kept prompt with the review's reason (#550 live re-check).
         await results.locator('.outcome-list > button').filter({ hasText: 'Protected' }).click();
+        await expect(records).toHaveCount(1);
+        await expect(records.first()).toHaveText(
+            /^Prompt \d+: kept, edited after it was saved; its empty category or tags may be intentional$/);
+        // An empty group says records, not files.
+        await results.locator('.outcome-list > button').filter({ hasText: 'Errors' }).click();
         await expect(results.locator('.outcome-files > p.empty-state')).toHaveText('No records in this group.');
         const library = await serverJson(request, '/prompt_manager/library');
         const lantern = library.items.find(item => item.text === 'S550 lantern');

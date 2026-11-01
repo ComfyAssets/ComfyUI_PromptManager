@@ -4845,6 +4845,8 @@ follows the safety backup policy like them (no forced backup). Rules
   writes `prompt_pairs`, `prompt_pair_tags`, `updated_at`, a tag or Library state.
 - The job lists 200 changed rows ("Prompt 12: category “night”; tags a, b"); its
   Download report lists every one (`truncated: false`, `Job.record_counted(complete=True)`).
+  Protected lists one row per kept prompt in the review's wording and order ("Prompt 7:
+  kept, pairs disagree on category: Adult, asian"), also complete in the report.
 - Activity shows a row with no path as a record: its detail as plain text, never an open
   or locate action, and the filter reads the detail. A maintenance job of records (every
   operation but Missing-file links) says "No records in this group.", "No listed record

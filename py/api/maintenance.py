@@ -697,7 +697,19 @@ class MaintenanceRoutesMixin:
             rows,
             complete=plan.operation in COMPLETE_RECORD,
         )
-        job.record_counted("protected", payload["protected"])
+        if "kept" in result:
+            # #550: each kept record with its reason, like the changed ones.
+            kept = [
+                {
+                    "path": "",
+                    "detail": f"Prompt {item['prompt_id']}: kept, "
+                    + "; ".join(item["reasons"]),
+                }
+                for item in result["kept"]
+            ]
+            job.record_counted("protected", len(kept), kept, complete=True)
+        else:
+            job.record_counted("protected", payload["protected"])
         line = _changed_line(
             plan.operation, result["changed"], result.get("marks", 0), result
         )
