@@ -75,7 +75,7 @@ function measureTagging(mainSelector) {
         // D202 (#431): the Skipped tags block (the concept has none).
         skipped: (block => block && { tree: [...block.children].map(name), key: block.dataset.key,
             text: [...block.firstElementChild.children].map(node => [node.localName, text(node), node.localName === 'label' ? node.htmlFor : null]),
-            add: [...block.querySelector('.skip-add').children].map(node => [name(node), node.id, node.placeholder ?? null, text(node)]),
+            add: [...block.querySelector('.skip-add').children].map(node => [name(node), node.id, node.getAttribute('placeholder'), text(node)]),
             preview: [text(block.querySelector('.skip-preview')), block.querySelector('.skip-preview').getAttribute('role')],
             ...css(block, 'paddingTop', 'paddingBottom', 'borderTopWidth', 'borderTopColor'),
             label: css(block.querySelector('label'), 'fontSize', 'fontWeight', 'color'),
@@ -139,7 +139,7 @@ function mapTaggingConcept(reference, { template, phone }) {
         skipped: { tree: ['div.setting-block-text', 'div.skip-add', 'p.skip-problem.small', 'div.skip-chips.tags', 'p.skip-preview.small'],
             key: 'autotag_skipped_tags',
             text: [['label', 'Skipped tags', 'tag-skipped-input'], ['p', SKIPPED_DESCRIPTION, null]],
-            add: [['input', 'tag-skipped-input', 'Add a word or words', ''], ['button', 'tag-skipped-add', '', 'Add']],
+            add: [['input', 'tag-skipped-input', 'Add a word or words', ''], ['button', 'tag-skipped-add', null, 'Add']],
             preview: ['No tags are skipped.', 'status'],
             paddingTop: reference.row.paddingTop, paddingBottom: reference.row.paddingBottom,
             borderTopWidth: reference.row.borderTopWidth, borderTopColor: reference.row.borderTopColor,
@@ -226,7 +226,9 @@ test('auto-tagging comparison detects mutations', async ({ page, request }) => {
     const production = await productionTagging(page, 'dark');
     expect(diffInventory(expected, production)).toEqual([]);
     // Unmapped, the section differs only where D132, D133, D134 and D202 are recorded (and the saved template's text).
-    expect(diffInventory(concept, production).map(item => item.path.split('.').slice(0, 3).join('.'))
+    // (The concept has no Skipped tags block, so every path under it is one D202 difference.)
+    expect(diffInventory(concept, production).map(item => (item.path.startsWith('skipped') ? 'skipped'
+        : item.path.split('.').slice(0, 3).join('.')))
         .filter((path, index, all) => all.indexOf(path) === index).sort()).toEqual([
         'actions.buttons.1', 'actions.buttons.2', 'field.textarea.value', 'operations.0.actions', 'operations.0.description',
         'operations.0.title', 'operations.0.tree', 'operations.length', 'rows.0.control', 'rows.0.text', 'rows.4.control', 'rows.4.controlBelow',
