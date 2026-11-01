@@ -102,6 +102,7 @@ try:
 
     def _preview_startup():
         api.start_preview_location()
+        api.recover_thumbnail_move()  # an interrupted move, before the sweep
         api.sweep_thumbnail_temps()
 
     threading.Thread(
@@ -118,6 +119,8 @@ try:
         # Build each output root's Images listing once the server's loop runs,
         # so the first open does not wait for the walk (#348).
         host_app.on_startup.append(api.warm_gallery_listings)
+        # #320: old thumbnails a move left to remove, once it is checked.
+        host_app.on_startup.append(api.finish_thumbnail_move)
     if host_app is not None and hasattr(host_app, "on_shutdown"):
         # Open Needs review change streams end before the server waits on them.
         host_app.on_shutdown.append(api.close_review_events)

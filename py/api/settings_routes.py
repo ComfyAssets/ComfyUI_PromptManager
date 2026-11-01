@@ -491,7 +491,8 @@ class SettingsRoutesMixin:
             for key in _THUMBNAIL_SETTINGS
         )
         job = self._jobs.active(THUMBNAILS_JOB_KIND) if changed else None
-        if job is None or job.scope.get("mode") != "convert":
+        # A move copies previews of the current settings (#320).
+        if job is None or job.scope.get("mode") not in ("convert", "move"):
             return None
         return web.json_response(
             {

@@ -186,6 +186,13 @@ def _set_keys(parsed, marker):
             _key_cache.clear()
 
 
+def set_cleanup(entries):
+    """The setting's ``cleanup`` after a removal was committed."""
+    global _parsed
+    with _state_lock:
+        _parsed = replace(_parsed, cleanup=tuple(entries))
+
+
 def mark_invalid():
     """The setting cannot be used (a startup check that failed): folder
     mode stays in force, unavailable, so nothing is written anywhere."""

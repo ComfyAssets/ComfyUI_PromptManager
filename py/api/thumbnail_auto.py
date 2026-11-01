@@ -775,6 +775,9 @@ class AutoThumbnailMixin:
                 return job
             if job.kind == THUMBNAILS_JOB_KIND and job.title == THUMBNAIL_CLEAR_TITLE:
                 return job
+            # Move thumbnails holds automatic previews for its whole run (D2A).
+            if job.kind == THUMBNAILS_JOB_KIND and job.scope.get("mode") == "move":
+                return job
         return None
 
     # ── the view admission ────────────────────────────────────────────

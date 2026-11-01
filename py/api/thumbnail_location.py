@@ -157,4 +157,6 @@ class ThumbnailLocationMixin:
         if with_path:
             payload["path"] = location.path
             payload["default_path"] = default_path()
+            # Old copies a move still has to remove (#320 Part 3).
+            payload["cleanup_pending"] = len(preview_store.setting().cleanup)
         return payload

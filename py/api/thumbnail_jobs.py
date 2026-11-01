@@ -132,7 +132,10 @@ class ThumbnailJobsMixin:
     """The thumbnail plan, the thumbnail job and the legacy stream on it."""
 
     async def get_thumbnail_plan(self, request):
-        """What a thumbnail run would do (read-only; capped like a run)."""
+        """What a thumbnail run would do (read-only; capped like a run).
+        ``mode=prune`` lists the removed sources' thumbnails (#320)."""
+        if request.query.get("mode") == "prune":
+            return await self.get_prune_plan()
         options, error = thumbnail_options(request.query, from_query=True)
         if error:
             return _invalid(error)
@@ -180,6 +183,8 @@ class ThumbnailJobsMixin:
                 )
             except (ValueError, UnicodeDecodeError):
                 return _invalid(_OPTIONS_ERROR)
+        if isinstance(body, dict) and body.get("mode") in ("move", "prune"):
+            return await self._start_location_job(body)
         options, error = thumbnail_options(body)
         if error:
             return _invalid(error)
@@ -191,6 +196,25 @@ class ThumbnailJobsMixin:
         except JobBusy as busy:
             return busy_response(busy)
         return web.json_response({"success": True, "job": job.summary()}, status=202)
+
+    async def _start_location_job(self, body):
+        """Move thumbnails or Remove thumbnails of removed sources (#320)."""
+        if body["mode"] == "prune":
+            refused = location_refusal()
+            if refused is not None:
+                return refused
+        try:
+            if body["mode"] == "move":
+                started = self.start_thumbnail_move(body)
+            else:
+                started = self.start_thumbnail_prune()
+        except JobBusy as busy:
+            return busy_response(busy)
+        if isinstance(started, web.Response):
+            return started
+        return web.json_response(
+            {"success": True, "job": started.summary()}, status=202
+        )
 
     def _start_thumbnail_job(self, options):
         """Register the thumbnail job synchronously; raises JobBusy.
@@ -515,8 +539,12 @@ class ThumbnailJobsMixin:
         the way.
         """
         running = self._jobs.active(THUMBNAILS_JOB_KIND)
-        if running is not None and running.scope.get("mode") == "convert":
-            return None, False, running  # no legacy frames to follow (#317)
+        if running is not None and running.scope.get("mode") in (
+            "convert",
+            "move",
+            "prune",
+        ):
+            return None, False, running  # no legacy frames to follow (#317, #320)
         if running is not None and running.cancellable:
             return running, False, None
         busy = self._jobs.blocker(THUMBNAILS_JOB_KIND, admission="guarded")

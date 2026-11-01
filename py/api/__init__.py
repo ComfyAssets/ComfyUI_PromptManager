@@ -62,6 +62,10 @@ from .job_routes import JobRoutesMixin
 from .image_tag_jobs import ImageTagJobsMixin
 from .thumbnail_jobs import ThumbnailJobsMixin
 from .thumbnail_location import ThumbnailLocationMixin
+from .thumbnail_move import ThumbnailMoveMixin
+from .thumbnail_move_plan import ThumbnailMovePlanMixin
+from .thumbnail_move_recovery import ThumbnailMoveRecoveryMixin
+from .thumbnail_prune import ThumbnailPruneMixin
 from .thumbnail_convert import ThumbnailConvertMixin
 from .thumbnail_auto import AutoThumbnailMixin
 from .system import SystemRoutesMixin
@@ -341,6 +345,10 @@ class PromptManagerAPI(
     ImageTagJobsMixin,
     ThumbnailJobsMixin,
     ThumbnailLocationMixin,
+    ThumbnailMovePlanMixin,
+    ThumbnailMoveMixin,
+    ThumbnailMoveRecoveryMixin,
+    ThumbnailPruneMixin,
     ThumbnailConvertMixin,
     AutoThumbnailMixin,
     SystemRoutesMixin,
@@ -719,6 +727,7 @@ class PromptManagerAPI(
         # ── Register domain-specific routes from mixins ───────────────
 
         self._register_pair_routes(routes)
+        self._register_thumbnail_move_routes(routes)
         self._register_library_routes(routes)
         self._register_library_delete_routes(routes)
         self._register_vocabulary_routes(routes)

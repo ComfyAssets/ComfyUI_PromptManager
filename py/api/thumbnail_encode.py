@@ -114,6 +114,7 @@ def replace_unless_held(tmp, dst, guard=None):
 
 # ``temp_sibling``'s names: ``.<stem>.<tag>-<pid>-<thread id><ext>``.
 _TEMP_NAME = re.compile(r"^\..+\.(?:part|src)-(\d+)-\d+\.[A-Za-z0-9]+$")
+_MOVE_TEMP_NAME = re.compile(r"\.pm-move-[0-9a-f]{8}\.tmp$")
 # A temp at least this old (seconds) outlived its write: no encode runs longer.
 STRAY_TEMP_AGE = 4 * ENCODE_TIMEOUT
 # When this process started (this module's import): a temp carrying its PID
@@ -138,7 +139,9 @@ def sweep_stray_temps(folder, min_age=None):
     for root, _dirs, files in os.walk(folder):
         for name in files:
             match = _TEMP_NAME.match(name)
-            if match is None:
+            # A move's copy temp (#320): ``<name>.pm-move-<8 hex>.tmp``.
+            move_temp = match is None and _MOVE_TEMP_NAME.search(name)
+            if match is None and not move_temp:
                 continue
             path = Path(root) / name
             try:
@@ -147,7 +150,13 @@ def sweep_stray_temps(folder, min_age=None):
                     continue
                 if min_age and (
                     now - stat.st_mtime < min_age
-                    or (match.group(1) == own and stat.st_mtime >= PROCESS_STARTED)
+                    or move_temp
+                    and stat.st_mtime >= PROCESS_STARTED
+                    or (
+                        match is not None
+                        and match.group(1) == own
+                        and stat.st_mtime >= PROCESS_STARTED
+                    )
                 ):
                     continue
                 path.unlink()
