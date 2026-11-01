@@ -171,7 +171,7 @@ class TestClassification(PairMetadataCase):
         self.assertEqual(self.preview().targets, [[prompt, True, True]])
 
     def test_category_is_case_sensitive(self):
-        _a, prompt = self.pair("case", "n1", category="Portrait")
+        self.pair("case", "n1", category="Portrait")
         self.pair("case", "n2", category="portrait")
         draft = self.preview()
         self.assertEqual(draft.targets, [])
@@ -292,7 +292,7 @@ class TestClassification(PairMetadataCase):
         )
 
     def test_protected_rows_come_first_within_fifty(self):
-        _c, conflict = self.pair("zz conflict", "n1", category="x")
+        self.pair("zz conflict", "n1", category="x")
         self.pair("zz conflict", "n2", category="y")
         for n in range(60):
             self.pair(f"fill {n:02d}", category="portrait")

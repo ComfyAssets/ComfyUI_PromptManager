@@ -2,7 +2,7 @@
 
 import sys
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 from utils import native_memory
 
@@ -10,7 +10,9 @@ from utils import native_memory
 class ReleaseFreeMemoryTests(unittest.TestCase):
     def setUp(self):
         # Each test looks the symbol up again.
-        patcher = mock.patch.multiple(native_memory, _trim=None, _looked_up=False)
+        patcher = mock.patch.object(
+            native_memory, "_trim", native_memory._NOT_LOOKED_UP
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -22,7 +24,7 @@ class ReleaseFreeMemoryTests(unittest.TestCase):
     def test_other_platforms_do_nothing(self):
         for platform in ("win32", "darwin", "cygwin"):
             with self.subTest(platform), mock.patch.object(sys, "platform", platform):
-                native_memory._looked_up = False
+                native_memory._trim = native_memory._NOT_LOOKED_UP
                 with mock.patch.object(native_memory.ctypes, "CDLL") as cdll:
                     self.assertFalse(native_memory.release_free_memory())
                 cdll.assert_not_called()

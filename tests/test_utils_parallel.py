@@ -12,10 +12,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import parallel  # noqa: E402
+from utils import exit_signal, parallel  # noqa: E402
 from utils.parallel import JOB_THREAD_PREFIX, map_parallel  # noqa: E402
 
 WAIT = 30
+# A map that has not returned by then is stuck (#593).
+HANG_LIMIT = 5
 
 
 def _job_threads():
@@ -161,6 +163,69 @@ class TestMapParallel(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             map_parallel(boom, [1, 2, 3], workers=3)
+
+
+class TestErrorAfterShutdownCancel(unittest.TestCase):
+    """#593: ``shutdown_job_pool`` cancels the call's queued items without
+    notifying them, so the error path must not wait on them (exit hung)."""
+
+    def setUp(self):
+        exit_signal.reset()
+        self.addCleanup(exit_signal.reset)
+        self.assertTrue(parallel.shutdown_job_pool(WAIT))
+        self.addCleanup(parallel.shutdown_job_pool, WAIT)
+
+    def _run_in_thread(self, func, items):
+        """``map_parallel`` on a daemon thread: (thread, outcome list), so a
+        hang fails the test instead of hanging the suite."""
+        outcome = []
+
+        def call():
+            try:
+                outcome.append(("result", map_parallel(func, items, 1)))
+            except Exception as error:  # the outcome the test checks
+                outcome.append(("error", error))
+
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+        return thread, outcome
+
+    def _hold_first_then_cancel_rest(self, first):
+        """One worker runs item 0 (``first``) while items 1 and 2 queue;
+        shutdown cancels the queued two, then item 0 is released."""
+        entered, release = threading.Event(), threading.Event()
+
+        def item(n):
+            if n == 0:
+                entered.set()
+                self.assertTrue(release.wait(WAIT))
+                return first()
+            return n
+
+        thread, outcome = self._run_in_thread(item, [0, 1, 2])
+        self.assertTrue(entered.wait(WAIT))
+        self.assertFalse(parallel.shutdown_job_pool(0))  # item 0 still runs
+        release.set()
+        thread.join(HANG_LIMIT)
+        self.assertFalse(thread.is_alive(), "map_parallel hung on cancelled items")
+        return outcome
+
+    def test_a_running_item_raising_after_shutdown_cancel_returns(self):
+        def fail():
+            raise ValueError("zero")
+
+        outcome = self._hold_first_then_cancel_rest(fail)
+        self.assertEqual(outcome[0][0], "error")
+        self.assertIsInstance(outcome[0][1], ValueError)
+
+    def test_exit_requested_inline_after_shutdown_cancel_returns(self):
+        def signal_exit():
+            exit_signal.request()  # the cancelled items then run inline
+            return 0
+
+        outcome = self._hold_first_then_cancel_rest(signal_exit)
+        self.assertEqual(outcome[0][0], "error")
+        self.assertIsInstance(outcome[0][1], exit_signal.ExitRequested)
 
 
 if __name__ == "__main__":
