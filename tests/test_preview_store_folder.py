@@ -287,6 +287,9 @@ class TestUnavailableFolder(FolderModeCase):
         self.assertTrue(stray.exists())
 
     async def test_a_stalled_store_call_marks_it_unreachable_and_stops_io(self):
+        # Without the probe: woken by the stall, it finds this healthy folder again
+        # at once, and the lookup below would rightly do store I/O.
+        self.assertTrue(preview_store.stop_probe())
         make_png(self.output_dir / "m.png", size=(64, 64))
         self.preview("m.png").write_bytes(b"x")
         ticks = iter([0.0, preview_store.IO_BUDGET + 1.0])
