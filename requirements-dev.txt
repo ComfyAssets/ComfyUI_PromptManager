@@ -1,11 +1,11 @@
-# Runtime dependencies
+# Runtime dependencies (Pillow, aiohttp and numpy floors match ComfyUI requirements.txt)
 watchdog>=6.0.0
-Pillow>=12.3.0
-aiohttp>=3.14.5
+Pillow>=10.1.0
+aiohttp>=3.11.8
 
 # Tests and coverage
 coverage>=7.16.2
-numpy>=2.2.6  # WD14 engine tests
+numpy>=1.25.0  # WD14 engine tests
 
 # Code quality
 black==26.10.1
