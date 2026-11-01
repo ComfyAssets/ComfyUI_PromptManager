@@ -183,6 +183,7 @@ export function reviewRefusal(error) {
  * #583: the review uploads not answered yet. WebKit can read a FormData's file part after the fetch call returned (it
  * did whenever a request interceptor, here Playwright's, was armed); a garbage collection in between dropped a form
  * nothing referenced any more, and the server got an empty file. Each form is held here until its upload is answered.
+ * Exported for the unit tests only.
  */
 export const uploadsInFlight = new Set();
 
