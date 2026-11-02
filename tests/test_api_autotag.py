@@ -732,6 +732,32 @@ class TestAutotagErrorBodiesHideServerPaths(AutotagAPITestCase):
 
 class TestUnloadAutotag(AutotagAPITestCase):
 
+    async def test_unload_runs_off_the_loop_and_holds_the_gate_until_done(self):
+        started = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        threads = []
+
+        def unload():
+            threads.append(threading.get_ident())
+            started.set()
+            release.wait(5)
+            self.service._loaded_type = None
+
+        self.service._loaded_type = "gguf"
+        self.service.unload_model = unload
+        first = asyncio.ensure_future(
+            self.client.request("POST", "/prompt_manager/autotag/unload")
+        )
+        self.assertTrue(await asyncio.to_thread(started.wait, 5))
+        self.assertNotEqual(threads, [threading.get_ident()])
+        second = await self.client.request("POST", "/prompt_manager/autotag/unload")
+        self.assertEqual(second.status, 409)
+        release.set()
+        data = await (await first).json()
+        self.assertEqual(data["message"], "GGUF model unloaded successfully")
+        self.assertIsNone(model_gate.holder())
+
     async def test_nothing_loaded(self):
         resp = await self.client.request("POST", "/prompt_manager/autotag/unload")
         data = await resp.json()

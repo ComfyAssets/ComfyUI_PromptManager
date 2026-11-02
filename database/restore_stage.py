@@ -42,6 +42,7 @@ from typing import Dict, Optional
 from . import workflow_documents as wd
 from .execution_history_schema import rotate_history_epoch
 from .safety_backup import take_safety_backup
+from .sqlite_uri import readonly_uri
 
 logger = logging.getLogger("prompt_manager.database.restore_stage")
 
@@ -114,7 +115,7 @@ def file_digest(path: str) -> str:
 
 
 def _readonly(path: str) -> sqlite3.Connection:
-    return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    return sqlite3.connect(readonly_uri(Path(path).resolve()), uri=True)
 
 
 def _schema(path: str) -> list:

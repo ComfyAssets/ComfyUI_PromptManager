@@ -1411,7 +1411,8 @@ class AutotagRoutesMixin:
                     )
 
                 model_type = service.get_loaded_model_type()
-                service.unload_model()
+                # Off the loop; a dropped request keeps the gate until it ends.
+                await model_gate.run(owner, service.unload_model)
             finally:
                 model_gate.release(owner)
 
