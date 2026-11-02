@@ -243,7 +243,6 @@ class TestNodesSaveNothing(NodeCase):
                 self.assertEqual(self.count_rows("prompt_pairs"), 0)
                 self.assertEqual(self.tracker.keyed_snapshot(), {})
                 self.assertEqual(self.tracker._prompt_queue, [])
-                node.comfyui_integration.register_prompt.assert_not_called()
                 if cls is PromptManagerText:
                     self.assertEqual(result, (POSITIVE,))
                 elif cls is PromptManagerPair:

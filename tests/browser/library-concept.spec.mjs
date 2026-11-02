@@ -21,8 +21,9 @@ export function mapLibraryConcept(reference) {
     // Save view is the concept's own (saved views, #249 D16 retired).
     const toolbar={...library.toolbar};
     toolbar.items=toolbar.items.map(item=>{
-        // D14: the Library appends its Oldest first after the concept's sorts; D153 (#447) drops "Highest rated".
-        if(item.id==='sort')return {...item,options:[...item.options.filter(option=>option!=='Highest rated'),'Oldest first']};
+        // D14: the Library appends its Oldest first after the concept's sorts; D153 (#447) drops "Highest rated"; D205
+        // (#620) appends the old Dashboard's three sorts.
+        if(item.id==='sort')return {...item,options:[...item.options.filter(option=>option!=='Highest rated'),'Oldest first','Recently used','Most used','Name Z–A']};
         // D36: the category list is the Library's real list, sorted alphabetically; the concept lists prompt order.
         if(item.id==='category-filter')return {...item,options:[item.options[0],...item.options.slice(1).sort(nocase)]};
         return item;

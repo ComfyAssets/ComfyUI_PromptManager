@@ -204,7 +204,7 @@ class TestSavedViewsApi(ImageAPITestCase):
             {
                 "page": "library",
                 "name": "L",
-                "state": {**LIBRARY_STATE, "sort": "name-desc"},
+                "state": {**LIBRARY_STATE, "sort": "shuffle"},
             },
         ]
         for body in cases:
@@ -562,7 +562,7 @@ class TestSavedViewsSchema(unittest.TestCase):
             conn.execute(
                 f"INSERT INTO {TABLE} (page, name, state, position, created_at, "
                 "updated_at) VALUES ('library', ?, ?, 6, 'x', 'x')",
-                (" " + "n" * 120, json.dumps({"sort": "name-desc", "q": 4})),
+                (" " + "n" * 120, json.dumps({"sort": "shuffle", "q": 4})),
             )
             conn.commit()
 

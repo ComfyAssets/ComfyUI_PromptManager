@@ -19,7 +19,6 @@ except ImportError:
 
 try:
     from .database.operations import PromptDatabase
-    from .utils.comfyui_integration import get_comfyui_integration
     from .utils.image_monitor import get_image_monitor
     from .utils.prompt_tracker import get_prompt_tracker
     from .utils.hashing import generate_prompt_hash
@@ -38,7 +37,6 @@ except ImportError:
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from database.operations import PromptDatabase
-    from utils.comfyui_integration import get_comfyui_integration
     from utils.image_monitor import get_image_monitor
     from utils.prompt_tracker import get_prompt_tracker
     from utils.hashing import generate_prompt_hash
@@ -86,7 +84,6 @@ class PromptManagerBase:
         self.db = PromptDatabase()
         self.prompt_tracker = get_prompt_tracker(self.db)
         self.image_monitor = get_image_monitor(self.db, self.prompt_tracker)
-        self.comfyui_integration = get_comfyui_integration()
 
         self._start_gallery_system()
         self.logger.debug(f"{self.__class__.__name__} node initialization completed")
@@ -433,18 +430,6 @@ class PromptManagerBase:
             self.logger.error(f"Error searching prompts: {e}")
             return []
 
-    def search_prompts_api(self, search_text: str = "") -> List[Dict[str, Any]]:
-        """API method for JavaScript UI to search prompts."""
-        return self._search_prompts(search_text=search_text)
-
-    def get_recent_prompts_api(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """API method for JavaScript UI to get recent prompts."""
-        try:
-            return self.db.get_recent_prompts(limit=limit)
-        except Exception as e:
-            self.logger.error(f"Error getting recent prompts: {e}")
-            return []
-
     def _start_gallery_system(self):
         """Initialize and start the gallery monitoring system."""
         try:
@@ -454,13 +439,6 @@ class PromptManagerBase:
         except Exception as e:
             self.logger.error(f"Failed to start gallery system: {e}")
             self.logger.warning("Gallery features will be disabled")
-
-    def get_gallery_status(self) -> Dict[str, Any]:
-        """Get status of the gallery system."""
-        return {
-            "image_monitor": self.image_monitor.get_status(),
-            "prompt_tracker": self.prompt_tracker.get_status(),
-        }
 
     def cleanup_gallery_system(self):
         """Clean up gallery system resources.

@@ -89,7 +89,6 @@ from .source_rescope import SourceRescopeMixin
 
 try:
     from ...database.operations import PromptDatabase
-    from ...utils.file_prompt import parse_comfyui_prompt
     from ...utils.logging_config import get_logger
     from ...utils.native_memory import release_free_memory
     from ...utils.png_text import png_text
@@ -101,7 +100,6 @@ except ImportError:
         0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     from database.operations import PromptDatabase
-    from utils.file_prompt import parse_comfyui_prompt
     from utils.logging_config import get_logger
     from utils.native_memory import release_free_memory
     from utils.png_text import png_text
@@ -252,23 +250,6 @@ async def _read_json_body(request, max_bytes=JSON_BODY_MAX_BYTES):
     if not isinstance(data, dict):
         return None, _json_error("Request body must be a JSON object", 400)
     return data, None
-
-
-class _LongJobGuard:
-    """Async context manager handed out by ``_acquire_long_job``."""
-
-    def __init__(self, lock):
-        self._lock = lock
-
-    async def __aenter__(self):
-        # The caller checked ``locked()`` on this same loop iteration, so this
-        # acquire never waits.
-        await self._lock.acquire()
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self._lock.release()
-        return False
 
 
 # ── Gzip compression middleware ────────────────────────────────────────
@@ -426,10 +407,6 @@ class PromptManagerAPI(
         self._workspace_card_cache = {}
         # Favorite keys of each root's cached scan (images._favorite_listing).
         self._favorite_listing_cache = {}
-        # Single-flight locks for long jobs, keyed by job family; see
-        # _acquire_long_job(). Created lazily so no lock binds to an event
-        # loop before the server's loop exists.
-        self._long_jobs: dict = {}
         # This session's jobs (py/api/jobs.py): the metadata scan, and later
         # every other long operation the Activity page tracks.
         self._jobs = JobRegistry(self.logger)
@@ -485,26 +462,6 @@ class PromptManagerAPI(
     _public_path = staticmethod(_public_path)
     _public_error = staticmethod(_public_error)
     _read_json_body = staticmethod(_read_json_body)
-
-    def _acquire_long_job(self, name):
-        """Claim the single-flight slot for a long job family, or None when busy.
-
-        Usage in a handler::
-
-            job = self._acquire_long_job("duplicates")
-            if job is None:
-                return self._long_job_busy_response("Duplicate scan")
-            async with job:
-                ...
-
-        Families are free-form strings ("duplicates", "thumbnails",
-        "autotag", ...); the lock is released when the ``async with`` block
-        exits, including on exceptions. Must be called from the event loop.
-        """
-        lock = self._long_jobs.setdefault(name, asyncio.Lock())
-        if lock.locked():
-            return None
-        return _LongJobGuard(lock)
 
     @staticmethod
     def _long_job_busy_response(label):
@@ -1079,7 +1036,3 @@ class PromptManagerAPI(
                 f"Unreadable image {os.path.basename(str(image_path))}: {e}"
             )
             return {}
-
-    def _parse_comfyui_prompt(self, metadata):
-        """Parse ComfyUI and A1111 prompt data from metadata."""
-        return parse_comfyui_prompt(metadata)

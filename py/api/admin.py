@@ -30,8 +30,10 @@ from .jobs import (
 )
 
 try:
+    from ...database.sqlite_uri import readonly_uri
     from ...utils.parallel import map_parallel
 except ImportError:
+    from database.sqlite_uri import readonly_uri
     from utils.parallel import map_parallel
 
 try:
@@ -399,7 +401,7 @@ def _inspect_restore_upload(path):
     Returns:
         None when acceptable, otherwise a human-readable reason (blocking).
     """
-    uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+    uri = readonly_uri(path)
     try:
         conn = sqlite3.connect(uri, uri=True)
     except sqlite3.Error as e:

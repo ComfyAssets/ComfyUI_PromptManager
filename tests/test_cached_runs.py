@@ -197,7 +197,6 @@ class JobCase(unittest.TestCase):
         node.logger = logging.getLogger("test.cached_runs")
         node.prompt_tracker = mock.Mock()
         self.trackers.append(node.prompt_tracker)
-        node.comfyui_integration = mock.Mock()
         node._inject_lora_trigger_words = lambda text: text
         node.pending_first_use = self.pending
         node.pending_pair_first_use = self.pair_pending

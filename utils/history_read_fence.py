@@ -1,7 +1,6 @@
 """Restore publication checks for snapshot-owned history reads."""
 
 import os
-from pathlib import Path
 import sqlite3
 import threading
 from typing import TYPE_CHECKING
@@ -10,11 +9,13 @@ if TYPE_CHECKING:
     from ..database.operations import PromptDatabase
 
 try:
+    from ..database.sqlite_uri import readonly_uri
     from ..database.execution_history import (
         HistoryEpochChanged,
         subscribe_history_restore,
     )
 except ImportError:
+    from database.sqlite_uri import readonly_uri
     from database.execution_history import (
         HistoryEpochChanged,
         subscribe_history_restore,
@@ -53,9 +54,7 @@ class HistoryReadFence:
             self._check(generation, epoch)
         # An API restore retires its previous model. Never reopen that owner,
         # and never reuse the projection transaction's view of the epoch.
-        conn = sqlite3.connect(
-            Path(self._path).as_uri() + "?mode=ro", uri=True, timeout=0.25
-        )
+        conn = sqlite3.connect(readonly_uri(self._path), uri=True, timeout=0.25)
         try:
             row = conn.execute(
                 "SELECT storage_epoch FROM execution_history_metadata "

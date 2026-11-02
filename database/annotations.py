@@ -291,13 +291,6 @@ class AnnotationOperations:
         conn.execute(_BUMP_INDEX)
         return conn.execute(_REVISION, (byte_id,)).fetchone()[0]
 
-    def _current_set(self, conn, sha256, byte_id, revision) -> dict:
-        return {
-            "sha256": sha256,
-            "tags": self._byte_tags(conn, byte_id),
-            "tag_revision": revision,
-        }
-
     def read_image_tags(self, locator: str, sha256: str) -> dict:
         """The stored set of these exact bytes, or an empty set at revision 0.
 

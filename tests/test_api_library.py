@@ -42,6 +42,37 @@ class TestLibraryAPI(ImageAPITestCase):
         self.assertEqual(len(media["images"]), 1)
         self.assertEqual(media["images"][0]["path"], "same.png")
 
+    async def test_used_and_reverse_name_sorts_page_through_every_prompt(self):
+        ids = {text: self._save_prompt(text) for text in ("alpha", "beta", "gamma")}
+        with self.api.db.model.get_connection() as conn:
+            for text, runs, used in (
+                ("alpha", 1, "2026-01-01T00:00:00+00:00"),
+                ("beta", 9, "2026-02-01T00:00:00+00:00"),
+                ("gamma", 0, None),
+            ):
+                conn.execute(
+                    "UPDATE prompts SET run_count=?, last_used_at=? WHERE id=?",
+                    (runs, used, ids[text]),
+                )
+            conn.commit()
+        for sort, expected in (
+            ("most-used", ["beta", "alpha", "gamma"]),
+            ("last-used", ["beta", "alpha", "gamma"]),
+            ("name-desc", ["gamma", "beta", "alpha"]),
+        ):
+            with self.subTest(sort=sort):
+                seen, cursor = [], None
+                for _ in expected:
+                    params = {"sort": sort, "limit": 1}
+                    if cursor:
+                        params["cursor"] = cursor
+                    response, page = await self.get(**params)
+                    self.assertEqual(response.status, 200)
+                    seen.extend(item["text"] for item in page["items"])
+                    cursor = page["next_cursor"]
+                self.assertEqual(seen, expected)
+                self.assertIsNone(cursor)
+
     async def test_scoped_cursor_tampering_filters_and_continuation(self):
         for text in ("one", "two", "three"):
             self._save_prompt(text)

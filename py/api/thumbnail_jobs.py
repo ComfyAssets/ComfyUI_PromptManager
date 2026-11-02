@@ -90,7 +90,7 @@ class ThumbnailOptions:
         }
 
 
-def thumbnail_options(raw, *, from_query=False):
+def thumbnail_options(raw):
     """``(ThumbnailOptions, None)`` from a body or query, or ``(None, message)``.
 
     An absent mode is ``missing``; the settings are the server's now.
@@ -136,7 +136,7 @@ class ThumbnailJobsMixin:
         ``mode=prune`` lists the removed sources' thumbnails (#320)."""
         if request.query.get("mode") == "prune":
             return await self.get_prune_plan()
-        options, error = thumbnail_options(request.query, from_query=True)
+        options, error = thumbnail_options(request.query)
         if error:
             return _invalid(error)
         try:

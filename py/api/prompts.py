@@ -727,7 +727,15 @@ class PromptRoutesMixin:
     async def save_prompt(self, request):
         """Save a new prompt with metadata and duplicate detection."""
         try:
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
+            for field in ("text", "category", "notes"):
+                if data.get(field) is not None and not isinstance(data[field], str):
+                    return web.json_response(
+                        {"success": False, "error": f"{field} must be text"},
+                        status=400,
+                    )
 
             text = (data.get("text") or "").strip()
             if not text:

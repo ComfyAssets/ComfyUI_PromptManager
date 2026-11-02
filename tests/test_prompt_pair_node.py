@@ -45,7 +45,6 @@ class TestPromptPairNode(unittest.TestCase):
         self.node.db = self.db
         self.node.logger = logging.getLogger("test.pair_node")
         self.node.prompt_tracker = Mock()
-        self.node.comfyui_integration = Mock()
         self.node._inject_lora_trigger_words = Mock(
             side_effect=lambda text: text + " LORA"
         )
@@ -241,12 +240,9 @@ class TestPromptPairNode(unittest.TestCase):
         )
         self.node.prompt_tracker.set_current_prompt.assert_not_called()
 
-    def test_invalid_text_does_not_write_and_integration_failures_do_not_block(self):
+    def test_invalid_text_does_not_write(self):
         with self.assertRaises(ValueError):
             self.node.encode_prompt(self.clip, [], negative_text="blur")
-        self.node.comfyui_integration.register_prompt.side_effect = RuntimeError(
-            "metadata unavailable"
-        )
         result = self.node.encode_prompt(self.clip, "cat", negative_text="blur")
         self.assertEqual(result[2:], ("cat LORA", "blur"))
 

@@ -191,7 +191,7 @@ test('library toolbar matches the concept and tags live in Refine this view',asy
     expect(await toolbar.evaluate(node=>[...node.children].map(child=>child.tagName.toLowerCase()+(child.id?`#${child.id}`:'')+(child.className?`.${child.className.split(' ').filter(name=>!name.startsWith('ca-')).join('.')}`:'')))).toEqual(['label.search-field','select#category-filter','select#sort','button','button']);
     await expect(toolbar.locator('#search')).toHaveAttribute('placeholder','Search prompts, tags, filenames…');
     // D153 (#447): no "Highest rated".
-    await expect(toolbar.locator('#sort option')).toHaveText(['Recently added','Name A–Z','Oldest first']);
+    await expect(toolbar.locator('#sort option')).toHaveText(['Recently added','Name A–Z','Oldest first','Recently used','Most used','Name Z–A']);
     await expect(toolbar.getByRole('button')).toHaveText(['Save view','Filters']);
     await expect(page.getByRole('button',{name:'Refresh library',exact:true})).toHaveCount(0);
     await expect(page.getByRole('textbox',{name:'Tags',exact:true})).toHaveCount(0);

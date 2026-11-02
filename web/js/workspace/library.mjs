@@ -36,7 +36,7 @@ const selectedPairs=new Map();
 const metadataDrafts=new Map();
 const archivedVisible=new Map();
 // The concept's sorts first, then the Library's appended Oldest first (D14); D153 (#447) drops "Highest rated".
-const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['oldest','Oldest first']]);
+const LIBRARY_SORTS=Object.freeze([['newest','Recently added'],['name','Name A–Z'],['oldest','Oldest first'],['last-used','Recently used'],['most-used','Most used'],['name-desc','Name Z–A']]);
 // Refine › Tag match (#444 D149, D150), in LIBRARY_TAG_MODES order.
 const TAG_MATCH_OPTIONS=Object.freeze([['all','All of these tags'],['any','Any of these tags'],['untagged','Prompts without tags']]);
 // A card's focusable controls in order: the D148 selection checkbox, then its buttons (#437).

@@ -16,18 +16,17 @@ check, and none of them carries a server path.
 
 import datetime
 import logging
-import ntpath
 import os
 import sqlite3
-from pathlib import PurePosixPath, PureWindowsPath
-from urllib.parse import quote
 
 try:
     from ..utils.hashing import register_prompt_functions
     from .models import normalize_image_path
+    from .sqlite_uri import readonly_uri
 except ImportError:
     from utils.hashing import register_prompt_functions
     from database.models import normalize_image_path
+    from database.sqlite_uri import readonly_uri
 
 logger = logging.getLogger("prompt_manager.database.health")
 
@@ -87,25 +86,6 @@ def _counted(lines):
         if len(detail) < MAX_DETAIL:
             detail.append(line)
     return _result(count, detail)
-
-
-def readonly_uri(db_path, *, windows=None):
-    """The ``mode=ro`` SQLite URI of *db_path*, on this platform or the given one.
-
-    pathlib spells a UNC path ``\\\\server\\share\\x.db`` as
-    ``file://server/share/x.db``, a remote authority SQLite refuses to open.
-    With an empty authority (``file:////server/share/x.db``) SQLite hands
-    Windows the ``//server/share`` path, which it opens as the UNC path.
-    """
-    if windows is None:
-        windows = os.name == "nt"
-        db_path = os.path.abspath(db_path)
-    if not windows:
-        return PurePosixPath(db_path).as_uri() + "?mode=ro"
-    path = PureWindowsPath(db_path)
-    if ntpath.splitdrive(str(path))[0].startswith("\\\\"):
-        return "file:" + quote("//" + path.as_posix()) + "?mode=ro"
-    return path.as_uri() + "?mode=ro"
 
 
 def _integrity(conn, _roots):

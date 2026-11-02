@@ -77,7 +77,7 @@ PM_TEST_WORKERS=8 npm run --prefix tools/vendor test:coverage            # whole
 npm run --prefix tools/vendor test:coverage:shard -- 1/4                 # node units, viewer suite, workflows 1/4
 npm run --prefix tools/vendor test:coverage:shard -- 2/4                 # workflows 2/4 (likewise 3/4, 4/4)
 npm run --prefix tools/vendor coverage:merge                             # report and baseline check of every raw file
-npm run --prefix tools/vendor test:workflows -- --project webkit --shard 2/2
+npm run --prefix tools/vendor test:workflows -- --project webkit --shard 2/3
 ```
 
 `coverage:merge` refuses an empty raw directory; it does not count shards, so run
@@ -193,8 +193,8 @@ waiting for the `frontend coverage` jobs.
 
 The `viewerjs` check runs on every PR, including backend-only changes. It is an
 aggregate job. It requires the four `frontend coverage (shard N/4)` jobs and
-`frontend coverage (merge)` to succeed on every event. The four
-`page workflows (firefox|webkit, shard N/2)` jobs run only in the merge queue,
+`frontend coverage (merge)` to succeed on every event. The six
+`page workflows (firefox|webkit, shard N/3)` jobs run only in the merge queue,
 on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
 `viewerjs` requires them to be skipped on a pull request and to succeed
 everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
@@ -2735,7 +2735,7 @@ the grid) and D43 (sorted chips, checked against the concept with its chips sort
 D44 needs no mapping: the comparison runs with no Refine filter active, so the button
 reads "Filters" as the concept's does. Nothing else follows the grid: the legacy
 "Current prompt library" link is removed from the shelf; the legacy Library stays at
-`/prompt_manager/admin` by direct URL, linked only from System (#525, D165)
+`/prompt_manager/admin` by direct URL (#525, #620)
 (`tests/browser/workspace.spec.mjs`). `library comparison detects
 mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
 
@@ -3243,7 +3243,7 @@ npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
 
 `#/inspect` ("Inspect a file") is a native workspace route; it no longer hands off to
 the legacy metadata page, which stays at its URL
-(`/prompt_manager/gallery.html`) linked only from System (#525, D165). The page is the concept's `#metadata`
+(`/prompt_manager/gallery.html`) at its URL only (#525, #620). The page is the concept's `#metadata`
 (app.js `renderMetadata` a740–748, selection a1715–1729; style.css 709–722, 1180–1194,
 1543–1545, 1559–1564) in the concept's own classes (`.surface`, `.file-drop`,
 `.spaced-20`, `.local-file-preview`, all from the synced `concept.css`), with no
@@ -4665,6 +4665,9 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   concept row's), `skipped tags add, preview, remove, save and reload (D202)`, `skipped
   tags preview checks library tags only …` (workspace-system-tagging.spec) and
   `suggestions omit skipped tags and say how many were hidden` (workspace-tagging.spec).
+- **D205** (Prompt library, #620, beyond the concept): the sort menu appends Recently used, Most used and Name Z–A
+  after Oldest first. These are the old Dashboard's sorts, kept before its removal because the community asked for
+  them. A prompt never run sorts last in both use orders.
 - **D203** (Auto-tagging, #431, beyond the concept): "Saved instructions" replaces the
   concept's "LLM tag template" field (the mock's state 2): a `.setting-block`
   (`data-setting="tag-instructions"`, `data-key="autotag_instructions"`) with the label,
@@ -7492,7 +7495,7 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
 longer hands off to the legacy tag manager. That page stays at
-`/prompt_manager/admin#/tags` linked only from System (#525, D165); tag search and sort, the untagged
+`/prompt_manager/admin#/tags` at its URL only (#525, #620); tag search and sort, the untagged
 entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
 (#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
 library's selection bar, D151). A prompt's category is changed in the Prompt library
@@ -7624,7 +7627,8 @@ The legacy pages (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.ht
 their URLs, and admin's Metadata and Gallery buttons still open their legacy pages (maintainer
 ruling; pinned by `legacy-system-links.spec.mjs`).
 
-- **D165** (beyond the concept, maintainer ruling 2026-10-30): System's Overview section ends
+- **D165 retired** (#620): the old pages show their removal notice since 3.5.1, so System no longer links them and the load failure below offers a reload and ComfyUI. The original ruling:
+  **D165** (beyond the concept, maintainer ruling 2026-10-30): System's Overview section ends
   with one small line, "Legacy pages: Dashboard · Tags · Gallery · Metadata viewer"
   (`.legacy-pages`, new tabs), outside `.settings-layout`. The concept has no such line;
   `mapOverviewConcept` adds it to the page tree.

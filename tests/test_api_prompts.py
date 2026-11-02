@@ -684,6 +684,28 @@ class TestTagMutationRoutes(RouteCoverageCase):
 
 class TestSaveRoute(RouteCoverageCase):
 
+    async def test_a_malformed_body_is_refused_and_saves_nothing(self):
+        for body in (
+            [],
+            "text",
+            {"text": 123},
+            {"text": "fixture", "category": 123},
+            {"text": "fixture", "notes": 123},
+            {"text": "fixture", "tags": 123},
+            {"text": "fixture", "rating": "high"},
+        ):
+            with self.subTest(body=body):
+                status, data = await self._json(
+                    "POST", "/prompt_manager/save", json=body
+                )
+                self.assertEqual(status, 400)
+                self.assertFalse(data["success"])
+        status, data = await self._json(
+            "POST", "/prompt_manager/save", data=b"{not json"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(self.api.db.search_prompts(text="fixture"), [])
+
     async def test_invalid_rating_is_400(self):
         status, data = await self._json(
             "POST", "/prompt_manager/save", json={"text": "ok", "rating": 99}

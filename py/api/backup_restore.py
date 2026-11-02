@@ -45,7 +45,6 @@ import os
 import sqlite3
 import tempfile
 from contextlib import closing
-from pathlib import Path
 
 from aiohttp import web
 
@@ -56,6 +55,7 @@ from .maintenance_plans import PlanExpired, PlanUsed
 from .restore_plans import RestorePlanStore
 
 try:
+    from ...database.sqlite_uri import readonly_uri
     from ...database import restore_stage
     from ...database.operations import PromptDatabase
     from ...database.safety_backup import (
@@ -66,6 +66,7 @@ try:
         safety_temp,
     )
 except ImportError:
+    from database.sqlite_uri import readonly_uri
     from database import restore_stage
     from database.operations import PromptDatabase
     from database.safety_backup import (
@@ -186,7 +187,7 @@ def snapshot_corruption(path):
         with open(path, "rb") as handle:
             if handle.read(len(SQLITE_HEADER)) != SQLITE_HEADER:
                 return "Not a SQLite database file"
-        uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+        uri = readonly_uri(path)
         with closing(sqlite3.connect(uri, uri=True)) as conn:
             row = conn.execute("PRAGMA integrity_check").fetchone()
     except (OSError, sqlite3.Error) as error:

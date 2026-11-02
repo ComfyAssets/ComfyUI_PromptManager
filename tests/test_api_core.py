@@ -343,7 +343,7 @@ class TestReadJsonBody(AioHTTPTestCase):
 
 
 class TestLongJobLock(unittest.TestCase):
-    """_acquire_long_job: one job per family at a time, released on exit."""
+    """The refusal a busy long job answers with."""
 
     def setUp(self):
         database = MagicMock()
@@ -352,33 +352,6 @@ class TestLongJobLock(unittest.TestCase):
 
     def _run(self, coro):
         return asyncio.run(coro)
-
-    def test_second_acquire_is_refused_until_first_releases(self):
-        async def scenario():
-            first = self.api._acquire_long_job("duplicates")
-            self.assertIsNotNone(first)
-            async with first:
-                self.assertIsNone(self.api._acquire_long_job("duplicates"))
-                # Other families are independent
-                other = self.api._acquire_long_job("thumbnails")
-                self.assertIsNotNone(other)
-                async with other:
-                    pass
-            again = self.api._acquire_long_job("duplicates")
-            self.assertIsNotNone(again)
-            async with again:
-                pass
-
-        self._run(scenario())
-
-    def test_lock_is_released_when_the_job_raises(self):
-        async def scenario():
-            with self.assertRaises(RuntimeError):
-                async with self.api._acquire_long_job("duplicates"):
-                    raise RuntimeError("boom")
-            self.assertIsNotNone(self.api._acquire_long_job("duplicates"))
-
-        self._run(scenario())
 
     def test_busy_response_is_409_with_envelope(self):
         resp = self.api._long_job_busy_response("Duplicate scan")
@@ -952,32 +925,6 @@ class TestMetadataParsing(unittest.TestCase):
         with open(garbage, "wb") as f:
             f.write(b"nope")
         self.assertEqual(self.api._extract_comfyui_metadata(garbage), {})
-
-    def test_parse_a1111_parameters(self):
-        meta = {"parameters": "a cat\nNegative prompt: dog\nSteps: 20"}
-        parsed = self.api._parse_comfyui_prompt(meta)
-        self.assertEqual(parsed["positive_prompt"], "a cat")
-        self.assertEqual(parsed["negative_prompt"], "dog")
-        self.assertEqual(parsed["parameters"]["parameters"], meta["parameters"])
-
-    def test_parse_comfyui_fields(self):
-        meta = {
-            "prompt": json.dumps({"1": {"class_type": "X", "inputs": {}}}),
-            "workflow": "not json",
-            "steps": "20",
-            "cfg": "not-json-either",
-        }
-        parsed = self.api._parse_comfyui_prompt(meta)
-        self.assertIsInstance(parsed["prompt"], dict)
-        self.assertEqual(parsed["workflow"], "not json")
-        self.assertEqual(parsed["parameters"]["steps"], 20)
-        self.assertEqual(parsed["parameters"]["cfg"], "not-json-either")
-
-        parsed = self.api._parse_comfyui_prompt(
-            {"prompt": "plain text", "workflow": json.dumps({"nodes": []})}
-        )
-        self.assertEqual(parsed["prompt"], "plain text")
-        self.assertEqual(parsed["workflow"], {"nodes": []})
 
 
 if __name__ == "__main__":

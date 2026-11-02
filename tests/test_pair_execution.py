@@ -47,7 +47,6 @@ class TestPairExecution(unittest.TestCase):
         self.node.db = self.db
         self.node.logger = logging.getLogger("test.execution")
         self.node.prompt_tracker = Mock()
-        self.node.comfyui_integration = Mock()
         self.node._inject_lora_trigger_words = lambda text: text + " LORA"
         self.extra = {"workflow": {"unchanged": True}, "sibling": {"keep": True}}
 

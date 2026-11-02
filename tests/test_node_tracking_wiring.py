@@ -19,7 +19,6 @@ def bare(node_cls):
     """A node without its database, tracker or gallery side effects."""
     node = node_cls.__new__(node_cls)
     node.logger = __import__("logging").getLogger("test.wiring")
-    node.comfyui_integration = mock.Mock()
     node._inject_lora_trigger_words = lambda text: text
     node._track_prompt_execution = mock.Mock(return_value=42)
     return node

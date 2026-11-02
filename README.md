@@ -12,10 +12,10 @@ Prompt Manager saves your prompts as you generate, links each image back to the 
 
 ## What's new: rebuilt from the ground up
 
-- **A new UI.** One app, the workspace, replaces the separate dashboard, gallery and metadata pages. The old pages still work if you want them.
+- **A new UI.** One app, the workspace, replaces the separate dashboard, gallery and metadata pages.
 - **Classic and Nodes 2.0.** The nodes work in both ComfyUI renderers. CI starts a real ComfyUI and checks both.
 - **Tested end to end.** Unit tests, browser tests in Chromium, Firefox, WebKit and touch emulation, and tests against a real ComfyUI.
-- **Mac, Linux and Windows.** The Python suite runs on all three, on Python 3.12, 3.13 and 3.14.
+- **Linux and Windows.** The Python suite runs on both, on Python 3.12, 3.13 and 3.14. macOS should work but is not tested.
 
 ## See it
 
@@ -212,9 +212,9 @@ Set `PROMPT_MANAGER_DATA_DIR` to an absolute folder to keep the library somewher
 - **Older images:** a one-time notice offers a metadata scan that links them to prompts and negatives. Scans don't count as new runs.
 - **Going back isn't supported.** Workflows are now stored once, and an older version shows new records without their workflow or prompt graph. Back up first in System > Backup & export. See [the old README's changelog](README-legacy.md#changelog) for the manual way back.
 
-## The old pages still work
+## The old pages will be removed
 
-They stay at their URLs, and System's Overview section links to them:
+They still work at their URLs for now and will be removed in a future release. Everything they do is moving to the workspace.
 
 | Page | URL |
 | --- | --- |

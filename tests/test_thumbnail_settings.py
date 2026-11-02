@@ -78,7 +78,7 @@ class TestDefaultsAndConfig(ConfigCase):
         self.assertEqual(ts.current().format, "webp")
 
     def test_the_never_read_gallery_thumbnail_size_is_gone(self):
-        # R1: older save_to_file wrote its default 256 into config.json; it
+        # R1: older versions wrote its default 256 into config.json; it
         # must never size a preview.
         self.assertFalse(hasattr(GalleryConfig, "THUMBNAIL_SIZE"))
         PromptManagerConfig.update_config(

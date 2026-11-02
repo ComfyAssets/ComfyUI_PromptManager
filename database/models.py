@@ -14,6 +14,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Optional, Set, Tuple
 
+from .sqlite_uri import readonly_uri
 from .managed_connection import (
     ManagedConnection,
     await_closed,
@@ -1199,7 +1200,7 @@ class PromptModel:
         if header != SQLITE_HEADER:
             return False, "Not a SQLite database file"
 
-        uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+        uri = readonly_uri(path)
         try:
             conn = sqlite3.connect(uri, uri=True)
         except sqlite3.Error as e:
@@ -1306,9 +1307,7 @@ class PromptModel:
         replacement (for example, incompatible page sizes in WAL mode),
         propagate the error rather than copy files under other open owners.
         """
-        source = sqlite3.connect(
-            Path(src_path).resolve().as_uri() + "?mode=ro", uri=True
-        )
+        source = sqlite3.connect(readonly_uri(Path(src_path).resolve()), uri=True)
         try:
             target = self.get_connection()
             # The target is written under backup's step too: mark it in use
