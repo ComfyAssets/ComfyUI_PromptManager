@@ -361,8 +361,9 @@ Seed: ${currentWorkflowData.seed || 'Unknown'}`;
         });
     </script>
 </head>
-<body class="bg-pm-primary text-pm font-sans overflow-hidden">
-    <div class="h-screen flex">
+<body class="bg-pm-primary text-pm font-sans overflow-hidden" style="display: flex; flex-direction: column; height: 100vh;">
+    <div id="legacy-removal-notice" role="note" class="bg-pm-surface border-b border-pm px-4 py-2 text-pm" style="font-size: 13px;">This page will be removed in a future release. Its features are moving to the new workspace. <a href="workspace#/inspect" style="text-decoration: underline;">Open the workspace</a></div>
+    <div class="flex" style="flex: 1; min-height: 0;">
         <!-- Main Image Area -->
         <div id="image-area" class="flex-1 flex items-center justify-center p-3 bg-pm-primary relative border-2 border-dashed border-transparent transition-colors min-w-0">
             <!-- Upload prompt overlay -->
