@@ -97,6 +97,9 @@ _ORDERS = {
     "newest": ("COALESCE(julianday(p.created_at),0)", "DESC"),
     "oldest": ("COALESCE(julianday(p.created_at),0)", "ASC"),
     "name": (_NAME, "ASC"),
+    "name-desc": (_NAME, "DESC"),
+    "most-used": ("COALESCE(p.run_count,0)", "DESC"),
+    "last-used": ("COALESCE(julianday(p.last_used_at),0)", "DESC"),
     "rating": ("COALESCE(p.rating,0)", "DESC"),
 }
 # Pair archive scopes for variant and image reads, as conditions on alias pp.

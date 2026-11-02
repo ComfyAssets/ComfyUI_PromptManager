@@ -46,7 +46,7 @@ const FIELDS = Object.freeze({
         collection: { fallback: '', accepts: value => typeof value === 'string' && /^(|[1-9][0-9]{0,8})$/.test(value) },
     }),
     library: Object.freeze({
-        q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name'], 'newest'), tags,
+        q: text(500), category: text(100), sort: choice(['newest', 'oldest', 'name', 'name-desc', 'most-used', 'last-used'], 'newest'), tags,
         // #444: how the Tags match ('untagged' never goes with tags; the listing refuses both) and the output folder
         // ('/'-joined, below a root).
         tag_mode: choice(['all', 'any', 'untagged'], 'all'), folder: text(1024),

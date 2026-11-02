@@ -31,7 +31,15 @@ MAX_STATE_BYTES = 4096
 MAX_TAGS = 20
 MAX_TAG_LENGTH = 50
 _IMAGE_SORTS = ("newest", "oldest", "name", "name-desc", "rating")
-_LIBRARY_SORTS = ("newest", "oldest", "name", "rating")
+_LIBRARY_SORTS = (
+    "newest",
+    "oldest",
+    "name",
+    "name-desc",
+    "most-used",
+    "last-used",
+    "rating",
+)
 _MEDIA = ("all", "image", "video")
 # How a Library view's Tags match (#444): every tag, any of them, or parents
 # without tags ("untagged" never goes with tags; the listing refuses both).

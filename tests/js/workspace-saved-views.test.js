@@ -32,7 +32,7 @@ test('a saved state always holds every page key and keeps only values its page a
         { ...full, q: '', folder: '', tags: [] });
     assert.deepEqual(normalizeViewState('images', { ...full, category: 'bad\u0007', tags: [' '] }), { ...full, category: '', tags: [] });
     // Library has no source or media, and no Name Z–A; its folder (#444) is the Library's own.
-    assert.deepEqual(normalizeViewState('library', { ...full, sort: 'name-desc' }), { q: 'castle', category: 'Portraits', sort: 'newest', tags: ['moody', 'fog'], tag_mode: 'all', folder: 'a/b' });
+    assert.deepEqual(normalizeViewState('library', { ...full, sort: 'rating' }), { q: 'castle', category: 'Portraits', sort: 'newest', tags: ['moody', 'fog'], tag_mode: 'all', folder: 'a/b' });
     assert.deepEqual(normalizeViewState('library', { sort: 'oldest' }), { ...LIBRARY_DEFAULTS, sort: 'oldest' });
     // The returned tags are a copy.
     const tags = ['one'];
@@ -244,5 +244,7 @@ test('a view saved under the retired Highest rated sort opens on Recently added 
     assert.equal(imagesFilters({ sort: 'rating' }).sort, 'newest');
     assert.equal(libraryFilters({ sort: 'rating' }).sort, 'newest');
     assert.equal(normalizeViewState('images', { sort: 'name-desc' }).sort, 'name-desc');
-    assert.equal(normalizeViewState('library', { sort: 'oldest' }).sort, 'oldest');
+    for (const sort of ['oldest', 'name-desc', 'most-used', 'last-used']) {
+        assert.equal(normalizeViewState('library', { sort }).sort, sort);
+    }
 });

@@ -377,7 +377,9 @@ class LibraryRoutesMixin:
                     [parent["id"] for parent in result["items"]]
                 )
                 result["next_cursor"] = _encode(
-                    result.pop("next_key"), scope, name=options["sort"] == "name"
+                    result.pop("next_key"),
+                    scope,
+                    name=options["sort"] in ("name", "name-desc"),
                 )
             return result, records
 

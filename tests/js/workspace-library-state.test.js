@@ -143,7 +143,7 @@ test('the shelf no longer sorts by rating (D153)',async()=>{
  const {createLibraryStream}=await source;const s=createLibraryStream({api:{get:async()=>page([])}});
  await assert.rejects(s.reset({sort:'rating'}),/Invalid library sort/);
  assert.throws(()=>createLibraryStream({api:{get:async()=>page([])},restore:{filters:{sort:'rating'},state:{}}}),/Invalid library sort/);
- for(const sort of ['newest','oldest','name']) assert.equal(await s.reset({sort}),0);s.dispose();
+ for(const sort of ['newest','oldest','name','name-desc','most-used','last-used']) assert.equal(await s.reset({sort}),0);s.dispose();
 });
 test('Refine › Folder nests each folder under its exact parent, by path segment (#444 live B1)',async()=>{
  const {libraryFolderOptions}=await source;assert.equal(typeof libraryFolderOptions,'function');
