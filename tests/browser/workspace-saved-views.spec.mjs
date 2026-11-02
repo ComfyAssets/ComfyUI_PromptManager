@@ -205,7 +205,7 @@ test('a view stored under older rules still lists and opens with its usable valu
         return (await response.json()).id;
     };
     const imagesId = await raw({ page: 'images', name: 'Old cats', state: JSON.stringify({ q: 'cat', sort: 'shuffle', layout: 'grid' }) });
-    await raw({ page: 'library', name: '', state: JSON.stringify({ q: 'dog', sort: 'name-desc' }) });
+    await raw({ page: 'library', name: '', state: JSON.stringify({ q: 'dog', sort: 'shuffle' }) });
     expect(await listed(request)).toEqual([
         { id: imagesId, page: 'images', name: 'Old cats', state: { ...IMAGE_DEFAULTS, q: 'cat' } },
         expect.objectContaining({ page: 'library', name: 'Saved view', state: { q: 'dog', category: '', sort: 'newest', tags: [], tag_mode: 'all', folder: '' } }),
