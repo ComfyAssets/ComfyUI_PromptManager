@@ -1,0 +1,25 @@
+# Left out of the Comfy Registry package (comfy node publish). Git clones still
+# have everything. tests/test_package_contents.py holds these rules to what
+# ComfyUI needs at run time; keep each one anchored to the root with a leading /.
+
+# Development folders
+/tests/
+/tools/
+/docs/
+/.github/
+
+# Screenshots used only by README-legacy.md on GitHub
+/images/
+
+# Development files
+/TESTING.md
+/Makefile
+/requirements-dev.txt
+/.coveragerc
+/.flake8
+/.pre-commit-config.yaml
+/.gitignore
+
+# Stray images no code uses
+/image_meta_data.png
+/test_metadata_file.png

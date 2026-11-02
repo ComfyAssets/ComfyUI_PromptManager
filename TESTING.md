@@ -668,6 +668,10 @@ Browser tests: `workspace-stale-source.spec.mjs` (`/__test__/sources/reverse` an
 `/__test__/scope-key/rotate`, both undone by every reset); the manual-Refresh
 recovery specs in `workspace-images.spec.mjs` answer every rescope 409.
 
+## Registry package
+
+`comfy node publish` zips the tracked files minus `.comfyignore`, so a new development file or folder at the root ships until it is listed there. `tests/test_package_contents.py` keeps each rule anchored to the root, checks that development paths are left out and that nothing ComfyUI needs at run time is. Git clones are unaffected.
+
 ## Windows portability preflight
 
 Before changing paths, SQLite, streams, restore or cleanup:
