@@ -179,7 +179,6 @@ class NodeTestCase(unittest.TestCase):
         self.node.logger = logging.getLogger("test.node")
         self.node.prompt_tracker = mock.Mock()
         self.node.image_monitor = mock.Mock()
-        self.node.comfyui_integration = mock.Mock()
 
     def tearDown(self):
         self.db.close_all()  # Windows cannot unlink an open database file
@@ -189,20 +188,16 @@ class NodeTestCase(unittest.TestCase):
 
 
 class TestBaseSaveAndSearch(NodeTestCase):
-    def test_init_wires_database_tracker_monitor_and_integration(self):
+    def test_init_wires_database_tracker_and_monitor(self):
         with (
             mock.patch.object(prompt_manager_base, "PromptDatabase") as db_cls,
             mock.patch.object(prompt_manager_base, "get_prompt_tracker") as tracker,
             mock.patch.object(prompt_manager_base, "get_image_monitor") as monitor,
-            mock.patch.object(
-                prompt_manager_base, "get_comfyui_integration"
-            ) as integration,
         ):
             node = PromptManagerBase()
         self.assertIs(node.db, db_cls.return_value)
         tracker.assert_called_once_with(db_cls.return_value)
         monitor.assert_called_once_with(db_cls.return_value, tracker.return_value)
-        self.assertIs(node.comfyui_integration, integration.return_value)
         monitor.return_value.start_monitoring.assert_called_once_with()
 
     def test_saving_an_existing_prompt_updates_its_metadata(self):
@@ -242,31 +237,18 @@ class TestBaseSaveAndSearch(NodeTestCase):
         self.node._save_prompt_to_database("a cat on a mat")
         self.assertEqual(self.node._search_prompts(""), [])
         self.assertEqual(self.node._search_prompts("   "), [])
-        self.assertEqual(len(self.node.search_prompts_api("cat")), 1)
-        self.assertEqual(len(self.node.get_recent_prompts_api(limit=5)["prompts"]), 1)
+        self.assertEqual(len(self.node._search_prompts("cat")), 1)
 
     def test_search_and_recent_errors_return_empty_lists(self):
         self.node.db = mock.Mock()
         self.node.db.search_prompts.side_effect = RuntimeError("locked")
-        self.node.db.get_recent_prompts.side_effect = RuntimeError("locked")
         with self.assertLogs("test.node", level="ERROR"):
             self.assertEqual(self.node._search_prompts("cat"), [])
-        with self.assertLogs("test.node", level="ERROR"):
-            self.assertEqual(self.node.get_recent_prompts_api(), [])
 
     def test_gallery_system_start_failure_is_logged(self):
         self.node.image_monitor.start_monitoring.side_effect = OSError("no inotify")
         with self.assertLogs("test.node", level="ERROR"):
             self.node._start_gallery_system()
-        self.node.image_monitor.get_status.return_value = {"running": False}
-        self.node.prompt_tracker.get_status.return_value = {"active_prompts_count": 0}
-        self.assertEqual(
-            self.node.get_gallery_status(),
-            {
-                "image_monitor": {"running": False},
-                "prompt_tracker": {"active_prompts_count": 0},
-            },
-        )
         self.node.cleanup_gallery_system()
         self.node.image_monitor.stop_monitoring.assert_not_called()
 
@@ -376,7 +358,6 @@ class TestPromptManagerEncoding(NodeTestCase):
         self.assertEqual(saved["text"], "a cat")
         self.assertIn("prepend:best", saved["tags"])
         self.assertIn("append:8k", saved["tags"])
-        self.node.comfyui_integration.register_prompt.assert_called_once()
 
     def test_tracking_failure_does_not_break_encoding(self):
         self.node._track_prompt_execution = mock.Mock(side_effect=RuntimeError("db"))

@@ -632,10 +632,6 @@ class AutoThumbnailer:
         """True once the worker has nothing queued or in hand."""
         return self._wait_for(lambda: not self._busy, timeout)
 
-    def wait_batch(self, size, timeout=None):
-        """True once the worker holds a batch of *size* files."""
-        return self._wait_for(lambda: self._batch == size, timeout)
-
 
 class _PreviewGate:
     """Admission of view requests on the event loop (#249 I2).
@@ -966,15 +962,6 @@ class AutoThumbnailMixin:
         if self._auto_thumbnails().enqueue(src, DeferredPreview(root, rel), is_video):
             return "queued"
         return "skipped"
-
-    def _capture_target(self, image_path):
-        """``(src, dst, is_video)`` of a new output's preview now, or None."""
-        located = self._capture_source(image_path)
-        if located is None:
-            return None
-        src, root, rel, is_video = located
-        dst = DeferredPreview(root, rel).resolve()
-        return None if dst is None else (src, dst, is_video)
 
     def _capture_source(self, image_path):
         """``(src, root, rel, is_video)`` of a media file under a current

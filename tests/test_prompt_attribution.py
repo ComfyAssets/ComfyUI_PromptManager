@@ -162,7 +162,6 @@ class NodeCase(DatabaseCase):
         node.db = self.db
         node.logger = logging.getLogger("test.prompt_attribution.node")
         node.prompt_tracker = self.tracker
-        node.comfyui_integration = mock.Mock()
         node._inject_lora_trigger_words = lambda text: text
         node.pending_first_use = PendingFirstUse()
         node.pending_pair_first_use = PendingFirstUse()

@@ -19,7 +19,3 @@
 /.flake8
 /.pre-commit-config.yaml
 /.gitignore
-
-# Stray images no code uses
-/image_meta_data.png
-/test_metadata_file.png

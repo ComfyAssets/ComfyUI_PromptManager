@@ -294,7 +294,6 @@ class TestNodeRecordsCachedRunReceipt(UsageTestCase):
         node.db = self.db
         node.logger = __import__("logging").getLogger("test.prompt_usage")
         node.prompt_tracker = mock.Mock()
-        node.comfyui_integration = mock.Mock()
         node._inject_lora_trigger_words = lambda text: text
         node.cached_runs = mock.Mock()
         node.cached_runs.replayed.return_value = False

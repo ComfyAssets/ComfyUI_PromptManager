@@ -64,7 +64,6 @@ class TestPairUsageTracking(unittest.TestCase):
         node.pending_pair_first_use = self.pair_pending
         node._inject_lora_trigger_words = lambda text: text
         node.prompt_tracker = Mock()
-        node.comfyui_integration = Mock()
         return node
 
     def execute(self, graph, text="cat", negative="blur"):

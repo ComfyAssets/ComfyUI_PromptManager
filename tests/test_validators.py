@@ -17,7 +17,6 @@ from utils.validators import (
     validate_tags,
     validate_category,
     sanitize_input,
-    parse_tags_string,
     validate_result_timeout,
     validate_worker_threads,
 )
@@ -123,48 +122,6 @@ class TestSanitizeInput(unittest.TestCase):
     def test_mixed_line_endings(self):
         result = sanitize_input("a\r\nb\rc\nd")
         self.assertEqual(result, "a\nb\nc\nd")
-
-
-class TestParseTagsString(unittest.TestCase):
-    """Test parse_tags_string function."""
-
-    def test_simple_comma_separated(self):
-        result = parse_tags_string("tag1, tag2, tag3")
-        self.assertEqual(result, ["tag1", "tag2", "tag3"])
-
-    def test_extra_whitespace(self):
-        result = parse_tags_string("  tag1  ,  tag2  ")
-        self.assertEqual(result, ["tag1", "tag2"])
-
-    def test_empty_string_returns_empty_list(self):
-        self.assertEqual(parse_tags_string(""), [])
-
-    def test_none_returns_empty_list(self):
-        self.assertEqual(parse_tags_string(None), [])
-
-    def test_non_string_returns_empty_list(self):
-        self.assertEqual(parse_tags_string(123), [])
-
-    def test_single_tag(self):
-        self.assertEqual(parse_tags_string("solo"), ["solo"])
-
-    def test_deduplication(self):
-        result = parse_tags_string("tag1, tag1, tag2, tag1")
-        self.assertEqual(result, ["tag1", "tag2"])
-
-    def test_empty_segments_skipped(self):
-        result = parse_tags_string("tag1,,tag2,,,tag3")
-        self.assertEqual(result, ["tag1", "tag2", "tag3"])
-
-    def test_max_20_tags(self):
-        tags = ", ".join(f"tag{i}" for i in range(25))
-        result = parse_tags_string(tags)
-        self.assertEqual(len(result), 20)
-
-    def test_strips_null_bytes_from_tags(self):
-        result = parse_tags_string("clean\x00tag, normal")
-        self.assertIn("cleantag", result)
-        self.assertIn("normal", result)
 
 
 class TestValidatePromptTextEdgeCases(unittest.TestCase):

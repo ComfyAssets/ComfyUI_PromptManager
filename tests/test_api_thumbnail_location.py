@@ -9,7 +9,6 @@ import json
 import ntpath
 import os
 import posixpath
-import re
 import sys
 import tempfile
 import threading
@@ -376,25 +375,6 @@ class TestValidation(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIn(status, (400, 409, 507))
                 self.assertTrue(text.endswith("."))
-
-
-class TestNoLegacySaveCallers(unittest.TestCase):
-    def test_save_to_file_has_no_callers(self):
-        offenders = []
-        for folder in ("py", "utils", "database"):
-            for path in (REPO / folder).rglob("*.py"):
-                for number, line in enumerate(
-                    path.read_text(encoding="utf-8").splitlines(), 1
-                ):
-                    code = line.split("#", 1)[0]
-                    if (
-                        re.search(r"\bsave_to_file\(", code)
-                        and "def save_to_file" not in code
-                    ):
-                        if "PromptManagerConfig.save_to_file('" in line:
-                            continue  # its own docstring example
-                        offenders.append(f"{path.relative_to(REPO)}:{number}")
-        self.assertEqual(offenders, [])
 
 
 try:

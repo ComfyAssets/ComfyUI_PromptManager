@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock ComfyUI server before importing anything that touches config. Only the
 # first test module to run installs the stub; nothing else in sys.modules is
-# replaced, so later modules (test_comfyui_integration) see the real package.
+# replaced, so later modules see the real package.
 _mock_server = MagicMock()
 _mock_server.PromptServer.instance.routes = MagicMock()
 sys.modules.setdefault("server", _mock_server)
@@ -879,17 +879,6 @@ class TestOutputListener(unittest.TestCase):
             self.assertIsNone(monitor.handler.output_listener)
         finally:
             self.assertTrue(monitor.stop_monitoring())
-
-
-class TestModuleIsolation(unittest.TestCase):
-    """This module must not leave mocks behind for later test modules."""
-
-    def test_comfyui_integration_is_not_replaced_by_a_mock(self):
-        module = sys.modules.get("utils.comfyui_integration")
-        self.assertFalse(
-            isinstance(module, MagicMock),
-            "utils.comfyui_integration was replaced by a MagicMock in sys.modules",
-        )
 
 
 class TestMonitorThreadSafety(unittest.TestCase):

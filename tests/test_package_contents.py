@@ -22,8 +22,6 @@ DEVELOPMENT = (
     "images/x.png",
     "TESTING.md",
     "requirements-dev.txt",
-    "image_meta_data.png",
-    "test_metadata_file.png",
 )
 KEPT = (
     "__init__.py",

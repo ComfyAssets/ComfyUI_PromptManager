@@ -3,7 +3,6 @@ PromptManagerText: A text-only version of PromptManager that outputs STRING
 without CLIP encoding, while maintaining all database and search features.
 """
 
-import time
 from typing import Any, Dict, Optional, Tuple
 
 if __package__:
@@ -230,19 +229,6 @@ class PromptManagerText(PromptManagerBase, ComfyNodeABC):
         if not save_to_library:
             return result  # #90: no metadata registration, no history text
 
-        # Register with ComfyUI integration for standard metadata compatibility
-        node_id = f"promptmanagertext_{int(time.time() * 1000)}"
-        self.comfyui_integration.register_prompt(
-            node_id,
-            final_text.strip(),
-            {
-                "category": category.strip() if category else None,
-                "tags": extended_tags,
-                "prompt_id": prompt_id,
-                "prepend_text": prepend_text.strip() if prepend_text else None,
-                "append_text": append_text.strip() if append_text else None,
-            },
-        )
         record_runtime_context(
             type(self).__name__, text, prepend_text, append_text, final_text
         )

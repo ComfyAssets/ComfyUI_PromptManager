@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import time
 from typing import Any, Dict, Optional, Tuple
 
 if __package__:
@@ -173,19 +172,6 @@ class PromptManagerPair(PromptManagerFocused):
                 self.logger.warning(f"Could not save or track paired prompt: {error}")
                 if is_positive:
                     self._mark_untracked(prompt, unique_id)
-        try:
-            self.comfyui_integration.register_prompt(
-                f"promptmanager_pair_{time.time_ns()}",
-                positive,
-                {
-                    "prompt_id": prompt_id,
-                    "pair_id": pair_id if pair_used else None,
-                    "negative_text": negative_text,
-                    "category": category.strip() or None,
-                },
-            )
-        except Exception as error:
-            self.logger.warning(f"Could not register paired metadata: {error}")
         record_runtime_context(
             type(self).__name__,
             text,

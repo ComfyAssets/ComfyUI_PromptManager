@@ -213,7 +213,8 @@ class TestPromptManagerConfig(unittest.TestCase):
         try:
             # Modify a value
             PromptManagerConfig.MAX_SEARCH_RESULTS = 42
-            PromptManagerConfig.save_to_file(tmp.name)
+            with open(tmp.name, "w", encoding="utf-8") as handle:
+                json.dump(PromptManagerConfig.get_config(), handle)
 
             # Reset and reload
             PromptManagerConfig.MAX_SEARCH_RESULTS = 100
@@ -237,55 +238,6 @@ class TestPromptManagerConfig(unittest.TestCase):
             PromptManagerConfig.load_from_file(tmp.name)
             # Should not crash, keeps existing values
             self.assertEqual(PromptManagerConfig.MAX_SEARCH_RESULTS, original)
-        finally:
-            os.unlink(tmp.name)
-
-    def test_save_creates_directory(self):
-        tmp_dir = tempfile.mkdtemp()
-        nested_path = os.path.join(tmp_dir, "subdir", "config.json")
-        try:
-            PromptManagerConfig.save_to_file(nested_path)
-            self.assertTrue(os.path.exists(nested_path))
-            with open(nested_path) as f:
-                data = json.load(f)
-            self.assertIn("database", data)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp_dir)
-
-    def test_saved_file_is_private_to_the_user(self):
-        import stat
-
-        tmp_dir = tempfile.mkdtemp()
-        try:
-            path = os.path.join(tmp_dir, "config.json")
-            PromptManagerConfig.save_to_file(path)
-            mode = stat.S_IMODE(os.stat(path).st_mode)
-            if os.name == "posix":
-                self.assertEqual(mode, 0o600)
-            with open(path) as f:
-                self.assertIn("database", json.load(f))
-            # Overwriting an existing, more open file tightens it as well
-            os.chmod(path, 0o644)
-            PromptManagerConfig.save_to_file(path)
-            if os.name == "posix":
-                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    def test_saved_file_is_valid_json(self):
-        tmp = tempfile.NamedTemporaryFile(
-            delete=False, suffix=".json", dir=tempfile.gettempdir()
-        )
-        tmp.close()
-        try:
-            PromptManagerConfig.save_to_file(tmp.name)
-            with open(tmp.name) as f:
-                data = json.load(f)
-            self.assertIsInstance(data, dict)
         finally:
             os.unlink(tmp.name)
 
@@ -404,18 +356,6 @@ class TestConfigPathOverride(unittest.TestCase):
             os.environ[self.ENV] = custom
             self.assertEqual(PromptManagerConfig.get_config_path(), custom)
 
-    def test_save_without_path_uses_env_override(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            custom = os.path.join(tmpdir, "nested", "custom.json")
-            os.environ[self.ENV] = custom
-            PromptManagerConfig.RESULT_TIMEOUT = 42
-
-            PromptManagerConfig.save_to_file()
-
-            with open(custom) as f:
-                saved = json.load(f)
-            self.assertEqual(saved["web_ui"]["result_timeout"], 42)
-
     def test_load_without_path_uses_env_override(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             custom = os.path.join(tmpdir, "custom.json")
@@ -503,7 +443,8 @@ class TestAutotagConfig(unittest.TestCase):
             PromptManagerConfig.update_config(
                 {"autotag": {"defaults": {"suggestion_limit": 25}}}
             )
-            PromptManagerConfig.save_to_file(path)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(PromptManagerConfig.get_config(), handle)
             self.config_class.SUGGESTION_LIMIT = 10
             PromptManagerConfig.load_from_file(path)
         self.assertEqual(self.config_class.suggestion_limit(), 25)

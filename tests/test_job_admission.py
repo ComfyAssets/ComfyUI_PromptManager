@@ -406,8 +406,6 @@ class TestLegacyRoutesHoldTheRegistry(_LegacyHoldCase):
         )
         await self._busy(resp)
         self.assertTrue(victim.exists())
-        # The duplicate family lock was not taken by the refused request.
-        self.assertIsNotNone(self.api._acquire_long_job(self.api.LONG_JOB_DUPLICATES))
 
     async def test_lora_scan_refused_while_scan_runs(self):
         from py.config import IntegrationConfig

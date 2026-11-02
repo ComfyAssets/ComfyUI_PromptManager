@@ -324,7 +324,6 @@ class CaptureTests(unittest.TestCase):
             node.db.save_prompt_pair.side_effect = RuntimeError("offline")
             node.logger = logging.getLogger("test.capture.nodes")
             node.prompt_tracker = Mock()
-            node.comfyui_integration = Mock()
             node._inject_lora_trigger_words = lambda text: text + " TRIGGER"
             clip = Mock()
             clip.tokenize.side_effect = lambda text: text

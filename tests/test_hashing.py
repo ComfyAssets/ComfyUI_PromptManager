@@ -1,7 +1,7 @@
 """
 Tests for hashing utilities.
 
-Tests is_duplicate_prompt and generate_prompt_hash, which are
+Tests and generate_prompt_hash, which are
 currently untested. generate_prompt_hash is covered in test_basic.py
 but we add edge cases here.
 """
@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tests.background_stops import stop_tracker  # noqa: E402
 from utils.hashing import (
     generate_prompt_hash,
-    is_duplicate_prompt,
     STRIPPED_CODE_POINTS,
     prompt_key,
     register_prompt_functions,
@@ -67,33 +66,6 @@ class TestSingleHashImplementation(unittest.TestCase):
 
         self.assertFalse(hasattr(PromptManagerBase, "_open_web_interface"))
         self.assertFalse(os.path.exists(os.path.join(ROOT, "restart_gallery.py")))
-
-
-class TestIsDuplicatePrompt(unittest.TestCase):
-    """Test is_duplicate_prompt function."""
-
-    def test_identical_texts_are_duplicates(self):
-        self.assertTrue(is_duplicate_prompt("hello", "hello"))
-
-    def test_case_insensitive(self):
-        self.assertTrue(is_duplicate_prompt("Hello World", "hello world"))
-
-    def test_whitespace_insensitive(self):
-        self.assertTrue(is_duplicate_prompt("  hello  ", "hello"))
-
-    def test_different_texts_not_duplicates(self):
-        self.assertFalse(is_duplicate_prompt("text A", "text B"))
-
-    def test_threshold_parameter_accepted(self):
-        # threshold is unused but should not cause errors
-        self.assertTrue(is_duplicate_prompt("same", "same", threshold=0.5))
-
-    def test_empty_strings_are_duplicates(self):
-        self.assertTrue(is_duplicate_prompt("", ""))
-
-    def test_unicode_comparison(self):
-        self.assertTrue(is_duplicate_prompt("日本語", "日本語"))
-        self.assertFalse(is_duplicate_prompt("日本語", "中文"))
 
 
 class TestGeneratePromptHashEdgeCases(unittest.TestCase):

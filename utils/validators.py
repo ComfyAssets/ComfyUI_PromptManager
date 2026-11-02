@@ -295,30 +295,3 @@ def sanitize_input(text: str) -> str:
             result_lines.append(line)
 
     return "\n".join(result_lines).strip()
-
-
-def parse_tags_string(tags_string: str) -> List[str]:
-    """
-    Parse a comma-separated tags string into a clean list.
-
-    Converts comma-separated tag strings into a clean, deduplicated list
-    of tags. Each tag is sanitized and trimmed.
-
-    Args:
-        tags_string: Comma-separated tags string (e.g., "tag1, tag2, tag3")
-
-    Returns:
-        List of unique, cleaned tag strings. Empty input returns empty list.
-        Limited to maximum 20 tags to prevent abuse.
-    """
-    if not tags_string or not isinstance(tags_string, str):
-        return []
-
-    # Split by comma and clean each tag
-    tags = []
-    for tag in tags_string.split(","):
-        clean_tag = sanitize_input(tag).strip()
-        if clean_tag and clean_tag not in tags:  # Avoid duplicates
-            tags.append(clean_tag)
-
-    return tags[:20]  # Limit to 20 tags

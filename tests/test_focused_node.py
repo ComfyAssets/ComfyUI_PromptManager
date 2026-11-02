@@ -24,7 +24,6 @@ class TestFocusedNode(unittest.TestCase):
     def test_focused_encodes_composition_and_tracks_main_text_and_graph(self):
         node = PromptManagerFocused.__new__(PromptManagerFocused)
         node.logger = logging.getLogger("test.focused")
-        node.comfyui_integration = mock.Mock()
         node._inject_lora_trigger_words = lambda text: text
         node._track_prompt_execution = mock.Mock(return_value=42)
         clip = mock.Mock()
