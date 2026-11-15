@@ -648,7 +648,10 @@ test('a video replaced while still starting is reset once it settles', async ({ 
     // page (TESTING.md D62), so it stays in place, inert and still playing its URL, with the new preview after it.
     // Once it reports metadata or an error it is paused, loses its src, is reset (load() with no src, which frees its
     // decoder) and leaves the page, and only then is its URL revoked. Fresh pages share one browser process.
-    for (let attempt = 0; attempt < 15; attempt++) {
+    // A busy WebKit can fire `loadstart` after the video already has data (#641, run 43732282629: readyState 4), so
+    // keep going until at least one page saw it still starting.
+    let startingSeen = 0;
+    for (let attempt = 0; attempt < 15 || (startingSeen === 0 && attempt < 30); attempt++) {
         const page = await context.newPage();
         try {
             if (attempt === 0) await startCoverage(page, browserName);
@@ -687,11 +690,11 @@ test('a video replaced while still starting is reset once it settles', async ({ 
             await choose(page, localFixture('core-tags.webm', 'video/webm'));
             await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
             await expect(preview(page).locator('video')).toHaveCount(0);
-            // Replaced while starting (always so at `loadstart` itself): kept in place and untouched. A video that had
+            // Replaced while starting (usually so at `loadstart` itself): kept in place and untouched. A video that had
             // settled is released at once. Either way it is reset once, and its URL goes last.
             await expect.poll(() => page.evaluate(() => window.__starting.revoked ?? null)).toEqual({ src: false, connected: false, resets: 1 });
             const { readyState, replaced } = await page.evaluate(() => ({ readyState: window.__starting.readyState, replaced: window.__starting.replaced }));
-            if (attempt % 5 === 0) expect(readyState).toBe(0);
+            if (readyState === 0) startingSeen++;
             expect(replaced).toEqual(readyState === 0 ? { connected: true, src: true, inert: true, resets: 0 } : { connected: false, src: false, inert: false, resets: 1 });
             expect(await page.evaluate(() => window.__starting.node.__resets)).toBe(1);
             // The page still answers.
@@ -702,6 +705,7 @@ test('a video replaced while still starting is reset once it settles', async ({ 
             await page.close();
         }
     }
+    expect(startingSeen, 'no page saw the video still starting at its loadstart').toBeGreaterThan(0);
 });
 
 test('a new selection while the viewer\'s own video is still starting leaves it until it settles (#483)', async ({ context, browserName }) => {
@@ -710,7 +714,10 @@ test('a new selection while the viewer\'s own video is still starting leaves it 
     // selection from that video's own `loadstart` (readyState HAVE_NOTHING), or a few milliseconds after it, must not
     // reset it or take it off the page while it starts (WebKit, GStreamer: TESTING.md D62; merge-queue run
     // 40903238387). The viewer stays open until it reports metadata or an error, then closes; the URL goes last.
-    for (let attempt = 0; attempt < 10; attempt++) {
+    // A busy WebKit can fire `loadstart` after the video already has data (#641, run 43732282629: readyState 4), so
+    // keep going until at least one page saw it still starting.
+    let startingSeen = 0;
+    for (let attempt = 0; attempt < 10 || (startingSeen === 0 && attempt < 20); attempt++) {
         const page = await context.newPage();
         try {
             if (attempt === 0) await startCoverage(page, browserName);
@@ -750,7 +757,7 @@ test('a new selection while the viewer\'s own video is still starting leaves it 
             await expect(preview(page).locator('img.local-file-preview')).toBeVisible({ timeout: 8000 });
             await expect.poll(() => page.evaluate(() => window.__starting?.revoked ?? null)).toEqual({ src: false, connected: false, resets: 1 });
             const { readyState, replaced } = await page.evaluate(() => ({ readyState: window.__starting.readyState, replaced: window.__starting.replaced }));
-            if (attempt % 5 === 0) expect(readyState).toBe(0);
+            if (readyState === 0) startingSeen++;
             // Starting when replaced: still on the page with its URL, never reset; settled: released at once.
             expect(replaced).toEqual(readyState === 0 ? { connected: true, src: true, resets: 0 } : { connected: false, src: false, resets: 1 });
             expect(await page.evaluate(() => window.__starting.node.__resets)).toBe(1);
@@ -764,6 +771,7 @@ test('a new selection while the viewer\'s own video is still starting leaves it 
             await page.close();
         }
     }
+    expect(startingSeen, 'no page saw the video still starting at its loadstart').toBeGreaterThan(0);
 });
 
 /** #483: holds the viewer's video in HAVE_NOTHING (its `loadedmetadata` never fires) so a hold can be driven by hand. */
@@ -850,7 +858,10 @@ test('leaving for another route while a video starts waits for it to settle', as
     // A WebKit (GStreamer) video detached before its pipeline had started deadlocked the page (TESTING.md D62); a
     // route change detaches the whole page, so the shell renders the next route once the video reports metadata or an
     // error. The route changes from the video's own `loadstart`, or a few milliseconds after it.
-    for (let attempt = 0; attempt < 15; attempt++) {
+    // A busy WebKit can fire `loadstart` after the video already has data (#641, run 43732282629: readyState 4), so
+    // keep going until at least one page saw it still starting.
+    let startingSeen = 0;
+    for (let attempt = 0; attempt < 15 || (startingSeen === 0 && attempt < 30); attempt++) {
         const page = await context.newPage();
         try {
             if (attempt === 0) await startCoverage(page, browserName);
@@ -878,7 +889,7 @@ test('leaving for another route while a video starts waits for it to settle', as
             await choose(page, localFixture('core-tags.webm', 'video/webm'));
             await expect(main(page).getByRole('heading', { level: 1, name: 'Overview', exact: true })).toBeVisible({ timeout: 8000 });
             const { readyState, reset } = await page.evaluate(() => ({ readyState: window.__starting.readyState, reset: window.__starting.reset }));
-            if (attempt % 5 === 0) expect(readyState).toBe(0);
+            if (readyState === 0) startingSeen++;
             // The video was reset and left the page only once it had settled.
             expect(reset.readyState >= 1 || reset.failed).toBe(true);
             expect(reset.connected).toBe(true);
@@ -891,6 +902,7 @@ test('leaving for another route while a video starts waits for it to settle', as
             await page.close();
         }
     }
+    expect(startingSeen, 'no page saw the video still starting at its loadstart').toBeGreaterThan(0);
 });
 
 test('closing the viewer on a video that just started never blocks the page', async ({ context, browserName }) => {

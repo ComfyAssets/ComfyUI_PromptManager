@@ -35,26 +35,60 @@ env:
 #   perf budget 30s / 29s / 27s, black and flake8 39s / 37s / 39s,
 #   frontend modules 23s / 19s / 29s -> 5 min (the floor)
 #   all tests: a result check without setup, 5 min (the floor)
+#   change class (#639): a file-less checkout and one stdlib script, 5 min (the floor)
 #
 # Pull requests run a fast subset (#420): Python 3.12 on ubuntu-latest, coverage, lint and frontend
 # modules. The merge queue (merge_group), pushes to main and manual runs add Python 3.13 and 3.14 on
 # Linux and the real ComfyUI job. "all tests" is the required gate that holds the queue to that set.
 # Windows runs in portability.yml (push to main, nightly, on demand) and never gate a merge.
 jobs:
+  # Sorts the change by the files it touches (tools/ci/change_class.py, #639): "inert" (nothing reads
+  # them), "docs" (a Python test reads them) or "code" (anything else, and every case of doubt). The
+  # jobs below skip what the class cannot affect. A job skipped by its condition reports Success, so
+  # the required contexts still report; "all tests" fails unless this job succeeded and each
+  # job did what the class asks. The clone has every commit but no file contents (blob:none): the
+  # script only compares file names between the base and the head.
+  changes:
+    name: change class
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: python3 tools/ci/change_class.py | tee -a "$GITHUB_OUTPUT"
+
   test:
     name: py${{ matrix.python-version }} on ${{ matrix.os }}
+    # A skipped matrix job reports under its unexpanded name, which would leave the required context
+    # "py3.12 on ubuntu-latest" waiting for ever. So this job always runs: a docs change gets the 3.12
+    # leg only, and for an inert change the leg starts and its steps are skipped (#639).
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 27
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.12", "3.13", "3.14"]') }}
+        python-version: ${{ (github.event_name == 'pull_request' || needs.changes.outputs.class == 'docs' || needs.changes.outputs.class == 'inert') && fromJSON('["3.12"]') || fromJSON('["3.12", "3.13", "3.14"]') }}
 
     steps:
       - uses: actions/checkout@v7
+        if: needs.changes.outputs.class != 'inert'
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: needs.changes.outputs.class != 'inert'
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -62,18 +96,26 @@ jobs:
           cache-dependency-path: requirements-dev.txt
 
       - name: Install dependencies
+        if: needs.changes.outputs.class != 'inert'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
       - name: Run tests
+        if: needs.changes.outputs.class != 'inert'
         run: python -m tests.run_suite -v
+
+      - name: Nothing to test
+        if: needs.changes.outputs.class == 'inert'
+        run: echo "Only inert files changed (tools/ci/change_class.py); no test can be affected."
 
   comfyui:
     name: real ComfyUI compatibility
     # Merge queue, main and manual runs only. A job skipped by its condition reports Success, so this
-    # required context never blocks a pull request; "all tests" fails if it is skipped anywhere else.
-    if: github.event_name != 'pull_request'
+    # required context never blocks a pull request; "all tests" fails if it is skipped anywhere else
+    # for a code change. Docs and inert changes skip it everywhere (#639).
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     # Chromium and its system libraries come from the pinned Playwright image (tag = @playwright/test in
     # tools/vendor/package-lock.json; tests/vendor/browser-image.test.mjs checks it). The runner install
@@ -174,6 +216,8 @@ jobs:
 
   coverage:
     name: coverage gate (85%)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -201,7 +245,8 @@ jobs:
     # Shared-runner timing varies, so it never gates a pull request: it runs on
     # each push to main and on demand. A red run on main means fix the code.
     name: perf budget
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -225,6 +270,8 @@ jobs:
 
   lint:
     name: black and flake8
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -241,6 +288,8 @@ jobs:
 
   js-test:
     name: frontend modules
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -268,9 +317,11 @@ jobs:
   # The required context "all tests". A dropped matrix leg never reports a check at all, so the eight
   # legs that pull requests skip cannot be required by name; this gate requires them instead. Every
   # job must succeed; real ComfyUI must be skipped on a pull request and succeed on every other event.
+  # For a docs or inert change (#639) the test matrix must still succeed and every other job must be
+  # skipped. The classifier itself must succeed, and a class it does not print fails the gate.
   all-tests:
     name: all tests
-    needs: [test, comfyui, coverage, lint, js-test]
+    needs: [changes, test, comfyui, coverage, lint, js-test]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -278,18 +329,26 @@ jobs:
       - name: Require every test job for this event
         env:
           EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGE_CLASS: ${{ needs.changes.outputs.class }}
           TEST_RESULT: ${{ needs.test.result }}
           COMFYUI_RESULT: ${{ needs.comfyui.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           JS_RESULT: ${{ needs.js-test.result }}
         run: |
-          queue_only=success
+          echo "change class: $CHANGE_CLASS (classifier: $CHANGES_RESULT)"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGE_CLASS" in
+            code) code_only=success; queue_only=success ;;
+            docs|inert) code_only=skipped; queue_only=skipped ;;
+            *) echo "::error::unknown change class"; exit 1 ;;
+          esac
           if [ "$EVENT_NAME" = pull_request ]; then queue_only=skipped; fi
-          echo "event: $EVENT_NAME (real ComfyUI must be $queue_only)"
+          echo "event: $EVENT_NAME (real ComfyUI must be $queue_only; coverage, lint and js-test must be $code_only)"
           echo "test matrix: $TEST_RESULT"
           echo "comfyui: $COMFYUI_RESULT"
           echo "coverage: $COVERAGE_RESULT"
           echo "lint: $LINT_RESULT"
           echo "js-test: $JS_RESULT"
-          test "$TEST_RESULT" = success && test "$COVERAGE_RESULT" = success && test "$LINT_RESULT" = success && test "$JS_RESULT" = success && test "$COMFYUI_RESULT" = "$queue_only"
+          test "$TEST_RESULT" = success && test "$COVERAGE_RESULT" = "$code_only" && test "$LINT_RESULT" = "$code_only" && test "$JS_RESULT" = "$code_only" && test "$COMFYUI_RESULT" = "$queue_only"
