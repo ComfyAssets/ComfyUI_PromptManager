@@ -7,6 +7,7 @@ on checkout by default, which changes those bytes, so ``.gitattributes`` marks
 them as never converted. This holds that for every tracked file under them.
 """
 
+import os
 import shutil
 import subprocess  # nosec B404 - fixed git arguments, no shell
 import unittest
@@ -22,8 +23,13 @@ PINNED = (
 
 
 def _git(*args: str) -> str:
+    # Without GIT_* variables: the pre-push hook exports GIT_DIR and
+    # GIT_INDEX_FILE, which must not choose the repository read here.
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
     return subprocess.run(  # nosec B603 B607 - fixed git arguments, no shell
-        ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True
+        ["git", *args], cwd=ROOT, env=env, check=True, capture_output=True, text=True
     ).stdout
 
 

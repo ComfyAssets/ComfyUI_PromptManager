@@ -3,7 +3,7 @@
 import os
 import tempfile
 import unittest
-from unittest import mock
+import unittest.mock
 
 try:
     from tests import process_cleanup
@@ -27,10 +27,10 @@ class TestRemoveWhenReleased(unittest.TestCase):
     def test_retries_while_another_process_still_holds_a_file(self):
         held = PermissionError(32, "being used by another process")
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 process_cleanup.shutil, "rmtree", side_effect=[held, held, None]
             ) as rmtree,
-            mock.patch.object(process_cleanup.time, "sleep") as sleep,
+            unittest.mock.patch.object(process_cleanup.time, "sleep") as sleep,
         ):
             process_cleanup.remove_when_released("folder")
         self.assertEqual(rmtree.call_count, 3)
@@ -40,9 +40,11 @@ class TestRemoveWhenReleased(unittest.TestCase):
         held = PermissionError(32, "being used by another process")
         clock = iter([0.0, 0.0, 5.0, 11.0])
         with (
-            mock.patch.object(process_cleanup.shutil, "rmtree", side_effect=held),
-            mock.patch.object(process_cleanup.time, "sleep"),
-            mock.patch.object(
+            unittest.mock.patch.object(
+                process_cleanup.shutil, "rmtree", side_effect=held
+            ),
+            unittest.mock.patch.object(process_cleanup.time, "sleep"),
+            unittest.mock.patch.object(
                 process_cleanup.time, "monotonic", side_effect=lambda: next(clock)
             ),
         ):
@@ -50,7 +52,7 @@ class TestRemoveWhenReleased(unittest.TestCase):
                 process_cleanup.remove_when_released("folder", timeout=10)
 
     def test_other_errors_are_not_retried(self):
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             process_cleanup.shutil, "rmtree", side_effect=OSError("disk gone")
         ) as rmtree:
             with self.assertRaises(OSError):
