@@ -10,8 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
@@ -91,7 +91,7 @@ class TestCommandLine(unittest.TestCase):
         self.repo.mkdir()
         # As in a git hook: these name another repository, which must stay untouched.
         self.other = Path(self.tmp.name) / "other.git"
-        patcher = mock.patch.dict(
+        patcher = unittest.mock.patch.dict(
             os.environ,
             {
                 "GIT_DIR": str(self.other),
