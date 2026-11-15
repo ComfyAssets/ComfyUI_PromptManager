@@ -742,6 +742,33 @@ is still a failure: fix it at its cause, not by rerunning, and have every one
 green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
 event split and runs both gate scripts for each event.
 
+### Only changes that can affect code are tested (#639)
+
+The table above is for a code change. Each of the three workflows starts with a
+`change class` job that runs `tools/ci/change_class.py` over the files the pull
+request, merge group or push touches, and the other jobs follow its answer:
+
+| Class | Files (allowlists in the script) | What runs |
+| --- | --- | --- |
+| `inert` | `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and the two gates. `py3.12 on ubuntu-latest` starts and skips its steps, because a skipped matrix job would never report that required context. |
+| `docs` | `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | The above plus the real `py3.12 on ubuntu-latest` suite, which holds the tests that read them (`tests/test_brand_assets.py`, `tests/test_package_contents.py`). |
+| `code` | Anything else | Everything in the table above. |
+
+A file on no list is code, and so is every case of doubt: no changed files, a
+manual run, a range git cannot read. `docs/` is code, because the browser suite
+compares production against `docs/concepts/workspace/`; `TESTING.md` is code,
+because the tooling tests read its tables. Before adding a file to a list,
+check that no test and no shipped code opens it.
+
+The gates enforce the class: for `docs` and `inert` they require the classifier
+to have succeeded, the Python matrix to have succeeded and every other job to
+have been skipped; a class the script does not print fails them. `bandit` has no
+gate, so it runs unless the class is `docs` or `inert`, which means a failed
+classifier gets a full scan. The required contexts do not change.
+
+The pre-push hook uses the same script: it skips the Python suite when the
+pushed commits are `inert` and runs it otherwise.
+
 ## Required merge checks
 
 `.github/branch-protection.json` records the required checks:

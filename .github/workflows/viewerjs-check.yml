@@ -45,9 +45,39 @@ concurrency:
 # test (PR #560 shard 2/3: 814 passed in 17.9m; queue run 41206495451 shard 1/3: 827 passed; PR #564
 # shard 2/3 twice), against recent green shards of 11m-17m. Coverage now runs in four shards with the
 # limits unchanged; the per-shard times are re-measured after three green main runs.
+# change class (#639): a file-less checkout and one stdlib script, 5 min (the floor of test.yml).
 jobs:
+  # Sorts the change by the files it touches (tools/ci/change_class.py, #639): "inert" (nothing reads
+  # them), "docs" (a Python test reads them) or "code" (anything else, and every case of doubt). The
+  # jobs below skip what the class cannot affect. A job skipped by its condition reports Success, so
+  # the required contexts still report; "viewerjs" fails unless this job succeeded and each
+  # job did what the class asks. The clone has every commit but no file contents (blob:none): the
+  # script only compares file names between the base and the head.
+  changes:
+    name: change class
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: python3 tools/ci/change_class.py | tee -a "$GITHUB_OUTPUT"
+
   frontend-coverage:
     name: frontend coverage (shard ${{ matrix.shard }}/4)
+    # Code changes only (#639): no browser test reads a docs or inert file.
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
     # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
@@ -117,7 +147,8 @@ jobs:
 
   frontend-coverage-merge:
     name: frontend coverage (merge)
-    needs: frontend-coverage
+    needs: [changes, frontend-coverage]
+    if: ${{ !cancelled() && needs.frontend-coverage.result == 'success' && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     # Same image as the shards: the raw files name sources by the container's workspace path.
     container:
@@ -186,7 +217,9 @@ jobs:
   browser-workflows:
     name: page workflows (${{ matrix.browser }}, shard ${{ matrix.shard }}/3)
     # Merge queue, main and manual runs only (#420); pull requests run the Chromium/touch coverage shards.
-    if: github.event_name != 'pull_request'
+    # Code changes only (#639).
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert' }}
     runs-on: ubuntu-latest
     # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
     # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
@@ -245,9 +278,10 @@ jobs:
   # Branch protection requires the exact context "viewerjs". This job keeps that
   # name and fails unless every coverage shard and the coverage merge succeeded and
   # the browser shards succeeded, or, on a pull request only, were skipped (#420).
-  # Any failure, cancellation or other skip fails it.
+  # Any failure, cancellation or other skip fails it. For a docs or inert change (#639) all three
+  # must be skipped. The classifier itself must succeed, and a class it does not print fails the gate.
   viewerjs:
-    needs: [frontend-coverage, frontend-coverage-merge, browser-workflows]
+    needs: [changes, frontend-coverage, frontend-coverage-merge, browser-workflows]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -255,14 +289,22 @@ jobs:
       - name: Require every frontend job to succeed
         env:
           EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGE_CLASS: ${{ needs.changes.outputs.class }}
           COVERAGE_RESULT: ${{ needs.frontend-coverage.result }}
           MERGE_RESULT: ${{ needs.frontend-coverage-merge.result }}
           WORKFLOWS_RESULT: ${{ needs.browser-workflows.result }}
         run: |
-          queue_only=success
+          echo "change class: $CHANGE_CLASS (classifier: $CHANGES_RESULT)"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGE_CLASS" in
+            code) code_only=success; queue_only=success ;;
+            docs|inert) code_only=skipped; queue_only=skipped ;;
+            *) echo "::error::unknown change class"; exit 1 ;;
+          esac
           if [ "$EVENT_NAME" = pull_request ]; then queue_only=skipped; fi
-          echo "event: $EVENT_NAME (browser-workflows must be $queue_only)"
+          echo "event: $EVENT_NAME (browser-workflows must be $queue_only; coverage and its merge must be $code_only)"
           echo "frontend-coverage: $COVERAGE_RESULT"
           echo "frontend-coverage-merge: $MERGE_RESULT"
           echo "browser-workflows: $WORKFLOWS_RESULT"
-          test "$COVERAGE_RESULT" = success && test "$MERGE_RESULT" = success && test "$WORKFLOWS_RESULT" = "$queue_only"
+          test "$COVERAGE_RESULT" = "$code_only" && test "$MERGE_RESULT" = "$code_only" && test "$WORKFLOWS_RESULT" = "$queue_only"

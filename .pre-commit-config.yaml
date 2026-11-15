@@ -22,9 +22,10 @@ repos:
         types: [python]
         exclude: ^(tests/|reference/)
 
+      # Skipped when the pushed commits only change inert files (tools/ci/change_class.py, #639).
       - id: tests
         name: tests
-        entry: python -m tests.run_suite -q
+        entry: python tools/ci/change_class.py --unless-inert python -m tests.run_suite -q
         language: system
         pass_filenames: false
         stages: [pre-push]
