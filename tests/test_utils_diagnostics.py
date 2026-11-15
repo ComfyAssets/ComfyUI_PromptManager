@@ -50,6 +50,17 @@ class DiagnosticsTestCase(unittest.TestCase):
         os.chdir(path)
         self.addCleanup(os.chdir, previous)
 
+    def _chdir_without_comfyui(self):
+        """Work two levels inside the temp folder (#636).
+
+        The fallback looks up to two levels above the working folder for
+        ``output`` and ``ComfyUI/output``; from here that never leaves the
+        temp folder, wherever the machine keeps it or installs ComfyUI.
+        """
+        folder = os.path.join(self.tmp.name, "a", "b")
+        os.makedirs(folder)
+        self._chdir(folder)
+
 
 class TestDatabaseChecks(DiagnosticsTestCase):
     def test_missing_database_is_an_error(self):
@@ -159,9 +170,7 @@ class TestComfyUIOutputCheck(DiagnosticsTestCase):
         )
 
     def test_nothing_found_is_a_warning(self):
-        empty = os.path.join(self.tmp.name, "empty")
-        os.makedirs(empty)
-        self._chdir(empty)
+        self._chdir_without_comfyui()
         with mock.patch.dict(sys.modules, {"folder_paths": None, "py.config": None}):
             result = self.diag.check_comfyui_output()
         self.assertEqual(result["status"], "warning")
@@ -203,7 +212,7 @@ class TestDependenciesAndFullRun(DiagnosticsTestCase):
 
     def test_full_diagnostic_reports_every_category(self):
         self._populate()
-        self._chdir(self.tmp.name)
+        self._chdir_without_comfyui()
         with mock.patch.dict(sys.modules, {"folder_paths": None, "py.config": None}):
             results = self.diag.run_full_diagnostic()
         self.assertEqual(

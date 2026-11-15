@@ -22,6 +22,11 @@ from pathlib import Path
 from tests.browser import slow_reset_watch
 from tests.browser.slow_reset_watch import REPORT_PREFIX, ResetWatch, is_reset_path
 
+try:
+    from tests.process_cleanup import remove_when_released
+except ImportError:  # discovered with tests/ as the top-level directory
+    from process_cleanup import remove_when_released
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_TIMEOUT_S = 60
 HOLD_SECONDS = slow_reset_watch.SLOW_RESET_SECONDS + 4
@@ -108,10 +113,10 @@ class TestSlowResetOnTheServer(unittest.TestCase):
     """A reset behind another process's write lock, on tests/browser/server.py."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        env = {**os.environ, "TMPDIR": self.tmp.name}
-        env.update(TEMP=self.tmp.name, TMP=self.tmp.name)
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(remove_when_released, self.tmp)
+        env = {**os.environ, "TMPDIR": self.tmp}
+        env.update(TEMP=self.tmp, TMP=self.tmp)
         self.stderr = tempfile.TemporaryFile()
         self.addCleanup(self.stderr.close)
         process = subprocess.Popen(
@@ -145,9 +150,7 @@ class TestSlowResetOnTheServer(unittest.TestCase):
                 self.assertIsNone(process.poll(), "the server exited early")
                 self.assertLess(time.monotonic(), deadline, "never ready")
                 time.sleep(0.1)
-        [self.db_path] = glob.glob(
-            os.path.join(self.tmp.name, "pm-browser-*", "browser.db")
-        )
+        [self.db_path] = glob.glob(os.path.join(self.tmp, "pm-browser-*", "browser.db"))
 
     def reset(self) -> tuple[int, float]:
         request = urllib.request.Request(

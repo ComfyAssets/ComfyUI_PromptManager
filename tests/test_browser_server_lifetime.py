@@ -17,6 +17,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    from tests.process_cleanup import remove_when_released
+except ImportError:  # discovered with tests/ as the top-level directory
+    from process_cleanup import remove_when_released
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_TIMEOUT_S = 60
 
@@ -25,12 +30,12 @@ class BrowserServerCase(unittest.TestCase):
     """Starts the test server in a temp folder of its own; holds no tests."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(remove_when_released, self.tmp)
 
     def start(self, *extra):
-        env = {**os.environ, "TMPDIR": self.tmp.name}
-        env.update(TEMP=self.tmp.name, TMP=self.tmp.name)
+        env = {**os.environ, "TMPDIR": self.tmp}
+        env.update(TEMP=self.tmp, TMP=self.tmp)
         process = subprocess.Popen(
             [sys.executable, "-m", "tests.browser.server", "--port", "0", *extra],
             cwd=REPO_ROOT,
@@ -65,7 +70,7 @@ class BrowserServerCase(unittest.TestCase):
                 time.sleep(0.1)
 
     def roots(self):
-        return sorted(path.name for path in Path(self.tmp.name).glob("pm-browser-*"))
+        return sorted(path.name for path in Path(self.tmp).glob("pm-browser-*"))
 
 
 class TestBrowserServerLifetime(BrowserServerCase):
