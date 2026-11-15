@@ -312,6 +312,13 @@ class LoraImportAPITestCase(LoraAPITestCase):
 class LoraImportRouteTests(LoraImportAPITestCase):
 
     async def test_preview_writes_nothing_and_makes_no_requests(self):
+        # The review shows a settings file under the home folder as ~/...
+        # (test_lora_manager_layout). Home is pinned beside the temp root, so
+        # the full path below holds wherever TEMP is: on Windows it sits
+        # under the profile (#636).
+        home = patch.object(Path, "home", return_value=self.tmp_root / "home")
+        home.start()
+        self.addCleanup(home.stop)
         self._two_loras()
         (self.loras / "broken.metadata.json").write_text("{{{")
         db_path = self.api.db.model.db_path

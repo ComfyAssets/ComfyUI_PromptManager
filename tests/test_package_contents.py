@@ -22,6 +22,7 @@ DEVELOPMENT = (
     "images/x.png",
     "TESTING.md",
     "requirements-dev.txt",
+    ".gitattributes",
 )
 KEPT = (
     "__init__.py",
