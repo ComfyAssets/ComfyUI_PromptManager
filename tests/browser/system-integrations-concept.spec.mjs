@@ -29,6 +29,7 @@ test.afterEach(async ({ page, request, browserName }) => {
 });
 
 const PREVIEW_URL = '/prompt_manager/lora/import/preview';
+const ENABLE_URL = '/prompt_manager/lora/enable';
 
 /** Runs in the page: Integrations' surfaces under `mainSelector`, every row's text and control, geometry and tokens. */
 function measureIntegrations(mainSelector) {
@@ -300,7 +301,10 @@ async function productionReview(page, request, theme) {
     await expect(page.locator('#workspace-main #renderer-status')).toHaveText(RENDERER_NONE);
     // The import reviews what is enabled: save the integration on first.
     await page.locator('#workspace-main #lora-enable').check();
+    // The save writes config.json durably, which a busy CI disk can hold for seconds (#631): wait for its answer.
+    const saved = page.waitForResponse(response => response.url().endsWith(ENABLE_URL));
     await page.getByRole('button', { name: 'Save preferences', exact: true }).click();
+    await saved;
     await expect(page.locator('#settings-status')).toHaveText('Saved to the server configuration.');
     const answer = page.waitForResponse(response => response.url().endsWith(PREVIEW_URL));
     await page.locator('#workspace-main').getByRole('button', { name: 'Review import', exact: true }).click();
