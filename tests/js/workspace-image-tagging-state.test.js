@@ -1033,7 +1033,9 @@ test('the bulk options pick and reset like the Tag image dialog (D204)', async (
 
 test('the client Built-in copy equals the server DEFAULT_TAG_TEMPLATE (#431)', async () => {
     const { BUILTIN_INSTRUCTIONS } = await load();
-    const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../py/tagging_defaults.py'), 'utf8');
+    // A Windows checkout may hold the file with CRLF line endings (#636).
+    const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../py/tagging_defaults.py'), 'utf8')
+        .replace(/\r\n/g, '\n');
     const block = source.slice(source.indexOf('DEFAULT_TAG_TEMPLATE = ('), source.indexOf('\n)\n', source.indexOf('DEFAULT_TAG_TEMPLATE = (')));
     const text = [...block.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(([, part]) => JSON.parse(`"${part}"`)).join('');
     assert.ok(text.length > 100);
