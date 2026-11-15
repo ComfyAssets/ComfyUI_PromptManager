@@ -15,6 +15,7 @@ from aiohttp import web
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
+from tests.browser.workspace_concept_fixture import HOST_PATH_STYLE
 from tests.browser.workspace_visual_fixture import _write_art, seed_workspace_visual
 from utils.execution_contexts import (
     ContextBundle,
@@ -293,7 +294,9 @@ def seed_workspace_history(
         ):
             conn.execute(f"DELETE FROM {table}")
     epoch = api.db.get_execution_epoch()
-    roots = snapshot_output_roots("posix", str(root / "output"), str(root / "temp"))
+    roots = snapshot_output_roots(
+        HOST_PATH_STYLE, str(root / "output"), str(root / "temp")
+    )
     folder = root / "output" / "history"
     folder.mkdir(exist_ok=True)
     for index, name in enumerate(("current.png", "other.png")):
@@ -309,7 +312,7 @@ def seed_workspace_history(
             kind,
             "history",
             name,
-            "posix",
+            HOST_PATH_STYLE,
             roots.output_key if kind == "output" else roots.temp_key,
         )
 
