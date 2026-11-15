@@ -277,6 +277,22 @@ the process exits non-zero.
   A test that waits on a fixed busy timeout, a network name (`\\server\share`:
   use `\\localhost\<missing share>`) or a default TLS context (it reads the
   Windows certificate store) costs seconds there; the slowest list shows it.
+- On a Windows development machine (#636), give the suite a short `TEMP`
+  (for example `C:\t`) or turn long paths on
+  (`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` = 1).
+  Under the default `C:\Users\<user>\AppData\Local\Temp`, the visual fixture's
+  182-character file name passes Windows' 260-character limit once a test
+  nests its own temp folder, and the chronological-history reset answers 500.
+  Three other differences from the CI runner are handled in the tests:
+  a virtual environment's `python.exe` is a launcher that runs the real
+  interpreter as a child, so a test that kills a server it started removes its
+  folder with `tests/process_cleanup.py`'s `remove_when_released`, which waits
+  for that child to end (a handle the test process itself still holds never
+  releases, so the bound still fails it); Git for Windows checks text files out
+  with CRLF, so `.gitattributes` keeps the pinned vendored files byte for byte
+  and a test that parses source text normalizes line endings; and a test that
+  expects no ComfyUI nearby works two folders inside its temp folder, because
+  the output-folder fallback looks two levels up.
 
 Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
 `portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
