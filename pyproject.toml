@@ -18,7 +18,7 @@ Repository = "https://github.com/ComfyAssets/ComfyUI_PromptManager"
 [tool.comfy]
 PublisherId = "kiko9"
 DisplayName = "ComfyUI_PromptManager"
-Icon = "https://avatars.githubusercontent.com/u/213204677?s=200"
+Icon = "https://raw.githubusercontent.com/ComfyAssets/ComfyUI_PromptManager/main/assets/brand/icon-256.png"
 
 [tool.black]
 line-length = 88
