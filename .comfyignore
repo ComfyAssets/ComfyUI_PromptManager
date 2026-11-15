@@ -19,3 +19,4 @@
 /.flake8
 /.pre-commit-config.yaml
 /.gitignore
+/.gitattributes
