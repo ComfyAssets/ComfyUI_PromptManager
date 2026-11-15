@@ -28,10 +28,13 @@ Usage:
 ``change_class.py --unless-inert <command...>``
     The pre-push hook: runs the command unless pre-commit's pushed range
     (``PRE_COMMIT_FROM_REF``..``PRE_COMMIT_TO_REF``) is inert, and exits
-    with the command's code.
+    with the command's code. The command is looked up on ``PATH`` first, so a
+    bare ``npm`` finds ``npm.cmd`` on Windows, which ``subprocess`` alone
+    does not do.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from typing import Iterable, Optional
@@ -99,6 +102,18 @@ def class_of_range(base: str, head: str, three_dot: bool = False) -> str:
     return classify(paths)
 
 
+def run_command(argv: list[str]) -> int:
+    """Run ``argv`` with its program resolved through ``PATH``; its exit code."""
+    if not argv:
+        print("change_class: --unless-inert needs a command", file=sys.stderr)
+        return 2
+    program = shutil.which(argv[0])
+    if program is None:
+        print(f"change_class: command not found: {argv[0]}", file=sys.stderr)
+        return 127
+    return subprocess.run([program, *argv[1:]], check=False).returncode
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--unless-inert"]:
         found = class_of_range(
@@ -108,7 +123,7 @@ def main(argv: list[str]) -> int:
         if found == "inert":
             print("Skipped: this push only changes inert files (tools/ci).")
             return 0
-        return subprocess.run(argv[1:], check=False).returncode
+        return run_command(argv[1:])
     event = os.environ.get("EVENT_NAME", "")
     found = "code"
     if event in RANGE_EVENTS:

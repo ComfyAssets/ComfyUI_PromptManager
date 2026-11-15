@@ -221,6 +221,33 @@ class TestCommandLine(unittest.TestCase):
         self.assertEqual(self.run_script(*command, **refs).returncode, 0)
         self.assertTrue(marker.exists())
 
+    def test_the_pre_push_command_is_found_through_path(self):
+        # On Windows a bare "npm" is npm.cmd: only a PATH lookup with PATHEXT finds it.
+        found = unittest.mock.Mock(return_value=unittest.mock.Mock(returncode=3))
+        with unittest.mock.patch.dict(os.environ, _isolated_environment(), clear=True):
+            with (
+                unittest.mock.patch.object(
+                    change_class.shutil, "which", return_value="C:/node/npm.cmd"
+                ) as which,
+                unittest.mock.patch.object(change_class.subprocess, "run", found),
+            ):
+                code = change_class.main(["--unless-inert", "npm", "test"])
+        which.assert_called_once_with("npm")
+        found.assert_called_once_with(["C:/node/npm.cmd", "test"], check=False)
+        self.assertEqual(code, 3)
+
+    def test_a_missing_or_absent_pre_push_command_fails_clearly(self):
+        with unittest.mock.patch.dict(os.environ, _isolated_environment(), clear=True):
+            with (
+                unittest.mock.patch.object(
+                    change_class.shutil, "which", return_value=None
+                ),
+                unittest.mock.patch.object(change_class.subprocess, "run") as run,
+            ):
+                self.assertEqual(change_class.main(["--unless-inert", "nope"]), 127)
+                self.assertEqual(change_class.main(["--unless-inert"]), 2)
+        run.assert_not_called()
+
     def test_the_pre_push_command_keeps_its_exit_code(self):
         result = self.run_script(
             "--unless-inert", sys.executable, "-c", "raise SystemExit(7)"
