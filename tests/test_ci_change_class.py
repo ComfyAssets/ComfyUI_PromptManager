@@ -11,12 +11,28 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
 import change_class  # noqa: E402
 
 SCRIPT = ROOT / "tools" / "ci" / "change_class.py"
+
+
+def _isolated_environment(**extra):
+    """The environment without git's own variables and the script's inputs.
+
+    A git hook exports ``GIT_DIR`` and ``GIT_INDEX_FILE`` for the repository
+    being pushed. A child ``git`` that inherits them works on that repository
+    instead of the temp one, so the pre-push hook must never pass them on.
+    """
+    kept = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_") and key not in change_class.ENVIRONMENT
+    }
+    return {**kept, **extra}
 
 
 class TestClassify(unittest.TestCase):
@@ -71,7 +87,21 @@ class TestCommandLine(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name)
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+        # As in a git hook: these name another repository, which must stay untouched.
+        self.other = Path(self.tmp.name) / "other.git"
+        patcher = mock.patch.dict(
+            os.environ,
+            {
+                "GIT_DIR": str(self.other),
+                "GIT_INDEX_FILE": str(self.other / "index"),
+                "GIT_WORK_TREE": str(self.tmp.name),
+            },
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(lambda: self.assertFalse(self.other.exists()))
         self.git("init", "-q", "-b", "main")
         self.commit({"py/a.py": "a\n", "README.md": "r\n"})
         self.base = self.head()
@@ -80,6 +110,7 @@ class TestCommandLine(unittest.TestCase):
         return subprocess.run(
             ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
             cwd=self.repo,
+            env=_isolated_environment(),
             check=True,
             capture_output=True,
             text=True,
@@ -97,15 +128,10 @@ class TestCommandLine(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def run_script(self, *args, **env):
-        clean = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in change_class.ENVIRONMENT
-        }
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
             cwd=self.repo,
-            env={**clean, **env},
+            env=_isolated_environment(**env),
             capture_output=True,
             text=True,
         )
