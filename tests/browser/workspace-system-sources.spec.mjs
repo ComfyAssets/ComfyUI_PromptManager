@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { clickHostSave, hostSaveAnswer, SETTINGS_URL } from './settings-save.mjs';
 import { seedConcept } from './concept-inventory.mjs';
 
 // System › Sources & scans (#249 System S4 Task 11) on the concept-shaped real fixture, whose two sources are this
@@ -7,7 +8,6 @@ import { seedConcept } from './concept-inventory.mjs';
 // Add/Remove edit the host draft behind the one Save row, and every scan starts the session job through the shared
 // "Review metadata scan" (D55), scoped to one source from its row (S4 Task 10). The hooks are workspace_system_fixture.py's.
 const workspace = '/prompt_manager/workspace';
-const SETTINGS_URL = '/prompt_manager/settings';
 const NOTICE_KEY = 'pm_update_notice_dismissed';
 const OUTSIDE_REASON = 'Gallery root must be inside a ComfyUI directory (output, input, temp, user) or one listed in PROMPT_MANAGER_EXTRA_GALLERY_ROOTS';
 
@@ -152,9 +152,9 @@ test('Add source validates on the server, then marks the host draft dirty; Save 
     ]);
     await expect(statusOf(page)).toHaveText('Unsaved changes.');
     expect((await serverJson(request, SETTINGS_URL)).sources.effective).toHaveLength(2);
-    const saved = page.waitForRequest(item => item.method() === 'POST' && item.url().endsWith(SETTINGS_URL));
+    const saved = hostSaveAnswer(page);
     await saveButton(page).click();
-    const body = (await saved).postDataJSON();
+    const body = (await saved).request().postDataJSON();
     expect(body.gallery_root_paths).toEqual(['output', 'input', 'output/unthumbnailed']);
     expect(typeof body.expected_revision).toBe('string');
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
@@ -207,7 +207,7 @@ test('Remove marks the draft; removing the last entry states auto-detect', async
     await expect(statusOf(page)).toHaveText('Unsaved changes.');
     await sourceRow(page, 'ComfyUI output').getByRole('button', { name: 'Remove', exact: true }).click();
     expect(await rowsOf(page)).toEqual([['p', 'small', 'No source is configured. After saving, ComfyUI’s output folder is used.']]);
-    await saveButton(page).click();
+    await clickHostSave(page, saveButton(page));
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     // Saved: ComfyUI's output folder is detected and listed without Remove, its row saying it is the default.
     await expect.poll(rowsOf.bind(null, page)).toEqual([
@@ -224,7 +224,7 @@ test('a configured source that does not exist says why and can be removed', asyn
     expect((await rowsOf(page)).at(-1)).toEqual(['unmounted-drive', `unmounted-drive · ${OUTSIDE_REASON}`, ['Remove']]);
     await sourceRow(page, 'unmounted-drive').getByRole('button', { name: 'Remove', exact: true }).click();
     await expect(sourceList(page).locator('.operation')).toHaveCount(2);
-    await saveButton(page).click();
+    await clickHostSave(page, saveButton(page));
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, SETTINGS_URL)).sources.configured.map(source => source.path)).toEqual(['output', 'input']);
 });
@@ -266,7 +266,7 @@ test('Watch for new outputs saves monitoring_enabled; a restart applies it', asy
     await expect(sourceList(page).locator('.operation .row-actions > button:first-child')).toHaveText(['Scan changes', 'Scan changes']);
     // Switched back on before the restart: the observer still runs, so nothing waits for one.
     await monitoring.check();
-    await saveButton(page).click();
+    await clickHostSave(page, saveButton(page));
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     await expect(sourceList(page).locator('.operation p')).toHaveText(['output · watching', 'input · watching']);
 });
@@ -327,9 +327,9 @@ test('D158: saved off while the monitor still watches until a restart, the forei
         await expect(layout.locator('.setting-row').filter({ has: page.locator('#foreign-runs') }).locator('p.small'))
             .toHaveText('Applies while Watch for new outputs is on.');
         await foreign.uncheck();
-        const saved = page.waitForRequest(item => item.method() === 'POST' && item.url().endsWith(SETTINGS_URL));
+        const saved = hostSaveAnswer(page);
         await saveButton(page).click();
-        expect((await saved).postDataJSON()).toEqual({ save_foreign_runs: false, expected_revision: expect.any(String) });
+        expect((await saved).request().postDataJSON()).toEqual({ save_foreign_runs: false, expected_revision: expect.any(String) });
         await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     } finally {
         await request.post(SETTINGS_URL, { data: { save_foreign_runs: true } });
@@ -349,9 +349,9 @@ test('worker range max is cpu_count', async ({ page, request }) => {
     await workers.fill(String(next));
     await expect(statusOf(page)).toHaveText(next === settings.worker_threads ? 'No unsaved changes.' : 'Unsaved changes.');
     test.skip(next === settings.worker_threads, 'One core: the range has a single value');
-    const saved = page.waitForRequest(item => item.method() === 'POST' && item.url().endsWith(SETTINGS_URL));
+    const saved = hostSaveAnswer(page);
     await saveButton(page).click();
-    expect((await saved).postDataJSON().worker_threads).toBe(next);
+    expect((await saved).request().postDataJSON().worker_threads).toBe(next);
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, SETTINGS_URL)).settings.worker_threads).toBe(next);
 });
@@ -601,7 +601,7 @@ test('a save refused for one unusable source names it and marks its row', async 
     // Removed, the list saves.
     await sourceRow(page, 'unplugged').getByRole('button', { name: 'Remove', exact: true }).click();
     await expect(sourceList(page).locator('.operation[aria-invalid="true"]')).toHaveCount(0);
-    await saveButton(page).click();
+    await clickHostSave(page, saveButton(page));
     await expect(statusOf(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, SETTINGS_URL)).sources.configured.map(source => source.path)).toEqual(['output']);
 });

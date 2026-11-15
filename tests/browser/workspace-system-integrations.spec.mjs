@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { clickHostSave } from './settings-save.mjs';
 import { seedConcept } from './concept-inventory.mjs';
 
 // System › Integrations (#249 System S10 Task 27) on the concept-shaped fixture with a fake LoraManager install
@@ -65,7 +66,7 @@ async function openIntegrations(page) {
 async function enable(page, { triggers = false } = {}) {
     await settingOf(page, 'LoraManager integration').locator('input').check();
     if (triggers) await settingOf(page, 'Automatically include trigger words').locator('input').check();
-    await save(page).click();
+    await clickHostSave(page, save(page), ENABLE_URL);
     await expect(status(page)).toHaveText('Saved to the server configuration.');
 }
 
@@ -201,7 +202,7 @@ test('key never prefilled; blank keeps; Clear saved key clears; saved through Sa
     await field.fill('sk-test-key');
     await expect(key.locator('p.small')).toHaveText('The new key replaces the saved one when you save.');
     await expect(status(page)).toHaveText('Unsaved changes.');
-    await save(page).click();
+    await clickHostSave(page, save(page), ENABLE_URL);
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     expect(enables).toHaveLength(1);
     expect(enables[0]).toMatchObject({ civitai_api_key: 'sk-test-key', enabled: false });
@@ -243,7 +244,7 @@ test('key never prefilled; blank keeps; Clear saved key clears; saved through Sa
     await expect(key.locator('p.small')).toHaveText('The saved key is removed when you save.');
     await expect(clear).toHaveCount(0);
     await expect(field).toBeFocused();
-    await save(page).click();
+    await clickHostSave(page, save(page), ENABLE_URL);
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     expect(enables.at(-1)).toMatchObject({ clear_civitai_api_key: true });
     expect(enables.at(-1)).not.toHaveProperty('civitai_api_key');
@@ -261,7 +262,7 @@ test('a LoRA save over settings changed elsewhere is a conflict, never a blind w
     await expect(status(page)).toHaveText('Settings changed elsewhere. Reload this section to see them.');
     expect((await serverJson(request, '/__test__/integrations/state')).trigger_words).toBe(false);
     // The draft stays; the next Save carries the reread revision and succeeds.
-    await save(page).click();
+    await clickHostSave(page, save(page), ENABLE_URL);
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, '/__test__/integrations/state')).trigger_words).toBe(true);
 });
@@ -292,7 +293,7 @@ test('a save where only the LoRA part is written says so; the next save needs no
         // The next save carries the revision the saved part left: it saves, with no "changed elsewhere".
         await nav.getByRole('button', { name: 'Sources & scans', exact: true }).click();
         await sourceRow('unplugged').getByRole('button', { name: 'Remove', exact: true }).click();
-        await save(page).click();
+        await clickHostSave(page, save(page));
         await expect(status(page)).toHaveText('Saved to the server configuration.');
         expect((await serverJson(request, '/prompt_manager/settings')).sources.configured.map(source => source.path)).toEqual(['output']);
     });

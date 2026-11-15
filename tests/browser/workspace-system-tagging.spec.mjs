@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { clickHostSave, hostSaveAnswer, SETTINGS_URL } from './settings-save.mjs';
 
 // System › Auto-tagging (#328, System S11 Tasks 6–7) on the tagging fixture (workspace_tagging_fixture.py) with the
 // injected fake model: no model file exists and nothing is downloaded or run for real. The fake download waits on the
@@ -8,7 +9,6 @@ import { test, expect } from './fixtures.mjs';
 const workspace = '/prompt_manager/workspace';
 const MODELS_URL = '/prompt_manager/autotag/models';
 const PREVIEW_URL = '/prompt_manager/autotag/batch/preview';
-const SETTINGS_URL = '/prompt_manager/settings';
 const MODEL_LABELS = ['WD14 SwinV2 · ~400 MB', 'WD14 ViT · ~400 MB', 'GGUF JoyCaption · ~4.5 GB', 'HuggingFace JoyCaption · ~16 GB'];
 const FIRST = 'tagging/dunes_00001.png';
 const SECOND = 'tagging/dunes_00002.png';
@@ -169,9 +169,9 @@ test('defaults save through Save preferences and the Tag image dialog uses them'
     await page.locator('#threshold-general').press('Tab');
     await page.locator('#tag-suggestions').fill('15');
     await page.locator('#tag-suggestions').press('Tab');
-    const posted = page.waitForRequest(item => item.method() === 'POST' && new URL(item.url()).pathname === SETTINGS_URL);
+    const posted = hostSaveAnswer(page);
     await save(page).click();
-    const body = (await posted).postDataJSON();
+    const body = (await posted).request().postDataJSON();
     expect(body).toMatchObject({ autotag_existing: 'merge', autotag_general_threshold: 0.4, autotag_suggestion_limit: 15 });
     expect(typeof body.expected_revision).toBe('string');
     await expect(status(page)).toHaveText('Saved to the server configuration.');
@@ -468,7 +468,7 @@ test('skipped tags add, preview, remove, save and reload (D202)', async ({ page,
     await skippedChips(page).last().getByRole('button', { name: 'Remove zebra', exact: true }).click();
     await expect(skippedChips(page)).toHaveCount(2);
     await expect(status(page)).toHaveText('Unsaved changes.');
-    await save(page).click();
+    await clickHostSave(page, save(page));
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, SETTINGS_URL)).settings.autotag_skipped_tags).toEqual(['blurry', 'light']);
     await openTagging(page);
@@ -526,7 +526,7 @@ test('saved instructions: new, edit, per-engine default, delete, save and reload
     await page.locator('#instruction-default-hf').selectOption({ label: 'Photo realism' });
     await expect(instructionOption(page, 'Photo realism').locator('.chip')).toHaveText(['Default for HuggingFace']);
     await expect(status(page)).toHaveText('Unsaved changes.');
-    await save(page).click();
+    await clickHostSave(page, save(page));
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     let saved = (await serverJson(request, SETTINGS_URL)).settings;
     expect(saved.autotag_instructions.map(entry => [entry.name, entry.text])).toEqual([['Describe the image', 'Describe the image'],
@@ -538,7 +538,7 @@ test('saved instructions: new, edit, per-engine default, delete, save and reload
     await page.locator('#instruction-delete').click();
     await expect(page.locator('#instruction-reset')).toHaveText('GGUF now uses Built-in.');
     await expect(page.locator('#instruction-default-gguf')).toHaveValue('builtin');
-    await save(page).click();
+    await clickHostSave(page, save(page));
     await expect(status(page)).toHaveText('Saved to the server configuration.');
     saved = (await serverJson(request, SETTINGS_URL)).settings;
     expect(saved.autotag_instructions.map(entry => entry.name)).toEqual(['Photo realism']);

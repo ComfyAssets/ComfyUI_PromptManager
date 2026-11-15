@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { clickHostSave, SETTINGS_URL } from './settings-save.mjs';
 import { seedConcept } from './concept-inventory.mjs';
 import { readCoverageTable, parseControl, CONTROL_EXEMPTIONS } from '../../tools/vendor/legacy-coverage.mjs';
 
@@ -326,7 +327,7 @@ test('Appearance › Thumbnails saves the server thumbnail settings and never co
     await format.selectOption('jpeg');
     await surface.locator('#thumbnail-quality').fill('65');
     await surface.locator('#thumbnail-quality').dispatchEvent('change');
-    await page.getByRole('button', { name: 'Save preferences', exact: true }).click();
+    await clickHostSave(page, page.getByRole('button', { name: 'Save preferences', exact: true }));
     await expect(page.locator('#settings-status')).toHaveText('Saved to the server configuration.');
     const { settings } = await serverJson(request, '/prompt_manager/settings');
     expect([settings.thumbnail_format, settings.thumbnail_quality, settings.thumbnail_edge]).toEqual(['jpeg', 65, 512]);
@@ -456,8 +457,8 @@ test('out-of-order overview responses never repaint a newer section', async ({ p
 
 // System › Appearance (#249 System S3 Task 8): the browser display defaults (`gallerySettings`, preferences.mjs) and the
 // two host fields behind the one Save row, and the consumers that read them on their next visit.
-const SETTINGS_URL = '/prompt_manager/settings';
 const INSPECT_PATH = '/prompt_manager/images/inspect/';
+const HOST_SAVED = 'Saved to the server configuration.';
 const statusOf = page => page.locator('#workspace-main #settings-status');
 const saveOf = page => page.locator('#workspace-main .save-row > button');
 const storedSettings = page => page.evaluate(() => JSON.parse(localStorage.getItem('gallerySettings') || 'null'));
@@ -473,7 +474,9 @@ async function openAppearance(page) {
 
 async function saveAppearance(page, text) {
     await expect(saveOf(page)).not.toHaveAttribute('aria-disabled', 'true');
-    await saveOf(page).click();
+    // A save that reaches the server waits for its answer (#631); one kept in this browser sends nothing.
+    if (text.includes(HOST_SAVED)) await clickHostSave(page, saveOf(page));
+    else await saveOf(page).click();
     await expect(statusOf(page)).toHaveText(text);
 }
 
