@@ -1,11 +1,16 @@
 import {rootedFileAdapter} from './inspection-state.mjs';
 
-/** A viewer visits only the descriptors loaded by its opening query. */
+/** One descriptor the adapter refuses is left out, so it never keeps the viewer from opening on the others (#646). */
+function openable(adapter, item) {
+    try { adapter.validate(item); return true; } catch (error) { if (error instanceof TypeError) return false; throw error; }
+}
+
+/** A viewer visits only the descriptors loaded by its opening query that its adapter accepts. */
 export function createViewerSession({items, initialKey, onChange = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, adapter = rootedFileAdapter}) {
-    if (!Array.isArray(items) || !items.length) throw new TypeError('A loaded media collection is required');
+    const accepted = Array.isArray(items) ? items.filter(item => openable(adapter, item)) : [];
+    if (!accepted.length) throw new TypeError('A loaded media collection is required');
     const keys = new Set();
-    const loaded = Object.freeze(items.map(item => {
-        adapter.validate(item);
+    const loaded = Object.freeze(accepted.map(item => {
         const key = adapter.key(item);
         if (keys.has(key)) throw new TypeError('Duplicate viewer identity');
         keys.add(key);
