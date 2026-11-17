@@ -31,7 +31,7 @@ function element(tag, className, text) {
  * #331 D139: with the client store `collections`, the viewer's inspector offers "Collections…"; the changes it confirms
  * reach `onCollectionsChanged({added, removed})` once the viewer closes, so the viewer keeps its place while open.
  */
-export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter,
+export function createMediaViewer({api,container,parentScope,inspectionController,sender,onSelect,onInvalidSelection,onRefresh,onRestoreFocus,onClose,onMediaError,adapter = rootedFileAdapter,
     collections = null,onCollectionsChanged = null,onDelete = null}) {
     const scope = createScope();
     let active = null, retryVersion = 0;
@@ -46,11 +46,31 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
 
     function open(options) {
         if (scope.signal.aborted) return;
-        active?.close(false);
         const {items,selectedKey,trigger = document.activeElement,details:detailsMode} = options;
+        if (!Array.isArray(items) || !items.length) throw new TypeError('A loaded media collection is required');
+        const keyFor = item => {
+            try { return adapter.key(item); } catch { return null; }
+        };
+        const selected = items.find(item => keyFor(item) === selectedKey);
+        const validItems = [];
+        for (const item of items) {
+            try {
+                adapter.validate(item);
+                adapter.key(item);
+                validItems.push(item);
+            } catch {
+                // A malformed identity must not prevent other listed media from opening.
+            }
+        }
+        if (!validItems.some(item => keyFor(item) === selectedKey)) {
+            active?.close(false);
+            if (selected) onInvalidSelection?.(selected);
+            return false;
+        }
+        active?.close(false);
         let mounted = false, initial, entry, currentKey, viewer = null, withoutViewer = false, mediaScope = null, closed = false;
         let originalDownload = null, inspectionState = inspectionController.state, collectionChanges = null;
-        const session = createViewerSession({adapter,items,initialKey:selectedKey,onChange:(state,selected) => {
+        const session = createViewerSession({adapter,items:validItems,initialKey:selectedKey,onChange:(state,selected) => {
             if (!mounted) { initial = [state,selected]; return; }
             update(state,selected);
         }});
@@ -359,6 +379,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
             inspector.setState(state);
             if (state.record?.identity.key === currentKey && state.record.library?.title) title.textContent = `${state.record.library.title} · ${entry.filename}`;
         }));
+        return true;
     }
     return {open,close,dispose,stopSlideshow};
 }

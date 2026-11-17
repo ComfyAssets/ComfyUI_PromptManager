@@ -433,6 +433,27 @@ test('server adapters still cache-bust the original on open and retry', async ()
     }
 });
 
+test('viewer skips malformed listed identities and hands a refused selection to the details panel', async () => {
+    const {rootedFileAdapter} = await import('../../web/js/workspace/inspection-state.mjs');
+    const scope = 'a'.repeat(64);
+    const valid = {root_index:0,path:'folder/a.png',filename:'a.png',root_scope:scope,is_video:false,
+        url:`/prompt_manager/images/serve/folder/a.png?root=0&root_scope=${scope}`};
+    const invalid = {...valid,path:'model\\2026-11-17/a.png',filename:'a.png'};
+    const f = mountedDom(), restoreGlobals = withViewerGlobals(f), parentScope = createScope(), selected = [], fallback = [];
+    const view = module.createMediaViewer({container:f.container,parentScope,inspectionController:borrowedController(),adapter:rootedFileAdapter,
+        onSelect:item => selected.push(item),onInvalidSelection:item => fallback.push(item),sender:{open(){}}});
+    try {
+        assert.equal(view.open({items:[invalid,valid],selectedKey:'0:folder/a.png'}),true);
+        assert.deepEqual(selected,[valid]);
+        assert.match(f.walk(f.container,n => n.className?.includes('media-position'))[0].textContent,/^1 of 1 loaded:/);
+        assert.equal(f.walk(f.container,n => n.attributes['aria-label'] === 'Next media')[0].attributes['aria-disabled'],'true');
+
+        assert.equal(view.open({items:[valid,invalid],selectedKey:'0:model\\2026-11-17/a.png'}),false);
+        assert.deepEqual(fallback,[invalid]);
+        assert.equal(f.walk(f.container,n => n.tagName === 'dialog').length,0);
+    } finally { view.dispose(); parentScope.dispose(); restoreGlobals(); f.restore(); }
+});
+
 test('the viewer and its download always use the original, never the thumbnail in any format (#317)', async () => {
     const {rootedFileAdapter, createInspectionController} = await import('../../web/js/workspace/inspection-state.mjs');
     const scope = 'a'.repeat(64);

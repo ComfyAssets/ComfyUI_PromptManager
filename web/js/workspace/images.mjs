@@ -339,7 +339,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     const collectionsChangedBy = ({added, removed}) => {
         if (filters.collection && [...added, ...removed].includes(Number(filters.collection))) collectionChanged();
     };
-    const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,
+    const mediaViewer = createMediaViewer({api,container:main,parentScope:scope,inspectionController:inspection,sender,onInvalidSelection:inspect,
         collections:inspectorCollections,onCollectionsChanged:collectionsChangedBy,
         onDelete:embedded ? null : (item,button) => deleteOne(item,button,() => mediaViewer.close()),
         onSelect:image => {if (selection !== imageKey(image)) inspect(image);else inspection.select(image);},
