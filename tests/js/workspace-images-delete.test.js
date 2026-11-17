@@ -23,7 +23,7 @@ test('the words of the review and its routes', () => {
     assert.equal(MAX_DELETE, 500);
     assert.equal(TOO_MANY, 'Select at most 500 images.');
     assert.equal(QUESTION, 'What should happen to the files?');
-    assert.deepEqual(MODES.map(mode => mode.label), ['Remove from the library only', 'Also move the files to the trash']);
+    assert.deepEqual(MODES.map(mode => mode.label), ['Remove from the library only', 'Also move the files to the trash', 'Permanently delete']);
 });
 
 test('library rows: scope, refusals, links, details, backup and media', () => {
@@ -149,3 +149,34 @@ test('apply refuses to send a delete without an explicit mode', async () => {
         await assert.rejects(applyDelete({ api, store: null, plan: plan(), mode, notify: () => {} }), TypeError);
     }
 });
+
+test('permanent rows: scope and media line', () => {
+    const { deleteRows } = module();
+    const rows = Object.fromEntries(deleteRows(plan({ permanent: { count: 3 } }), 'permanent'));
+    assert.equal(rows.Scope, '3 images');
+    assert.equal(rows['Media on disk'], 'Files are removed from disk. Disk space is freed immediately.');
+});
+
+test('permanent sentences', () => {
+    const { deleteSentences, SENTENCES } = module();
+    assert.deepEqual(deleteSentences(plan(), 'permanent'), [SENTENCES.permanent]);
+});
+
+test('permanent primary label and close-only reason', () => {
+    const { primaryLabel, closeOnlyReason } = module();
+    assert.equal(primaryLabel('permanent', 2), 'Permanently delete 2 images from disk');
+    assert.equal(closeOnlyReason(plan({ library: { count: 0 }, trash: { count: 0 }, permanent: { count: 0 } })), 'None of the selected images can be deleted.');
+    assert.equal(closeOnlyReason(plan({ library: { count: 3 } })), null);
+});
+
+test('permanent outcome toast', () => {
+    const { outcomeToast } = module();
+    assert.equal(outcomeToast({ scope: { mode: 'permanent' }, counters: { deleted: 3, not_changed: 0 }, total: 3 }),
+        'Permanently deleted 3 images from disk.');
+    assert.equal(outcomeToast({ scope: { mode: 'permanent' }, counters: { deleted: 2, not_changed: 1 }, total: 3 }),
+        'Permanently deleted 2 images from disk. 1 was not changed (see Activity).');
+    assert.equal(outcomeToast({ scope: { mode: 'permanent', failure: 'records-failed' }, counters: { deleted: 1 }, total: 4 }),
+        'Stopped after 1 of 4 images; the rest were not changed. See Activity.');
+});
+
+

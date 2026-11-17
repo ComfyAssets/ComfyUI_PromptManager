@@ -1,9 +1,9 @@
-"""Delete selected images: remove them from the library, or trash them (#480).
+"""Delete images: remove from library, trash, or permanently delete.
 
 ``POST /prompt_manager/images/delete/preview {items | filter}`` reviews the
-selection for both modes at once and answers a reviewed plan (the System ›
+selection for all modes at once and answers a reviewed plan (the System ›
 Maintenance contract, ``py/api/maintenance.py``): the token, the counts of
-the records each file loses, the refused files with a coded reason (both
+the records each file loses, the refused files with a coded reason (all
 modes, and the trash-only ones), the prompts that lose their last image and
 the safety backup. It writes nothing. ``items`` are Images listing identities
 (at most 500); ``filter`` is "Select all N matching". Each target is matched
@@ -19,12 +19,16 @@ again (containment and fingerprint) and
   in one transaction; the file stays on disk, hidden;
 - ``mode="trash"``: it is moved to the trash first (``utils/trash.py``); a
   refused move leaves the file and its records alone; after a move its
-  records are deleted.
+  records are deleted;
+- ``mode="permanent"``: it is unlinked from disk with ``os.remove``; a refused
+  unlink leaves the file and its records alone; after removal its records are
+  deleted. This mode is Linux/BSD only.
 
-No path here unlinks a media file. A failed records write stops the job; the
-files after it are not attempted.
+Only ``mode="permanent"`` unlinks a media file from disk. A failed records
+write stops the job; the files after it are not attempted.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -59,10 +63,11 @@ except ImportError:
     from utils.media_folders import is_trash_folder
 
 IMAGE_DELETE = "delete_images"
-MODES = ("library", "trash")
+MODES = ("library", "trash", "permanent")
 TITLES = {
     "library": "Delete images (remove from the library)",
     "trash": "Delete images (move to the trash)",
+    "permanent": "Delete images (permanently delete from disk)",
 }
 MAX_DETAIL_ROWS = 50
 # The system moved the file but its place in a trash could not be shown (#499).
@@ -87,8 +92,8 @@ REASONS = {
     trash.LOCKED: "The file is open in another program. Close it and try again.",
     trash.FAILED: "The file could not be moved to the trash.",
     trash.NO_PERMISSION: (
-        "PromptManager isn't allowed to move this file (no permission, or it is "
-        "locked in Finder)."
+        "PromptManager isn't allowed to remove this file (no permission, or it is "
+        "locked)."
     ),
     trash.CLOUD_SYNC: (
         "Files in iCloud Drive or a cloud-synced folder can't be moved to the "
@@ -112,6 +117,16 @@ _PROBLEM_CODES = {
 }
 SOURCES_CHANGED = "The sources changed since the review; nothing was changed."
 RECORDS_FAILED = "The image records could not be removed; the job stopped."
+
+
+def _permanent_delete_code(error: OSError) -> str:
+    """Translate a removal ``OSError`` into a permanent-delete refusal code."""
+    code = error.errno if error.errno else None
+    if code in (errno.EACCES, errno.EPERM, errno.EROFS):
+        return trash.NO_PERMISSION
+    if code in (errno.ENETUNREACH, errno.ENETRESET, errno.EHOSTUNREACH):
+        return trash.NETWORK
+    return trash.LOCKED
 
 
 def lexical_problem(relative: str) -> str | None:
@@ -275,17 +290,23 @@ class ImageDeleteMixin:
             acted.append(target)
         counted = db.count_removal_records([t["removal"] for t in acted])
         library_count = len(acted)
+        permanent_supported = isinstance(trash.BACKEND, trash.FreedesktopBackend)
         public = {
             "operation": IMAGE_DELETE,
             "scope": {"count": library_count, "label": "images"},
             "library": {"count": library_count},
             "trash": {"count": library_count - len(trash_refused)},
+            "permanent": {"count": library_count},
             "protected": {"count": len(refused), "reasons": []},
             "refused": _summary(refused),
             "trash_refused": _summary(trash_refused),
             "records": counted["records"],
             "orphaned_prompts": counted["orphaned_prompts"],
-            "media": {"deletes_files": False, "label": "Chosen in the review"},
+            "media": {
+                "deletes_files": permanent_supported,
+                "label": "Chosen in the review",
+            },
+            "permanent_delete_supported": permanent_supported,
             "details": [],
         }
         return {"targets": acted, "public": public}
@@ -341,7 +362,11 @@ class ImageDeleteMixin:
     async def _delete_images(self, job, db, targets, mode, backup):
         job.update(total=len(targets), status_line=TITLES[mode])
         roots = [str(root) for root in self._get_all_output_dirs()]
-        done_group = "trashed" if mode == "trash" else "removed"
+        done_group = (
+            "trashed"
+            if mode == "trash"
+            else ("deleted" if mode == "permanent" else "removed")
+        )
         changed, failed = 0, None
         for done, target in enumerate(targets, start=1):
             if failed:
@@ -366,17 +391,26 @@ class ImageDeleteMixin:
                 )
             elif group == done_group:
                 changed += 1
-                detail = (
-                    f"Moved to the {label}" if label else "Removed from the library"
-                )
+                if mode == "trash":
+                    detail = (
+                        f"Moved to the {label}" if label else "Removed from the library"
+                    )
+                elif mode == "permanent":
+                    detail = "Deleted from disk"
+                else:
+                    detail = "Removed from the library"
                 self._record_delete(job, group, target, None, detail)
             else:
                 self._record_delete(job, group, target, code)
             job.update(processed=done, progress=int(done / len(targets) * 100))
         if changed:
             self.invalidate_gallery_cache()
-        verb = "Moved" if mode == "trash" else "Removed"
-        where = "to the trash" if mode == "trash" else "from the library"
+        if mode == "trash":
+            verb, where = "Moved", "to the trash"
+        elif mode == "permanent":
+            verb, where = "Permanently deleted", "from disk"
+        else:
+            verb, where = "Removed", "from the library"
         line = f"{verb} {changed:,} of {len(targets):,} images {where}"
         job.log_line(line)
         job.update(progress=100, status_line=f"{line} · {backup_note(backup)}")
@@ -398,7 +432,7 @@ class ImageDeleteMixin:
             "code": code,
             "detail": text,
         }
-        mark = {"removed": "-", "trashed": "-"}.get(group, "=")
+        mark = {"removed": "-", "trashed": "-", "deleted": "-"}.get(group, "=")
         job.record(
             group, row, f"{mark} {target['root_label']}/{target['rel']} · {text}"
         )
@@ -437,6 +471,21 @@ class ImageDeleteMixin:
                 )
                 return "errors", TRASH_UNCONFIRMED, None
             mark = None
+        elif mode == "permanent":
+            try:
+                os.remove(target["abs"])
+            except OSError as error:
+                if error.errno == errno.ENOENT:
+                    pass
+                else:
+                    code = _permanent_delete_code(error)
+                    self.logger.info(
+                        "Not permanently deleted (%s): %s",
+                        code,
+                        target["rel"],
+                    )
+                    return "not_changed", code, None
+            mark = None
         else:
             mark = (target["size"], target["mtime_ns"])
         try:
@@ -445,7 +494,11 @@ class ImageDeleteMixin:
             self.logger.exception("Removing an image's records failed")
             return "errors", None, label
         _remove_thumbnail(Path(target["root"]), Path(target["rel"]), self.logger)
-        return ("trashed" if mode == "trash" else "removed"), None, label
+        if mode == "trash":
+            return "trashed", None, label
+        if mode == "permanent":
+            return "deleted", None, label
+        return "removed", None, label
 
     # ── the workspace listing ─────────────────────────────────────────
 

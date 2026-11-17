@@ -2543,7 +2543,10 @@ npm run --prefix tools/vendor test:workflows -- workspace-collections.spec.mjs c
 
 Images › Delete… removes the checked images (or "Select all N matching", at most 500, or
 the one file of the side panel or the viewer) from the library, and on request moves the
-files to the system trash. **No code path unlinks or overwrites a media file.**
+files to the system trash or (Linux/BSD servers only) deletes them permanently. **The only
+code path that unlinks or overwrites a media file is the permanent-delete apply job.** Library
+and trash modes never unlink media files; permanent-delete unlinks files only via the apply
+job after `file_check` confirms containment and non-symlink, and the review step never unlinks.
 
 - **D159** (#480, maintainer request): the concept's "Remove links…" (`danger`, app.js
   432) returns as **Delete…** in the same place (after Export metadata, before Clear), and

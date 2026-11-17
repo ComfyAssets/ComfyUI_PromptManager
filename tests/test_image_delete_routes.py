@@ -1,12 +1,14 @@
 """Delete selected images: the review and the apply job (#480).
 
-``POST /prompt_manager/images/delete/preview`` reviews both modes;
+``POST /prompt_manager/images/delete/preview`` reviews all three modes;
 ``POST /prompt_manager/maintenance/apply {token, mode}`` removes the files'
-records (library mode, with a removal mark) or moves the files to the trash
-first (trash mode, the fake trash here). No path unlinks a media file.
+records (library mode, with a removal mark), moves the files to the trash
+first (trash mode, the fake trash here), or unlinks the files from disk
+(permanent mode, Linux/BSD only).
 """
 
 import asyncio
+import errno
 import os
 import sys
 import sqlite3
@@ -407,3 +409,68 @@ class TestNativeBackend(ImageDeleteTestCase):
         self.assertTrue((self.output_dir / "a.png").exists())
         self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 0)
         self.assertEqual(await self.listed(), [])
+
+
+class TestPermanentMode(ImageDeleteTestCase):
+    """Permanent delete: files are unlinked from disk (Linux/BSD only)."""
+
+    async def test_permanent_delete_supported_flag_and_plan_counts(self):
+        from utils import trash
+
+        fake_trash.uninstall()
+        self.addCleanup(fake_trash.uninstall)
+        self.write("a.png", b"aaa", mtime=1_000_000)
+        plan = await self.review(["a.png"])
+        permanent_supported = isinstance(trash.BACKEND, trash.FreedesktopBackend)
+        self.assertEqual(plan.get("permanent_delete_supported"), permanent_supported)
+        if permanent_supported:
+            self.assertEqual(plan["permanent"], {"count": 1})
+        else:
+            self.assertFalse(plan.get("permanent_delete_supported"))
+
+    async def test_permanent_delete_removes_the_file(self):
+        fake_trash.uninstall()
+        self.addCleanup(fake_trash.uninstall)
+        if sys.platform == "win32":
+            self.skipTest("permanent delete is Linux/BSD only")
+        self.write("a.png", b"aaa", mtime=1_000_000)
+        self.link("a.png")
+        _plan, job = await self.delete(["a.png"], "permanent")
+        self.assertEqual(job.state, "finished", job.summary())
+        self.assertFalse((self.output_dir / "a.png").exists())
+        self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 0)
+        self.assertEqual(self.api.db.removal_marks(), {})
+        self.assertEqual(job.counters["deleted"], 1)
+        self.assertTrue(
+            any(
+                "Permanently deleted 1 of 1 images from disk" in line
+                for line in job.log
+            )
+        )
+
+    async def test_a_refused_os_remove_leaves_the_file(self):
+        from utils import trash
+
+        fake_trash.uninstall()
+        self.addCleanup(fake_trash.uninstall)
+        if sys.platform == "win32":
+            self.skipTest("permanent delete is Linux/BSD only")
+        self.write("a.png", b"aaa", mtime=1_000_000)
+        self.link("a.png")
+        plan = await self.review(["a.png"])
+        with patch.object(self.api, "_backup_promised", return_value=False):
+            with patch(
+                "os.remove", side_effect=OSError(errno.EACCES, "Permission denied")
+            ):
+                body = await self.post(
+                    APPLY, {"token": plan["token"], "mode": "permanent"}, 202
+                )
+                job = self.api._jobs.get(body["job"]["id"])
+                await asyncio.wait_for(asyncio.shield(job.task), DISK_BOUND_SECONDS)
+        self.assertTrue((self.output_dir / "a.png").exists())
+        self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 1)
+        self.assertEqual(job.counters["not_changed"], 1)
+        self.assertEqual(
+            self.details(job, "not_changed"),
+            [image_delete.REASONS[trash.NO_PERMISSION]],
+        )
