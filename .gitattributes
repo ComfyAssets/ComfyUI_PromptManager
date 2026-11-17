@@ -1,0 +1,7 @@
+# Pinned files are compared byte for byte with their recorded hashes
+# (npm run --prefix tools/vendor check). Git must never convert their line
+# endings, which Git for Windows does by default (core.autocrlf=true, #636).
+/web/lib/viewerjs/** -text
+/web/js/shared/toolkit/** -text
+/web/js/workspace/concept.css -text
+/docs/concepts/workspace/style.css -text

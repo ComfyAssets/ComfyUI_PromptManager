@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { clickHostSave, LORA_ENABLE_URL } from './settings-save.mjs';
 import { SIZES, THEMES, seedConcept, openConcept, openProduction, diffInventory, mutate } from './concept-inventory.mjs';
 
 // #249 System S10 Task 28: System › Integrations (app.js renderSystem 682–684) and the LoRA import review against the
@@ -300,7 +301,8 @@ async function productionReview(page, request, theme) {
     await expect(page.locator('#workspace-main #renderer-status')).toHaveText(RENDERER_NONE);
     // The import reviews what is enabled: save the integration on first.
     await page.locator('#workspace-main #lora-enable').check();
-    await page.getByRole('button', { name: 'Save preferences', exact: true }).click();
+    // The save writes config.json durably, which a busy CI disk can hold for seconds (#631): wait for its answer.
+    await clickHostSave(page, page.getByRole('button', { name: 'Save preferences', exact: true }), LORA_ENABLE_URL);
     await expect(page.locator('#settings-status')).toHaveText('Saved to the server configuration.');
     const answer = page.waitForResponse(response => response.url().endsWith(PREVIEW_URL));
     await page.locator('#workspace-main').getByRole('button', { name: 'Review import', exact: true }).click();

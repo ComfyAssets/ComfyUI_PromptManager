@@ -6,27 +6,36 @@ down when the launcher's end of its stdin pipe closes, and still removes its
 temp root. This runs on every OS in CI, where Windows is the strict case.
 """
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
+
+try:
+    from tests.process_cleanup import remove_when_released
+except ImportError:  # discovered with tests/ as the top-level directory
+    from process_cleanup import remove_when_released
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_TIMEOUT_S = 60
 
 
-class TestBrowserServerLifetime(unittest.TestCase):
+class BrowserServerCase(unittest.TestCase):
+    """Starts the test server in a temp folder of its own; holds no tests."""
+
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(remove_when_released, self.tmp)
 
     def start(self, *extra):
-        env = {**os.environ, "TMPDIR": self.tmp.name}
-        env.update(TEMP=self.tmp.name, TMP=self.tmp.name)
+        env = {**os.environ, "TMPDIR": self.tmp}
+        env.update(TEMP=self.tmp, TMP=self.tmp)
         process = subprocess.Popen(
             [sys.executable, "-m", "tests.browser.server", "--port", "0", *extra],
             cwd=REPO_ROOT,
@@ -47,7 +56,8 @@ class TestBrowserServerLifetime(unittest.TestCase):
         self.addCleanup(stop)
         line = process.stdout.readline().decode()
         self.assertTrue(line.startswith("PM_TEST_SERVER_PORT="), line)
-        url = f"http://127.0.0.1:{int(line.split('=', 1)[1])}/prompt_manager/test"
+        self.origin = f"http://127.0.0.1:{int(line.split('=', 1)[1])}"
+        url = f"{self.origin}/prompt_manager/test"
         deadline = time.monotonic() + SERVER_TIMEOUT_S
         while True:
             try:
@@ -60,8 +70,10 @@ class TestBrowserServerLifetime(unittest.TestCase):
                 time.sleep(0.1)
 
     def roots(self):
-        return sorted(path.name for path in Path(self.tmp.name).glob("pm-browser-*"))
+        return sorted(path.name for path in Path(self.tmp).glob("pm-browser-*"))
 
+
+class TestBrowserServerLifetime(BrowserServerCase):
     def test_server_exits_and_removes_its_temp_root_when_stdin_closes(self):
         process = self.start("--exit-on-stdin-eof")
         self.assertEqual(len(self.roots()), 1, "the server works in its own temp root")
@@ -77,6 +89,37 @@ class TestBrowserServerLifetime(unittest.TestCase):
         process.stdin.close()
         with self.assertRaises(subprocess.TimeoutExpired):
             process.wait(timeout=1)
+
+
+class TestBrowserServerSeeding(BrowserServerCase):
+    """The fixtures seed on every OS (#629): Windows roots are not POSIX paths."""
+
+    def reset(self, path, body):
+        request = urllib.request.Request(
+            f"{self.origin}{path}",
+            json.dumps(body).encode(),
+            {"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(  # nosec B310
+                request, timeout=SERVER_TIMEOUT_S
+            ) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, error.read().decode(errors="replace")
+
+    def test_concept_fixture_seeds_its_recorded_runs(self):
+        self.start()
+        status, body = self.reset("/__test__/concept/reset", {})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["success"])
+
+    def test_history_fixture_seeds_its_recorded_runs(self):
+        self.start()
+        status, body = self.reset("/__test__/reset", {"chronological_history": True})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["success"])
 
 
 class TestBrowserServerLoraIsolation(unittest.TestCase):

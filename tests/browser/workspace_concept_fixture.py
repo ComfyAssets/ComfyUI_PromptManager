@@ -35,6 +35,10 @@ from utils.execution_outputs import OutputBundle, OutputReference, snapshot_outp
 from utils.pair_execution import EXECUTION_KEY
 from tests.browser.folder_trash import replace_folder
 
+# Recorded outputs use the host's path style, as production does (#629): a
+# Windows temp root is not an absolute POSIX path and would get no root key.
+HOST_PATH_STYLE = "windows" if os.name == "nt" else "posix"
+
 if TYPE_CHECKING:
     from py.api import PromptManagerAPI
 
@@ -433,7 +437,9 @@ def seed_workspace_concept(
 
     folder = root / "output" / "concepts"
     folder.mkdir()
-    roots = snapshot_output_roots("posix", str(root / "output"), str(root / "temp"))
+    roots = snapshot_output_roots(
+        HOST_PATH_STYLE, str(root / "output"), str(root / "temp")
+    )
     # The API package needs the host stubs the server installs before importing it.
     from py.api.images import _favorite_relative_key, _favorite_root_key
 
@@ -474,7 +480,7 @@ def seed_workspace_concept(
             "3", _snapshot(prompt.positive), _snapshot(negative), "inferred"
         )
         reference = OutputReference(
-            "4", 0, "output", "concepts", name, "posix", roots.output_key
+            "4", 0, "output", "concepts", name, HOST_PATH_STYLE, roots.output_key
         )
         runs.append(
             _record_run(

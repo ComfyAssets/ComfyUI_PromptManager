@@ -4,6 +4,10 @@ updates:
   # Python dependencies (requirements.txt / setup.cfg / pyproject.toml)
   - package-ecosystem: "pip"
     directory: "/"
+    # Our requirements are minimum versions that install into ComfyUI's shared
+    # environment. Leave a floor alone when it already allows the new release;
+    # raising it would force-upgrade the package for every other custom node.
+    versioning-strategy: "increase-if-necessary"
     schedule:
       interval: "weekly"
       day: "sunday"

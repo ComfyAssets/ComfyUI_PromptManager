@@ -5,11 +5,12 @@
  * - The concept's selection bar has "Remove links…" (`danger`) opening its `maintenancePlan` review (`dl.meta-grid`
  *   Scope / Protected / Backup / Media on disk, Cancel and a primary). Production names it "Delete…" and asks each
  *   time (maintainer ruling): a radio group "What should happen to the files?" with nothing checked, "Remove from the
- *   library only" (records go, the file stays on disk, hidden from Images) or "Also move the files to the trash".
- * - One preview (`POST /images/delete/preview`) answers both modes; choosing a mode only redraws the rows. The primary
+ *   library only" (records go, the file stays on disk, hidden from Images) or "Also move the files to the trash" (or,
+ *   on Linux/BSD servers, "Permanently delete" from disk).
+ * - One preview (`POST /images/delete/preview`) answers all three modes; choosing a mode only redraws the rows. The primary
  *   (`danger`) is enabled once a mode with images to act on is chosen. Apply sends `{token, mode}` to the reviewed-plan
  *   apply; the job is followed in the Activity store and `onDeleted(job)` runs when it ends.
- * - Nothing here deletes a file: the server never unlinks one (it renames into the system trash or leaves it).
+ * - Only the "permanent" mode unlinks a file from disk (via the apply job); library and trash modes leave the file intact.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { closeWorkspaceDialog, openCloseOnlyReview, openContentDialog } from './workspace-dialogs.mjs';
@@ -26,6 +27,7 @@ export const MODES = Object.freeze([
     Object.freeze({value: 'library', label: 'Remove from the library only', hint: 'Files stay on disk, hidden from Images.'}),
     Object.freeze({value: 'trash', label: 'Also move the files to the trash',
         hint: 'You can restore them from the trash until it is emptied.'}),
+    Object.freeze({value: 'permanent', label: 'Permanently delete', hint: 'Files are removed from disk permanently.'}),
 ]);
 export const NONE_DELETABLE = 'None of the selected images can be deleted.';
 export const REVIEW_FAILED = 'The review failed. Nothing was changed.';
@@ -40,6 +42,7 @@ const SENTENCES = Object.freeze({
         + 'collections and favorite cannot be recovered.',
     trash: 'A file restored from the trash shows again without its tags, category, collections or favorite; a scan '
         + 'links it to its prompt again.',
+    permanent: 'Permanently deleted files are gone from disk. Records can only be restored via the safety database backup; the files themselves cannot be recovered.',
 });
 export { SENTENCES };
 
@@ -111,7 +114,9 @@ export function deleteRows(plan, mode) {
         : 'Off: no safety backup (System › Backup & export › Recovery policy)']);
     rows.push(['Media on disk', mode === 'trash'
         ? 'Files move to the trash. Nothing is deleted permanently. Disk space is freed when you empty the trash.'
-        : 'Files stay on disk, hidden from Images.']);
+        : mode === 'permanent'
+            ? 'Files are removed from disk. Disk space is freed immediately.'
+            : 'Files stay on disk, hidden from Images.']);
     return rows;
 }
 
@@ -122,6 +127,7 @@ function backupOn(plan) {
 /** The `p.small` sentences for `mode`. */
 export function deleteSentences(plan, mode) {
     if (mode === 'library') return [backupOn(plan) ? SENTENCES.libraryBackup : SENTENCES.libraryNoBackup];
+    if (mode === 'permanent') return [SENTENCES.permanent];
     const sentences = [SENTENCES.trash];
     const trashRefused = Number(plan?.trash_refused?.count ?? 0);
     if (trashRefused && trashRefused >= modeCount(plan, 'library')) sentences.push(NO_TRASH_HERE);
@@ -129,14 +135,16 @@ export function deleteSentences(plan, mode) {
     return sentences;
 }
 
-/** The primary's label: "Remove N images from the library" or "Move N images to the trash". */
+/** The primary's label: "Remove N images from the library", "Move N images to the trash", or "Permanently delete N from disk". */
 export function primaryLabel(mode, count) {
-    return mode === 'trash' ? `Move ${countOf(count, 'image')} to the trash` : `Remove ${countOf(count, 'image')} from the library`;
+    if (mode === 'trash') return `Move ${countOf(count, 'image')} to the trash`;
+    if (mode === 'permanent') return `Permanently delete ${countOf(count, 'image')} from disk`;
+    return `Remove ${countOf(count, 'image')} from the library`;
 }
 
 /** Why the review cannot start at all, or null. */
 export function closeOnlyReason(plan) {
-    if (modeCount(plan, 'library') === 0 && modeCount(plan, 'trash') === 0) return NONE_DELETABLE;
+    if (modeCount(plan, 'library') === 0 && modeCount(plan, 'trash') === 0 && modeCount(plan, 'permanent') === 0) return NONE_DELETABLE;
     if (plan?.disk && plan.disk.sufficient === false) {
         return `There is not enough free space for the safety backup (needs ${number(plan.disk.required_bytes)} bytes, `
             + `has ${number(plan.disk.free_bytes)}).`;
@@ -159,24 +167,31 @@ export function outcomeToast(job) {
     const mode = job?.scope?.mode;
     if (job?.scope?.failure === 'backup-failed') return 'The safety backup failed; nothing was changed.';
     if (job?.scope?.failure === 'sources-changed') return 'The sources changed; nothing was changed.';
-    const done = Number(mode === 'trash' ? counters.trashed : counters.removed) || 0;
+    let done;
+    if (mode === 'trash') done = Number(counters.trashed) || 0;
+    else if (mode === 'permanent') done = Number(counters.deleted) || 0;
+    else done = Number(counters.removed) || 0;
     const total = Number(job?.total ?? 0);
     if (job?.scope?.failure === 'records-failed') {
         return `Stopped after ${number(done)} of ${countOf(total, 'image')}; the rest were not changed. See Activity.`;
     }
-    const head = mode === 'trash' ? `Moved ${countOf(done, 'image')} to the trash.` : `Removed ${countOf(done, 'image')} from the library.`;
+    let head;
+    if (mode === 'trash') head = `Moved ${countOf(done, 'image')} to the trash.`;
+    else if (mode === 'permanent') head = `Permanently deleted ${countOf(done, 'image')} from disk.`;
+    else head = `Removed ${countOf(done, 'image')} from the library.`;
     const unchanged = Number(counters.not_changed ?? 0);
     return unchanged ? `${head} ${number(unchanged)} ${unchanged === 1 ? 'was' : 'were'} not changed (see Activity).` : head;
 }
 
-function modeGroup(onChange) {
+function modeGroup(onChange, plan) {
     const group = el('div', undefined, 'field');
     group.setAttribute('role', 'radiogroup');
     const caption = el('span', QUESTION);
     caption.id = 'image-delete-mode-label';
     group.setAttribute('aria-labelledby', caption.id);
     group.append(caption);
-    for (const choice of MODES) {
+    const choices = plan?.permanent_delete_supported ? MODES : MODES.filter(m => m.value !== 'permanent');
+    for (const choice of choices) {
         const label = el('label');
         const input = el('input');
         Object.assign(input, {type: 'radio', name: 'image-delete-mode', value: choice.value, checked: false});
@@ -217,7 +232,7 @@ export function showDeleteReview(plan, {scope, count, trigger = null, onApply}) 
         start.textContent = primaryLabel(mode, acting);
         start.setAttribute('aria-disabled', String(acting === 0));
     }
-    const group = modeGroup(value => { mode = value; render(); });
+    const group = modeGroup(value => { mode = value; render(); }, plan);
     cancel.addEventListener('click', () => closeWorkspaceDialog());
     // Nothing starts without an explicit mode: an aria-disabled primary ignores every activation (click, Enter, Space),
     // and a chosen one starts once however often it is pressed. The dialog has no form, so Enter elsewhere submits nothing.

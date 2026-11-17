@@ -1,5 +1,6 @@
 import { startCoverage, saveCoverage } from '../../tools/vendor/browser-coverage.mjs';
 import { test, expect } from './fixtures.mjs';
+import { hostSaveAnswer } from './settings-save.mjs';
 import { seedConcept } from './concept-inventory.mjs';
 import { followRestore, SEEN_RESTORE_PILL, SEEN_RESTORE_TOAST } from './unseen-restore.mjs';
 
@@ -387,9 +388,9 @@ test('safety backup toggle saves through Save preferences with revision (D104)',
     await expect(toggle).toBeChecked();
     await toggle.uncheck();
     await expect(settingsStatus(page)).toHaveText('Unsaved changes.');
-    const saved = page.waitForRequest(item => item.url().endsWith('/prompt_manager/settings') && item.method() === 'POST');
+    const saved = hostSaveAnswer(page);
     await save(page).click();
-    const body = (await saved).postDataJSON();
+    const body = (await saved).request().postDataJSON();
     expect(body).toEqual({ safety_backup: false, expected_revision: before.revision });
     await expect(settingsStatus(page)).toHaveText('Saved to the server configuration.');
     expect((await serverJson(request, '/prompt_manager/settings')).settings.safety_backup).toBe(false);

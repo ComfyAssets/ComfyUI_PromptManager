@@ -1,3 +1,5 @@
+![PromptManager by ComfyAssets](assets/brand/banner.webp)
+
 # ComfyUI Prompt Manager
 
 **Every prompt you run, every image it made, and every negative you tried, in one searchable library inside ComfyUI.**

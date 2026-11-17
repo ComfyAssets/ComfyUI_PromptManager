@@ -277,6 +277,22 @@ the process exits non-zero.
   A test that waits on a fixed busy timeout, a network name (`\\server\share`:
   use `\\localhost\<missing share>`) or a default TLS context (it reads the
   Windows certificate store) costs seconds there; the slowest list shows it.
+- On a Windows development machine (#636), give the suite a short `TEMP`
+  (for example `C:\t`) or turn long paths on
+  (`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` = 1).
+  Under the default `C:\Users\<user>\AppData\Local\Temp`, the visual fixture's
+  182-character file name passes Windows' 260-character limit once a test
+  nests its own temp folder, and the chronological-history reset answers 500.
+  Three other differences from the CI runner are handled in the tests:
+  a virtual environment's `python.exe` is a launcher that runs the real
+  interpreter as a child, so a test that kills a server it started removes its
+  folder with `tests/process_cleanup.py`'s `remove_when_released`, which waits
+  for that child to end (a handle the test process itself still holds never
+  releases, so the bound still fails it); Git for Windows checks text files out
+  with CRLF, so `.gitattributes` keeps the pinned vendored files byte for byte
+  and a test that parses source text normalizes line endings; and a test that
+  expects no ComfyUI nearby works two folders inside its temp folder, because
+  the output-folder fallback looks two levels up.
 
 Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
 `portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
@@ -741,6 +757,33 @@ nightly and on demand, and no context there is required. A red portability run
 is still a failure: fix it at its cause, not by rerunning, and have every one
 green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
 event split and runs both gate scripts for each event.
+
+### Only changes that can affect code are tested (#639)
+
+The table above is for a code change. Each of the three workflows starts with a
+`change class` job that runs `tools/ci/change_class.py` over the files the pull
+request, merge group or push touches, and the other jobs follow its answer:
+
+| Class | Files (allowlists in the script) | What runs |
+| --- | --- | --- |
+| `inert` | `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and the two gates. `py3.12 on ubuntu-latest` starts and skips its steps, because a skipped matrix job would never report that required context. |
+| `docs` | `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | The above plus the real `py3.12 on ubuntu-latest` suite, which holds the tests that read them (`tests/test_brand_assets.py`, `tests/test_package_contents.py`). |
+| `code` | Anything else | Everything in the table above. |
+
+A file on no list is code, and so is every case of doubt: no changed files, a
+manual run, a range git cannot read. `docs/` is code, because the browser suite
+compares production against `docs/concepts/workspace/`; `TESTING.md` is code,
+because the tooling tests read its tables. Before adding a file to a list,
+check that no test and no shipped code opens it.
+
+The gates enforce the class: for `docs` and `inert` they require the classifier
+to have succeeded, the Python matrix to have succeeded and every other job to
+have been skipped; a class the script does not print fails them. `bandit` has no
+gate, so it runs unless the class is `docs` or `inert`, which means a failed
+classifier gets a full scan. The required contexts do not change.
+
+The pre-push hook uses the same script: it skips the Python suite when the
+pushed commits are `inert` and runs it otherwise.
 
 ## Required merge checks
 
@@ -2500,7 +2543,10 @@ npm run --prefix tools/vendor test:workflows -- workspace-collections.spec.mjs c
 
 Images › Delete… removes the checked images (or "Select all N matching", at most 500, or
 the one file of the side panel or the viewer) from the library, and on request moves the
-files to the system trash. **No code path unlinks or overwrites a media file.**
+files to the system trash or (Linux/BSD servers only) deletes them permanently. **The only
+code path that unlinks or overwrites a media file is the permanent-delete apply job.** Library
+and trash modes never unlink media files; permanent-delete unlinks files only via the apply
+job after `file_check` confirms containment and non-symlink, and the review step never unlinks.
 
 - **D159** (#480, maintainer request): the concept's "Remove links…" (`danger`, app.js
   432) returns as **Delete…** in the same place (after Export metadata, before Clear), and
