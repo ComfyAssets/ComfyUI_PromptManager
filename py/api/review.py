@@ -273,6 +273,9 @@ class ReviewRoutesMixin:
                 "root_scope": self._gallery_root_scope(roots[index], index),
                 "path": relative,
             }
+            if "\\" in relative:
+                # #646: the mark the Images listing sets (POSIX only).
+                target["path_style"] = "posix"
             # The Images listing's media URL for the same file (formatting only).
             url = (
                 "/prompt_manager/images/serve/"

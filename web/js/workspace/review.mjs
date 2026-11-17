@@ -73,6 +73,8 @@ const isDisabled = button => button.getAttribute('aria-disabled') === 'true';
 export function imageOf(item) {
     const target = item.target ?? {};
     return { filename: item.filename, root_index: target.root_index, root_scope: target.root_scope, path: target.path,
+        // #646: a POSIX server's mark for a name holding a backslash, as the Images listing sends it.
+        ...(target.path_style === 'posix' ? { path_style: 'posix' } : {}),
         url: item.url, thumbnail_url: item.thumbnail_url ?? null, is_video: item.is_video === true,
         media_type: item.is_video ? 'video' : 'image' };
 }

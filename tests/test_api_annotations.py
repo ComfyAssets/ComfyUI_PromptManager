@@ -404,6 +404,17 @@ class TestObserve(AnnotationAPITestCase):
         self.assertEqual(response.headers["Content-Type"], "video/mp4")
         self.assertEqual(await response.read(), clip.read_bytes())
 
+    @unittest.skipIf(os.sep == "\\", "a backslash cannot be in a Windows name")
+    async def test_a_backslash_inside_a_name_can_be_tagged_on_posix(self):
+        # #646: a Windows-style filename_prefix makes such a folder on POSIX.
+        path = "m.safetensors\\2026-11-17/a.png"
+        make_png(self.output_dir / "m.safetensors\\2026-11-17" / "a.png")
+        observed = await self.observe_ok(path)
+        self.assertEqual(observed["target"]["path"], path)
+        status, body = await self.put_tags(self.save_body(observed, ["forest"]))
+        self.assertEqual(status, 200, body)
+        self.assertEqual((await self.observe_ok(path))["tags"], ["forest"])
+
     async def test_observe_maps_capture_outcomes_to_codes(self):
         make_png(self.output_dir / "sub" / "a.png")
         outside = make_png(self.comfy_dir / "outside.png")

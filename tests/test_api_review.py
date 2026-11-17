@@ -14,6 +14,7 @@ import os
 import posixpath
 import sqlite3
 import threading
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -450,6 +451,22 @@ class TestQueueReads(ReviewRoutesTestCase):
             ),
             (0, "a/b.png"),
         )
+
+
+class TestBackslashNames(ReviewRoutesTestCase):
+    """#646: a review item in a folder whose name holds a backslash (POSIX)."""
+
+    @unittest.skipIf(os.sep == "\\", "a backslash cannot be in a Windows name")
+    async def test_the_target_carries_the_posix_mark(self):
+        self._require_routes()
+        self._record(self._ambiguous("m.safetensors\\2026-11-17/a.png"))
+        self._record(self._ambiguous("plain/b.png", color=(0, 255, 0)))
+        items = {item["filename"]: item for item in (await self._list())["items"]}
+        marked = items["a.png"]["target"]
+        self.assertEqual(marked["path"], "m.safetensors\\2026-11-17/a.png")
+        self.assertEqual(marked["path_style"], "posix")
+        self.assertFalse(items["a.png"]["unavailable"])
+        self.assertNotIn("path_style", items["b.png"]["target"])
 
 
 class TestDecisions(ReviewRoutesTestCase):
