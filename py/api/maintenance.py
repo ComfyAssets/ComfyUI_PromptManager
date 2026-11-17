@@ -516,7 +516,7 @@ class MaintenanceRoutesMixin:
     # ── apply ─────────────────────────────────────────────────────────
 
     async def apply_maintenance_plan(self, request):
-        from .image_delete import IMAGE_DELETE, parse_mode
+        from .image_delete import IMAGE_DELETE, parse_mode, permanent_delete_supported
 
         data, error = await self._read_maintenance_body(request, ("token", "mode"))
         if error is not None:
@@ -531,7 +531,12 @@ class MaintenanceRoutesMixin:
         if plan.operation == IMAGE_DELETE:
             mode = parse_mode(data.get("mode"))
             if mode is None:
-                return _invalid('mode must be "library" or "trash"')
+                return _invalid('mode must be "library", "trash" or "permanent"')
+            if mode == "permanent" and not permanent_delete_supported():
+                # The review never offers it here; refuse a direct call (#644).
+                return _invalid(
+                    "Permanent delete is only available on Linux and BSD servers"
+                )
         elif "mode" in data:
             return _invalid("Unknown field: mode")
         store = self._maintenance_plans

@@ -103,7 +103,7 @@ Pick an open ComfyUI window and a node, then review the exact before and after. 
 
 ### Deletes you can review
 
-Choose what happens to the files before anything is removed: remove the image from the library and leave the file on disk, or on Linux and macOS also move it to the system trash. On Windows, images can only be removed from the library. A safety backup of the database is on by default, and removed images can be brought back.
+Choose what happens to the files before anything is removed: remove the image from the library and leave the file on disk, or on Linux and macOS also move it to the system trash. On a Linux or BSD server you can also delete the files permanently, for headless servers where a trash only fills up the disk; those files can't be recovered. On Windows, images can only be removed from the library. A safety backup of the database is on by default, and removed images can be brought back.
 
 ![Delete dialog offering to remove from the library only or move files to the trash](assets/readme/delete-review.webp)
 
@@ -230,6 +230,7 @@ The documentation for those pages is in [README-legacy.md](README-legacy.md).
 ## Known limits
 
 - **Trash is Linux and macOS only.** Windows has no Recycle Bin option, because the bin can delete large files permanently without warning. On Windows you can only remove an image from the library, and the file stays on disk. Where a move to the trash isn't possible on Linux or macOS, the dialog lists why for each file.
+- **Permanent delete is Linux and BSD only,** and can't be undone. The safety backup brings back the library records, not the files.
 - **Show in folder** opens the file manager on the machine running ComfyUI, not necessarily the one with your browser.
 - **Returned images** get their prompt links back, but not their tags, categories, collections or favorites.
 - **Inspect a file** doesn't add the file to your library.
