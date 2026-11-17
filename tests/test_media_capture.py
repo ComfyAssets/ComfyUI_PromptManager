@@ -135,6 +135,18 @@ class CaptureStoreTestCase(unittest.TestCase):
 
     # -- exact bytes and identity -------------------------------------------
 
+    @unittest.skipIf(os.sep == "\\", "a backslash cannot be in a Windows name")
+    def test_a_backslash_inside_a_name_is_captured_on_posix(self):
+        # #646: a Windows-style filename_prefix makes such a folder on POSIX.
+        data = png_bytes(2, 2, b"backslash")
+        self.write("m.safetensors\\2026-11-17/a.png", data)
+        store = self.make_store()
+        cap = self.capture(store, "m.safetensors\\2026-11-17/a.png")
+        try:
+            self.assertEqual(Path(cap.path).read_bytes(), data)
+        finally:
+            store.release(cap.token)
+
     def test_capture_hashes_and_copies_exact_bytes_owner_only(self):
         source_bytes = png_bytes(3, 2, os.urandom(40))
         source = self.write("a.png", source_bytes)
@@ -212,7 +224,8 @@ class CaptureStoreTestCase(unittest.TestCase):
             "",
             "/a.png",
             "C:/a.png",
-            "a\\b.png",
+            # #646: a backslash separates folders only on Windows.
+            *(["a\\b.png"] if os.sep == "\\" else []),
             "a\x00.png",
             "notes.txt",
             "folder",

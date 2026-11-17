@@ -51,7 +51,17 @@ class TestMapParallel(unittest.TestCase):
     def test_jobs_reuse_the_same_long_lived_threads(self):
         """Arenas are reused instead of a new set of threads per job."""
         first, second = set(), set()
-        map_parallel(lambda _: first.add(threading.current_thread()), range(8), 2)
+        # The pool starts threads lazily: tiny tasks could all run on the first
+        # thread and leave the second to start in the next job (queue run
+        # 44169912829). The barrier makes the first job run on both.
+        both = threading.Barrier(2)
+
+        def meet(_):
+            first.add(threading.current_thread())
+            both.wait(WAIT)
+
+        map_parallel(meet, range(8), 2)
+        self.assertEqual(len(first), 2, first)
         map_parallel(lambda _: second.add(threading.current_thread()), range(8), 2)
         self.assertTrue(second <= first, (first, second))
         self.assertLessEqual(len(_job_threads()), 2)

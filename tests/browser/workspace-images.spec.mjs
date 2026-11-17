@@ -2709,3 +2709,26 @@ test('all matching over 10,000 images says so before any dialog or request', asy
     }
     expect(posted).toBe(0);
 });
+
+// #646: on a POSIX server a Windows-style filename_prefix makes one folder whose name holds a backslash. Its file opens
+// in the viewer, takes a star that survives a reload, and the folder filter names it with its backslash.
+test('a file in a folder whose name holds a backslash opens, stars and filters (#646)', async ({ page, request }) => {
+    await expect(await request.post('/__test__/add-backslash-image')).toBeOK();
+    await page.goto(workspace);
+    await expect(cards(page)).toHaveCount(3);
+    const card = page.locator('article[data-image-key="0:model.safetensors\\\\2026-11-17/slash.png"]');
+    await card.locator('.image-open').click();
+    const viewer = page.locator('dialog#viewer-dialog[open]');
+    await expect(viewer.locator('#viewer-title')).toContainText('slash.png');
+    await expect(viewer.locator('#viewer-details .panel-heading')).toBeVisible();
+    await viewer.locator('#viewer-close').click();
+    await expect(viewer).toHaveCount(0);
+    await star(card, 'slash.png').click();
+    await expectStar(star(card, 'slash.png'), true);
+    await expect.poll(async () => (await listedFavorites(request))['0:model.safetensors\\2026-11-17/slash.png']).toBe(true);
+    await page.reload();
+    await expectStar(star(card, 'slash.png'), true);
+    await refine(page, { Folder: 'model.safetensors\\2026-11-17' });
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toContainText('slash.png');
+});

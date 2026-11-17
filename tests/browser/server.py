@@ -655,6 +655,17 @@ def create_app(root: Path) -> web.Application:
         shutil.copyfile(root / "output" / "shared" / "same.png", destination)
         return web.json_response({"success": True})
 
+    @routes.post("/__test__/add-backslash-image")
+    async def add_backslash_image(request: web.Request) -> web.Response:
+        """#646: a folder whose name holds a backslash, as a Windows-style
+        ``filename_prefix`` makes on a POSIX server."""
+        if os.sep == "\\":
+            return web.json_response({"success": False}, status=409)
+        destination = root / "output" / "model.safetensors\\2026-11-17" / "slash.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / "output" / "shared" / "same.png", destination)
+        return web.json_response({"success": True})
+
     @routes.post("/__test__/add-local-inspect-file")
     async def add_local_inspect_file(request: web.Request) -> web.Response:
         """Serve one committed Inspect fixture from the output folder.

@@ -672,12 +672,13 @@ def owns(root, path, location=None):
 def is_preview_text(filepath):
     """URL text naming a preview: ``thumbnails/<...>/<name>_thumb<ext>``.
 
-    Text only, before any join: no backslash, drive or stream colon, and no
+    Text only, before any join: no backslash (on Windows; on POSIX it is part
+    of a name, #646), drive or stream colon, and no
     empty, ``.`` or ``..`` segment; ``thumbnails`` exactly as the first part
     and nowhere else among the folders; the extension, in any case, one a
     preview may carry (``X_thumb.JPG`` of an older release included).
     """
-    if not filepath or "\\" in filepath or ":" in filepath:
+    if not filepath or ":" in filepath or (os.sep == "\\" and "\\" in filepath):
         return False
     parts = filepath.split("/")
     if len(parts) < 2 or parts[0] != PREVIEW_FOLDER:

@@ -1045,7 +1045,8 @@ class TestRevealRoute(ImageAPITestCase):
         for path in (
             "../outside.png",
             "sub/../../outside.png",
-            "sub\\..\\..\\outside.png",
+            # #646: a separator only on Windows; on POSIX one name (below).
+            *(["sub\\..\\..\\outside.png"] if os.sep == "\\" else []),
             str(outside),
             "/" + outside.name,
             "C:/outside.png",
@@ -1054,6 +1055,9 @@ class TestRevealRoute(ImageAPITestCase):
             with self.subTest(path=path):
                 status, data = await self.post(self.body(path=path))
                 self.assertEqual(status, 400, data)
+        if os.sep == "/":
+            status, data = await self.post(self.body(path="sub\\..\\..\\outside.png"))
+            self.assertEqual(status, 404, data)
         self.assertEqual(self.opened, [])
 
     async def test_symlink_out_of_the_root_is_refused(self):

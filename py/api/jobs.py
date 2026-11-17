@@ -42,6 +42,7 @@ open across the switch (#249 S8).
 import asyncio
 import itertools
 import logging
+import os
 import re
 import time
 import uuid
@@ -160,7 +161,8 @@ def _relative_path(path) -> str:
         or PureWindowsPath(text).drive
     ):
         return re.split(r"[\\/]", text)[-1]
-    return text.replace("\\", "/")
+    # #646: on POSIX a backslash is part of a name, never a separator.
+    return text.replace("\\", "/") if os.sep == "\\" else text
 
 
 class JobBusy(Exception):

@@ -45,7 +45,7 @@ from .foreign_runs import (
     store_foreign,
 )
 from .hashing import generate_prompt_hash
-from .media_folders import in_skipped_folder
+from .media_folders import in_skipped_folder, split_relative
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .parallel import note_refusal, refused_at_shutdown
 from .logging_config import get_logger
@@ -519,7 +519,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
         ]
         if holding:
             text = text[len(os.path.join(max(holding, key=len), "")) :]
-        return text.replace("\\", "/").split("/")[:-1]
+        return split_relative(text)[:-1]
 
     def process_new_image(self, image_path: str, prompt_snapshot=None):
         """Process a newly created image file for gallery integration.
