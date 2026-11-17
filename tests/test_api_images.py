@@ -2740,6 +2740,20 @@ class TestSharedListing(ImageAPITestCase):
         delay.start()
         self.addCleanup(delay.stop)
 
+    async def tearDownAsync(self):
+        # A read that stores a listing starts the workspace cache build, which
+        # opens the database on a worker thread; cancelling its task at cleanup
+        # does not stop the thread. A test that ends on that read must let it
+        # finish, or teardown can find its connection open (queue run
+        # 44164234834, py3.14). No new build starts from here on; a held walk
+        # is not waited for (its scan never opens the database).
+        self.api._workspace_warm_enabled = False
+        if self._warming():
+            await asyncio.wait_for(
+                asyncio.shield(self.api._workspace_warm_task), _HANG_LIMIT
+            )
+        await super().tearDownAsync()
+
     async def _json(self, method, path, **kwargs):
         # Bounded, like every wait in this class: a stuck walk fails the test
         # with a traceback instead of hanging the whole run.
