@@ -149,7 +149,8 @@ class TestRescopeRoute(ImageAPITestCase):
             {"target": {**good, "path": "../a.png"}},
             {"target": {**good, "path": "/abs.png"}},
             {"target": {**good, "path": "C:/a.png"}},
-            {"target": {**good, "path": "sub\\a.png"}},
+            # #646: a backslash is a separator only on Windows.
+            *([{"target": {**good, "path": "sub\\a.png"}}] if os.sep == "\\" else []),
             {"target": {**good, "path": "sub//a.png"}},
             {"target": {**good, "path": "notes.txt"}},
             {"target": {**good, "path": "x" * 2000 + ".png"}},

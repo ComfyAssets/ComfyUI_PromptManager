@@ -70,6 +70,8 @@ try:
         in_trash_below_roots,
         in_trash_folder,
         is_skipped_folder,
+        path_separators,
+        split_relative,
     )
     from ...utils.parallel import map_parallel
     from ...utils.json_strict import dumps_strict
@@ -101,6 +103,8 @@ except ImportError:
         in_trash_below_roots,
         in_trash_folder,
         is_skipped_folder,
+        path_separators,
+        split_relative,
     )
     from utils.parallel import map_parallel
     from utils.json_strict import dumps_strict
@@ -267,18 +271,23 @@ def _is_within(path, root):
 
 
 def _has_traversal(relative):
-    """True for absolute paths, drive-qualified paths or any ``..`` segment."""
+    """True for absolute paths, drive-qualified paths or any ``..`` segment.
+
+    Segments are split at this server's separators: on POSIX ``\\`` is part
+    of a name, so ``a\\..\\b`` is one name below the root (#646).
+    """
     if not relative or os.path.isabs(relative) or os.path.splitdrive(relative)[0]:
         return True
-    if relative[0] in ("/", "\\"):
+    if relative[0] in path_separators():
         return True
-    return ".." in re.split(r"[\\/]+", relative)
+    return ".." in split_relative(relative)
 
 
 def _is_thumbnail_cache_path(relative):
     """True when *relative* names something in a root's ``thumbnails/``
-    cache (any case, either separator): never inspected as a media file."""
-    first = re.split(r"[\\/]+", relative.lstrip("\\/"), maxsplit=1)[0]
+    cache (any case, this server's separators, #646): never inspected as a
+    media file."""
+    first = split_relative(relative.lstrip(path_separators()))[0]
     return first.casefold() == "thumbnails"
 
 
@@ -875,7 +884,7 @@ def _favorite_root_key(root) -> str:
 
 
 def _source_depth(source: str) -> int:
-    return len([part for part in re.split(r"[\\/]+", source) if part])
+    return len([part for part in split_relative(source) if part])
 
 
 def deepest_source(sources, absolute_path):
@@ -1200,6 +1209,10 @@ def _output_image_entry(
     }
     if root_scope is not None:
         entry["root_scope"] = root_scope
+    if "\\" in entry["path"]:
+        # #646: only a POSIX server lists a name holding a backslash (Windows
+        # turns it into ``/``); the workspace accepts it only with this mark.
+        entry["path_style"] = "posix"
     return entry
 
 
@@ -1221,9 +1234,10 @@ def _workspace_filters(query: Mapping) -> dict:
     folded = text.casefold()
     media = query.get("media", "all")
     order = query.get("sort", "newest")
-    folder = query.get("subfolder", "").strip().replace("\\", "/")
+    # #646: ``\\`` separates only on Windows; on POSIX it is part of a name.
+    folder = "/".join(split_relative(query.get("subfolder", "").strip()))
     # ``path``: one exact relative path (Activity opens a scan row by it, D57).
-    exact = query.get("path", "").strip().replace("\\", "/")
+    exact = "/".join(split_relative(query.get("path", "").strip()))
     category = query.get("category", "").strip() or None
     tags = sorted(
         {tag.strip() for tag in query.get("tags", "").split(",") if tag.strip()}

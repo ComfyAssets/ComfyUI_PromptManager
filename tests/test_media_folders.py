@@ -39,3 +39,41 @@ class TrashFolderNameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerSeparatorTests(unittest.TestCase):
+    """#646: ``\\`` separates names only on Windows; on POSIX it is part of one."""
+
+    def test_posix_keeps_a_backslash_inside_one_name(self):
+        import posixpath
+
+        from utils.media_folders import path_separators, split_relative
+
+        self.assertEqual(path_separators(posixpath), "/")
+        self.assertEqual(
+            split_relative("m.safetensors\\2026-11-17/x.png", posixpath),
+            ["m.safetensors\\2026-11-17", "x.png"],
+        )
+        self.assertEqual(split_relative("a\\..\\b", posixpath), ["a\\..\\b"])
+
+    def test_windows_splits_on_both(self):
+        import ntpath
+
+        from utils.media_folders import path_separators, split_relative
+
+        self.assertEqual(path_separators(ntpath), "/\\")
+        self.assertEqual(
+            split_relative("m.safetensors\\2026-11-17/x.png", ntpath),
+            ["m.safetensors", "2026-11-17", "x.png"],
+        )
+        self.assertEqual(split_relative("a\\..\\b", ntpath), ["a", "..", "b"])
+
+    def test_trash_detection_follows_the_server_separators(self):
+        import ntpath
+        import posixpath
+
+        from utils.media_folders import in_trash_folder
+
+        self.assertTrue(in_trash_folder(".Trash-1000\\x.png", ntpath))
+        self.assertFalse(in_trash_folder(".Trash-1000\\x.png", posixpath))
+        self.assertTrue(in_trash_folder("a/.Trash-1000/x.png", posixpath))

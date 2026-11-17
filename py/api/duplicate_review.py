@@ -304,7 +304,8 @@ def _relative_key(path, root):
         relative = os.path.relpath(str(path), str(root))
     except ValueError:  # another drive (Windows)
         return None
-    return os.path.normcase(relative).replace("\\", "/")
+    # #646: on POSIX ``a\\b.png`` and ``a/b.png`` are two files.
+    return os.path.normcase(relative).replace(os.sep, "/")
 
 
 @dataclass

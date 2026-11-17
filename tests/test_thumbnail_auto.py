@@ -434,7 +434,8 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         for path in (
             "thumbnails/D:/x_thumb.webp",
             "thumbnails/D:x_thumb.webp",
-            "thumbnails/\\\\server\\share/x_thumb.webp",
+            # #646: a backslash re-anchors a join only on Windows.
+            *(["thumbnails/\\\\server\\share/x_thumb.webp"] if os.sep == "\\" else []),
             "thumbnails//server/share/x_thumb.webp",
             "/thumbnails/x_thumb.webp",
             "thumbnails/a/./x_thumb.webp",
@@ -451,7 +452,11 @@ class TestThumbnailOnFirstView(AutoThumbnailCase):
         ):
             for path in (
                 "thumbnails/D:/x_thumb.webp",
-                "thumbnails/\\\\server\\share/x_thumb.webp",
+                *(
+                    ["thumbnails/\\\\server\\share/x_thumb.webp"]
+                    if os.sep == "\\"
+                    else []
+                ),
                 "/thumbnails/x_thumb.webp",
             ):
                 answer = await self.api._serve_missing_thumbnail(

@@ -1049,7 +1049,8 @@ class PromptDatabase(
         if include_ancestors:
             ancestors = set()
             for folder in folders:
-                parts = folder.replace("\\", "/").split("/")
+                # #646: ``folder`` already uses ``/``; on POSIX ``\\`` is a name.
+                parts = folder.split("/")
                 for i in range(1, len(parts)):
                     ancestors.add("/".join(parts[:i]))
             folders.update(ancestors)

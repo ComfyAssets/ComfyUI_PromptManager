@@ -205,7 +205,8 @@ def _is_preview_request(filepath):
     take as an anchor: a backslash, a drive or stream colon, and empty, ``.``
     or ``..`` segments (so a leading ``/`` and ``//server/share`` too).
     """
-    if "\\" in filepath or ":" in filepath:
+    # #646: a backslash is a separator only on Windows.
+    if ":" in filepath or (os.sep == "\\" and "\\" in filepath):
         return False
     parts = filepath.split("/")
     if len(parts) < 2 or parts[0] != "thumbnails":

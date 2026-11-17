@@ -225,7 +225,12 @@ class TestObserve(AnnotationAPITestCase):
                 ("dot segment", {"path": "./a.png"}, 403),
                 ("empty segment", {"path": "sub//a.png"}, 403),
                 ("absolute", {"path": "/etc/a.png"}, 403),
-                ("backslash", {"path": "sub\\a.png"}, 403),
+                # #646: a backslash is a separator only on Windows.
+                *(
+                    [("backslash", {"path": "sub\\a.png"}, 403)]
+                    if os.sep == "\\"
+                    else []
+                ),
                 ("drive", {"path": "C:/a.png"}, 403),
                 ("drive segment", {"path": "sub/C:a.png"}, 403),
                 ("nul", {"path": "a\x00.png"}, 403),

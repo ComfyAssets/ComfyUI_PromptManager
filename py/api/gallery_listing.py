@@ -148,7 +148,7 @@ def folder_sets(root, files) -> tuple[frozenset, frozenset]:
             folders.add(rel_dir)
     with_ancestors = set(folders)
     for folder in folders:
-        with_ancestors.update(_ancestors(folder))
+        with_ancestors.update(_ancestors(folder, sep))
     return frozenset(folders), frozenset(with_ancestors)
 
 
@@ -158,7 +158,7 @@ def add_folder(root, path, folders, with_ancestors) -> tuple[frozenset, frozense
     rel_dir = _folder_of(root, path, sep, prefix)
     if not rel_dir or rel_dir in folders:
         return folders, with_ancestors
-    return folders | {rel_dir}, with_ancestors | {rel_dir, *_ancestors(rel_dir)}
+    return folders | {rel_dir}, with_ancestors | {rel_dir, *_ancestors(rel_dir, sep)}
 
 
 def _root_prefix(root) -> tuple[str, str]:
@@ -180,8 +180,10 @@ def _folder_of(root, path, sep, prefix) -> str:
     return "" if rel_dir == "." else rel_dir
 
 
-def _ancestors(folder: str) -> list[str]:
-    parts = folder.replace("\\", "/").split("/")
+def _ancestors(folder: str, sep: str) -> list[str]:
+    # #646: ``\\`` separates only in a Windows root (*sep*, the root flavour's
+    # own); on POSIX it is part of a folder's name.
+    parts = (folder.replace("\\", "/") if sep == "\\" else folder).split("/")
     return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 

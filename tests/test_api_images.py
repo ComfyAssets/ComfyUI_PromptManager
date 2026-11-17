@@ -1268,7 +1268,12 @@ class TestPathHelpers(unittest.TestCase):
     def test_has_traversal(self):
         self.assertTrue(images_module._has_traversal(""))
         self.assertTrue(images_module._has_traversal("a/../b.png"))
-        self.assertTrue(images_module._has_traversal("\\\\srv\\share\\x.png"))
+        # #646: on POSIX a backslash is part of a name, so a UNC spelling is one
+        # name below the root; on Windows it re-anchors the path.
+        self.assertEqual(
+            images_module._has_traversal("\\\\srv\\share\\x.png"), os.sep == "\\"
+        )
+        self.assertEqual(images_module._has_traversal("a\\..\\b.png"), os.sep == "\\")
         self.assertTrue(images_module._has_traversal(os.path.abspath(os.sep)))
         self.assertFalse(images_module._has_traversal("sub/x.png"))
 

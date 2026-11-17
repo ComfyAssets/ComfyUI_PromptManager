@@ -32,12 +32,30 @@ def is_skipped_folder(name: str) -> bool:
     return name == PREVIEW_FOLDER or is_trash_folder(name)
 
 
-def in_trash_folder(relative: str) -> bool:
+def path_separators(pathmod=os.path) -> str:
+    """The characters that separate names in a root-relative path on this server.
+
+    ``/`` always; ``\\`` only on Windows, where it cannot be part of a name. On
+    POSIX ``\\`` is an ordinary character (a Windows-style ``filename_prefix``
+    makes such a folder, #646).
+    """
+    return "/\\" if pathmod.sep == "\\" else "/"
+
+
+def split_relative(relative: str, pathmod=os.path) -> list[str]:
+    """*relative* split into its names at this server's separators (#646)."""
+    if pathmod.sep == "\\":
+        relative = relative.replace("\\", "/")
+    return relative.split("/")
+
+
+def in_trash_folder(relative: str, pathmod=os.path) -> bool:
     """Whether a root-relative file path lies in a trash folder (#543).
 
-    Takes either separator. Previews of it (``thumbnails/.Trash-1000/...``) count.
+    Takes this server's separators (#646). Previews of it
+    (``thumbnails/.Trash-1000/...``) count.
     """
-    folders = relative.replace("\\", "/").split("/")[:-1]
+    folders = split_relative(relative, pathmod)[:-1]
     return any(is_trash_folder(part) for part in folders)
 
 

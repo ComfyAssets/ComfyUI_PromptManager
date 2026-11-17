@@ -146,7 +146,9 @@ def format_review_target(spelled_path, locator, real_roots, *, pathmod=os.path):
             rest = rest[1:]
         parts = rest.split(sep)
         if any(
-            part in ("", ".", "..") or "/" in part or "\\" in part or ":" in part
+            part in ("", ".", "..") or "/" in part
+            # #646: on POSIX a backslash is part of a name.
+            or (sep == "\\" and "\\" in part) or ":" in part
             for part in parts
         ):
             continue

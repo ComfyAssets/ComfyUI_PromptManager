@@ -2,6 +2,7 @@
 
 import json
 import ntpath
+import os
 import sqlite3
 from unittest.mock import patch
 
@@ -272,7 +273,9 @@ class TestRefusals(ImageCategoryTestCase):
 
     async def test_unsafe_paths_are_403(self):
         (self.output_dir / "notes.txt").write_text("not media")
-        for path in ("../outside.png", "/a.png", "C:/a.png", "a\\b.png", "a/./b.png"):
+        # #646: a backslash is a separator only on Windows.
+        windows = ["a\\b.png"] if os.sep == "\\" else []
+        for path in ("../outside.png", "/a.png", "C:/a.png", *windows, "a/./b.png"):
             with self.subTest(path=path):
                 await self.put([self.target(path)], "x", status=403)
         data = await self.put([self.target("notes.txt")], "x", status=403)
