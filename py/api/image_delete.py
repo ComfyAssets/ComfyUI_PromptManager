@@ -290,7 +290,7 @@ class ImageDeleteMixin:
             acted.append(target)
         counted = db.count_removal_records([t["removal"] for t in acted])
         library_count = len(acted)
-        permanent_supported = isinstance(trash.BACKEND, trash.FreedesktopBackend)
+        permanent_supported = permanent_delete_supported()
         public = {
             "operation": IMAGE_DELETE,
             "scope": {"count": library_count, "label": "images"},
@@ -568,6 +568,12 @@ class ImageDeleteMixin:
         """*paths* found by a walk of *root*, less the hidden ones (blocking)."""
         removed = self._removal_check_under(root)
         return [path for path in paths if not removed(path)]
+
+
+def permanent_delete_supported() -> bool:
+    """Permanent delete is offered only with the Freedesktop trash backend
+    (Linux/BSD servers); the review and the apply both ask here (#644)."""
+    return isinstance(trash.BACKEND, trash.FreedesktopBackend)
 
 
 def parse_mode(value):
