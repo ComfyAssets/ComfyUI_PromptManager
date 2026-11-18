@@ -926,6 +926,24 @@ class TestMetadataParsing(unittest.TestCase):
             f.write(b"nope")
         self.assertEqual(self.api._extract_comfyui_metadata(garbage), {})
 
+    def test_extract_metadata_from_webp_exif(self):
+        """SaveAnimatedWEBP writes the records as EXIF, with no text chunks."""
+        from PIL import Image
+
+        path = os.path.join(self.tmpdir, "m.webp")
+        exif = Image.Exif()
+        exif[0x0110] = 'prompt:{"1": {"class_type": "KSampler"}}'
+        exif[0x010F] = 'workflow:{"nodes": [{"type": "CLIPTextEncode"}]}'
+        Image.new("RGB", (1, 1)).save(path, "WEBP", exif=exif)
+
+        self.assertEqual(
+            self.api._extract_comfyui_metadata(path),
+            {
+                "prompt": '{"1": {"class_type": "KSampler"}}',
+                "workflow": '{"nodes": [{"type": "CLIPTextEncode"}]}',
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

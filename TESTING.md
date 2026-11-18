@@ -491,6 +491,17 @@ differ are files whose pixel data is undecodable or cut short: legacy found
 nothing, the walk keeps the text before the pixels. Animated PNGs still use
 `.text`.
 
+WebP, AVIF and JPEG keep the same records in EXIF, not in text chunks.
+ComfyUI's `SaveAnimatedWEBP` writes `prompt:{json}` to EXIF tag 0x0110, then
+`workflow:{json}` and every other `extra_pnginfo` key to 0x010F and down; the
+AVIF writer uses that layout. `utils/exif_text.py` answers the `png_text` shape
+through Pillow's `getexif()`, and both metadata readers fall back to it when a
+file has no text chunks. Only a value shaped like a record counts (a key, a
+colon, then a JSON object, array or string), so camera EXIF stays out.
+`tests/test_exif_text.py` writes real still and animated WebP files, AVIF (where
+Pillow has it) and JPEG in that layout; `tests/test_metadata_extraction.py` and
+`tests/test_api_core.py` hold the two readers to it.
+
 Image work runs on PromptManager's own threads (#523). glibc keeps each thread's
 malloc arena at its high-water mark, so image buffers spread over the default
 executor's threads stay resident. Interactive image work (view previews behind their
