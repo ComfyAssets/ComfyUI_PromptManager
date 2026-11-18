@@ -99,19 +99,21 @@ class PromptManager(PromptManagerBase, ComfyNodeABC):
                 "prepend_text": (
                     IO.STRING,
                     {
+                        "default": "",
                         "tooltip": (
                             "Text to prepend to the main prompt (connected STRING "
                             "nodes will be added before the main text)"
-                        )
+                        ),
                     },
                 ),
                 "append_text": (
                     IO.STRING,
                     {
+                        "default": "",
                         "tooltip": (
                             "Text to append to the main prompt (connected STRING "
                             "nodes will be added after the main text)"
-                        )
+                        ),
                     },
                 ),
                 "save_to_library": SAVE_TO_LIBRARY_INPUT,
