@@ -7,7 +7,9 @@ developer's machine a missing short name or symlink right is a failure.
 """
 
 import ctypes
+import ntpath
 import os
+import posixpath
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -300,7 +302,10 @@ class TestPredicates(unittest.TestCase):
             self.assertFalse(is_trash_folder(name), name)
 
     def test_either_separator(self):
-        self.assertTrue(in_trash_folder("a\\.Trash\\b.png"))
+        # #646: a backslash separates only on Windows.
+        self.assertTrue(in_trash_folder("a\\.Trash\\b.png", ntpath))
+        self.assertFalse(in_trash_folder("a\\.Trash\\b.png", posixpath))
+        self.assertTrue(in_trash_folder("a/.Trash/b.png"))
         self.assertFalse(in_trash_folder(".Trash"))
 
     def test_a_path_no_root_visibly_holds_fails_closed(self):

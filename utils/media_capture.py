@@ -659,12 +659,16 @@ def header_dimensions(path: str) -> tuple[int, int]:
 
 
 def _relative_parts(relative) -> tuple[list[str], str]:
-    """Split a safe relative POSIX media path; anything else is denied."""
+    """Split a safe relative POSIX media path; anything else is denied.
+
+    A backslash is denied on Windows, where it separates folders; on POSIX it
+    is part of a name (#646), and ``_resolve`` still checks the joined path.
+    """
     if not isinstance(relative, str) or not relative:
         raise CaptureDenied("Invalid file path")
     if len(relative) > MAX_RELATIVE_LENGTH or "\x00" in relative:
         raise CaptureDenied("Invalid file path")
-    if "\\" in relative or relative.startswith("/"):
+    if ("\\" in relative and os.sep == "\\") or relative.startswith("/"):
         raise CaptureDenied("Invalid file path")
     parts = relative.split("/")
     for part in parts:

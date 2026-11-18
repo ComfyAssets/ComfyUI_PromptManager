@@ -38,6 +38,19 @@ test('viewer rejects empty duplicate or unknown identity', () => {
     assert.equal(view.state.index, 0); view.dispose();
 });
 
+test('viewer leaves out an identity it refuses instead of refusing to open (#646)', () => {
+    const items = entries().slice(0, 3);
+    items.splice(1, 0, {...items[1], path: 'model.safetensors\\2026-11-17/x.png', filename: 'x.png'});
+    const view = session({items, initialKey: '0:folder/0.png'});
+    assert.deepEqual(view.state, {key:'0:folder/0.png',index:0,total:3,phase:'stopped',requested:false,mediaReady:false});
+    view.navigate(1); assert.equal(view.state.key, '1:folder/1.png');
+    view.navigate(1); assert.equal(view.state.key, '0:folder/2.png');
+    view.dispose();
+    // The refused file itself is not in the viewer, and a collection of refused files has nothing to open.
+    assert.throws(() => session({items, initialKey: '1:model.safetensors\\2026-11-17/x.png'}), TypeError);
+    assert.throws(() => session({items: [items[1]], initialKey: '0:folder/0.png'}), TypeError);
+});
+
 test('viewer ignores stale readiness after navigation and disposal', () => {
     let calls = 0;
     const view = session({items:entries(),initialKey:'0:folder/0.png',onChange:() => calls++,

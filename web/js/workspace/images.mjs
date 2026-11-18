@@ -3,7 +3,7 @@ import { createImageStream, withItem, imageKey, countLine, captionDate, scopeLab
 import { createImageCard } from './image-card.mjs';
 import { layoutImages, visibleImages, gridMetrics, stacksCardInfo } from './image-layout.mjs';
 import { mountFileInspector } from './file-inspector.mjs';
-import { createInspectionController } from './inspection-state.mjs';
+import { createInspectionController, rootedFileAdapter } from './inspection-state.mjs';
 import { mountSelectionBar } from './images-selection.mjs';
 import { scrollToPageTop } from './sticky-chrome.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
@@ -374,6 +374,8 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
     }
     function previewImage(image) {
         if (!image) return;
+        // #646: a file the viewer can't open (a backslash in a folder name) shows its details panel instead.
+        try { rootedFileAdapter.validate(image); } catch { inspect(image); return; }
         mediaViewer.open({items:state.items,selectedKey:imageKey(image),trigger:document.activeElement});
     }
     /** The concept media card (image-card.mjs): the image opens the viewer, Info inspects (D7–D11, D19). */

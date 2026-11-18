@@ -954,3 +954,15 @@ test('record accepts an image\'s own category on any link status (#332)', () => 
         assert.equal(record.library.category_scope, 'image');
     }
 });
+
+test('a backslash inside a name is accepted only from a POSIX listing (#646)', () => {
+    const inspectPath = contract('inspectPath');
+    const path = 'model.safetensors\\2026-11-17/a.png';
+    assert.equal(inspectPath({root_index:0, path, root_scope:scopeA, path_style:'posix'}),
+        `/prompt_manager/images/inspect/model.safetensors%5C2026-11-17/a.png?root=0&root_scope=${scopeA}`);
+    for (const path_style of [undefined, 'windows', 'POSIX'])
+        assert.throws(() => inspectPath({root_index:0, path, root_scope:scopeA, path_style}), /Invalid inspection identity/);
+    // The mark relaxes only the backslash: traversal, drives and empty names stay refused.
+    for (const bad of ['../a.png', 'a/../b.png', 'C:\\a.png', 'a//b.png', '/a.png'])
+        assert.throws(() => inspectPath({root_index:0, path:bad, root_scope:scopeA, path_style:'posix'}), /Invalid inspection identity/);
+});

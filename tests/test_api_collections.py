@@ -2,6 +2,7 @@
 
 import json
 import ntpath
+import os
 import sqlite3
 from unittest.mock import patch
 
@@ -178,7 +179,8 @@ class TestCollectionRoutes(CollectionRoutesTestCase):
             "../a.png",
             "sub/../../a.png",
             "C:/a.png",
-            "a\\b.png",
+            # #646: a backslash is a separator only on Windows.
+            *(["a\\b.png"] if os.sep == "\\" else []),
             "/a.png",
             "notes.txt",
         ):

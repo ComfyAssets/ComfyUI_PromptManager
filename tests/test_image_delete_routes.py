@@ -428,10 +428,31 @@ class TestPermanentMode(ImageDeleteTestCase):
         else:
             self.assertFalse(plan.get("permanent_delete_supported"))
 
+    async def test_permanent_is_refused_where_the_review_does_not_offer_it(self):
+        """#644: without the Freedesktop backend the apply answers 400 for
+        "permanent" before any backup, and the file and its records stay."""
+        from utils import trash
+
+        fake_trash.uninstall()
+        self.addCleanup(fake_trash.uninstall)
+        self.write("a.png", b"aaa", mtime=1_000_000)
+        self.link("a.png")
+        with patch.object(trash, "BACKEND", trash.UnavailableBackend()):
+            plan = await self.review(["a.png"])
+            self.assertFalse(plan["permanent_delete_supported"])
+            with patch("os.remove") as remove:
+                body = await self.post(
+                    APPLY, {"token": plan["token"], "mode": "permanent"}, 400
+                )
+            remove.assert_not_called()
+        self.assertIn("Linux", body["error"])
+        self.assertTrue((self.output_dir / "a.png").exists())
+        self.assertEqual(self.count("SELECT COUNT(*) FROM generated_images"), 1)
+
     async def test_permanent_delete_removes_the_file(self):
         fake_trash.uninstall()
         self.addCleanup(fake_trash.uninstall)
-        if sys.platform == "win32":
+        if not image_delete.permanent_delete_supported():
             self.skipTest("permanent delete is Linux/BSD only")
         self.write("a.png", b"aaa", mtime=1_000_000)
         self.link("a.png")
@@ -453,7 +474,7 @@ class TestPermanentMode(ImageDeleteTestCase):
 
         fake_trash.uninstall()
         self.addCleanup(fake_trash.uninstall)
-        if sys.platform == "win32":
+        if not image_delete.permanent_delete_supported():
             self.skipTest("permanent delete is Linux/BSD only")
         self.write("a.png", b"aaa", mtime=1_000_000)
         self.link("a.png")

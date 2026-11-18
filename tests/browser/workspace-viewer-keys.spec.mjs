@@ -311,3 +311,42 @@ test('on a video the image keys and Space do nothing, as the toolbar disables th
     await page.evaluate(() => new Promise(requestAnimationFrame));
     await expect(viewer(page)).not.toHaveClass(/\bviewer-fullscreen\b/);
 });
+
+/** #646: the listing carries one file whose folder name holds a backslash, as a Windows-style prefix makes on Linux. */
+async function withBackslashFile(page) {
+    await page.route(/\/prompt_manager\/images\/output\?/, async route => {
+        const response = await route.fetch(), body = await response.json();
+        if (body.images?.length > 1) {
+            const copy = body.images[1];
+            body.images.splice(1, 0, {...copy, path: `model.safetensors\\2026-11-17/${copy.filename}`, relative_path: `model.safetensors\\2026-11-17/${copy.filename}`});
+        }
+        await route.fulfill({response, json: body});
+    });
+}
+
+test('a file the viewer refuses is left out, and the others still open (#646)', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await withBackslashFile(page);
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await openProduction(page, 'images', 'dark');
+    const cards = await page.locator(CARDS).count();
+    await page.locator(CARDS).first().locator('.image-open').click();
+    await expect(position(page)).toContainText(`1 of ${cards - 1}`);
+    await page.keyboard.press('ArrowRight');
+    await expect(position(page)).toContainText('2 of ');
+    await expect(viewer(page).locator('#viewer-title')).not.toContainText('model.safetensors');
+    expect(errors).toEqual([]);
+});
+
+test('the refused file itself opens its details instead of the viewer (#646)', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await withBackslashFile(page);
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await openProduction(page, 'images', 'dark');
+    await page.locator(`${CARDS}[data-image-key*="model.safetensors"] .image-open`).click();
+    await expect(page.getByRole('complementary', {name: 'Selected image details'}).getByRole('alert')).toHaveText('Could not read prompts from this file.');
+    await expect(viewer(page)).toHaveCount(0);
+    expect(errors).toEqual([]);
+});

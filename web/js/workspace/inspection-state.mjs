@@ -31,9 +31,12 @@ function descriptorScope(image) {
     return image.root_scope;
 }
 
+/** #646: a POSIX server marks a path whose names hold a backslash; anywhere else a backslash stays refused. */
+const backslashRefused = image => image.path.includes('\\') && image.path_style !== 'posix';
+
 function validateIdentity(image) {
     if (!object(image) || !Number.isSafeInteger(image.root_index) || image.root_index < 0 ||
-        typeof image.path !== 'string' || !image.path || image.path.includes('\\') || /^[a-z]:/i.test(image.path) || /[\x00-\x1f\x7f]/.test(image.path) ||
+        typeof image.path !== 'string' || !image.path || backslashRefused(image) || /^[a-z]:/i.test(image.path) || /[\x00-\x1f\x7f]/.test(image.path) ||
         image.path.split('/').some(part => !part || part === '.' || part === '..')) throw new TypeError('Invalid inspection identity');
     return descriptorScope(image);
 }

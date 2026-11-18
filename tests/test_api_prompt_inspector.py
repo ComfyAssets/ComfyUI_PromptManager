@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import shutil
 import subprocess
 import unittest
@@ -151,7 +152,8 @@ class TestPromptInspector(ImageAPITestCase):
         for path in (
             "%2Fetc%2Fpasswd.png",
             "..%2Fsecret.png",
-            "%5Csecret.png",
+            # #646: on POSIX a backslash is part of a name (404 below).
+            *(["%5Csecret.png"] if os.sep == "\\" else []),
             "bad.txt",
             "null%00.png",
             "C:%5Csecret.png",
@@ -160,6 +162,9 @@ class TestPromptInspector(ImageAPITestCase):
             self.assertEqual(response.status, 403, path)
         response, result = await self.inspect("missing.png")
         self.assertEqual(response.status, 404)
+        if os.sep == "/":
+            response, result = await self.inspect("%5Csecret.png")
+            self.assertEqual(response.status, 404)
         outside = png(self.comfy_dir / "outside.png", prompt=graph("private"))
         self._make_symlink(outside, self.output_dir / "escape.png")
         response, result = await self.inspect("escape.png")
