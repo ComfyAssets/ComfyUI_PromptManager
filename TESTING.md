@@ -500,7 +500,9 @@ file has no text chunks. Only a value shaped like a record counts (a key, a
 colon, then a JSON object, array or string), so camera EXIF stays out.
 `tests/test_exif_text.py` writes real still and animated WebP files, AVIF (where
 Pillow has it) and JPEG in that layout; `tests/test_metadata_extraction.py` and
-`tests/test_api_core.py` hold the two readers to it.
+`tests/test_api_core.py` hold the two readers to it. No scan, monitor or
+gallery list collects `.avif` yet, so AVIF files are read correctly but never
+reach the readers; #652 tracks AVIF as a media type.
 
 Image work runs on PromptManager's own threads (#523). glibc keeps each thread's
 malloc arena at its high-water mark, so image buffers spread over the default
