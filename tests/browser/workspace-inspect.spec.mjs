@@ -565,9 +565,11 @@ test('URLs and media end with their owning session', async ({ page }) => {
     // Replacement.
     await choose(page, parityPng('f02.png'));
     await expect(preview(page).locator('img.local-file-preview')).toBeVisible();
+    // #653: a video still starting (inline, or in the viewer the selection opened) is held until it settles or
+    // STARTING_VIDEO_MS (15 s) passes, so its release can follow the new preview: wait for it, never check once.
     let state = await urls(page);
-    expect(state.revoked).toEqual([state.created[0]]);
-    expect(await page.evaluate(() => window.__loads)).toBeGreaterThanOrEqual(1);
+    await expect.poll(async () => (await urls(page)).revoked, { timeout: 20000 }).toEqual([state.created[0]]);
+    await expect.poll(() => page.evaluate(() => window.__loads), { timeout: 20000 }).toBeGreaterThanOrEqual(1);
     // Route change, from the page (D155: the selection opened the viewer, which makes the sidebar inert).
     await closeOpened(page);
     await page.locator('aside.sidebar nav').getByRole('link', { name: 'Overview', exact: true }).click();
