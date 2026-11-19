@@ -89,6 +89,7 @@ from .source_rescope import SourceRescopeMixin
 
 try:
     from ...database.operations import PromptDatabase
+    from ...utils.exif_text import exif_text
     from ...utils.logging_config import get_logger
     from ...utils.native_memory import release_free_memory
     from ...utils.png_text import png_text
@@ -100,6 +101,7 @@ except ImportError:
         0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     from database.operations import PromptDatabase
+    from utils.exif_text import exif_text
     from utils.logging_config import get_logger
     from utils.native_memory import release_free_memory
     from utils.png_text import png_text
@@ -1018,9 +1020,11 @@ class PromptManagerAPI(
         return []
 
     def _extract_comfyui_metadata(self, image_path):
-        """Embedded ComfyUI metadata of an image (PNG text chunks) or a video.
+        """Embedded ComfyUI metadata of an image (PNG text, EXIF) or a video.
 
-        PNG text is read without decoding the pixels (``utils.png_text``, #523).
+        PNG text is read without decoding the pixels (``utils.png_text``, #523);
+        WebP, AVIF and JPEG keep the same records as EXIF strings, read through
+        ``utils.exif_text``.
 
         Videos go through ffprobe (see utils/video_metadata). Unreadable files
         are a warning, not an error: a scan over a large output tree meets
@@ -1030,7 +1034,7 @@ class PromptManagerAPI(
             return read_video_metadata(image_path)
         try:
             with Image.open(image_path) as img:
-                return png_text(img)
+                return png_text(img) or exif_text(img)
         except Exception as e:
             self.logger.warning(
                 f"Unreadable image {os.path.basename(str(image_path))}: {e}"
