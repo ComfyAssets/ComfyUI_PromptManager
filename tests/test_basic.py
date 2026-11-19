@@ -273,6 +273,12 @@ class TestNodeIntegration(unittest.TestCase):
         # Check optional inputs
         self.assertIn("search_text", input_types["optional"])
 
+        # Every optional STRING starts empty, so the schema offers "" and not
+        # null: the composition sockets used to be the only ones without a
+        # default, although the node already treats them as empty.
+        for name in ("category", "tags", "search_text", "prepend_text", "append_text"):
+            self.assertEqual(input_types["optional"][name][1]["default"], "", name)
+
 
 if __name__ == "__main__":
     unittest.main()
