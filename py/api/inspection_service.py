@@ -128,7 +128,7 @@ def review_reader(
     logger: Any,
     *,
     close: bool = False,
-    record: Callable[[], Any] | None = None,
+    record: Callable[[dict | None], Any] | None = None,
 ) -> Callable[[int, int], dict | None]:
     """The inspector's ``review`` reader for one file *locator* (#659, C4).
 
@@ -138,16 +138,19 @@ def review_reader(
     read is None, never an error. ``close`` closes the calling thread's
     connection afterwards, for routes that close theirs (History).
 
-    *record*, when given, is called once when no item exists at that stat
-    (#657 addendum D2: Inspect records the item through the review worker's
-    own per-file path), and the item is read again. A recording error is
-    logged and the answer stays None.
+    *record*, when given, is called with the found facet when there is no
+    item at that stat or a pending one (#657 addendum D2: Inspect records the
+    item, or records a stale one again, through the review worker's own
+    per-file path; the caller decides whether anything needs doing). The
+    item is then read once more, also after a failed recording (the worker
+    may have recorded it meanwhile). A recording error is logged.
     """
 
     def read(size: int, mtime_ns: int) -> dict | None:
         try:
             found = db.review_item_at(locator, size, mtime_ns)
-            if found is None and record is not None and _recorded(record, logger):
+            if record is not None and (found is None or found["state"] == "pending"):
+                _record(record, found, logger)
                 found = db.review_item_at(locator, size, mtime_ns)
             return found
         except Exception:
@@ -160,16 +163,14 @@ def review_reader(
     return read
 
 
-def _recorded(record: Callable[[], Any], logger: Any) -> bool:
-    """Run *record*; True when it may have stored an item (no error)."""
+def _record(record: Callable[[dict | None], Any], found, logger: Any) -> None:
+    """Run *record* for the *found* facet; an error is logged, not raised."""
     try:
-        outcome = record()
+        record(found)
     except Exception:
         logger.warning(
             "Inspection could not add the file to Needs review", exc_info=True
         )
-        return False
-    return outcome not in ("deferred", "skipped", "untraced", "linked")
 
 
 def _asks_review(evidence: dict, library: dict) -> bool:

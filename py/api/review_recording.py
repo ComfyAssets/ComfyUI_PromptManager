@@ -53,6 +53,7 @@ rebuild no longer holds Needs review back for its whole run.
 
 import functools
 import hashlib
+import json
 import os
 import threading
 from collections import OrderedDict
@@ -79,11 +80,13 @@ NEW_OUTCOMES = ("recorded", "limited")
 try:
     from ...utils import review_capture
     from ...utils.file_prompt import NEVER, Policy, decide_file_prompt
+    from ...utils.media_capture import CaptureCapacity
     from ...utils.parallel import note_refusal, refused_at_shutdown
     from ...utils.review_capture import record_ambiguous_file
 except ImportError:
     from utils import review_capture
     from utils.file_prompt import NEVER, Policy, decide_file_prompt
+    from utils.media_capture import CaptureCapacity
     from utils.parallel import note_refusal, refused_at_shutdown
     from utils.review_capture import record_ambiguous_file
 
@@ -115,6 +118,15 @@ def _digest(text: str) -> bytes:
 def _memory_key(locator: str) -> bytes:
     """A 16-byte digest of ``locator`` (the untraced memory's key)."""
     return _digest(locator)
+
+
+# Files Inspect found it cannot record (#657 review), per process: a 16-byte
+# digest of the locator, its stat and the review versions, oldest forgotten
+# first. Inspect then does not run the recording again for that state.
+MAX_INSPECT_MEMORY = 4096
+# record_review_file outcomes that record nothing for the file's current
+# state (an expected outcome, not an error): remembered by Inspect.
+UNRECORDABLE_OUTCOMES = ("skipped", "untraced")
 
 
 # The scan log's reason for items that leave the queue with nothing to choose.
@@ -489,6 +501,90 @@ class ReviewRecordingMixin:
             media_file, roots, decision, decision.unlinked_status
         )
         return recorded or "skipped"
+
+    def inspect_review_file(self, image_path, found=None):
+        """Inspect's recording of one file (#657 addendum D2, blocking).
+
+        ``found`` is the file's ``review`` facet at the inspected stat (None
+        or a pending item). A pending item of a current item version needs
+        nothing (``current``); one of an older version is recorded again, so
+        the new item supersedes it. Otherwise ``record_review_file`` runs,
+        unless Inspect already found this state unrecordable (``skipped`` or
+        ``untraced``, remembered in ``MAX_INSPECT_MEMORY`` digests:
+        ``remembered``). A busy capture store (the worker copying a fresh
+        output) is expected: logged at debug level, ``busy``.
+        """
+        if found is not None and self._review_item_current(
+            found["item_id"], image_path
+        ):
+            return "current"
+        key = self._inspect_memory_key(image_path)
+        memory = self._inspect_memory()
+        with _UNTRACED_MEMORY_LOCK:
+            if key is not None and key in memory:
+                return "remembered"
+        try:
+            outcome = self.record_review_file(image_path)
+        except CaptureCapacity:
+            self.logger.debug(
+                "Inspect left Needs review to the worker: captures are busy"
+            )
+            return "busy"
+        if key is not None and outcome in UNRECORDABLE_OUTCOMES:
+            with _UNTRACED_MEMORY_LOCK:
+                memory.pop(key, None)
+                memory[key] = True
+                while len(memory) > MAX_INSPECT_MEMORY:
+                    del memory[next(iter(memory))]
+        return outcome
+
+    def _inspected_metadata(self, image_path):
+        """The file's metadata with its prompt graph decoded (or None)."""
+        metadata = self._extract_comfyui_metadata(str(image_path)) or {}
+        prompt = metadata.get("prompt")
+        if isinstance(prompt, str):
+            try:
+                metadata = {**metadata, "prompt": json.loads(prompt)}
+            except (ValueError, TypeError, RecursionError):
+                return None
+        return metadata if isinstance(metadata.get("prompt"), dict) else None
+
+    def _review_item_current(self, item_id, image_path):
+        """True when the item's version is one the file is queued under now
+        (the file's metadata is read only for a non-default version)."""
+        item = self.db.review_item(item_id)
+        if item is None:
+            return False
+        version = item.get("resolver_version")
+        if version == review_capture.default_item_version():
+            return True
+        metadata = self._inspected_metadata(image_path)
+        return metadata is not None and version in review_capture.item_versions(
+            metadata
+        )
+
+    def _inspect_memory_key(self, image_path):
+        """The digest of the file's locator, stat and review versions."""
+        full = os.path.abspath(str(image_path))
+        located = os.path.join(
+            os.path.realpath(os.path.dirname(full)), os.path.basename(full)
+        )
+        try:
+            facts = os.lstat(located)
+        except OSError:
+            return None
+        return _digest(
+            f"{os.path.normcase(located)}:{facts.st_size}:{facts.st_mtime_ns}:"
+            f"{review_capture.default_item_version()}:"
+            f"{review_capture.semantics_version()}"
+        )
+
+    def _inspect_memory(self):
+        with _UNTRACED_MEMORY_LOCK:
+            memory = getattr(self, "_inspect_unrecordable", None)
+            if memory is None:
+                memory = self._inspect_unrecordable = {}
+            return memory
 
     def _review_worker(self):
         """The API's one review worker, made on first use (no thread yet)."""

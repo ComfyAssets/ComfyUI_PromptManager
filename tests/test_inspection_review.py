@@ -29,7 +29,8 @@ except ImportError:
     from tests.test_api_prompt_inspector import graph, png
     from tests.test_review import unlinkable_graph
 
-from utils.media_capture import CaptureStore
+from utils.media_capture import CaptureCapacity, CaptureStore
+from utils.review_capture import default_item_version as current_version
 
 NOW = "2026-11-19T00:00:00+00:00"
 
@@ -262,6 +263,75 @@ class TestInspectReviewField(ReviewItemsMixin, ImageAPITestCase):
             body = await self.inspect()
         self.assertIsNone(body["review"])
         self.assertEqual(self.items(), [])
+
+    async def test_a_busy_capture_store_is_expected_not_a_warning(self):
+        """The worker may hold the store while it copies a fresh output: a
+        ``CaptureCapacity`` is logged at debug level only (#657 review)."""
+        png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        with (
+            self.assertNoLogs(self.api.logger, "WARNING"),
+            patch.object(
+                type(self.api),
+                "record_review_file",
+                side_effect=CaptureCapacity("busy"),
+            ),
+        ):
+            body = await self.inspect()
+        self.assertIsNone(body["review"])
+        self.assertEqual(self.items(), [])
+
+    async def test_the_item_is_read_again_after_a_failed_recording(self):
+        """The worker recorded the file while Inspect waited for the store."""
+        path = png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        queued = []
+
+        def worker_won(*_args):
+            queued.append(self.queue(path, resolver_version=current_version()))
+            raise CaptureCapacity("busy")
+
+        with patch.object(type(self.api), "record_review_file", side_effect=worker_won):
+            body = await self.inspect()
+        self.assertEqual(body["review"], {"state": "pending", "item_id": queued[0]})
+
+    async def test_an_unrecordable_file_is_not_tried_again_at_its_stat(self):
+        """A file the scan would link records nothing; Inspect remembers its
+        stat and does not run the recording again (#657 review)."""
+        path = png(self.output_dir / "a.png", prompt=two_samplers())
+        real = type(self.api).record_review_file
+        calls = []
+
+        def counted(api, image_path):
+            calls.append(image_path)
+            return real(api, image_path)
+
+        with patch.object(type(self.api), "record_review_file", counted):
+            await self.inspect()
+            await self.inspect()
+            self.assertEqual(len(calls), 1)
+            facts = path.stat()
+            os.utime(path, ns=(facts.st_atime_ns, facts.st_mtime_ns + 10**9))
+            await self.inspect()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.items(), [])
+
+    async def test_an_old_version_pending_item_is_recorded_again(self):
+        """A pending item of an older item version (a choiceless limited
+        item recorded before D3) is replaced by the current record."""
+        path = png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        old = self.queue(path, resolver_version=1)
+        body = await self.inspect()
+        (item_id,) = self.items()
+        self.assertNotEqual(item_id, old)
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item_id})
+
+    async def test_a_current_pending_item_is_not_recorded_again(self):
+        path = png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        item_id = self.queue(path, resolver_version=current_version())
+        with patch.object(
+            type(self.api), "record_review_file", side_effect=AssertionError
+        ):
+            body = await self.inspect()
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item_id})
 
     async def test_pending_item_names_its_id(self):
         path = png(self.output_dir / "a.png", prompt=two_samplers())

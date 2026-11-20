@@ -4215,7 +4215,7 @@ class ImageRoutesMixin:
             self.db,
             locator,
             self.logger,
-            record=functools.partial(self.record_review_file, path),
+            record=functools.partial(self.inspect_review_file, path),
         )
 
     def _read_own_category(self, sources, path):

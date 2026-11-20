@@ -745,7 +745,7 @@ class HistoryRoutesMixin:
                 locator,
                 self.logger,
                 close=True,
-                record=partial(self.record_review_file, str(target)),
+                record=partial(self.inspect_review_file, str(target)),
             )(size, mtime_ns)
 
         return read
