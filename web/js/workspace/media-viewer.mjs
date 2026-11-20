@@ -161,7 +161,7 @@ export function createMediaViewer({api,container,parentScope,inspectionControlle
         body.append(left,details);dialog.append(header,body);container.append(dialog);
         const localSender = {open(roles,trigger) {session.stop();sender.open(roles,trigger);}};
         const inspector = mountFileInspector(details,{api,sender:localSender,parentScope:local,variant:'full',onInteraction:() => session.stop(),onRetry:() => inspectionController.retry(),
-            onLoad:() => inspectionController.load?.(),onReviewDecided:() => inspectionController.refresh?.(),
+            onLoad:() => inspectionController.load?.(),onReviewDecided:inspectionController.refresh,
             onRefresh:onRefresh ? () => { closeViewer();onRefresh(); } : undefined,collections,
             onCollectionsChanged:({added,removed}) => {
                 collectionChanges ??= {added:[],removed:[]};
