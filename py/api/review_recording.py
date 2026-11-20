@@ -97,6 +97,8 @@ REVIEW_DEFERRED_LIMIT = 1000
 REVIEW_RETRY_SECONDS = 5
 REVIEW_STOP_SECONDS = 5
 _REVIEW_WORKER_LOCK = threading.Lock()
+# Guards the untraced memory, which the scan and the review worker share.
+_UNTRACED_MEMORY_LOCK = threading.Lock()
 
 # Untraced files remembered per process so a rescan of an unchanged file does
 # not run the inspection profile again (oldest forgotten first). A plain dict
@@ -279,17 +281,21 @@ class ReviewRecordingMixin:
                 return canonical, None
         memory = self._untraced_memory()
         key = _memory_key(locator)
-        if state is not None and memory.get(key) == state:
-            return None
+        # The scan and the review worker (#659) share the memory: every
+        # read and change holds its lock (the resolve below does not).
+        with _UNTRACED_MEMORY_LOCK:
+            if state is not None and memory.get(key) == state:
+                return None
         resolution = review_capture.inspection_choice(canonical, media_file.name)
-        if resolution is not None:
-            memory.pop(key, None)
-            return canonical, resolution
-        if state is not None:
-            memory.pop(key, None)  # re-inserted last: the newest state
-            memory[key] = state
-            while len(memory) > MAX_UNTRACED_MEMORY:
-                del memory[next(iter(memory))]
+        with _UNTRACED_MEMORY_LOCK:
+            if resolution is not None:
+                memory.pop(key, None)
+                return canonical, resolution
+            if state is not None:
+                memory.pop(key, None)  # re-inserted last: the newest state
+                memory[key] = state
+                while len(memory) > MAX_UNTRACED_MEMORY:
+                    del memory[next(iter(memory))]
         return None
 
     def _settle_stale_reviews(self, media_file, roots, canonical, review=None):
@@ -329,10 +335,11 @@ class ReviewRecordingMixin:
         return removed
 
     def _untraced_memory(self):
-        memory = getattr(self, "_untraced_inspections", None)
-        if memory is None:
-            memory = self._untraced_inspections = {}
-        return memory
+        with _UNTRACED_MEMORY_LOCK:
+            memory = getattr(self, "_untraced_inspections", None)
+            if memory is None:
+                memory = self._untraced_inspections = {}
+            return memory
 
     @staticmethod
     def _review_location(media_file, roots, real_roots=None):
