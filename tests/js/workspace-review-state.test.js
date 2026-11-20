@@ -217,13 +217,35 @@ test('#657 D4: imageChoices lists the choosable candidates once per prompt pair,
 test('#657 D4: applyCandidate decides the open item with that candidate, as Apply association does', async () => {
     const { c, h } = await loaded();
     assert.equal(await c.applyCandidate({ itemId: 'two', hash: HASH_B }), false, 'not the open item');
+    assert.equal(c.state.warning, '');
     assert.equal(await c.applyCandidate({ itemId: 'one', hash: HASH_C }), false, 'a disabled candidate');
+    // The dialog's choice is no longer offered (the detail was read again meanwhile): it says so.
+    assert.equal(c.state.warning, 'This prompt is no longer offered for this file. Choose again.');
+    assert.equal(await c.applyCandidate({ itemId: 'one', hash: 'gone' }), false, 'a candidate the detail no longer lists');
+    assert.equal(c.state.warning, 'This prompt is no longer offered for this file. Choose again.');
     assert.equal(h.of('POST', OBSERVE).length, 0);
     assert.equal(await c.applyCandidate({ itemId: 'one', hash: HASH_B }), true);
     const [decision] = h.of('POST', `${ITEMS}/one/decision`);
     assert.equal(decision.body.choice, HASH_B);
     assert.equal(c.state.toast, 'Association accepted.');
     assert.equal(c.state.selectedId, 'two');
+});
+
+test('#657 D4: an unanswered applyCandidate asks to press Link image again, and that resends the same body once', async () => {
+    let attempts = 0;
+    const { c, h } = await loaded({
+        [`POST ${ITEMS}/one/decision`]: () => {
+            attempts += 1;
+            if (attempts === 1) return Promise.reject(new TypeError('Failed to fetch'));
+            return response(200, { success: true, library_epoch: EPOCH, total: 1, item: { ...QUEUE[0], state: 'selected', revision: 1 } });
+        },
+    });
+    assert.equal(await c.applyCandidate({ itemId: 'one', hash: HASH_B }), false);
+    assert.equal(c.state.warning, 'The link may not have been saved. Press Link image again to send the same choice once more.');
+    assert.equal(await c.applyCandidate({ itemId: 'one', hash: HASH_B }), true);
+    const [first, second] = h.of('POST', `${ITEMS}/one/decision`);
+    assert.deepEqual(second.body, first.body);
+    assert.equal(h.of('POST', OBSERVE).length, 1);
 });
 
 test('link posts the chosen prompt and recipe with a fresh capture, then the next item opens', async () => {

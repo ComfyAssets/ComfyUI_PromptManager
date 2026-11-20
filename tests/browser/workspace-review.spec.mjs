@@ -805,3 +805,62 @@ test('#657 D3: a file whose prompts were shortened to the most used says so', as
     await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
     await expect(line).toBeHidden();
 });
+
+test('#657 D4: typing drops a choice from the image; Link waits for a Library prompt and links it', async ({ page, request }) => {
+    await seed(request, 1, { unreadable: true });
+    await open(page);
+    await expect(panel(page).locator('p.small')).toHaveText('review_0000.png');
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    const own = dialog.getByRole('group', { name: 'From this image', exact: true });
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await own.getByRole('button', { name: 'Harbor lights at night / Soft negative, blur', exact: true }).click();
+    await expect(submit).not.toHaveAttribute('aria-disabled', 'true');
+    const search = dialog.getByRole('searchbox');
+    await search.fill('harbor');
+    await expect(own).toBeHidden();
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    // An empty box lists the image's prompts again, none chosen.
+    await search.fill('');
+    await expect(own).toBeVisible();
+    await expect(own.locator('button[aria-pressed="true"]')).toHaveCount(0);
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await search.fill('harbor');
+    await dialog.getByRole('button', { name: 'Quiet harbor', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Negative prompt', exact: true }).selectOption({ label: 'grainy' });
+    await expect(submit).not.toHaveAttribute('aria-disabled', 'true');
+    const sent = page.waitForRequest(item => /\/review\/items\/[^/]+\/(link|decision)$/.test(item.url()));
+    await submit.click();
+    const sentRequest = await sent;
+    expect(sentRequest.url()).toMatch(/\/link$/);
+    expect(sentRequest.postDataJSON()).toEqual(expect.objectContaining({ positive_id: expect.any(Number), pair_id: expect.any(Number) }));
+    await expect(toast(page)).toHaveText('Linked to Quiet harbor.');
+    const link = (await links(request)).find(row => row.filename === 'review_0000.png');
+    expect([link.positive, link.negative]).toEqual(['Quiet harbor', 'grainy']);
+});
+
+test('#657 D4: a re-read that no longer offers the chosen image prompt drops it from the dialog', async ({ page, request }) => {
+    await seed(request, 1);
+    await open(page);
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    const own = dialog.getByRole('group', { name: 'From this image', exact: true });
+    await own.getByRole('button', { name: 'Harbor lights at night / Soft negative, blur', exact: true }).click();
+    // The decision is refused as stale, so the item is read again, and this time its Harbor path cannot be applied.
+    await page.route(/\/decision$/, route => route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ success: false, code: 'review-conflict', error: 'This item changed. Choose again.' }) }));
+    await page.route(url => /\/prompt_manager\/review\/items\/[0-9a-f-]{36}$/.test(url.pathname), async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        const candidates = body.candidates.map(candidate => (candidate.positive?.text === 'Harbor lights at night'
+            ? { ...candidate, state: 'unresolved', reason: 'Text is decided at run time' } : candidate));
+        await route.fulfill({ response, json: { ...body, candidates } });
+    });
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await submit.click();
+    await expect(own.getByRole('button')).toHaveText(['Golden dunes at dusk / Soft negative, blur']);
+    await expect(own.locator('button[aria-pressed="true"]')).toHaveCount(0);
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await expect(dialog.locator('.warning-note')).toHaveText('This item changed. Choose again.');
+    expect(await pending(request)).toBe(1);
+});

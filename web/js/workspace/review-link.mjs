@@ -10,7 +10,7 @@
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { closeWorkspaceDialog, field, openContentDialog } from './workspace-dialogs.mjs';
-import { imageChoices } from './review-state.mjs';
+import { COPY, imageChoices } from './review-state.mjs';
 
 export const SEARCH_DELAY_MS = 250;
 export const RESULT_LIMIT = 20;
@@ -65,11 +65,15 @@ export const pairIdOf = value => (value === NO_NEGATIVE ? null : Number(value));
 export function openPromptLink({ api, scope, controller, filename, trigger }) {
     // A re-read may open another item meanwhile (decided elsewhere): the dialog names this one, so it closes.
     const itemId = controller.state.selectedId;
-    const stopWatching = controller.subscribe(state => { if (state.selectedId !== itemId && !closed) closeWorkspaceDialog(); });
     let timer = null, search = null, variantsRead = null, chosen = null, closed = false;
-    // #657 D4: the image's own prompts, and the one chosen among them (`chosen` is then null).
-    const choices = imageChoices(controller.state.options);
-    let chosenOwn = null;
+    // #657 D4: the image's own prompts (from the options shown last), and the one chosen among them (`chosen` is then null).
+    let shownOptions = controller.state.options, choices = imageChoices(shownOptions), chosenOwn = null;
+    const stopWatching = controller.subscribe(state => {
+        if (closed) return;
+        if (state.selectedId !== itemId) closeWorkspaceDialog();
+        // The item's detail was read again: list what it offers now.
+        else if (state.detailStatus === 'ready' && state.options !== shownOptions) refreshOwn(state.options);
+    });
 
     const sentence = el('p', LINK_COPY.sentence(filename), 'small');
     const input = el('input');
@@ -140,10 +144,22 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
         own.replaceChildren(...choices.map(choice => {
             const button = createButton(choiceLabel(choice));
             button.title = choiceLabel(choice);
-            button.setAttribute('aria-pressed', 'false');
+            button.setAttribute('aria-pressed', String(choice.value === chosenOwn?.value));
             button.addEventListener('click', () => chooseOwn(choice, button));
             return button;
         }));
+    }
+
+    /** The item's candidates changed: list them again; a chosen one no longer offered is unchosen. */
+    function refreshOwn(options) {
+        shownOptions = options;
+        choices = imageChoices(options);
+        if (chosenOwn && !choices.some(choice => choice.value === chosenOwn.value)) {
+            chosenOwn = null;
+            warn(COPY.notOffered);
+        }
+        showOwn();
+        syncSubmit();
     }
 
     async function choose(prompt, button) {
@@ -198,8 +214,14 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
     }
 
     input.addEventListener('input', () => {
-        // Typing searches the Library only; an empty box lists the image's prompts again.
-        ownHeading.hidden = own.hidden = Boolean(input.value.trim());
+        // Typing searches the Library only, so a choice from the image is dropped; an empty box lists them again.
+        const typed = Boolean(input.value.trim());
+        ownHeading.hidden = own.hidden = typed;
+        if (typed && chosenOwn) {
+            chosenOwn = null;
+            press(null);
+            syncSubmit();
+        }
         clearTimeout(timer);
         timer = setTimeout(find, SEARCH_DELAY_MS);
     });
@@ -215,6 +237,7 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
         if (closed) return;
         if (done) { closeWorkspaceDialog(); return; }
         warn(controller.state.warning);
+        refreshOwn(controller.state.options);
         syncSubmit();
     });
 

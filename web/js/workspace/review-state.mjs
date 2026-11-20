@@ -62,6 +62,8 @@ export const COPY = Object.freeze({
     unreadable: count => `${count === 1 ? "This file's sampler path" : `None of this file's ${count} sampler paths`} could be traced to a complete prompt, so there is nothing to apply. Choose the prompt yourself, or leave it unresolved.`,
     lostLink: 'The link may not have been saved. Press Link image again to send the same choice once more.',
     unavailable: 'This file is not under a current image source, so it cannot be opened. You can leave it unresolved.',
+    // #657 D4: Link to a prompt's choice from the image is no longer among the item's candidates.
+    notOffered: 'This prompt is no longer offered for this file. Choose again.',
     lost: 'The decision may not have been saved. Apply again to send the same decision once more.',
     storageChanged: 'Prompt storage was restored; reload the review queue.',
     // D119 (F2): the open item left the queue in a re-read, and a failed re-read.
@@ -508,17 +510,20 @@ export function createReviewController({ api, itemId = null }) {
         } });
     }
 
-    function apply() {
+    function apply(lost = COPY.lost) {
         const { choice } = state;
         if (!choice) return Promise.resolve(false);
-        return decide({ key: choice, path: 'decision', fields: { choice }, toast: COPY.applied });
+        return decide({ key: choice, path: 'decision', fields: { choice }, toast: COPY.applied, lost });
     }
 
     /** Apply candidate `hash` of item `itemId`, which must still be the open one (#657 D4). */
     function applyCandidate({ itemId, hash }) {
         if (state.selectedId !== itemId) return Promise.resolve(false);
         choose(hash);
-        return state.choice === hash ? apply() : Promise.resolve(false);
+        if (state.choice === hash) return apply(COPY.lostLink);
+        // The detail was read again meanwhile and no longer offers it (the dialog lists the item's candidates again).
+        set({ warning: COPY.notOffered });
+        return Promise.resolve(false);
     }
 
     function leaveUnresolved() {
@@ -556,7 +561,7 @@ export function createReviewController({ api, itemId = null }) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, applyCandidate,
+        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply: () => apply(), applyCandidate,
         leaveUnresolved, link, retry, leave,
         dispose() {
             if (disposed) return;
