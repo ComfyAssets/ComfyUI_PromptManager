@@ -368,12 +368,18 @@ and the time left. The steps, in order:
    observer join get what is left, which can be 0 s. `stop()` joins watchdog's
    emitters without a limit, so it runs on a daemon thread and is waited for
    only until the deadline; a later stop waits for that same call (#561).
-3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s),
+3. `stop_review_worker` stops the Needs review worker (`pm-review-recorder`,
+   5 s, #659): it drops the queued and deferred paths (their count is logged;
+   the next scan covers them), refuses every later `queue_review_file` and
+   joins the thread, which finishes at most the file in hand. It always runs,
+   so an image in hand cannot start the worker afterwards; it is reported as
+   part `review` only when the worker started.
+4. `close_auto_thumbnails(final=True)` stops the preview worker (30 s),
    kills ffmpeg and shuts the interactive image pool down.
-4. `shutdown_job_pool` (`utils/parallel.py`) cancels the long-lived job pool's
+5. `shutdown_job_pool` (`utils/parallel.py`) cancels the long-lived job pool's
    queued items and joins its threads (5 s; part `workers`, only when a job
    used the pool, #523).
-5. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
+6. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
 
 A failing step, or a second Ctrl+C, is logged with its traceback and does not
 skip the later steps. A clean run logs one INFO line to PromptManager's log:
@@ -426,6 +432,7 @@ exit waits for the call in flight, as before. `tests/test_exit_cancel.py` runs a
 child process with three such calls running and requires its exit within 15 s.
 
 Stop contract: `PromptTracker.shutdown(timeout)`,
+`ReviewRecordingMixin.stop_review_worker(timeout)` (final),
 `ImageGenerationHandler.shutdown(timeout)` (restartable),
 `ImageGenerationHandler.close(timeout)` (final: `schedule()` refuses and a
 sealed run's re-check is dropped) and `ImageMonitor.stop_monitoring(timeout)`
@@ -438,7 +445,8 @@ Test rules:
 - Every test that constructs a real `PromptTracker`, `ImageGenerationHandler`
   or `ImageMonitor` ends with its final stop and an assertion
   (`tests/background_stops.py`: `close_handler`, `stop_monitor`,
-  `stop_tracker`). The stop comes before the folder and databases are removed.
+  `stop_tracker`). `ReviewTestCase.tearDownAsync` asserts
+  `stop_review_worker` before its capture store and folder go. The stop comes before the folder and databases are removed.
   `tearDown` runs before `addCleanup` callbacks, so a class whose `tearDown`
   removes files stops the thread there.
 - A test waits for a state through an `Event` set by the code under test, or
@@ -952,7 +960,15 @@ WanImageToVideo by output slot). `ConditioningZeroOut` is an explicit empty text
 with source `zeroed-conditioning`. `easy ifElse` with a literal boolean follows that
 branch only; with a linked boolean both branches are traced, equal texts resolve and
 different texts make the sampler `ambiguous` with one candidate per choice (at most
-32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
+32, else `work-limit`). A value is *proven* (#657, rgthree's `Any Switch (rgthree)`,
+strategy `first-present`, which outputs its first input that is not `None`) only by
+a literal or a traced path whose every node is a PromptManager node, a class the
+resolver handles in code (`Reroute`, `StringConcatenate`, `Text Concatenate`, the
+default string adapters) or an entry of the table's `encoders`, `strings`,
+`conditioning` or `composites` (`PROVEN_VALUE_CATEGORIES`). That allowlist is a rule
+for every future table entry: a class that can return `None` (a selector, an
+unknown node, a `runtime`, `facts` or `lineage` class) never goes into those four
+categories, and a test pins them. ConditioningCombine/Concat/Average resolve only when every
 part has the same text, otherwise `unresolved` with `composite` naming the node
 (but see the added-conditioning floor below for a later stage).
 Results that depend on a forced choice are never memoized. A `FaceDetailer`
@@ -6445,9 +6461,12 @@ never the metadata row.
 Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
 `tests/test_review.py`, `tests/test_review_outcome.py`,
 `tests/test_review_choosable.py`): a file is queued only when its final outcome
-is ambiguous and unlinked and there is something to choose. Only scans produce
-items; the monitor links new outputs and clears pending items it resolves
-(maintainer rulings, 2026-10-23). The output scan (Activity's
+is ambiguous and unlinked and there is something to choose. The scan and the
+live monitor queue the same files (maintainer decision 2026-11-19, #659; it
+replaces the 2026-10-23 ruling that only scans add items, made when the
+monitor's pass queued files the scan's fallback went on to link): one per-file
+decision, `review_dispatch` (`py/api/review_recording.py`), serves both. The
+output scan (Activity's
 Scan for metadata and the legacy `/scan`) hands `record_ambiguous_file` a file
 the ingestion resolver finds `ambiguous` only when the browser-parser fallback
 then links nothing (status `ambiguous`) and no saved row links the file
@@ -6464,8 +6483,12 @@ a choice when it holds at least two candidates) leave the queue on the next
 scan (`settle_untraced_review_items`). The maintainer's
 second live check found 39 items whose 11 candidates were all "unresolved".
 Inspection-profile choices (`tests/test_review_inspection.py`, ruling a): when
-the default profile is ambiguous without a choice and nothing links the file,
-the scan (never the monitor) resolves it again with `INSPECTION_PROFILE`, which
+the default profile is ambiguous without a choice, or calls a file with a prompt
+graph `unresolved` (#659 C1/C2: `Decision.default_unresolved`, set before the
+blank-positive rewrite, so a blank positive does not count; "Unsupported latent
+ancestry" on the maintainer's model-compare sweep is the example), and nothing
+links the file, the scan and the monitor's review worker resolve it again with
+`INSPECTION_PROFILE`, which
 knows `TextEncodeQwenImageEdit`, `StringConstantMultiline`, `JoinStringMulti`
 and the rest of `web/js/inspection-semantics.json`. With at least two choosable
 candidates there, the file is `ambiguous` and is queued from that profile's
@@ -6518,13 +6541,35 @@ items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
 (`settle_linked_review_items`; the review index revision moves). Only an
 undecided item goes (`pending`, revision 0, no decision row): a decision is
-never deleted or changed, so no schema state was added. The monitor never
-records an item (only scans add items, maintainer ruling 2026-10-23): an
-unlinked file passed to `record_review_file` is `skipped` with no capture,
-and only a linked one's pending items are settled
-(`test_monitor_never_records_an_unlinked_ambiguous_output`). The
+never deleted or changed, so no schema state was added. The monitor queues a
+file only at its final unlinked outcome, after run history had its say
+(`tests/test_foreign_save_to_library.py` `TestFinalUnlinkedOutcomesQueueForReview`):
+the ladder wait's sealed re-check left it unlinked, the settle lookup found the
+run's record and no certain prompt, the file is outside ComfyUI's output folder
+(it is never sealed) at the PromptManager or foreign exit, or the keyless
+history re-check found no prompt. A wait that expires or an entry dropped at the
+wait's cap is only logged and left to the next scan. At that point the handler's
+recorder, `queue_review_file`, puts the path on the review worker's queue and
+returns at once; linked ambiguous outputs go the same way, so their pending items
+leave the queue. The worker (thread `pm-review-recorder`, a daemon, started on the
+first queued path) runs `record_review_file`: the job blocker, root and linked
+checks, then the scan's own per-file steps for that one file, read only: the
+scan's metadata read, the ladder under `Policy.SCAN` with the file's recorded
+history (`_BatchHistory`) and the recorded-run check. A file any step would link,
+or whose prompt does not save, is `skipped` (the next scan links it; the worker
+links nothing); otherwise the answer is `review_dispatch`'s record outcome
+(`recorded`, `duplicate`, `decided`, `untraced`, `limited`), so the next scan
+finds the item a `duplicate` (`test_monitor_pass_queues_and_the_next_scan_reports_a_duplicate`).
+An untraced file also loses its pending items without a choice, as in the scan.
+A file without a prompt graph is never captured. The queue coalesces by path (a
+path queued while it runs runs once more afterwards; one thread, so two
+recordings of one path never overlap) and holds at most `REVIEW_QUEUE_LIMIT` =
+4,096 paths, dropping the oldest with a log line, so the image worker never
+waits for it. A recorder failure is logged by the worker and undoes no link.
+`tests/test_review.py` `TestReviewWorker` covers the queue. The
 maintainer's live check of #284/#288 found the queue at 10,232 against a review
-group of 4,677: every fallback-linked ambiguous file had been queued. It captures
+group of 4,677: every fallback-linked ambiguous file had been queued; the
+worker's ladder pass is what keeps those files out now. It captures
 the file (scope `needs-review`), reads its metadata again from the capture,
 resolves it with the default profile and stores only an ambiguous result,
 bound to the capture's byte record (created or refreshed like an observe) and
@@ -6551,14 +6596,21 @@ capture capacity), each only when N > 0. Recording captures in the background: i
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
 (`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor's
-pass runs after its own link, best effort: a failure is logged and the link
-stays. Recording follows the registry's `records`
+pass is best effort: a failure is logged and any link stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
 the monitor's pass (one file, not a job, which only settles) is refused
 while a `records` or `guarded` job or hold runs, except thumbnail work, which
-writes no records (S5 M7). It then writes nothing, logs that the file waits
-for the next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
-again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
+writes no records (S5 M7). It then writes nothing, logs it, and answers
+`deferred`. The worker keeps a deferred path in its own insertion-ordered set
+(`REVIEW_DEFERRED_LIMIT` = 1,000, oldest dropped first with a log line), waits on
+its queue with a `REVIEW_RETRY_SECONDS` = 5 s timeout while that set is not empty,
+and on each wake asks the registry's `blocker()` (a snapshot, safe from any
+thread); once none remains it replays the set through its queue, so the file is
+queued after the job ends with no other output, exactly once
+(`test_monitor_recording_is_refused_beside_record_changing_jobs`). A replay
+re-reads and re-decides: a file already queued is a `duplicate`, one the job
+linked is `linked`. The set lives in memory; a restart drops it and the next scan
+is the backstop. A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a
 stat compare); the file still stays in the default "new" scope, because it is
@@ -6941,8 +6993,28 @@ handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
   file linked to another prompt is `conflict` and keeps its link. Logged at info
   "Foreign run: <status> prompt <id> for <file> (<source>)"; a failure is logged and
   the file stays unlinked.
-- **Never.** No tracker FIFO entry is read or consumed, nothing is counted (run count
-  stays 0, no `last_used_at`), and nothing is queued for Needs review.
+- **Never.** No tracker FIFO entry is read or consumed and nothing is counted (run
+  count stays 0, no `last_used_at`). At its final unlinked outcome the file is handed
+  to the Needs review worker (#659, see "Needs review items").
+- **PromptManager runs (#659 Part 3).** A PromptManager output its metadata and its
+  tracked run cannot link (`_find_prompt_from_run` returns `(prompt, cause)`; causes
+  `RUN_SEVERAL_KEYS`, `RUN_BATCH_LATEST`, `RUN_NO_ENTRY`) takes the same path with run
+  kind `promptmanager`; one outside ComfyUI's output folder (`RUN_OUTSIDE_OUTPUT`)
+  asks the ladder once with `in_output=False`. A keyless image keeps its own
+  history-only wait and a placeholder batch entry stays unlinked; neither, nor a file
+  whose metadata could not be read, asks the ladder. Wait entries are
+  `(path, deadline, kind)` and due re-checks `ForeignRecheck(reference, kind)`;
+  `awaiting_foreign()` lists foreign entries only, `awaiting_ladder()` all. The kind
+  is read in one place, `ladder_gate(kind)`: `foreign` gives
+  `(save_foreign_runs(), RUN_MARKS)`, `promptmanager` gives
+  `(MONITORING_ENABLED is not False, SCAN_MARKS)`, so `SAVE_FOREIGN_RUNS` off stops
+  only foreign entries and the node's own Save to library applies through the
+  ladder's #90 steps. Stored as "PromptManager run: <status> prompt <id> for <file>
+  (<source>)"; a file waiting for its run logs "No certain prompt for <file> yet;
+  left unlinked until its run ends". `Policy.MONITOR` stores no fallback guess, so
+  the only new links are inspector and recorded-run answers, which the next scan
+  would make too (`tests/test_foreign_save_to_library.py`
+  `TestPromptManagerRunsAskTheLadder`).
 - **The setting.** `GalleryConfig.SAVE_FOREIGN_RUNS` (`gallery.monitoring.
   save_foreign_runs`, default true, only a bool applies) is read for every file, at
   settle, at the re-check and again just before the store, together with
