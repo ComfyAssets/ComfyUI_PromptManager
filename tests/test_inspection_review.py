@@ -136,6 +136,14 @@ class TestReviewItemAt(ReviewItemsMixin, ImageAPITestCase):
             self.api.db.review_item_at(*self.stat(path)),
             {"state": "pending", "item_id": newest},
         )
+        # Recorded within one timestamp: the later insert is still the newest.
+        conn = self.api.db.model.get_connection()
+        with conn:
+            conn.execute("UPDATE media_review_items SET created_at=?", (NOW,))
+        self.assertEqual(
+            self.api.db.review_item_at(*self.stat(path)),
+            {"state": "pending", "item_id": newest},
+        )
 
     async def test_decided_item_is_decided(self):
         path = png(self.output_dir / "a.png", prompt=two_samplers())

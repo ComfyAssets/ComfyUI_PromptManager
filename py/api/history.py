@@ -719,24 +719,30 @@ class HistoryRoutesMixin:
             )
             return OWN_CATEGORY_UNREAD
 
-    def _history_review(self, target) -> Callable | None:
+    def _history_review(self, target) -> Callable:
         """The ``review`` reader of a reported current file (#659, C4).
 
         Located as the scan locates it (``_review_location`` over the scan
-        roots, resolved like the canonical target); a file under no scan root
-        gives None. The read closes its
-        connection, as this route's other reads do.
+        roots, resolved like the canonical target), only when the inspector
+        asks; a file under no scan root reads None. A file reached through a
+        linked subfolder is keyed by its resolved path here, so an item the
+        scan stored under the linked spelling is not found (None, no choice).
+        The read closes its connection, as this route's other reads do.
         """
-        # The target is canonical, so the roots are too (a linked output).
-        roots = _scan_roots(
-            [os.path.realpath(root) for root in self._get_all_output_dirs()]
-        )
-        located = self._review_location(target, roots)
-        if located is None:
-            return None
-        return review_reader(
-            self.db, os.path.normcase(located[3]), self.logger, close=True
-        )
+
+        def read(size: int, mtime_ns: int) -> dict | None:
+            roots = _scan_roots(
+                [os.path.realpath(root) for root in self._get_all_output_dirs()]
+            )
+            located = self._review_location(target, roots)
+            if located is None:
+                return None
+            locator = os.path.normcase(located[3])
+            return review_reader(self.db, locator, self.logger, close=True)(
+                size, mtime_ns
+            )
+
+        return read
 
     async def _history_current(
         self, request: web.Request, kind: str
