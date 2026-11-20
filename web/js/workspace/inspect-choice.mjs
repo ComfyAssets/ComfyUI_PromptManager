@@ -103,16 +103,22 @@ export function mountInspectChoice({ api, itemId, sender, parentScope, onDecided
     root.append(heading, intro, status, context, warning, blocks, actions);
 
     const prompts = mountPromptBlocks(blocks, { prompts: null, sender, parentScope: scope, includePairAction: false, contextLabel: 'Chosen' });
-    let shownPrompts, shownDecisions = 0, disposed = false;
+    let shownPrompts, shownDecisions = 0, shownDecided = false, disposed = false;
 
     function render(state) {
         if (disposed || scope.signal.aborted) return;
         if (state.decisions !== shownDecisions) {
             shownDecisions = state.decisions;
             showWorkspaceToast(state.toast);
+        }
+        // Decided here or elsewhere (another tab, Needs review): the inspection is read again once.
+        if (state.decided && !shownDecided) {
+            shownDecided = true;
             onDecided();
         }
         const mode = choiceMode(state);
+        // A decided item offers nothing; the re-read inspection removes the section.
+        root.hidden = mode === 'decided';
         const choosing = mode === 'choose';
         status.textContent = mode === 'loading' ? CHOICE_COPY.loading : mode === 'review' ? CHOICE_COPY.nothing : '';
         status.hidden = !status.textContent;

@@ -122,3 +122,17 @@ test('a decision re-reads the inspection; a record without the item removes the 
         assert.equal(m.sections().length, 0);
     } finally { m.done(); }
 });
+
+test('reading another file ends the section', async () => {
+    const m = mount();
+    try {
+        m.view.setState({ record: record({ state: 'pending', item_id: ITEM }) });
+        await settle();
+        const [section] = m.sections();
+        m.view.setState({ loading: true });
+        assert.equal(m.sections().length, 0);
+        m.view.setState({ record: record({ state: 'pending', item_id: ITEM }) });
+        await settle();
+        assert.notEqual(m.sections()[0], section, 'a new section for the newly read record');
+    } finally { m.done(); }
+});

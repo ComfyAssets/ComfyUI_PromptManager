@@ -275,6 +275,9 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
      */
     function render(state) {
         const inner = el('div', undefined, full ? undefined : 'detail-inner');
+        // #659: a read of another file, a failed read or a deferred one ends the shown Choose prompt (a quiet re-read
+        // after a decision keeps the record, and so the section, until its answer lands).
+        if (state.loading || state.error || state.deferred || !state.record) reviewChoice(null);
         if (state.loading || state.error) {container.append(inner); statusView(state, inner); return;}
         // D124: "Load metadata on selection" is off, so the file's details wait for an explicit request.
         if (state.deferred) {
@@ -358,7 +361,7 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
     }
     /** #659: the Choose prompt section of the record's pending review item, kept while the item stays the same. */
     function reviewChoice(record) {
-        const review = record.review;
+        const review = record?.review;
         const itemId = review?.state === 'pending' && api && onReviewDecided ? review.item_id : null;
         if (choice?.itemId === itemId) return choice;
         choice?.dispose();

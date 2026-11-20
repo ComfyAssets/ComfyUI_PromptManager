@@ -259,3 +259,13 @@ test('choiceMode names what the section shows', () => {
     assert.equal(choiceMode({ ...ready, detailStatus: 'loading', detail: null }), 'loading');
     assert.equal(choiceMode({ ...ready, options: [{ disabled: true }] }), 'review');
 });
+
+test('an item decided elsewhere hides the section and re-reads the inspection once', async () => {
+    const m = await mounted({ [`GET ${ITEMS}/${ITEM}`]: () => response(200, detail({ state: 'selected', revision: 1 })) });
+    try {
+        assert.equal(m.view.root.hidden, true);
+        assert.deepEqual(m.decided, [true]);
+        await settle();
+        assert.deepEqual(m.decided, [true]);
+    } finally { m.done(); }
+});
