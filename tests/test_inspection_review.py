@@ -5,6 +5,13 @@ ambiguous and the file is unlinked: ``{"state": "pending", "item_id": ...}``
 for an item that waits, ``{"state": "decided"}`` once the user decided it,
 ``null`` otherwise. It is looked up by the file's locator and the stat the
 inspection took, never by hashing the file.
+
+Inspect records the item (#657 addendum D2): when such a file has no item at
+that stat, the handler runs the review worker's own per-file path
+(``record_review_file``: the job blocker, the root and linked checks, the
+scan's ladder, ``review_dispatch``) in the executor and answers the new item.
+A file the scan would link or that offers nothing to choose records nothing;
+a recording error is logged and the field stays ``null``.
 """
 
 import hashlib
@@ -16,9 +23,13 @@ from unittest.mock import patch
 try:
     from test_api_images import ImageAPITestCase
     from test_api_prompt_inspector import graph, png
+    from test_review import unlinkable_graph
 except ImportError:
     from tests.test_api_images import ImageAPITestCase
     from tests.test_api_prompt_inspector import graph, png
+    from tests.test_review import unlinkable_graph
+
+from utils.media_capture import CaptureStore
 
 NOW = "2026-11-19T00:00:00+00:00"
 
@@ -169,6 +180,20 @@ class TestReviewItemAt(ReviewItemsMixin, ImageAPITestCase):
 class TestInspectReviewField(ReviewItemsMixin, ImageAPITestCase):
     """``GET /prompt_manager/images/inspect/...`` carries ``review``."""
 
+    async def get_application(self):
+        app = await super().get_application()
+        # Inspect may record (D2): captures stay inside the test directory.
+        self.api._captures = CaptureStore(temp_parent=self.comfy_dir / "captures")
+        return app
+
+    async def tearDownAsync(self):
+        self.api.close_annotation_captures()
+        await super().tearDownAsync()
+
+    def items(self):
+        conn = self.api.db.model.get_connection()
+        return [row[0] for row in conn.execute("SELECT id FROM media_review_items")]
+
     async def inspect(self, relative="a.png"):
         response = await self.client.get(
             f"/prompt_manager/images/inspect/{relative}", params={"root": "0"}
@@ -177,12 +202,66 @@ class TestInspectReviewField(ReviewItemsMixin, ImageAPITestCase):
         self.assertEqual(response.status, 200, body)
         return body
 
-    async def test_unqueued_ambiguous_file_is_null(self):
+    async def test_unqueued_file_the_scan_would_link_is_null(self):
+        """The scan's fallback links ``two_samplers``: nothing is recorded."""
         png(self.output_dir / "a.png", prompt=two_samplers())
         body = await self.inspect()
         self.assertEqual(body["prompts"]["positive"]["status"], "ambiguous")
         self.assertIn("review", body)
         self.assertIsNone(body["review"])
+        self.assertEqual(self.items(), [])
+
+    async def test_unqueued_ambiguous_file_is_recorded_and_pending(self):
+        """D2: Inspect records the item as the scan would and names it."""
+        png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        body = await self.inspect()
+        self.assertEqual(body["prompts"]["positive"]["status"], "ambiguous")
+        (item_id,) = self.items()
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item_id})
+        self.assertFalse(self.api.db.review_file_linked((str(self.output_dir),)))
+
+    async def test_a_second_inspect_records_nothing_new(self):
+        png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        first = await self.inspect()
+        with patch.object(
+            type(self.api), "record_review_file", side_effect=AssertionError
+        ):
+            second = await self.inspect()
+        self.assertEqual(second["review"], first["review"])
+        self.assertEqual(len(self.items()), 1)
+
+    async def test_a_decided_file_records_nothing(self):
+        path = png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        self.decide(self.queue(path))
+        with patch.object(
+            type(self.api), "record_review_file", side_effect=AssertionError
+        ):
+            body = await self.inspect()
+        self.assertEqual(body["review"], {"state": "decided"})
+
+    async def test_a_recording_error_keeps_the_response_and_is_logged(self):
+        png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        with (
+            self.assertLogs(self.api.logger, "WARNING") as logs,
+            patch.object(
+                type(self.api),
+                "record_review_file",
+                side_effect=sqlite3.OperationalError("locked"),
+            ),
+        ):
+            body = await self.inspect()
+        self.assertIsNone(body["review"])
+        self.assertEqual(body["prompts"]["positive"]["status"], "ambiguous")
+        self.assertEqual(self.items(), [])
+        self.assertIn("Needs review", "\n".join(logs.output))
+        self.assertNotIn(str(self.output_dir), "\n".join(logs.output))
+
+    async def test_a_running_records_job_defers_and_records_nothing(self):
+        png(self.output_dir / "a.png", prompt=unlinkable_graph("cat", "dog"))
+        with patch.object(self.api, "record_review_file", return_value="deferred"):
+            body = await self.inspect()
+        self.assertIsNone(body["review"])
+        self.assertEqual(self.items(), [])
 
     async def test_pending_item_names_its_id(self):
         path = png(self.output_dir / "a.png", prompt=two_samplers())
@@ -221,8 +300,13 @@ class TestInspectReviewField(ReviewItemsMixin, ImageAPITestCase):
         path = png(self.output_dir / "a.png", prompt=two_samplers())
         self.queue(path)
         self._link_image(str(path), "golden dunes")
-        with patch.object(
-            type(self.api.db), "review_item_at", side_effect=AssertionError
+        with (
+            patch.object(
+                type(self.api.db), "review_item_at", side_effect=AssertionError
+            ),
+            patch.object(
+                type(self.api), "record_review_file", side_effect=AssertionError
+            ),
         ):
             body = await self.inspect()
         self.assertEqual(body["library"]["status"], "linked")

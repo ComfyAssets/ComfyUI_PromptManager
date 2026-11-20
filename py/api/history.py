@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import binascii
-from functools import wraps
+from functools import partial, wraps
 import json
 import os
 import re
@@ -727,7 +727,9 @@ class HistoryRoutesMixin:
         asks; a file under no scan root reads None. A file reached through a
         linked subfolder is keyed by its resolved path here, so an item the
         scan stored under the linked spelling is not found (None, no choice).
-        The read closes its connection, as this route's other reads do.
+        A file without an item is recorded first through the review worker's
+        path (#657 addendum D2). The read closes its connection, as this
+        route's other reads do.
         """
 
         def read(size: int, mtime_ns: int) -> dict | None:
@@ -738,9 +740,13 @@ class HistoryRoutesMixin:
             if located is None:
                 return None
             locator = os.path.normcase(located[3])
-            return review_reader(self.db, locator, self.logger, close=True)(
-                size, mtime_ns
-            )
+            return review_reader(
+                self.db,
+                locator,
+                self.logger,
+                close=True,
+                record=partial(self.record_review_file, str(target)),
+            )(size, mtime_ns)
 
         return read
 

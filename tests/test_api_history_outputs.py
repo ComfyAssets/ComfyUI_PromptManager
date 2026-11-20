@@ -1821,6 +1821,23 @@ class HistoryOutputAPITests(ImageAPITestCase):
         self.assertEqual(response.status, 200, body)
         self.assertEqual(body["review"], {"state": "pending", "item_id": item_id})
 
+    async def test_current_inspection_records_an_unqueued_file(self):
+        """#657 addendum D2: History's current-file read records as Images."""
+        from tests.test_review import unlinkable_graph
+        from utils.media_capture import CaptureStore
+
+        self.api._captures = CaptureStore(temp_parent=self.comfy_dir / "captures")
+        self.addCleanup(self.api.close_annotation_captures)
+        path = png(self.output_dir / "image.png", prompt=unlinkable_graph("a", "b"))
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        locator = os.path.normcase(os.path.realpath(path))
+        (item,) = self.api.db.review_items_for(locator)
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item["id"]})
+
     async def test_current_inspection_review_read_failure_is_null(self):
         from tests.test_inspection_review import two_samplers
 

@@ -4204,12 +4204,19 @@ class ImageRoutesMixin:
 
         Keyed as review items are (the normcased realpath of the root joined
         with the relative path). Only an output root is a scan root; a root
-        past the output folders (a LoRA root) gives None.
+        past the output folders (a LoRA root) gives None. A file without an
+        item is recorded first through the review worker's path (#657 D2).
         """
         if index >= len(outputs):
             return None
         locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
-        return review_reader(self.db, locator, self.logger)
+        path = os.path.join(str(root), *parts)
+        return review_reader(
+            self.db,
+            locator,
+            self.logger,
+            record=functools.partial(self.record_review_file, path),
+        )
 
     def _read_own_category(self, sources, path):
         """One file's own category, None, or OWN_CATEGORY_UNREAD (blocking).

@@ -123,7 +123,12 @@ def image_tags_reader(
 
 
 def review_reader(
-    db: Any, locator: str, logger: Any, *, close: bool = False
+    db: Any,
+    locator: str,
+    logger: Any,
+    *,
+    close: bool = False,
+    record: Callable[[], Any] | None = None,
 ) -> Callable[[int, int], dict | None]:
     """The inspector's ``review`` reader for one file *locator* (#659, C4).
 
@@ -132,11 +137,19 @@ def review_reader(
     (``review_item_at``): pending with its id, decided, or None. A failed
     read is None, never an error. ``close`` closes the calling thread's
     connection afterwards, for routes that close theirs (History).
+
+    *record*, when given, is called once when no item exists at that stat
+    (#657 addendum D2: Inspect records the item through the review worker's
+    own per-file path), and the item is read again. A recording error is
+    logged and the answer stays None.
     """
 
     def read(size: int, mtime_ns: int) -> dict | None:
         try:
-            return db.review_item_at(locator, size, mtime_ns)
+            found = db.review_item_at(locator, size, mtime_ns)
+            if found is None and record is not None and _recorded(record, logger):
+                found = db.review_item_at(locator, size, mtime_ns)
+            return found
         except Exception:
             logger.warning("Inspection review item could not be read", exc_info=True)
             return None
@@ -145,6 +158,18 @@ def review_reader(
                 db.model.close()
 
     return read
+
+
+def _recorded(record: Callable[[], Any], logger: Any) -> bool:
+    """Run *record*; True when it may have stored an item (no error)."""
+    try:
+        outcome = record()
+    except Exception:
+        logger.warning(
+            "Inspection could not add the file to Needs review", exc_info=True
+        )
+        return False
+    return outcome not in ("deferred", "skipped", "untraced", "linked")
 
 
 def _asks_review(evidence: dict, library: dict) -> bool:
