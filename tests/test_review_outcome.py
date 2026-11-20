@@ -357,21 +357,25 @@ class TestMonitorRule(OutcomeTestCase):
         self.assertEqual((self._items(), self._decisions()), before)
         self.assertEqual(self._pending(), 0)
 
-    async def test_record_review_file_only_clears_what_it_links(self):
-        """Only scans add items: the monitor's pass skips every unlinked file
-        and settles the items of a linked one."""
+    async def test_record_review_file_queues_what_the_scan_would(self):
+        """#659: the monitor's pass queues an unlinked file the scan would
+        queue, skips one the scan's fallback would link (linking nothing
+        itself) and settles the items of a linked one."""
         self._roots()
-        write_png(self.output_dir / "fallback.png", prompt=ambiguous_graph("a", "b"))
+        fallback = self.output_dir / "fallback.png"
+        write_png(fallback, prompt=ambiguous_graph("a", "b"))
         write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         linked = self.output_dir / "linked.png"
         write_png(linked, prompt=unlinkable_graph("cat", "dog"))
         self._link(linked)
 
         record = self.api.record_review_file
-        self.assertEqual(record(str(self.output_dir / "fallback.png")), "skipped")
+        self.assertEqual(record(str(fallback)), "skipped")
+        self.assertEqual(self.api.db.review_file_linked((str(fallback),)), False)
         self.assertEqual(record(str(linked)), "linked")
-        self.assertEqual(record(str(self.output_dir / "two.png")), "skipped")
-        self.assertEqual(self._items(), [])
+        self.assertEqual(record(str(self.output_dir / "two.png")), "recorded")
+        (item,) = self._items()
+        self.assertEqual(os.path.basename(item["locator"]), "two.png")
 
 
 if __name__ == "__main__":

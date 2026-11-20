@@ -10,7 +10,9 @@ choices. Ruling (option a): when the default profile is ambiguous with fewer
 than two candidates that carry text, the scan asks the inspection profile;
 with at least two choosable candidates it records the item from that
 profile, and Apply re-resolves with the same profile. Nothing links
-automatically from the inspection profile, and the live monitor never queues.
+automatically from the inspection profile. Since #659 the live monitor queues
+what the scan would, at a file's final unlinked outcome, and a file the
+default profile calls unresolved is offered its inspection choices too.
 """
 
 import contextlib
@@ -29,6 +31,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_review import unlinkable_graph, write_png
 
 from tests.background_stops import close_handler
+from tests.sweep_graphs import sweep_graph
 from utils import inspection_semantics, review_capture
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
@@ -457,28 +460,32 @@ class TestApplyInspectionCandidate(InspectionTestCase):
         self.assertEqual(job["scope"]["review_untraced"], 1)
 
 
-class TestMonitorNeverQueues(InspectionTestCase):
+class TestMonitorQueues(InspectionTestCase):
     def _handler(self):
         handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
         self.addCleanup(close_handler, self, handler)
         handler.review_recorder = self.api.record_review_file
         return handler
 
-    async def test_monitor_pass_never_queues_but_the_next_scan_does(self):
+    async def test_monitor_pass_queues_and_the_next_scan_reports_a_duplicate(self):
+        """#659: the monitor queues at the final outcome what the scan
+        would; the next scan finds the item already there."""
         self._roots()
         path = self._write()
 
-        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
-        self.assertEqual(self._items(), [])
-        self.assertEqual(self._capture_files(), [])
-
-        await self._scan()
+        self.assertEqual(self.api.record_review_file(str(path)), "recorded")
         (item,) = self._items()
         self.assertEqual(self._evidence(item)["profile"], "inspection")
+        self.assertEqual(self._capture_files(), [])
+
+        job = await self._scan()
+        self.assertEqual([i["id"] for i in self._items()], [item["id"]])
+        self.assertEqual(job["scope"]["review_items"], 1)
+        self.assertEqual(job["scope"]["review_added"], 0)
 
     async def test_monitor_keeps_the_inspection_item_of_an_unlinked_output(self):
-        """The monitor's untraced settle judges each item by its own
-        evidence: an inspection item offers a choice and stays."""
+        """The monitor judges each item by its own evidence: the old bytes'
+        inspection item offers a choice and stays beside the new bytes'."""
         self._roots()
         path = self._write()
         await self._scan()
@@ -486,8 +493,9 @@ class TestMonitorNeverQueues(InspectionTestCase):
         # Other bytes, so the stat shortcut does not answer for the file.
         self._write(color=(0, 0, 255))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
-        self.assertEqual([i["id"] for i in self._items()], [item["id"]])
+        self.assertEqual(self.api.record_review_file(str(path)), "recorded")
+        self.assertIn(item["id"], [i["id"] for i in self._items()])
+        self.assertEqual(len(self._items()), 2)
 
     async def test_monitor_link_removes_the_inspection_item(self):
         self._roots()
@@ -987,21 +995,133 @@ class TestUntracedMemoryKeys(InspectionTestCase):
         self.assertEqual(len(key), 16)
 
 
-class TestMonitorNeverRecords(InspectionTestCase):
-    async def test_monitor_never_records_an_unlinked_ambiguous_output(self):
-        """Only scans add items (maintainer ruling); the monitor only clears
-        the items of outputs it links."""
+class TestMonitorRecords(InspectionTestCase):
+    async def test_monitor_records_an_unlinked_ambiguous_output(self):
+        """#659 (2026-11-19): the monitor's pass queues an unlinked ambiguous
+        output with a choice, once; the next scan reports a duplicate."""
         self._roots()
         path = self.output_dir / "two.png"
         write_png(path, prompt=unlinkable_graph("cat", "dog"))
 
         with _counted(self.api._captures, "capture") as copies:
-            self.assertEqual(self.api.record_review_file(str(path)), "skipped")
+            self.assertEqual(self.api.record_review_file(str(path)), "recorded")
 
+        self.assertEqual(len(copies), 1)
+        (item,) = self._items()
+        job = await self._scan()
+        self.assertEqual([i["id"] for i in self._items()], [item["id"]])
+        self.assertEqual(job["scope"]["review_added"], 0)
+
+    async def test_a_file_without_a_prompt_graph_is_never_captured(self):
+        self._roots()
+        path = self.output_dir / "plain.png"
+        write_png(path)
+        with _counted(self.api._captures, "capture") as copies:
+            self.assertEqual(self.api.record_review_file(str(path)), "skipped")
         self.assertEqual(copies, [])
         self.assertEqual(self._items(), [])
-        await self._scan()
+
+
+SWEEP = "sweep_00001_.png"
+SWEEP_TEXTS = [
+    "<lora:style:1.00>, a lighthouse on a cliff at dusk",
+    "a lighthouse on a cliff at dusk",
+]
+
+
+class TestDefaultUnresolvedFiles(InspectionTestCase):
+    """#659 C1: a file the default profile calls unresolved is queued from
+    the inspection profile when that finds a choice. The sweep graph, before
+    rgthree's Any Switch has a table entry, is the example."""
+
+    def _sweep(self):
+        path = self._write(SWEEP, graph=sweep_graph())
+        return path
+
+    def test_the_sweep_graph_is_recorded_from_the_inspection_profile(self):
+        self._roots()
+        self._sweep()
+        outcome = review_capture.record_ambiguous_file(
+            self.api.db, self.api._captures, self.output_dir, 0, SWEEP
+        )
+        self.assertEqual(outcome, "skipped")  # the default profile alone
+        self.assertEqual(self._items(), [])
+
+        outcome = review_capture.record_ambiguous_file(
+            self.api.db,
+            self.api._captures,
+            self.output_dir,
+            0,
+            SWEEP,
+            inspection=True,
+        )
+
+        self.assertEqual(outcome, "recorded")
+        (item,) = self._items()
+        evidence = self._evidence(item)
+        self.assertEqual(evidence["profile"], "inspection")
+        self.assertEqual(_texts(evidence), SWEEP_TEXTS)
+        self.assertEqual(item["resolver_version"], _version(sweep_graph()))
+        self.assertEqual(self._capture_files(), [])
+
+    def test_a_default_unresolved_file_without_a_choice_is_untraced(self):
+        self._roots()
+        graph = sweep_graph()
+        graph["14"]["inputs"].pop("any_02")  # one input: nothing to choose
+        graph["14"]["class_type"] = "PMTest Opaque Switch"
+        graph["15"]["class_type"] = "PMTest Opaque Encode"
+        self._write(SWEEP, graph=graph)
+        outcome = review_capture.record_ambiguous_file(
+            self.api.db,
+            self.api._captures,
+            self.output_dir,
+            0,
+            SWEEP,
+            inspection=True,
+        )
+        self.assertEqual(outcome, "untraced")
+        self.assertEqual(self._items(), [])
+
+    async def test_the_scan_queues_the_sweep_image(self):
+        self._roots()
+        path = self._sweep()
+
+        job = await self._scan()
+
+        (item,) = self._items()
+        self.assertEqual(self._evidence(item)["profile"], "inspection")
+        self.assertEqual(_texts(self._evidence(item)), SWEEP_TEXTS)
+        (row,) = job["outcomes"]["review"]
+        self.assertEqual(row["path"], SWEEP)
+        self.assertIn("more than one prompt could match", row["detail"])
+        self.assertIsNone(self._linked_text(path))
+        # The rescan reads the queued bytes from the stat shortcut
+        with _counted(review_capture, "resolve_inspection") as calls:
+            await self._scan("all")
+        self.assertEqual(calls, [])
         self.assertEqual(len(self._items()), 1)
+
+    async def test_the_monitor_queues_the_sweep_image(self):
+        """Outside ComfyUI's output folder (no run is ever sealed for it),
+        the monitor's ladder leaves it unlinked and its recorder queues it."""
+        self._roots()
+        path = self._sweep()
+        handler = ImageGenerationHandler(self.api.db, PromptTracker(self.api.db))
+        self.addCleanup(close_handler, self, handler)
+        outcomes = []
+
+        def recorder(image_path):
+            outcomes.append(self.api.record_review_file(image_path))
+            return outcomes[-1]
+
+        handler.review_recorder = recorder
+        with patch("utils.image_monitor.host_output_directory", return_value=None):
+            handler.process_new_image(str(path))
+
+        self.assertEqual(outcomes, ["recorded"])
+        (item,) = self._items()
+        self.assertEqual(_texts(self._evidence(item)), SWEEP_TEXTS)
+        self.assertIsNone(self._linked_text(path))
 
 
 class TestStaleSettleContainment(InspectionTestCase):

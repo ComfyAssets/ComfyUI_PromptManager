@@ -1699,7 +1699,8 @@ class AdminRoutesMixin:
         review (best effort, counted in ``review`` when given); one a saved
         row already links is reported ``unchanged`` and never queued. An
         ambiguous file with nothing to choose is reported ``unresolved`` and
-        its pending items without a choice leave the queue.
+        its pending items without a choice leave the queue. The decision is
+        ``review_dispatch``'s, shared with the monitor's review worker (#659).
         """
         counts = dict.fromkeys(SCAN_COUNT_KEYS, 0)
 
@@ -1713,14 +1714,12 @@ class AdminRoutesMixin:
             if self._scan_job and self._scan_job.cancelled:
                 break
             counts["processed"] += 1
-            ambiguous, untraced, records = [], [], {}
+            records = {}
             try:
                 outcome = self._ingest_scanned_file(
                     media_file,
                     metadata,
                     detailed=True,
-                    ambiguous=ambiguous,
-                    untraced=untraced,
                     records=records,
                     history=history,
                 )
@@ -1729,24 +1728,9 @@ class AdminRoutesMixin:
                 counts["failed"] += 1
                 note(media_file, "error")
                 continue
-            if ambiguous and outcome == "ambiguous":
-                if self._review_file_linked(media_file, roots):
-                    outcome = "unchanged"  # already linked: not a review case
-                else:
-                    # The records name the item versions that count; the
-                    # saver anchor (#390) is checked on the captured bytes.
-                    self._record_scanned_review(
-                        media_file,
-                        roots,
-                        review,
-                        scanned=(records.get("canonical"), None),
-                    )
-            elif untraced and outcome == "unresolved":
-                # Untraced by the default profile: the inspection profile may
-                # still offer a choice (queued for review, never linked).
-                outcome = self._untraced_scan_outcome(
-                    media_file, roots, records.get("canonical"), review
-                )
+            outcome, _recorded = self.review_dispatch(
+                media_file, roots, records.get("decision"), outcome, review
+            )
             if outcome is None:
                 note(media_file, None)
                 continue
@@ -1786,8 +1770,9 @@ class AdminRoutesMixin:
         (``reviewable`` is False: fewer than two candidates carry a prompt)
         goes to ``untraced`` instead and returns ``"unresolved"`` when nothing
         links it. The parsed records of either ambiguous file go to
-        ``records["canonical"]`` when ``records`` is a dict. ``history`` is
-        the batch's lazy recorded-history lookup.
+        ``records["canonical"]`` when ``records`` is a dict, and the ladder's
+        ``Decision`` to ``records["decision"]`` (``review_dispatch``'s input).
+        ``history`` is the batch's lazy recorded-history lookup.
         """
         path = str(media_file)
         if history is None:  # one file: history is still asked once
@@ -1800,6 +1785,8 @@ class AdminRoutesMixin:
             lookup=functools.partial(history.recorded, path),
             policy=Policy.SCAN,
         )
+        if records is not None:
+            records["decision"] = decision
         if decision.kind in (NOT_SAVED, NOT_SAVED_WIRED):
             # Save to library off (#90): no write, recorded-run fallback or
             # Needs review item

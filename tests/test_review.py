@@ -117,6 +117,57 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+# Ceiling of every wait for the review worker (TESTING.md: 30 s)
+WAIT_SECONDS = 30
+
+
+class Recorded:
+    """Wrap ``api.record_review_file`` (called by the review worker, #659)
+    and let a test wait for its calls without sleeping."""
+
+    def __init__(self, testcase, api, side_effect=None):
+        import threading
+
+        self._real = api.record_review_file
+        self._side_effect = side_effect
+        self._changed = threading.Condition()
+        self.paths, self.outcomes = [], []
+        patcher = patch.object(api, "record_review_file", self)
+        patcher.start()
+        testcase.addCleanup(patcher.stop)
+
+    def __call__(self, image_path):
+        try:
+            if self._side_effect is not None:
+                outcome = self._side_effect(image_path)
+            else:
+                outcome = self._real(image_path)
+        except Exception:
+            outcome = "raised"
+            raise
+        finally:
+            with self._changed:
+                self.paths.append(os.path.basename(str(image_path)))
+                self.outcomes.append(outcome)
+                self._changed.notify_all()
+        return outcome
+
+    def reset(self):
+        with self._changed:
+            self.paths, self.outcomes = [], []
+
+    def wait_blocking(self, count):
+        with self._changed:
+            return self._changed.wait_for(
+                lambda: len(self.outcomes) >= count, WAIT_SECONDS
+            )
+
+    async def wait_for(self, count):
+        reached = await asyncio.to_thread(self.wait_blocking, count)
+        if not reached:
+            raise AssertionError(f"the review worker made {self.outcomes}")
+
+
 class ReviewTestCase(AdminAPITestCase):
     """Scan helpers over a capture store kept inside the test directory."""
 
@@ -127,6 +178,8 @@ class ReviewTestCase(AdminAPITestCase):
         return app
 
     async def tearDownAsync(self):
+        # The review worker (#659) ends before its store and folder go.
+        self.assertTrue(self.api.stop_review_worker(30), "review worker running")
         self.api.close_annotation_captures()
         await super().tearDownAsync()
 
@@ -157,6 +210,10 @@ class ReviewTestCase(AdminAPITestCase):
                 "ORDER BY i.created_at, i.id"
             )
         ]
+
+    def _items_at(self, path):
+        locator = os.path.normcase(os.path.realpath(str(path)))
+        return [item for item in self._items() if item["locator"] == locator]
 
     def _review_revision(self):
         conn = self.api.db.model.get_connection()
@@ -866,39 +923,49 @@ class TestMonitorRecording(ReviewTestCase):
         """S1 admission: a ``records`` recording waits for no job; it is refused.
 
         While a ``records`` or ``guarded`` job runs, the monitor's pass
-        writes nothing and answers ``deferred`` (its fallback link stands and
-        a later scan reads the ambiguous file again); a ``read`` job does not
-        refuse it. Thumbnail work (the job and the gallery's holds) is
-        ``guarded`` but writes only previews, never records, so it does not
-        defer the pass either (S5 M7). Not deferred, the pass still records
-        nothing: only scans add items, so an unlinked output is ``skipped``.
+        writes nothing and answers ``deferred``; the review worker keeps the
+        file and queues it once the job ends, with no other output (#659). A
+        ``read`` job does not refuse it. Thumbnail work (the job and the
+        gallery's holds) is ``guarded`` but writes only previews, never
+        records, so it does not defer the pass either (S5 M7).
         """
         self._require_module()
+        from py.api import review_recording
         from py.api.jobs import RESTORE_JOB_KIND, THUMBNAILS_JOB_KIND
 
         self._roots()
-        path = self.output_dir / "held.png"
-        write_png(path, prompt=unlinkable_graph("cat", "dog"))
-
+        calls = Recorded(self, self.api)
         for kind, admission in (
             (RESTORE_JOB_KIND, "records"),
             ("backup", "guarded"),
         ):
             with self.subTest(admission=admission):
-                async with self.api._jobs.hold(
-                    kind, f"{kind} (admin page)", admission=admission
-                ):
-                    with self.assertLogs("prompt_manager", logging.INFO) as logs:
-                        outcome = await asyncio.to_thread(
-                            self.api.record_review_file, str(path)
-                        )
-                self.assertEqual(outcome, "deferred")
-                self.assertEqual(self._items(), [])
+                path = self.output_dir / f"held_{admission}.png"
+                write_png(path, prompt=unlinkable_graph("cat", "dog"))
+                calls.reset()
+                with patch.object(review_recording, "REVIEW_RETRY_SECONDS", 0.05):
+                    async with self.api._jobs.hold(
+                        kind, f"{kind} (admin page)", admission=admission
+                    ):
+                        with self.assertLogs("prompt_manager", logging.INFO) as logs:
+                            self.assertEqual(
+                                self.api.queue_review_file(str(path)), "queued"
+                            )
+                            await calls.wait_for(1)
+                        self.assertEqual(calls.outcomes, ["deferred"])
+                        self.assertEqual(self._items_at(path), [])
+                    # The job ended: the deferred file is queued, once
+                    await calls.wait_for(2)
+                self.assertEqual(calls.outcomes, ["deferred", "recorded"])
+                self.assertEqual(len(self._items_at(path)), 1)
                 self.assertTrue(
                     any(f"{kind} (admin page)" in line for line in logs.output),
                     logs.output,
                 )
+                self.assertEqual(self.api._review_worker().deferred_count(), 0)
 
+        path = self.output_dir / "beside_reads.png"
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
         async with self.api._jobs.hold("probe-read", "Read probe", admission="read"):
             async with self.api._jobs.hold(
                 THUMBNAILS_JOB_KIND,
@@ -908,8 +975,8 @@ class TestMonitorRecording(ReviewTestCase):
                 outcome = await asyncio.to_thread(
                     self.api.record_review_file, str(path)
                 )
-        self.assertEqual(outcome, "skipped")
-        self.assertEqual(self._items(), [])
+        self.assertEqual(outcome, "recorded")
+        self.assertEqual(len(self._items_at(path)), 1)
 
     async def test_a_running_thumbnail_job_does_not_defer_monitor_recording(self):
         """S5 M7: a long rebuild never defers the monitor's pass (no records)."""
@@ -937,9 +1004,9 @@ class TestMonitorRecording(ReviewTestCase):
         finally:
             gate.set()
             await asyncio.wait_for(job.task, 5)
-        # Not deferred (thumbnail work writes no records); only scans add items.
-        self.assertEqual(outcome, "skipped")
-        self.assertEqual(self._items(), [])
+        # Not deferred (thumbnail work writes no records): queued (#659).
+        self.assertEqual(outcome, "recorded")
+        self.assertEqual(len(self._items()), 1)
 
     async def test_monitor_wiring_reaches_new_and_existing_handlers(self):
         self._require_module()
@@ -1077,6 +1144,162 @@ class TestRecordedSpelling(ReviewTestCase):
             self.assertEqual(self._review_revision(), revision + 1)
             with self.assertRaises(ValueError):
                 db.refresh_review_spelling(locator, os.path.join(root, "other.png"))
+
+
+class TestReviewWorker(ReviewTestCase):
+    """#659 C5: one daemon thread records monitor outputs, off the image
+    worker, one path at a time."""
+
+    def _worker_thread(self):
+        return self.api._review_worker()._thread
+
+    async def test_a_queued_output_is_recorded_on_the_worker_thread(self):
+        self._roots()
+        path = self.output_dir / "two.png"
+        write_png(path, prompt=unlinkable_graph("cat", "dog"))
+        calls = Recorded(self, self.api)
+
+        self.assertEqual(self.api.queue_review_file(str(path)), "queued")
+        await calls.wait_for(1)
+
+        self.assertEqual(calls.outcomes, ["recorded"])
+        self.assertEqual(len(self._items()), 1)
+        thread = self._worker_thread()
+        self.assertEqual(thread.name, "pm-review-recorder")
+        self.assertTrue(thread.daemon)
+        self.assertTrue(self.api.review_worker_started())
+
+    async def test_a_path_queued_while_it_runs_runs_once_more_never_at_once(self):
+        import threading
+
+        entered, release = threading.Event(), threading.Event()
+        running, overlaps = [], []
+
+        def held(image_path):
+            if image_path in running:
+                overlaps.append(image_path)
+            running.append(image_path)
+            try:
+                if not entered.is_set():
+                    entered.set()
+                    release.wait(WAIT_SECONDS)
+                return "skipped"
+            finally:
+                running.remove(image_path)
+
+        calls = Recorded(self, self.api, side_effect=held)
+        self.addCleanup(release.set)
+        first, other = str(self.output_dir / "a.png"), str(self.output_dir / "b.png")
+        self.api.queue_review_file(first)
+        self.assertTrue(await asyncio.to_thread(entered.wait, WAIT_SECONDS))
+        for path in (first, first, other):  # coalesced: "a" once more
+            self.assertEqual(self.api.queue_review_file(path), "queued")
+        release.set()
+        await calls.wait_for(3)
+
+        self.assertEqual(calls.paths, ["a.png", "a.png", "b.png"])
+        self.assertEqual(overlaps, [])
+
+    async def test_a_full_queue_drops_its_oldest_path_and_never_blocks(self):
+        import threading
+
+        from py.api import review_recording
+
+        entered, release = threading.Event(), threading.Event()
+
+        def held(image_path):
+            if not entered.is_set():
+                entered.set()
+                release.wait(WAIT_SECONDS)
+            return "skipped"
+
+        calls = Recorded(self, self.api, side_effect=held)
+        self.addCleanup(release.set)
+        with patch.object(review_recording, "REVIEW_QUEUE_LIMIT", 2):
+            self.api.queue_review_file(str(self.output_dir / "x.png"))
+            self.assertTrue(await asyncio.to_thread(entered.wait, WAIT_SECONDS))
+            with self.assertLogs("prompt_manager.api", logging.INFO) as logs:
+                for name in ("a.png", "b.png", "c.png"):
+                    self.assertEqual(
+                        self.api.queue_review_file(str(self.output_dir / name)),
+                        "queued",
+                    )
+            release.set()
+            await calls.wait_for(3)
+        self.assertEqual(calls.paths, ["x.png", "b.png", "c.png"])
+        self.assertTrue(any("a.png" in line for line in logs.output), logs.output)
+
+    async def test_the_deferred_set_keeps_its_newest_paths(self):
+        from py.api import review_recording
+
+        calls = Recorded(self, self.api, side_effect=lambda path: "deferred")
+        blocked = patch.object(
+            self.api._jobs, "blocker", return_value=object()
+        )  # a job stays running: no replay
+        blocked.start()
+        self.addCleanup(blocked.stop)
+        with (
+            patch.object(review_recording, "REVIEW_DEFERRED_LIMIT", 2),
+            self.assertLogs("prompt_manager.api", logging.INFO) as logs,
+        ):
+            for name in ("a.png", "b.png", "c.png"):
+                self.api.queue_review_file(str(self.output_dir / name))
+            await calls.wait_for(3)
+            worker = self.api._review_worker()
+            self.assertTrue(await asyncio.to_thread(worker.wait_idle, WAIT_SECONDS))
+        self.assertEqual(worker.deferred_count(), 2)
+        self.assertEqual(
+            [os.path.basename(p) for p in worker.deferred_paths()],
+            ["b.png", "c.png"],
+        )
+        self.assertTrue(any("a.png" in line for line in logs.output), logs.output)
+
+    async def test_a_recorder_failure_is_logged_and_the_worker_goes_on(self):
+        def flaky(image_path):
+            if image_path.endswith("bad.png"):
+                raise sqlite3.OperationalError("database is locked")
+            return "skipped"
+
+        calls = Recorded(self, self.api, side_effect=flaky)
+        with self.assertLogs("prompt_manager.api", logging.WARNING) as logs:
+            self.api.queue_review_file(str(self.output_dir / "bad.png"))
+            self.api.queue_review_file(str(self.output_dir / "good.png"))
+            await calls.wait_for(2)
+        self.assertEqual(calls.outcomes, ["raised", "skipped"])
+        self.assertTrue(any("bad.png" in line for line in logs.output))
+        self.assertTrue(self._worker_thread().is_alive())
+
+    async def test_stop_drops_waiting_paths_joins_and_refuses_new_ones(self):
+        import threading
+
+        entered, release = threading.Event(), threading.Event()
+
+        def held(image_path):
+            entered.set()
+            release.wait(WAIT_SECONDS)
+            return "skipped"
+
+        Recorded(self, self.api, side_effect=held)
+        self.addCleanup(release.set)
+        self.api.queue_review_file(str(self.output_dir / "a.png"))
+        self.assertTrue(await asyncio.to_thread(entered.wait, WAIT_SECONDS))
+        self.api.queue_review_file(str(self.output_dir / "b.png"))
+        thread = self._worker_thread()
+
+        with self.assertLogs("prompt_manager.api", logging.WARNING):
+            self.assertFalse(self.api.stop_review_worker(0.05))  # "a" in hand
+        release.set()
+        self.assertTrue(self.api.stop_review_worker(WAIT_SECONDS))
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(
+            self.api.queue_review_file(str(self.output_dir / "c.png")), "stopped"
+        )
+        self.assertEqual(self.api._review_worker().pending_count(), 0)
+
+    def test_a_worker_never_started_stops_at_once(self):
+        self.assertFalse(self.api.review_worker_started())
+        self.assertTrue(self.api.stop_review_worker(0))
+        self.assertFalse(self.api.review_worker_started())
 
 
 class TestCaptureStoreShutdown(ReviewTestCase):
