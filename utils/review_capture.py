@@ -1,8 +1,9 @@
 """Capture-bound Needs review items for ambiguous files (#249 E2).
 
-The output scan hands every unlinked file the ingestion resolver finds
-``ambiguous`` to :func:`record_ambiguous_file` (only scans add items; the
-live monitor records nothing). It captures the file
+The output scan, and the live monitor's review worker at a file's final
+unlinked outcome (#659, maintainer decision 2026-11-19: the monitor queues
+what the scan would), hand every unlinked file the ingestion resolver finds
+``ambiguous`` to :func:`record_ambiguous_file`. It captures the file
 (the bounded private copy of ``utils.media_capture``, hashed while copied),
 reads the metadata again from the capture, resolves it with the default
 (ingestion) profile and stores only an ``ambiguous`` result, bound to the
@@ -24,8 +25,10 @@ a ``limited`` item without candidates (a result without any candidate is not
 ``reviewable`` and is never stored).
 
 Inspection-profile choices (ruling a, after the maintainer's Qwen image-edit
-batches): when the default profile is ambiguous without a choice, the scan
-(``inspection=True``) asks ``INSPECTION_PROFILE``,
+batches): when the default profile is ambiguous without a choice, or calls a
+file with a prompt graph ``unresolved`` (#659 C1, e.g. "Unsupported latent
+ancestry"), the scan and the review worker (``inspection=True``) ask
+``INSPECTION_PROFILE``,
 which knows more encoder and string nodes. With at least two choosable
 candidates there, the item is recorded from that profile: its evidence names
 ``profile: "inspection"`` and ``semantics``, the fingerprint of what the table
@@ -203,8 +206,9 @@ def resolve_inspection(metadata: dict, file_name: str | None = None) -> dict:
 def inspection_choice(metadata: dict, file_name: str | None = None) -> dict | None:
     """The inspection profile's result when the file is a review case.
 
-    The scan asks only for a file the default profile found ambiguous
-    without a choice that nothing links. The result is ambiguous with a
+    The scan and the review worker ask only for a file nothing links that
+    the default profile found ambiguous without a choice, or unresolved
+    (#659 C1). The result is ambiguous with a
     choice, or ``resolved`` when ``file_name`` anchors the file on its saver
     and only that anchor resolves it (``saver_anchored``): the item then
     offers the anchor's pair. None otherwise.
@@ -293,9 +297,11 @@ def record_ambiguous_file(
 ) -> str:
     """Persist the ambiguous evidence of one rooted file.
 
-    With ``inspection`` (the scan), a default result without a choice is
-    resolved again with the inspection profile, and recorded from it when
-    that offers a choice. ``scanned`` is the
+    With ``inspection`` (the scan and the review worker), a default result
+    without a choice, or an ``unresolved`` one of a file with a prompt graph
+    (#659 C1), is resolved again with the inspection profile, and recorded
+    from it when that offers a choice (or only the saver anchor resolves
+    it); otherwise the answer is ``untraced``. ``scanned`` is the
     scan's ``(metadata, inspection_resolution_or_None)`` for the file: its
     metadata names the item versions that count, and when the capture holds
     the same records its resolution is reused instead of resolving again.
@@ -344,7 +350,16 @@ def record_ambiguous_file(
     finally:
         store.release(capture.token)
     resolution = captured[1] if captured is not None else None
-    if resolution is None or resolution.get("state") != "ambiguous":
+    if resolution is None:
+        return "skipped"
+    # #659 C1: a graph the default profile cannot read at all may still be
+    # one the inspection profile offers a choice in.
+    unreadable = (
+        inspection
+        and resolution.get("state") == "unresolved"
+        and isinstance(captured[0].get("prompt"), dict)
+    )
+    if not unreadable and resolution.get("state") != "ambiguous":
         return "skipped"
     profile, version = DEFAULT, RESOLVER_VERSION
     named = _captured_inspection(captured[0], relative, scanned) if inspection else None
@@ -357,7 +372,7 @@ def record_ambiguous_file(
             "reason": ANCHOR_REASON,
             "candidates": [named[0]],
         }
-    elif not reviewable(resolution):
+    elif unreadable or not reviewable(resolution):
         if named is None:
             return "untraced"
         profile, (resolution, version) = INSPECTION, named
