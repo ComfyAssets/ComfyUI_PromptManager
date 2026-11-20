@@ -121,7 +121,8 @@
       "strategy": "boolean-select",
       "condition": "boolean",
       "branches": { "true": "on_true", "false": "on_false" }
-    }
+    },
+    "Any Switch (rgthree)": { "strategy": "first-present", "input_prefix": "any_" }
   },
   "composites": {
     "ConditioningCombine": { "strategy": "combine", "inputs": ["conditioning_1", "conditioning_2"], "additive": true },

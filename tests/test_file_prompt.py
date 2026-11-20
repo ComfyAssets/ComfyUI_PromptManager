@@ -20,9 +20,11 @@ from utils.prompt_inspector import InspectionResult
 try:
     from tests import inspection_parity as parity
     from tests import saver_anchor_graphs as shapes
+    from tests import unknown_node_graphs as switch_graphs
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import inspection_parity as parity
     import saver_anchor_graphs as shapes
+    import unknown_node_graphs as switch_graphs
 
 SHARED_NAME = "IMG_GEN_00371_.png"
 LORA = "<lora:style:1.00>"
@@ -417,6 +419,17 @@ class TestUndecidedGraph(unittest.TestCase):
         self.assertEqual(decision.source, "inspector")
         self.assertEqual(decision.text, parity.POS)
         self.assertEqual(decision.resolution["state"], "unresolved")
+
+    def test_step_8_1_the_inspector_links_the_any_switch_sweep(self):
+        # #657: the default profile cannot read rgthree's Any Switch; the
+        # inspector proves its first input and links it under both policies.
+        graph = switch_graphs.any_switch_sweep_graph()
+        for policy in (Policy.SCAN, Policy.MONITOR):
+            with self.subTest(policy=policy):
+                decision = _decide(_graph(graph), policy=policy, lookup=_Lookup())
+                self.assertEqual(decision.kind, "positive")
+                self.assertEqual(decision.source, "inspector")
+                self.assertEqual(decision.text, switch_graphs.POSITIVE)
 
     def test_step_8_1_the_recorded_saver_names_its_branch(self):
         lookup = _Lookup("23")

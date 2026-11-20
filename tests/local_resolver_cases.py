@@ -915,6 +915,9 @@ def golden_cases():
         import unknown_node_graphs
     for name, graph in unknown_node_graphs.shapes().items():
         add(f"pass-through-{name}", graph)
+    # #657: rgthree Any Switch, the first input proven to hold a value.
+    for name, graph in unknown_node_graphs.first_present_shapes().items():
+        add(f"first-present-{name}", graph)
     for name, records in {
         **unknown_node_graphs.recorded_shapes(),
         **unknown_node_graphs.review_shapes(),

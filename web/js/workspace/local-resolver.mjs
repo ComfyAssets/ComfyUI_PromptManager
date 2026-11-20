@@ -16,6 +16,7 @@ import {
     Diverging,
     EMPTY_POSITIVE,
     EMPTY_POSITIVE_REASON,
+    FIRST_PRESENT,
     GUIDER_ABSENT_REASON,
     INCOMPATIBLE_SLOT,
     MALFORMED_EVIDENCE_REASON,
@@ -23,6 +24,7 @@ import {
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
     MAX_WORKFLOW_NODES,
+    NO_SWITCH_INPUT,
     CODED_CLASSES,
     NO_SAMPLER_NAMES,
     OWN_CLASSES,
@@ -30,6 +32,7 @@ import {
     PASS_THROUGH,
     SELECTOR_BRANCHES_REASON,
     SEVERAL_SOURCES_REASON,
+    SWITCH_UNVERIFIABLE,
     PASSED_UNVERIFIABLE,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
@@ -294,7 +297,11 @@ class GraphResolver {
             this.inheritSource(nodeId, slot, [traced[1]]);
             return traced;
         }
-        if (semantics.selectors.has(name)) return this.select(nodeId, semantics.selectors.get(name), inputs, kind, depth);
+        if (semantics.selectors.has(name)) {
+            const selector = semantics.selectors.get(name);
+            if (selector.strategy === 'first-present') return this.firstPresent(nodeId, selector, inputs, kind, depth);
+            return this.select(nodeId, selector, inputs, kind, depth);
+        }
         const parts = semantics.composites.get(name).inputs.map(inputName => this.text(pyGet(inputs, inputName), kind, depth + 1));
         if (new Set(parts.map(part => part[0])).size !== 1) throw this.named('Combined conditioning has different texts', 'composite', nodeId);
         return this.merged(nodeId, slot, parts);
@@ -317,6 +324,55 @@ class GraphResolver {
         const parts = ['true', 'false'].map(label => this.text(pyGet(inputs, branches[label]), kind, depth + 1));
         if (parts[0][0] !== parts[1][0]) throw new Diverging(slotKey(String(condition[0]), condition[1]), [true, false]);
         return this.merged(nodeId, 0, parts);
+    }
+
+    /**
+     * `first_present` (#657, rgthree Any Switch): the first `input_prefix` input that is not null. A literal first input,
+     * or the only one, is the output; a forced choice (re-resolve) takes its input; otherwise `firstOf` decides. While an
+     * execution record is checked, a choice is unverifiable (as `passed`).
+     */
+    firstPresent(nodeId, entry, inputs, kind, depth) {
+        const prefix = entry.input_prefix;
+        const values = [...inputs].filter(([name, value]) => name.startsWith(prefix) && value !== null).map(([, value]) => value);
+        if (!values.length) throw new Unresolved(NO_SWITCH_INPUT, 'malformed');
+        // JSON escapes U+0000, so this never equals a selector's raw `slotKey` (Python: a 3-tuple vs a 2-tuple).
+        const key = JSON.stringify([FIRST_PRESENT, nodeId, 0]);
+        let chosen;
+        if (values.length === 1 || !isLink(values[0])) chosen = values[0];
+        else if (this.choices.has(key)) {
+            this.tainted = true;
+            chosen = values[this.choices.get(key)];
+        } else if (!this.verifying) return this.firstOf(nodeId, key, values, kind, depth);
+        else {
+            try {
+                return this.firstOf(nodeId, key, values, kind, depth);
+            } catch (error) {
+                if (error instanceof Diverging) throw this.unsupported(SWITCH_UNVERIFIABLE, nodeId);
+                throw error;
+            }
+        }
+        const traced = this.text(chosen, kind, depth + 1);
+        this.inheritSource(nodeId, 0, [traced[1]]);
+        return traced;
+    }
+
+    /** `first_of`: the first linked input when its path proves a value, one shared text, or one choice per input. */
+    firstOf(nodeId, key, values, kind, depth) {
+        const found = [];
+        for (const value of values) {
+            try {
+                found.push(this.text(value, kind, depth + 1));
+            } catch (error) {
+                if (!(error instanceof Unresolved) || PASS_LIMIT_CODES.has(error.code)) throw error;
+                break;
+            }
+            if (found.length === 1 && this.provesValue(found[0][1])) {
+                this.inheritSource(nodeId, 0, [found[0][1]]);
+                return found[0];
+            }
+        }
+        if (found.length === values.length && new Set(found.map(part => part[0])).size === 1) return this.merged(nodeId, 0, found);
+        throw new Diverging(key, values.map((_, index) => index));
     }
 
     /** `passed`: `readThrough`, except that while an execution record is checked any outcome but `work-limit` is unverifiable. */
@@ -415,6 +471,17 @@ class GraphResolver {
     throughUnknown(path) {
         this.scan(path.length);
         return path.some(step => !this.described.has(this.node(step.node_id)[0]));
+    }
+
+    /** `proves_value` (#657): every node on the path always outputs a value (own, coded, adapter or proven-category classes). */
+    provesValue(path) {
+        this.scan(path.length);
+        const semantics = this.semantics;
+        return path.every(step => {
+            const name = this.node(step.node_id)[0], key = slotKey(name, step.output_slot);
+            if (OWN_CLASSES.has(name) || CODED_CLASSES.includes(name) || semantics.composites.has(name)) return true;
+            return ADAPTERS.has(key) || semantics.encoders.has(key) || semantics.strings.has(key) || semantics.conditioning.has(key);
+        });
     }
 
     /** `owned`: whether a followed path passes through one of this repository's nodes. */

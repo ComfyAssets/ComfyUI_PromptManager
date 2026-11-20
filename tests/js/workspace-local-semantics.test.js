@@ -41,3 +41,21 @@ test("without the API client nothing is fetched", async () => {
     assert.equal(await module.loadInspectionSemantics(), null);
     assert.deepEqual(calls, []);
 });
+
+// #657: a `first-present` selector (rgthree Any Switch) has exactly `strategy` and a non-empty `input_prefix` of at most
+// 128 characters, as utils/inspection_semantics.py checks; the browser rejected nothing about a selector before.
+test("the compiler checks a first-present selector as strictly as the server", async () => {
+    const { compileSemantics, SemanticsError } = await import("../../web/js/workspace/local-resolver.mjs");
+    const real = compileSemantics(JSON.parse(TABLE));
+    assert.deepEqual(real.selectors.get("Any Switch (rgthree)"), { strategy: "first-present", input_prefix: "any_" });
+    const valid = { strategy: "first-present", input_prefix: "any_" };
+    for (const entry of [{ ...valid, condition: "boolean" }, { strategy: "first-present" }, { ...valid, input_prefix: "" },
+        { ...valid, input_prefix: "a".repeat(129) }, { ...valid, input_prefix: 1 }]) {
+        const doc = JSON.parse(TABLE);
+        doc.selectors["Any Switch (rgthree)"] = entry;
+        assert.throws(() => compileSemantics(doc), SemanticsError, JSON.stringify(entry));
+    }
+    const doc = JSON.parse(TABLE);
+    doc.selectors["Any Switch (rgthree)"] = { ...valid, input_prefix: "a".repeat(128) };
+    assert.doesNotThrow(() => compileSemantics(doc));
+});

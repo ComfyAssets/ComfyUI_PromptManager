@@ -164,6 +164,18 @@ def _unrelated_encoder(doc):
     )
 
 
+ANY_SWITCH = {"strategy": "first-present", "input_prefix": "any_"}
+
+
+def _without_any_switch(doc):
+    """The table before #657 listed rgthree's Any Switch."""
+    del doc["selectors"]["Any Switch (rgthree)"]
+
+
+def _with_any_switch(doc):
+    doc["selectors"]["Any Switch (rgthree)"] = dict(ANY_SWITCH)
+
+
 def _texts(evidence):
     return sorted(
         c["positive"]["text"]
@@ -569,6 +581,35 @@ class TestVersionChanges(InspectionTestCase):
         _, (status, data) = await self._apply("make it night")
         self.assertEqual(status, 200, data)
         self.assertEqual(self._linked_text(path), "make it night")
+
+    async def test_the_any_switch_entry_moves_only_items_of_graphs_with_one(self):
+        # #657: adding ``Any Switch (rgthree)`` to the table changes the class
+        # projection of a graph that holds that class, and of no other graph.
+        self._roots()
+        self._table(_without_any_switch)
+        plain = qwen_edit_graph(*PROMPTS)
+        switched = {**plain, "90": {"class_type": "Any Switch (rgthree)", "inputs": {}}}
+        self._write(graph=plain)
+        self._write("switched_00001_.png", graph=switched)
+        await self._scan()
+        old = {item["locator"]: item for item in self._items()}
+        self.assertEqual(len(old), 2)
+
+        # ``_table`` edits the table in effect: put the entry back.
+        self._table(_with_any_switch)
+        await self._scan("all")
+
+        new = {item["locator"]: item for item in self._items()}
+        self.assertEqual(set(new), set(old))
+        (moved,) = [locator for locator in new if "switched" in locator]
+        (kept,) = [locator for locator in new if "switched" not in locator]
+        self.assertEqual(new[kept]["id"], old[kept]["id"])
+        self.assertEqual(new[kept]["resolver_version"], old[kept]["resolver_version"])
+        self.assertNotEqual(
+            new[moved]["resolver_version"], old[moved]["resolver_version"]
+        )
+        self.assertEqual(new[moved]["resolver_version"], _version(switched))
+        self.assertEqual(self._pending(), 2)
 
     async def test_unrelated_table_edit_keeps_the_item_and_does_no_work(self):
         self._roots()
