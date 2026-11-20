@@ -6488,6 +6488,13 @@ branches listed (disabled, e.g. "Text is decided at run time") and the user
 may confirm it or leave it unresolved. The live case is the sweep with an LLM
 enhancer on rgthree Any Switch `any_01` (`tests/sweep_graphs.py`
 `enhanced_sweep_graph`, `TestOneReadableChoiceIsQueued`, scan and monitor).
+A default choice that is partial (a branch beside it has no prompt to choose,
+or it offers fewer than two: `partial_choice`) still asks the inspection
+profile, and the item is recorded from that profile when it offers more
+choosable candidates (`offers_more`; #657 review, `mixed_edit_graph`:
+a Qwen image-edit sampler only the inspection profile reads beside a
+CLIPTextEncode one, `TestPartialDefaultAsksInspection`, scan, monitor and a
+rescan that keeps the item an inspection item).
 Inspection-profile choices (`tests/test_review_inspection.py`, ruling a): when
 the default profile is ambiguous without a choice, or calls a file with a prompt
 graph `unresolved` (#659 C1/C2: `Decision.default_unresolved`, set before the
@@ -6514,7 +6521,9 @@ delete); beside a decided or advanced item nothing new is stored, and the
 rescan's stat shortcut then skips those bytes under any version. A pending item
 stays applicable while the bytes still offer its chosen candidate.
 Apply re-resolves the capture with the profile the item recorded and re-checks
-the chosen hash; the link goes through the same compatible-only ingestion. The
+the chosen hash against every projected, de-duplicated candidate hash of the
+bytes (`candidate_hashes`, before any bound or collapse, so a reorder that
+changes the collapsed representatives still applies); the link goes through the same compatible-only ingestion. The
 inspection profile never links on its own, and ingestion keeps the default
 profile (D1). The heavier profile runs only for files already ambiguous without
 a choice, and once per file state: the capture reuses the scan's result when
@@ -6575,6 +6584,16 @@ exists at the inspected stat, then reads the item again; Images and History's
 current-file inspection share the reader (`review_reader(..., record=)`). A
 file the scan would link, an untraced one or a deferred pass records nothing;
 a failure is logged and the field stays null, never failing the response.
+Inspect calls `inspect_review_file` (`py/api/review_recording.py`): a pending
+item of a current item version needs nothing; one of an older version (e.g. a
+choiceless limited item from before D3) is recorded again, so the new item
+supersedes it. A busy capture store (`CaptureCapacity`, the worker copying a
+fresh output) is expected and logged at debug level, and the item is read
+once more after any failed recording. A state Inspect found unrecordable
+(`skipped`, `untraced`) is remembered per process by a 16-byte digest of its
+locator, size, `mtime_ns`, default item version and semantics table version
+(at most `MAX_INSPECT_MEMORY` = 4,096, oldest forgotten first), so a repeated
+Inspect does not copy it again.
 The queue coalesces by path (a
 path queued while it runs runs once more afterwards; one thread, so two
 recordings of one path never overlap) and holds at most `REVIEW_QUEUE_LIMIT` =
@@ -6593,9 +6612,12 @@ candidate (nested ambiguous stages flattened, duplicates dropped; each side
 `{text, storage_text, provenance}`; `hash` = SHA-256 of the canonical candidate
 without it). More than 16 candidates are collapsed, not dropped (#657 addendum
 D3, the maintainer's ConsistentFace batch: 83 samplers, 81 prompts): the
-choosable ones are grouped by their (positive, negative) texts, the groups
-ordered by size, largest first, then by first appearance, and the first 16
-kept, each by its first occurrence (its real sampler and hash, so Apply finds
+choosable ones are grouped by their (positive, negative) texts. With at most
+16 texts the item stays ordinary: one candidate per text, its first
+occurrence, and the branches without a prompt fill the remaining places in
+their order (20 samplers sharing three texts keep their run-time branches).
+With more than 16 texts the groups are ordered by size, largest first, then
+by first appearance, and the first 16 are kept, each by its first occurrence (its real sampler and hash, so Apply finds
 it again). The evidence is ordinary (not limited) and adds `collapsed:
 {shown, total, paths}` (groups shown, distinct choosable texts, candidates in
 all); the item detail returns it as `collapsed` (null otherwise) and the page
