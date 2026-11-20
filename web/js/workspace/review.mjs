@@ -26,8 +26,11 @@
  *   thumbnail when the server knows one (M10).
  * - The SAVED VIEWS row's count follows the total the page shows (`onTotal`), so a change costs no count read.
  * - D119: the queue cards carry no selection checkbox and no star (this page has no selection bar, and the queue
- *   carries no favorite state); more than 40 items add the Images page's `.infinite-continuation` Load more after the
- *   layout; the toasts "Association accepted." and "Left unresolved." stand in for the concept's prototype toast.
+ *   carries no favorite state); the toasts "Association accepted." and "Left unresolved." stand in for the concept's
+ *   prototype toast.
+ * - #657 D5: more than 40 items add the Images page's `.infinite-continuation` after the layout, and the next page loads
+ *   as it scrolls into view (an IntersectionObserver, 250 px ahead), never behind an open dialog or viewer; a failed
+ *   page says so with Retry. Without IntersectionObserver the continuation keeps its Load more button.
  * - #657 D3: a file whose candidates the server shortened to its most used prompts says so under Sampler context.
  */
 import { createButton } from '../shared/toolkit/core.js';
@@ -57,6 +60,8 @@ export const REOPEN_FIRST_MS = 3000;
 export const REOPEN_MAX_MS = 30000;
 // D120: the page's line while the change stream is down (the concept has no such state).
 export const NOT_LIVE = 'Live updates are paused: changes made elsewhere appear once the connection returns.';
+// #657 D5: how far ahead of the viewport the continuation loads the next page (the Images page's margin).
+export const LOAD_AHEAD_PX = 250;
 const openEvents = url => new EventSource(window.ApiClient.resolveUrl(url));
 
 function el(tag, text, className) {
@@ -160,10 +165,19 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     live.hidden = true;
     heading.description.after(live);
 
-    const continuation = el('div', undefined, 'infinite-continuation'); // D119: Load more past 40 items
+    const continuation = el('div', undefined, 'infinite-continuation'); // D119, #657 D5: more past 40 items
     const moreText = el('p', '', 'small');
     const more = createButton('Load more images');
-    continuation.append(moreText, more);
+    const retryMore = createButton('Retry');
+    continuation.append(moreText, more, retryMore);
+    // #657 D5: scrolling loads the next page; without an observer, Load more does.
+    const observer = typeof IntersectionObserver === 'function'
+        ? new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) maybeLoad(); },
+            { rootMargin: `${LOAD_AHEAD_PX}px` })
+        : null;
+    observer?.observe(continuation);
+    let loadFrame = 0;
+    scope.cleanup(() => { observer?.disconnect(); cancelAnimationFrame(loadFrame); });
 
     const sender = createPromptSender({ scope });
     const prompts = mountPromptBlocks(blocks, { prompts: null, sender, parentScope: scope, includePairAction: false,
@@ -273,16 +287,44 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         if (!layout.isConnected) notice.after(layout);
         renderCards(state);
         renderPanel(state);
-        if (state.nextCursor) {
-            setText(moreText, `${state.items.length.toLocaleString('en-US')} of ${state.total.toLocaleString('en-US')} images`);
-            setDisabled(more, state.more === 'loading');
-            if (state.more === 'error') setText(moreText, COPY.moreFailed);
-            if (!continuation.isConnected) layout.after(continuation);
-        } else continuation.remove();
+        if (state.nextCursor) renderContinuation(state);
+        else continuation.remove();
     }
+
+    function renderContinuation(state) {
+        const failed = state.more === 'error';
+        const count = `${state.items.length.toLocaleString('en-US')} of ${state.total.toLocaleString('en-US')} images`;
+        setText(moreText, failed ? COPY.moreFailed : observer ? `${count} · more load as you scroll` : count);
+        moreText.setAttribute('role', failed ? 'alert' : 'status');
+        setDisabled(more, state.more === 'loading');
+        more.hidden = Boolean(observer) || failed;
+        retryMore.hidden = !failed;
+        if (!continuation.isConnected) layout.after(continuation);
+        scheduleLoad();
+    }
+
+    /** #657 D5: the next page, when the continuation is in view and nothing covers the page or loads already. */
+    function maybeLoad() {
+        const state = controller.state;
+        if (scope.signal.aborted || !continuation.isConnected || state.status !== 'ready' || !state.nextCursor ||
+            state.more !== 'idle' || document.querySelector('dialog[open]')) return;
+        const bounds = continuation.getBoundingClientRect();
+        if (bounds.top <= window.innerHeight + LOAD_AHEAD_PX && bounds.bottom >= 0) controller.loadMore();
+    }
+    function runScheduledLoad() {
+        loadFrame = 0;
+        maybeLoad();
+    }
+    /** After a render or a closed dialog: the continuation may already be in view, where the observer stays silent. */
+    function scheduleLoad() {
+        if (observer && !loadFrame && !scope.signal.aborted) loadFrame = requestAnimationFrame(runScheduledLoad);
+    }
+    // A closed dialog or viewer (removed, or closed) hands focus back to the page: look again then.
+    scope.listen(document, 'focusin', scheduleLoad);
 
     scope.listen(retryLoad, 'click', () => controller.load());
     scope.listen(more, 'click', () => { if (!isDisabled(more)) controller.loadMore(); });
+    scope.listen(retryMore, 'click', () => controller.loadMore());
     scope.listen(apply, 'click', () => { if (!isDisabled(apply)) controller.apply(); });
     scope.listen(later, 'click', () => { if (!isDisabled(later)) controller.leave(); });
     scope.listen(leaveUnresolved, 'click', () => { if (!isDisabled(leaveUnresolved)) controller.leaveUnresolved(); });

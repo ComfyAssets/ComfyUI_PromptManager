@@ -269,15 +269,69 @@ test('an empty queue shows the empty notice only', async ({ page, request }) => 
     await expect(reviewRow(page)).toHaveText('Needs review0');
 });
 
-test('load more appends the next page', async ({ page, request }) => {
+const continuation = page => main(page).locator('.infinite-continuation');
+const scrollToContinuation = page => continuation(page).evaluate(node => node.scrollIntoView({ block: 'end' }));
+
+test('#657 D5: scrolling to the end of the queue loads the next page', async ({ page, request }) => {
+    await seed(request, 45);
+    const reads = reviewReads(page);
+    await open(page);
+    await expect(cards(page)).toHaveCount(40);
+    await expect(continuation(page).locator('p')).toHaveText('40 of 45 images · more load as you scroll');
+    // Scrolling does the work, so there is no button.
+    await expect(continuation(page).getByRole('button')).toHaveCount(0);
+    await scrollToContinuation(page);
+    await expect(cards(page)).toHaveCount(45);
+    await expect(continuation(page)).toHaveCount(0);
+    expect(reads.filter(read => read === 'more')).toHaveLength(1);
+});
+
+test('#657 D5: a page that could not be read says so, and Retry reads it', async ({ page, request }) => {
+    await seed(request, 45);
+    await open(page);
+    let failing = true;
+    await page.route(url => url.pathname === '/prompt_manager/review/items' && url.searchParams.has('cursor'),
+        route => (failing ? route.fulfill({ status: 500, contentType: 'application/json',
+            body: JSON.stringify({ success: false, error: 'Internal error' }) }) : route.continue()));
+    const failed = page.waitForResponse(item => item.url().includes('cursor=') && item.status() === 500);
+    await scrollToContinuation(page);
+    await failed;
+    await expect(continuation(page).locator('p')).toHaveText('More items could not be loaded. Try again.');
+    const retry = continuation(page).getByRole('button', { name: 'Retry', exact: true });
+    await expect(retry).toBeVisible();
+    await expect(cards(page)).toHaveCount(40);
+    failing = false;
+    await retry.click();
+    await expect(cards(page)).toHaveCount(45);
+    await expect(continuation(page)).toHaveCount(0);
+});
+
+test('#657 D5: nothing loads behind an open dialog; closing it loads the page in view', async ({ page, request }) => {
+    await seed(request, 45);
+    const reads = reviewReads(page);
+    await open(page);
+    await linkButton(page).click();
+    await expect(linkDialog(page)).toBeVisible();
+    await scrollToContinuation(page);
+    // Two frames: the observer's callback and the load it would schedule.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(cards(page)).toHaveCount(40);
+    expect(reads).not.toContain('more');
+    await linkDialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(linkDialog(page)).toHaveCount(0);
+    // The continuation is still in view, where the observer stays silent: closing the dialog loads the page.
+    await expect(cards(page)).toHaveCount(45);
+});
+
+test('#657 D5: without IntersectionObserver, Load more pages the queue', async ({ page, request }) => {
+    await page.addInitScript(() => { delete window.IntersectionObserver; });
     await seed(request, 45);
     await open(page);
     await expect(cards(page)).toHaveCount(40);
-    const continuation = main(page).locator('.infinite-continuation');
-    await expect(continuation.locator('p')).toHaveText('40 of 45 images');
-    await continuation.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(continuation(page).locator('p')).toHaveText('40 of 45 images');
+    await continuation(page).getByRole('button', { name: 'Load more images', exact: true }).click();
     await expect(cards(page)).toHaveCount(45);
-    await expect(continuation).toHaveCount(0);
+    await expect(continuation(page)).toHaveCount(0);
 });
 
 test('a scan job with review items offers Review metadata in Activity', async ({ page, request }) => {
@@ -581,7 +635,7 @@ test('a live re-read keeps the loaded depth and the scroll position', async ({ p
     await seed(request, 45);
     await open(page);
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
-    await main(page).getByRole('button', { name: 'Load more images', exact: true }).click();
+    await scrollToContinuation(page);
     await expect(cards(page)).toHaveCount(45);
     await cards(page).last().scrollIntoViewIfNeeded();
     const scrollTop = () => cards(page).first().evaluate(node => {
