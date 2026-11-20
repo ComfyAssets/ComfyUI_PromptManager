@@ -520,6 +520,14 @@ def first_present_shapes():
             {"any_01": ["90", 0], "any_02": ["31", 0]},
             **{"90": inner, "31": _string(OTHER)},
         ),
+        "repeated-text": switched(
+            {"any_01": ["50", 0], "any_02": ["13", 0], "any_03": ["12", 0]},
+            **{"50": _vendor(src=["12", 0])},
+        ),
+        "repeated-text-failed-middle": switched(
+            {"any_01": ["50", 0], "any_02": ["missing", 0], "any_03": ["12", 0]},
+            **{"50": _vendor(src=["12", 0])},
+        ),
         "depth-limit": switched(
             {"any_01": ["r0", 0], "any_02": ["13", 0]}, **_reroutes(70, 0, ["12", 0])
         ),

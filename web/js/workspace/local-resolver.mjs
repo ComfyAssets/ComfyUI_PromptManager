@@ -372,7 +372,7 @@ class GraphResolver {
             }
         }
         if (found.length === values.length && new Set(found.map(part => part[0])).size === 1) return this.merged(nodeId, 0, found);
-        throw new Diverging(key, values.map((_, index) => index));
+        throw new Diverging(key, values.map((_, index) => index), false, true);
     }
 
     /** `passed`: `readThrough`, except that while an execution record is checked any outcome but `work-limit` is unverifiable. */
@@ -473,7 +473,10 @@ class GraphResolver {
         return path.some(step => !this.described.has(this.node(step.node_id)[0]));
     }
 
-    /** `proves_value` (#657): every node on the path always outputs a value (own, coded, adapter or proven-category classes). */
+    /**
+     * `proves_value` (#657): every node on the path always outputs a value: own, coded and adapter classes, and the
+     * table's `PROVEN_VALUE_CATEGORIES` (inspection_semantics.py: composites by class, the rest by output slot).
+     */
     provesValue(path) {
         this.scan(path.length);
         const semantics = this.semantics;
@@ -681,7 +684,7 @@ class GraphResolver {
 
     branches(samplerId) {
         const pending = [new Map()];
-        let results = [], several = false;
+        let results = [], several = false, unique = false;
         try {
             while (pending.length) {
                 this.choices = pending.shift();
@@ -691,6 +694,7 @@ class GraphResolver {
                     if (!(error instanceof Diverging)) throw error;
                     if (results.length + pending.length + error.choices.length > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
                     several = several || error.sources;
+                    unique = unique || error.unique;
                     for (const choice of error.choices) pending.push(new Map([...this.choices, [error.key, choice]]));
                 }
             }
@@ -701,8 +705,8 @@ class GraphResolver {
             this.choices = new Map();
         }
         if (results.every(item => item.state === 'unresolved')) return results[0];
-        if (several) {
-            // Chained unknown nodes can offer one text twice: list it once.
+        if (unique) {
+            // Chained unknown nodes, or a switch's inputs, can offer one outcome twice: list it once.
             const unique = new Map();
             for (const item of results) if (!unique.has(outcomeKey(item))) unique.set(outcomeKey(item), item);
             results = [...unique.values()];

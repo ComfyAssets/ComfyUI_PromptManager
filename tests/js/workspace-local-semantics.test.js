@@ -55,7 +55,11 @@ test("the compiler checks a first-present selector as strictly as the server", a
         doc.selectors["Any Switch (rgthree)"] = entry;
         assert.throws(() => compileSemantics(doc), SemanticsError, JSON.stringify(entry));
     }
-    const doc = JSON.parse(TABLE);
-    doc.selectors["Any Switch (rgthree)"] = { ...valid, input_prefix: "a".repeat(128) };
-    assert.doesNotThrow(() => compileSemantics(doc));
+    // 128 code points, as Python's len(): an emoji is one, though two UTF-16 units.
+    for (const [prefix, ok] of [["a".repeat(128), true], ["\u{1F600}".repeat(128), true], ["\u{1F600}".repeat(129), false]]) {
+        const doc = JSON.parse(TABLE);
+        doc.selectors["Any Switch (rgthree)"] = { ...valid, input_prefix: prefix };
+        if (ok) assert.doesNotThrow(() => compileSemantics(doc));
+        else assert.throws(() => compileSemantics(doc), SemanticsError);
+    }
 });

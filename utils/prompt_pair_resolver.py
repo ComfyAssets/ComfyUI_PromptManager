@@ -278,7 +278,9 @@ class _Diverging(Exception):
     texts through (#381) has one choice per distinct text, ``0..n-1``.
     """
 
-    def __init__(self, key: tuple, choices: tuple, sources: bool = False) -> None:
+    def __init__(
+        self, key: tuple, choices: tuple, sources: bool = False, unique: bool = False
+    ) -> None:
         super().__init__(key)
         # A selector's condition output (node ID, slot): one runtime value, so
         # every selector it drives is forced together. A pass-through key is
@@ -287,6 +289,8 @@ class _Diverging(Exception):
         self.choices = choices
         # Raised by an unknown node passing several texts (the outcome's reason).
         self.sources = sources
+        # Choices may repeat an outcome (a switch's inputs, #657): list it once.
+        self.unique = sources or unique
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
@@ -947,7 +951,7 @@ class _GraphResolver:
                 return found[0]
         if len(found) == len(values) and len({part[0] for part in found}) == 1:
             return self.merged(node_id, 0, found)
-        raise _Diverging(key, tuple(range(len(values))))
+        raise _Diverging(key, tuple(range(len(values))), unique=True)
 
     def passed(
         self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
@@ -1975,7 +1979,7 @@ class _GraphResolver:
         """
         pending: list = [{}]
         results: list = []
-        several = False
+        several = unique = False
         try:
             while pending:
                 self.choices = pending.pop(0)
@@ -1986,6 +1990,7 @@ class _GraphResolver:
                     if len(results) + len(pending) + count > _MAX_BRANCH_CANDIDATES:
                         raise _Unresolved("Too many selector branches", "work-limit")
                     several = several or diverging.sources
+                    unique = unique or diverging.unique
                     pending.extend(
                         {**self.choices, diverging.key: choice}
                         for choice in diverging.choices
@@ -2002,8 +2007,9 @@ class _GraphResolver:
             self.choices = {}
         if all(item["state"] == "unresolved" for item in results):
             return results[0]
-        if several:
-            # Chained unknown nodes can offer one text twice: list it once.
+        if unique:
+            # Chained unknown nodes, or a switch's inputs, can offer one
+            # outcome twice: list it once.
             unique: dict = {}
             for item in results:
                 unique.setdefault(_outcome_key(item), item)

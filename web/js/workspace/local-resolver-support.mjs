@@ -39,8 +39,6 @@ export const PASS_THROUGH = 'pass-through';
 export const FIRST_PRESENT = 'first-present';
 export const NO_SWITCH_INPUT = 'Switch has no connected input';
 export const SWITCH_UNVERIFIABLE = 'Switch output is not verifiable';
-// `PROVEN_VALUE_CATEGORIES` (inspection_semantics.py): outputs never None, so a path through them proves a value.
-export const PROVEN_VALUE_CATEGORIES = Object.freeze(['encoders', 'strings', 'conditioning', 'composites']);
 // `_NAME_LENGTH` (inspection_semantics.py), in code points.
 export const NAME_LENGTH = 128;
 export const PASSED_UNVERIFIABLE = 'Text passed through an unknown node is not verifiable';
@@ -132,12 +130,14 @@ export class Unresolved extends Error {
 }
 export class Diverging extends Error {
     /** A selector's choices are [true, false]; an unknown node's are 0..n-1, one per distinct text (#381). */
-    constructor(key, choices, sources = false) {
+    constructor(key, choices, sources = false, unique = false) {
         super('diverging');
         this.key = key;
         this.choices = choices;
         // Raised by an unknown node passing several texts (the outcome's reason).
         this.sources = sources;
+        // Choices may repeat an outcome (a switch's inputs, #657): list it once.
+        this.unique = sources || unique;
     }
 }
 

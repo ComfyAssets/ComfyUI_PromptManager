@@ -1754,6 +1754,21 @@ class TestFirstPresentSelector(unittest.TestCase):
         )
         self.assertEqual(result["candidates"][0]["reason_code"], "runtime-value")
 
+    def test_inputs_with_one_outcome_are_one_candidate(self):
+        # Three inputs, two with one text: two candidates, not three, so one
+        # text never reads as a choice between two.
+        result = self.shape("repeated-text")
+        self.assertEqual(result["reason"], resolver.SELECTOR_BRANCHES_REASON)
+        self.assertEqual(
+            self.candidates(result),
+            [("resolved", switch_graphs.POSITIVE), ("resolved", self.JOINED)],
+        )
+        result = self.shape("repeated-text-failed-middle")
+        self.assertEqual(
+            self.candidates(result),
+            [("resolved", switch_graphs.POSITIVE), ("unresolved", None)],
+        )
+
     def test_inputs_with_one_text_need_no_choice(self):
         self.assertResolved(self.shape("same-text"), switch_graphs.OTHER)
 
@@ -1777,7 +1792,9 @@ class TestFirstPresentSelector(unittest.TestCase):
         self.assertEqual(result["state"], "ambiguous")
         self.assertEqual(
             [text for _, text in self.candidates(result)],
-            [switch_graphs.OTHER, self.JOINED, switch_graphs.POSITIVE, self.JOINED],
+            # Each selector choice applies the switch rule; the joined text
+            # both choices reach is listed once.
+            [switch_graphs.OTHER, self.JOINED, switch_graphs.POSITIVE],
         )
 
     def test_a_switch_never_proves_a_value(self):
