@@ -68,7 +68,8 @@ export function mountRecordedRun(container, {api, controller, sender, parentScop
         const receiptNodes = new Map();
         const evidenceValues = new Map();
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:local});
-        const inspector = mountFileInspector(inspectorContainer, {sender, parentScope:local, inline:true, promptContext:'Current file', onRetry:() => inspection.retry(), onRefresh:refreshCurrent});
+        const inspector = mountFileInspector(inspectorContainer, {api, sender, parentScope:local, inline:true, promptContext:'Current file', onRetry:() => inspection.retry(), onRefresh:refreshCurrent,
+            onReviewDecided:() => inspection.refresh()});
         function selectedReceipt() {
             const selected = latest.selection.receipt;
             return selected && latest.outputs.items.find(item => occurrenceKey(item.occurrence) === occurrenceKey(selected));
