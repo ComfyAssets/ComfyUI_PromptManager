@@ -6460,7 +6460,7 @@ never the metadata row.
 
 Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
 `tests/test_review.py`, `tests/test_review_outcome.py`,
-`tests/test_review_choosable.py`): a file is queued only when its final outcome
+`tests/test_review_choosable.py`, `tests/test_review_collapsed.py`): a file is queued only when its final outcome
 is ambiguous and unlinked and there is something to choose. The scan and the
 live monitor queue the same files (maintainer decision 2026-11-19, #659; it
 replaces the 2026-10-23 ruling that only scans add items, made when the
@@ -6473,15 +6473,21 @@ then links nothing (status `ambiguous`) and no saved row links the file
 already; an ambiguous file a saved row links is reported `unchanged` ("Already
 linked to its prompt"), not Needs review. A file the fallback links, an exact
 pair the ingester stores, and `conflict` and `unresolved` files are not
-queued. Neither is an ambiguous file with nothing to choose: fewer than two of
-its candidates are `resolved` with non-blank positive text (`reviewable`). With
-none the file could not be traced; with exactly one, the untraced branches may
-still have made the file, so that text is not certain either. Both report
-`unresolved` ("could not be traced"), are never linked, and their pending,
-undecided items whose own evidence offers no choice (a limited item counts as
-a choice when it holds at least two candidates) leave the queue on the next
-scan (`settle_untraced_review_items`). The maintainer's
-second live check found 39 items whose 11 candidates were all "unresolved".
+queued. Neither is an ambiguous file with nothing to choose: none of its
+candidates is `resolved` with non-blank positive text (`reviewable`,
+`MIN_CHOOSABLE` = 1). Such a file could not be traced: it reports `unresolved`
+("could not be traced"), is never linked, and its pending, undecided items
+whose own evidence offers no choice (a limited item counts as a choice when it
+holds at least one candidate) leave the queue on the next scan
+(`settle_untraced_review_items`). The maintainer's second live check found 39
+items whose 11 candidates were all "unresolved". One readable candidate is
+enough (#657 addendum D1, maintainer 2026-11-20: "fine that we cannot tell,
+not fine to show nothing"): the untraced branches may still have made the
+file, so it is never linked from that text, but it is queued with the other
+branches listed (disabled, e.g. "Text is decided at run time") and the user
+may confirm it or leave it unresolved. The live case is the sweep with an LLM
+enhancer on rgthree Any Switch `any_01` (`tests/sweep_graphs.py`
+`enhanced_sweep_graph`, `TestOneReadableChoiceIsQueued`, scan and monitor).
 Inspection-profile choices (`tests/test_review_inspection.py`, ruling a): when
 the default profile is ambiguous without a choice, or calls a file with a prompt
 graph `unresolved` (#659 C1/C2: `Decision.default_unresolved`, set before the
@@ -6490,16 +6496,16 @@ ancestry" on the maintainer's model-compare sweep is the example), and nothing
 links the file, the scan and the monitor's review worker resolve it again with
 `INSPECTION_PROFILE`, which
 knows `TextEncodeQwenImageEdit`, `StringConstantMultiline`, `JoinStringMulti`
-and the rest of `web/js/inspection-semantics.json`. With at least two choosable
-candidates there, the file is `ambiguous` and is queued from that profile's
+and the rest of `web/js/inspection-semantics.json`. With a choosable
+candidate there, the file is `ambiguous` and is queued from that profile's
 evidence, which adds `profile: "inspection"` and `semantics`: the SHA-256 of
 `class_projection`, the table restricted to the graph's node classes plus its
 class-independent `schema` and `stage_inputs` (the resolver looks the table up
 only by a graph node's class). The item's `resolver_version` is
 `inspection_review_version(metadata)`, 2^40 plus 40 bits of SHA-256 over the
 profile with its budgets, `RESOLVER_VERSION`, `INSPECTION_RESOLVER_VERSION`
-(bump it when the inspection profile would resolve the same metadata otherwise)
-and that fingerprint. A table edit about the
+(bump it when the inspection profile would resolve the same metadata otherwise),
+`REVIEW_RULE_VERSION`, `REVIEW_EVIDENCE_VERSION` and that fingerprint. A table edit about the
 graph's classes behaves like a resolver change (I2); an edit about other
 classes changes nothing. One file never holds two pending items for the same
 bytes: a new version's item supersedes the byte record's other items when all
@@ -6535,8 +6541,7 @@ item versions, so older inspection items are recorded again once. Apply accepts
 the anchored pair and refuses a choice the anchor contradicts. Measured on the
 maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
 `gpu_unlock_bench` files the inspector resolves are linked by the parser
-floor. The 16-candidate limited
-rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
+floor. The 16-candidate collapse and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
 (`settle_linked_review_items`; the review index revision moves). Only an
@@ -6561,7 +6566,16 @@ links nothing); otherwise the answer is `review_dispatch`'s record outcome
 (`recorded`, `duplicate`, `decided`, `untraced`, `limited`), so the next scan
 finds the item a `duplicate` (`test_monitor_pass_queues_and_the_next_scan_reports_a_duplicate`).
 An untraced file also loses its pending items without a choice, as in the scan.
-A file without a prompt graph is never captured. The queue coalesces by path (a
+A file without a prompt graph is never captured. Inspect records too (#657
+addendum D2, `tests/test_inspection_review.py`): its `review` field (`{"state":
+"pending", "item_id"}`, `{"state": "decided"}` or null, asked only for an
+ambiguous role of an unlinked file under an output root) runs
+`record_review_file`, the worker's own path, in the executor when no item
+exists at the inspected stat, then reads the item again; Images and History's
+current-file inspection share the reader (`review_reader(..., record=)`). A
+file the scan would link, an untraced one or a deferred pass records nothing;
+a failure is logged and the field stays null, never failing the response.
+The queue coalesces by path (a
 path queued while it runs runs once more afterwards; one thread, so two
 recordings of one path never overlap) and holds at most `REVIEW_QUEUE_LIMIT` =
 4,096 paths, dropping the oldest with a log line, so the image worker never
@@ -6577,8 +6591,23 @@ fenced by the capture's storage epoch. Evidence is the resolver reason plus one
 `{sampler_id, state, reason, positive, negative, hash}` per selectable
 candidate (nested ambiguous stages flattened, duplicates dropped; each side
 `{text, storage_text, provenance}`; `hash` = SHA-256 of the canonical candidate
-without it). More than 16 candidates, or evidence over 8 MiB, is a `limited`
-item without candidates. Recording is idempotent per `(byte_id,
+without it). More than 16 candidates are collapsed, not dropped (#657 addendum
+D3, the maintainer's ConsistentFace batch: 83 samplers, 81 prompts): the
+choosable ones are grouped by their (positive, negative) texts, the groups
+ordered by size, largest first, then by first appearance, and the first 16
+kept, each by its first occurrence (its real sampler and hash, so Apply finds
+it again). The evidence is ordinary (not limited) and adds `collapsed:
+{shown, total, paths}` (groups shown, distinct choosable texts, candidates in
+all); the item detail returns it as `collapsed` (null otherwise) and the page
+reads "Showing the n most used of total prompts in this file". Evidence that
+cannot be projected, or is over 8 MiB, is a `limited` item without candidates.
+`REVIEW_EVIDENCE_VERSION` (`utils/review_capture.py`) names this shape and is
+folded into every item version: a default-profile item carries
+`default_item_version()` = `RESOLVER_VERSION` + `REVIEW_EVIDENCE_VERSION` (2
+now; items before it carry 1), an inspection item folds it into its seed. The
+next scan therefore records such a file again and the new item supersedes the
+pending, undecided limited one; a decided item is kept and no item is added
+beside it (`tests/test_review_collapsed.py`). Recording is idempotent per `(byte_id,
 resolver_version, evidence_hash)` and never touches an existing item or its
 decisions; changed bytes add a new pending item and keep the old one. The
 capture is released before the write; no model is loaded and no pixel is
@@ -6655,9 +6684,10 @@ whose bytes are the item's, re-hashes the current file (`file-changed`
 otherwise, also for a fresh capture of new bytes), re-reads the capture and
 requires that its bytes are still ambiguous and still offer the chosen
 candidate (`review-conflict` otherwise; a resolver change that rewords the
-reason or reorders candidates leaves the item applicable, and
-`RESOLVER_VERSION` in `utils/prompt_pair_resolver.py` is the one version
-ingestion provenance and review share), then in one `_pair_transaction`
+reason or reorders candidates leaves the item applicable;
+`RESOLVER_VERSION` in `utils/prompt_pair_resolver.py` is ingestion's
+provenance version, and a review item's version folds it with
+`REVIEW_EVIDENCE_VERSION`, see above), then in one `_pair_transaction`
 checks the epoch, the item revision and state (`review-conflict` with the
 current item for a repeat), the re-hashed digest, the dependency fingerprint
 and the public ingester's compatible-only rules through
