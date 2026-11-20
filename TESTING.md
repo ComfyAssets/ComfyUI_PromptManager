@@ -968,7 +968,7 @@ default string adapters) or an entry of the table's `encoders`, `strings`,
 `conditioning` or `composites` (`PROVEN_VALUE_CATEGORIES`). That allowlist is a rule
 for every future table entry: a class that can return `None` (a selector, an
 unknown node, a `runtime`, `facts` or `lineage` class) never goes into those four
-categories, and a test pins them. ConditioningCombine/Concat/Average resolve only when every
+categories, and a test pins them. Otherwise the switch offers one candidate per distinct outcome of its inputs, and no PromptManager path is preferred. When a sampler is `ambiguous`, Inspect still shows a role every candidate resolves alike (same text, recipe and left-out parts) as resolved (#658); `resolution.state` stays `ambiguous`, so pair actions and ingestion are unchanged. ConditioningCombine/Concat/Average resolve only when every
 part has the same text, otherwise `unresolved` with `composite` naming the node
 (but see the added-conditioning floor below for a later stage).
 Results that depend on a forced choice are never memoized. A `FaceDetailer`
