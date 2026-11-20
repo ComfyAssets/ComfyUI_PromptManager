@@ -236,6 +236,99 @@ class InspectionTestCase(ReviewRoutesTestCase):
         return row[0] if row else None
 
 
+MIXED_NAME = "zzz_00001_.png"
+
+
+def mixed_edit_graph():
+    """One Qwen image-edit sampler ("alpha", which only the inspection profile
+    reads) and one CLIPTextEncode sampler ("beta"): the default profile
+    offers one choice beside an unresolved branch, the inspection profile
+    both (#657 review)."""
+    graph = qwen_edit_graph("alpha")
+    graph["900"] = {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "m.safetensors"},
+    }
+    graph["901"] = {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"clip": ["900", 1], "text": "beta"},
+    }
+    graph["902"] = {
+        "class_type": "CLIPTextEncode",
+        "inputs": {"clip": ["900", 1], "text": "neg"},
+    }
+    graph["903"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["900", 0],
+            "positive": ["901", 0],
+            "negative": ["902", 0],
+            "latent_image": ["6", 0],
+            "seed": 9,
+        },
+    }
+    graph["904"] = {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["903", 0], "vae": ["900", 2]},
+    }
+    graph["905"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["904", 0], "filename_prefix": "x"},
+    }
+    return graph
+
+
+class TestPartialDefaultAsksInspection(InspectionTestCase):
+    """A default result with one choice beside unresolved branches still asks
+    the inspection profile, which may read those branches (#657 review). The
+    file's name anchors on no saver, so both branches are offered."""
+
+    def _write(self, name=MIXED_NAME, graph=None, color=(255, 0, 0)):
+        return super()._write(name, graph, color)
+
+    def _assert_inspection_item(self, item):
+        evidence = self._evidence(item)
+        self.assertEqual(evidence["profile"], "inspection")
+        self.assertEqual(_texts(evidence), ["alpha", "beta"])
+
+    async def test_the_scan_records_the_inspection_choices(self):
+        self._roots()
+        self._write(graph=mixed_edit_graph())
+
+        await self._scan()
+
+        (item,) = self._items()
+        self._assert_inspection_item(item)
+
+    def test_the_monitor_records_the_inspection_choices(self):
+        self._roots()
+        path = self._write(graph=mixed_edit_graph())
+
+        self.assertEqual(self.api.record_review_file(str(path)), "recorded")
+        (item,) = self._items()
+        self._assert_inspection_item(item)
+
+    async def test_a_rescan_keeps_an_older_inspection_item_inspection(self):
+        """An item recorded before D1 and D3 (two choices needed, the old
+        evidence version) is recorded again from the inspection profile,
+        never replaced by the poorer default choices."""
+        self._roots()
+        self._write(graph=mixed_edit_graph())
+        with (
+            patch.object(review_capture, "MIN_CHOOSABLE", 2),
+            patch.object(review_capture, "REVIEW_EVIDENCE_VERSION", 0),
+        ):
+            await self._scan()
+        (old,) = self._items()
+        self._assert_inspection_item(old)
+
+        await self._scan("all")
+
+        (item,) = self._items()
+        self.assertNotEqual(item["id"], old["id"])
+        self._assert_inspection_item(item)
+
+
 class TestQwenEditBatchIsQueued(InspectionTestCase):
     async def test_qwen_edit_batch_is_queued_with_its_texts(self):
         self._roots()
@@ -313,10 +406,11 @@ class TestQwenEditBatchIsQueued(InspectionTestCase):
 
 
 class TestDefaultProfileStillDecides(InspectionTestCase):
-    async def test_ambiguous_file_with_texts_keeps_the_default_profile(self):
-        """A default-ambiguous file with a choice is recorded from the
-        default profile, even when the inspection profile would offer more
-        candidates. That profile only checks the saver anchor (#390): no
+    async def test_a_partial_default_choice_yields_to_a_fuller_inspection(self):
+        """A default-ambiguous file whose choice sits beside unresolved
+        branches is recorded from the inspection profile when that offers
+        more choices (#657 review; before, the default profile kept it and
+        the inspection profile only checked the saver anchor, #390). No
         saver names this file, so it anchors nothing."""
         self._roots()
         graph = {
@@ -325,21 +419,12 @@ class TestDefaultProfileStillDecides(InspectionTestCase):
         }
         self._write("unsaved_00001_.png", graph=graph)
 
-        with patch.object(
-            review_capture,
-            "inspection_choice",
-            side_effect=AssertionError("inspection choices were asked"),
-        ):
-            await self._scan()
+        await self._scan()
 
         (item,) = self._items()
         evidence = self._evidence(item)
-        self.assertNotIn("profile", evidence)
-        self.assertNotIn("semantics", evidence)
-        self.assertEqual(
-            item["resolver_version"], review_capture.default_item_version()
-        )
-        self.assertEqual(_texts(evidence), ["cat", "dog"])
+        self.assertEqual(evidence["profile"], "inspection")
+        self.assertEqual(_texts(evidence), ["cat", "dog", "make it night"])
 
     async def test_apply_of_a_default_item_inspects_only_for_the_anchor(
         self,

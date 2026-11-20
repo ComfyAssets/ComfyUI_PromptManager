@@ -35,7 +35,11 @@ file with a prompt graph ``unresolved`` (#659 C1, e.g. "Unsupported latent
 ancestry"), the scan and the review worker (``inspection=True``) ask
 ``INSPECTION_PROFILE``,
 which knows more encoder and string nodes. With a choosable
-candidate there, the item is recorded from that profile: its evidence names
+candidate there, the item is recorded from that profile. A default choice
+beside unresolved branches (``partial_choice``) yields to the inspection
+profile's when that offers more choosable candidates (``offers_more``, #657
+review): one readable choice no longer hides the branches only the
+inspection profile reads. The inspection item's evidence names
 ``profile: "inspection"`` and ``semantics``, the fingerprint of what the table
 says about the graph's node classes, and its ``resolver_version`` is
 ``inspection_review_version(metadata)``, which folds the profile,
@@ -403,6 +407,10 @@ def record_ambiguous_file(
         profile, (resolution, version) = INSPECTION, named
         if resolution.get("state") != "ambiguous" or not reviewable(resolution):
             return "untraced"
+    elif named is not None and offers_more(named[0], resolution):
+        # The default result left branches unread that the inspection
+        # profile reads (#657 review): offer its fuller choice.
+        profile, (resolution, version) = INSPECTION, named
     evidence, count, limited = review_evidence(
         resolution, profile, version, captured[0], anchored=anchored
     )
@@ -591,6 +599,30 @@ def reviewable(resolution: Any) -> bool:
             if count >= MIN_CHOOSABLE:
                 return True
     return False
+
+
+def _choosable_count(resolution: Any) -> int:
+    if not isinstance(resolution, dict):
+        return 0
+    return sum(1 for c in _flattened(resolution.get("candidates"), 0) if choosable(c))
+
+
+def partial_choice(resolution: Any) -> bool:
+    """True when an ambiguous result left a branch without a prompt to
+    choose, or offers fewer than two: another profile may read more."""
+    candidates = list(_flattened((resolution or {}).get("candidates"), 0))
+    offered = sum(1 for c in candidates if choosable(c))
+    return offered < 2 or offered < len(candidates)
+
+
+def offers_more(inspected: Any, default: Any) -> bool:
+    """True when the inspection result ``inspected`` is a review case that
+    offers more choosable candidates than the partial ``default`` result."""
+    if not isinstance(inspected, dict) or inspected.get("state") != "ambiguous":
+        return False
+    if not partial_choice(default) or not reviewable(inspected):
+        return False
+    return _choosable_count(inspected) > _choosable_count(default)
 
 
 def review_evidence(
