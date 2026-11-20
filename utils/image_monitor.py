@@ -977,7 +977,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
         if decision.kind == HISTORY:
             decision = self._settle_lookup(image_path, metadata, kind)
             if decision is None:
-                self.logger.debug(f"{name} waits for its run to end")
+                # Unlinked for now: the re-check after the seal decides
+                self.logger.info(
+                    f"No certain prompt for {name} yet; left unlinked until "
+                    "its run ends"
+                )
                 return
             self._stop_awaiting(image_path, self._awaiting_foreign)
             final = True

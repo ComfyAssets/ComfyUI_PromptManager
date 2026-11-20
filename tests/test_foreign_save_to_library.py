@@ -14,6 +14,12 @@ from unittest import mock
 from tests import saver_anchor_graphs as shapes
 from tests import test_run_attribution as attribution
 from tests import test_save_to_library as save_tests
+from tests.sweep_graphs import (
+    JOINED_TEXT,
+    joined_prompt_manager_graph,
+    prompt_manager_shared_prefix,
+    sweep_graph,
+)
 from tests.test_pair_scan import sampled_graph
 from utils.foreign_runs import ForeignRecheck
 from utils.hashing import generate_prompt_hash
@@ -330,137 +336,6 @@ class TestForeignPathKeepsSaveToLibrary(attribution.RecordedRuns, unittest.TestC
         self.assertEqual(self.linked_text(path), shapes.BRANCH_TEXTS[0])
 
 
-PM_TEXT = "a quiet harbor"
-JOINED_TEXT = "a quiet harbor, golden hour"
-
-
-def joined_prompt_manager_graph(save=True):
-    """A PromptManagerText joined to a string node the default profile does
-    not know: only the inspection profile resolves the positive."""
-    return {
-        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m"}},
-        "1": {
-            "class_type": "PromptManagerText",
-            "inputs": {"text": PM_TEXT, "save_to_library": save},
-        },
-        "5": {
-            "class_type": "StringConstantMultiline",
-            "inputs": {"string": "golden hour", "strip_newlines": True},
-        },
-        "7": {
-            "class_type": "JoinStringMulti",
-            "inputs": {
-                "inputcount": 2,
-                "delimiter": ", ",
-                "return_list": False,
-                "string_1": ["1", 0],
-                "string_2": ["5", 0],
-            },
-        },
-        "8": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": ["7", 0], "clip": ["4", 1]},
-        },
-        "2": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": "blurry", "clip": ["4", 1]},
-        },
-        "6": {"class_type": "EmptyLatentImage", "inputs": {"batch_size": 1}},
-        "3": {
-            "class_type": "KSampler",
-            "inputs": {
-                "model": ["4", 0],
-                "positive": ["8", 0],
-                "negative": ["2", 0],
-                "latent_image": ["6", 0],
-            },
-        },
-    }
-
-
-def prompt_manager_shared_prefix():
-    """The dataset run with a PromptManagerText feeding branch 1: a
-    PromptManager run only its recorded saver decides."""
-    graph = shapes.shared_prefix()
-    graph["50"] = {
-        "class_type": "PromptManagerText",
-        "inputs": {"text": shapes.BRANCH_TEXTS[0], "save_to_library": True},
-    }
-    graph["10"]["inputs"]["text"] = ["50", 0]
-    return graph
-
-
-def sweep_graph(positive="a lighthouse on a cliff at dusk", negative="soft, grainy"):
-    """The maintainer's model-compare sweep (#657) with placeholder text.
-
-    The default profile calls it unresolved ("Unsupported latent
-    ancestry"); without a table entry for rgthree's Any Switch, the
-    inspection profile finds two resolved candidates for the sampler.
-    """
-    return {
-        "8": {"class_type": "CLIPLoader", "inputs": {"clip_name": "c.safetensors"}},
-        "9": {"class_type": "VAELoader", "inputs": {"vae_name": "v.safetensors"}},
-        "10": {
-            "class_type": "ModelResolutionPicker",
-            "inputs": {"model": "m", "width": 64, "height": 64, "batch_size": 1},
-        },
-        "11": {
-            "class_type": "Lora Stacker (LoraManager)",
-            "inputs": {"text": "<lora:style:1.00>", "loras": []},
-        },
-        "12": {
-            "class_type": "PromptManagerText",
-            "inputs": {
-                "text": positive,
-                "prepend_text": "",
-                "append_text": "",
-                "save_to_library": True,
-            },
-        },
-        "13": {
-            "class_type": "StringConcatenate",
-            "inputs": {"string_a": ["11", 1], "string_b": ["12", 0], "delimiter": ", "},
-        },
-        "14": {
-            "class_type": "Any Switch (rgthree)",
-            "inputs": {"any_01": ["12", 0], "any_02": ["13", 0]},
-        },
-        "15": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": ["14", 0], "clip": ["8", 0]},
-        },
-        "16": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": negative, "clip": ["8", 0]},
-        },
-        "21": {"class_type": "CheckpointFolderIterator", "inputs": {"folder": "f"}},
-        "23": {
-            "class_type": "LoRA Text Loader (LoraManager)",
-            "inputs": {"model": ["21", 0], "lora_syntax": ["11", 2]},
-        },
-        "26": {
-            "class_type": "KSampler",
-            "inputs": {
-                "seed": 1,
-                "steps": 20,
-                "cfg": 2.5,
-                "model": ["23", 0],
-                "positive": ["15", 0],
-                "negative": ["16", 0],
-                "latent_image": ["10", 0],
-            },
-        },
-        "27": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["26", 0], "vae": ["9", 0]},
-        },
-        "28": {
-            "class_type": "ModelCompareSheet",
-            "inputs": {"run_name": "sweep", "images": ["27", 0]},
-        },
-    }
-
-
 class TestPromptManagerRunsAskTheLadder(attribution.RecordedRuns, unittest.TestCase):
     """#659 Part 3: a PromptManager run the default profile and the tracked
     run cannot link asks the ladder, as a foreign run does."""
@@ -604,6 +479,107 @@ class TestPromptManagerRunsAskTheLadder(attribution.RecordedRuns, unittest.TestC
             sorted([self.key(keyless), self.key(unreadable)]),
         )
         self.assertIsNone(self.linked_text(placeholder))
+
+
+class TestFinalUnlinkedOutcomesQueueForReview(
+    attribution.RecordedRuns, unittest.TestCase
+):
+    """#659 Part 4: the monitor hands a file to Needs review only at its
+    final unlinked outcome, after run history had its say."""
+
+    close_databases = Fixture["close_databases"]
+    wait_for = Fixture["wait_for"]
+    image = Fixture["image"]
+    linked_text = Fixture["linked_text"]
+    key = Fixture["key"]
+    settled = Fixture["settled"]
+    seal = TestForeignPathKeepsSaveToLibrary.seal
+
+    def setUp(self):
+        Fixture["setUp"](self)
+        self.queued = []
+        self.handler.review_recorder = lambda path: self.queued.append(
+            os.path.basename(path)
+        )
+
+    def test_nothing_is_queued_before_the_run_is_sealed(self):
+        self.metadata = {"prompt": sweep_graph()}
+        path = self.image("sweep_00001_.png")
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, [])
+        self.seal(path, nodes=("28",))
+        self.assertTrue(self.wait_for(lambda: self.queued))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, ["sweep_00001_.png"])
+
+    def test_a_foreign_file_unlinked_after_its_seal_is_queued(self):
+        self.metadata = {"prompt": shapes.shared_prefix()}
+        path = self.image("IMG_GEN_00001_.png")
+        reported = [("dataset", "IMG_GEN_00001_.png")] * 2
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, [])
+        # One run reported it from two savers: a record, but no saver
+        self.record_run(self.db, self.output, reported, [], nodes=["13", "23"])
+        self.assertTrue(self.wait_for(lambda: self.queued))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, ["IMG_GEN_00001_.png"])
+
+    def test_a_record_found_at_settle_without_a_prompt_queues_at_once(self):
+        self.metadata = {"prompt": sweep_graph()}
+        path = self.image("sweep_00002_.png")
+        self.seal(path, nodes=("28",))
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, ["sweep_00002_.png"])
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_a_file_outside_the_output_folder_is_queued_at_once(self):
+        outside = self.image("sweep_00003_.png", subfolder="")
+        with mock.patch(
+            "utils.image_monitor.host_output_directory",
+            return_value=os.path.join(self.output, "dataset"),
+        ):
+            for graph in (sweep_graph(), shapes.shared_prefix()):
+                self.metadata = {"prompt": graph}
+                self.handler.process_new_image(outside)
+        self.assertEqual(self.queued, ["sweep_00003_.png"] * 2)
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_a_linked_or_waiting_file_is_not_queued(self):
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        self.handler.process_new_image(self.image("IMG_GEN_00002_.png"))
+        self.metadata = {"prompt": prompt_manager_shared_prefix()}
+        waiting = self.image("IMG_GEN_00003_.png")
+        self.handler.process_new_image(waiting)
+        self.seal(waiting, nodes=("13",))
+        self.assertTrue(self.wait_for(lambda: self.linked_text(waiting)))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, [])
+
+    def test_the_keyless_recheck_queues_a_file_history_does_not_name(self):
+        path = self.image("bare_00001_.png", subfolder="")
+        self.metadata = None
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, [])
+        self.record_run(self.db, self.output, [("", "bare_00001_.png")], [])
+        self.assertTrue(self.wait_for(lambda: self.queued))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, ["bare_00001_.png"])
+
+    def test_a_recorder_failure_keeps_the_monitor_running(self):
+        def broken(path):
+            raise RuntimeError("recorder broke")
+
+        self.handler.review_recorder = broken
+        self.metadata = {"prompt": sweep_graph()}
+        path = self.image("sweep_00004_.png")
+        self.seal(path, nodes=("28",))
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            self.handler.process_new_image(path)
+        self.assertIn("could not be added to Needs review", "\n".join(logs.output))
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        linked = self.image("IMG_GEN_00004_.png")
+        self.handler.process_new_image(linked)
+        self.assertEqual(self.linked_text(linked), JOINED_TEXT)
 
 
 if __name__ == "__main__":
