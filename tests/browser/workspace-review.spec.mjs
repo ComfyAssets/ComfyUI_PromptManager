@@ -684,6 +684,58 @@ test('#536: a refused link stays in the dialog with the server\'s sentence', asy
     expect(await links(request)).toEqual([]);
 });
 
+test('#657 D4: Link to a prompt first lists the image\'s own prompts, and choosing one applies it', async ({ page, request }) => {
+    await seed(request, 2);
+    await open(page);
+    const harborHash = await context(page).locator('option', { hasText: 'Harbor lights at night' }).getAttribute('value');
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    const own = dialog.getByRole('group', { name: 'From this image', exact: true });
+    await expect(dialog.locator('.review-link-heading')).toHaveText(['From this image', 'Library']);
+    await expect(own.getByRole('button')).toHaveText(['Golden dunes at dusk / Soft negative, blur',
+        'Harbor lights at night / Soft negative, blur']);
+    // Typing searches the Library only; an empty box lists the image's prompts again.
+    const search = dialog.getByRole('searchbox');
+    await search.fill('zzz');
+    await expect(own).toBeHidden();
+    await expect(dialog.getByRole('status').first()).toHaveText('No prompt in the Library matches.');
+    await search.fill('');
+    await expect(own).toBeVisible();
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    const harbor = own.getByRole('button', { name: 'Harbor lights at night / Soft negative, blur', exact: true });
+    await harbor.click();
+    await expect(harbor).toHaveAttribute('aria-pressed', 'true');
+    // The candidate carries its own negative.
+    await expect(dialog.getByRole('combobox', { name: 'Negative prompt', exact: true })).toBeHidden();
+    await expect(submit).not.toHaveAttribute('aria-disabled', 'true');
+    const decided = page.waitForResponse(item => /\/review\/items\/[^/]+\/decision$/.test(item.url()));
+    await submit.click();
+    const response = await decided;
+    expect(response.status()).toBe(200);
+    expect(response.request().postDataJSON().choice).toBe(harborHash);
+    await expect(dialog).toHaveCount(0);
+    await expect(toast(page)).toHaveText('Association accepted.');
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
+    expect(await links(request)).toEqual([{ filename: 'review_0000.png', prompt: 'Harbor lights at night',
+        pair_id: expect.any(Number), positive: 'Harbor lights at night', negative: 'Soft negative, blur' }]);
+});
+
+test('#657 D4: a refused candidate stays in the dialog with the server\'s sentence', async ({ page, request }) => {
+    await seed(request, 1);
+    await open(page);
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    await dialog.getByRole('group', { name: 'From this image', exact: true }).getByRole('button').first().click();
+    await page.route(/\/decision$/, route => route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ success: false, code: 'association-conflict', error: 'This image is already linked.' }) }));
+    await dialog.getByRole('button', { name: 'Link image', exact: true }).click();
+    await expect(dialog.locator('.warning-note')).toHaveText('This image is already linked.');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await pending(request)).toBe(1);
+});
+
 test('#657 D3: a file whose prompts were shortened to the most used says so', async ({ page, request }) => {
     await seed(request, 2);
     await page.route(url => /\/prompt_manager\/review\/items\/[0-9a-f-]{36}$/.test(url.pathname), async route => {

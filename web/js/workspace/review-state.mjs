@@ -8,6 +8,8 @@
  *   ones disabled with the server's reason, the first workable one chosen (rulings R2/R3). "Leave unresolved" is its
  *   own action (#536 D179, `leaveUnresolved()`). With nothing workable `unreadable` says why (D180).
  * - `link(choice)` (#536) records the Library prompt the reviewer chose, under the same capture and retry rules.
+ * - `applyCandidate({itemId, hash})` (#657 D4) is Apply association for one of the item's own candidates, as Link to a
+ *   prompt's "From this image" list chooses it (`imageChoices`).
  * - A recorded decision opens the item after it (else the one before) and re-reads the queue quietly: the page stays
  *   (#536, overturning ruling R7). `decisions` counts them, for the page's toast.
  * - Apply takes a fresh capture of the file (`observe`), then posts the decision; the server releases a capture it
@@ -101,6 +103,24 @@ export function contextOptions(detail) {
 }
 
 /**
+ * #657 D4: the candidates Link to a prompt offers "From this image": the choosable options with a non-blank positive,
+ * one per (positive, negative) pair (the first seen).
+ */
+export function imageChoices(options) {
+    const seen = new Set();
+    const choices = [];
+    for (const { value, disabled, candidate } of options) {
+        if (disabled) continue;
+        const positive = candidate.positive.text, negative = candidate.negative.text;
+        const key = JSON.stringify([positive, negative]);
+        if (!positive.trim() || seen.has(key)) continue;
+        seen.add(key);
+        choices.push(Object.freeze({ value, positive, negative }));
+    }
+    return Object.freeze(choices);
+}
+
+/**
  * When no candidate of an available, listed file can be applied: their count and each distinct reason with its count
  * (first seen first). Null otherwise.
  */
@@ -139,7 +159,8 @@ const initial = () => ({
 /**
  * @param {{api: {get: Function, post: Function, del: Function}, itemId?: string}} options `itemId`: single-item mode.
  * @returns the controller: `state`, `subscribe(listener)`, `load()`, `refresh()`, `loadMore()`, `select(id)`, `choose(value)`,
- *   `sync(version)`, `apply()`, `leaveUnresolved()`, `link(choice)`, `retry()`, `leave()`, `dispose()`.
+ *   `sync(version)`, `apply()`, `applyCandidate(choice)`, `leaveUnresolved()`, `link(choice)`, `retry()`, `leave()`,
+ *   `dispose()`.
  */
 export function createReviewController({ api, itemId = null }) {
     const single = typeof itemId === 'string' && itemId !== '';
@@ -493,6 +514,13 @@ export function createReviewController({ api, itemId = null }) {
         return decide({ key: choice, path: 'decision', fields: { choice }, toast: COPY.applied });
     }
 
+    /** Apply candidate `hash` of item `itemId`, which must still be the open one (#657 D4). */
+    function applyCandidate({ itemId, hash }) {
+        if (state.selectedId !== itemId) return Promise.resolve(false);
+        choose(hash);
+        return state.choice === hash ? apply() : Promise.resolve(false);
+    }
+
     function leaveUnresolved() {
         return decide({ key: UNRESOLVED, path: 'decision', fields: { choice: UNRESOLVED }, toast: COPY.leftUnresolved });
     }
@@ -528,7 +556,8 @@ export function createReviewController({ api, itemId = null }) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, leaveUnresolved, link, retry, leave,
+        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, applyCandidate,
+        leaveUnresolved, link, retry, leave,
         dispose() {
             if (disposed) return;
             dropPending();

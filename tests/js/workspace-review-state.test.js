@@ -197,6 +197,35 @@ test('nothing selectable: the reasons are summed, there is no choice and apply s
 const linkRoute = (body = {}) => ({ [`POST ${ITEMS}/one/link`]: call => response(200, { success: true, library_epoch: EPOCH, total: 1,
     item: { ...QUEUE[0], state: 'selected', revision: 1 }, pair: { id: call.body.pair_id ?? 7, image_id: 3, status: 'added' }, ...body }) });
 
+test('#657 D4: imageChoices lists the choosable candidates once per prompt pair, with non-blank positive text', async () => {
+    const { imageChoices, contextOptions } = await load();
+    const detail = detailOf(QUEUE[0], { candidates: [
+        candidate(HASH_C, '9', 'No positive / Soft negative', null, 'blur', 'unresolved'),
+        candidate(HASH_A, '12', 'Dunes / Soft negative', 'golden dunes', 'blur'),
+        candidate('1'.repeat(64), '13', 'Dunes / Soft negative', 'golden dunes', 'blur'),
+        candidate('2'.repeat(64), '14', ' / Soft negative', '  ', 'blur'),
+        candidate(HASH_B, '28', 'Dunes / No negative', 'golden dunes', ''),
+    ] });
+    const choices = imageChoices(contextOptions(detail));
+    assert.deepEqual(choices.map(choice => [choice.value, choice.positive, choice.negative]),
+        [[HASH_A, 'golden dunes', 'blur'], [HASH_B, 'golden dunes', '']]);
+    assert.ok(Object.isFrozen(choices));
+    // An unavailable file has nothing to apply.
+    assert.deepEqual(imageChoices(contextOptions({ ...detail, target: null })), []);
+});
+
+test('#657 D4: applyCandidate decides the open item with that candidate, as Apply association does', async () => {
+    const { c, h } = await loaded();
+    assert.equal(await c.applyCandidate({ itemId: 'two', hash: HASH_B }), false, 'not the open item');
+    assert.equal(await c.applyCandidate({ itemId: 'one', hash: HASH_C }), false, 'a disabled candidate');
+    assert.equal(h.of('POST', OBSERVE).length, 0);
+    assert.equal(await c.applyCandidate({ itemId: 'one', hash: HASH_B }), true);
+    const [decision] = h.of('POST', `${ITEMS}/one/decision`);
+    assert.equal(decision.body.choice, HASH_B);
+    assert.equal(c.state.toast, 'Association accepted.');
+    assert.equal(c.state.selectedId, 'two');
+});
+
 test('link posts the chosen prompt and recipe with a fresh capture, then the next item opens', async () => {
     const { c, h } = await loaded({ ...linkRoute(), [`GET ${ITEMS}/one`]: () => response(200, unreadable()) });
     assert.equal(await c.link({ itemId: 'one', positiveId: 4, pairId: 9, title: 'Harbor' }), true);
