@@ -648,6 +648,30 @@ def review_evidence(
         base["semantics"] = semantics_version(metadata)
     if anchored:
         base["anchor"] = SAVER_ANCHOR
+    candidates, total, projected = _projected(resolution)
+    if not projected:
+        return _limited(base, total), 0, True
+    if len(candidates) > MAX_CANDIDATES:
+        candidates, collapsed = _bounded(candidates)
+        if collapsed is not None:
+            base["collapsed"] = collapsed
+    if not candidates:
+        return _limited(base, total), 0, True
+    evidence = {**base, "candidates": candidates}
+    try:
+        canonical_evidence(evidence)
+    except ValueError:
+        return _limited(base, total), 0, True
+    return evidence, len(candidates), False
+
+
+def _projected(resolution: dict) -> tuple[list, int, bool]:
+    """``(candidates, total, projected)``: each selectable candidate of
+    ``resolution`` projected with its ``hash``, duplicates dropped.
+
+    ``projected`` is False when a candidate cannot be projected; ``total``
+    then counts the candidates read up to it.
+    """
     candidates: list[dict] = []
     seen: set[str] = set()
     total = 0
@@ -659,23 +683,23 @@ def review_evidence(
                 canonical_evidence(projected).encode("utf-8")
             ).hexdigest()
         except (ValueError, TypeError, KeyError):
-            return _limited(base, total), 0, True
+            return candidates, total, False
         if digest in seen:
             total -= 1
             continue
         seen.add(digest)
         candidates.append({**projected, "hash": digest})
-    if len(candidates) > MAX_CANDIDATES:
-        candidates, collapsed = _collapsed(candidates)
-        base["collapsed"] = collapsed
-    if not candidates:
-        return _limited(base, total), 0, True
-    evidence = {**base, "candidates": candidates}
-    try:
-        canonical_evidence(evidence)
-    except ValueError:
-        return _limited(base, total), 0, True
-    return evidence, len(candidates), False
+    return candidates, total, True
+
+
+def candidate_hashes(resolution: Any) -> frozenset:
+    """Every candidate hash ``resolution`` offers, before any bound or
+    collapse (Apply's still-offered check); empty when it cannot be
+    projected."""
+    if not isinstance(resolution, dict):
+        return frozenset()
+    candidates, _total, projected = _projected(resolution)
+    return frozenset(c["hash"] for c in candidates) if projected else frozenset()
 
 
 def _limited(base: dict, total: int) -> dict:
@@ -683,16 +707,35 @@ def _limited(base: dict, total: int) -> dict:
     return {**base, "limited": True, "candidate_total": total, "candidates": []}
 
 
-def _collapsed(candidates: list) -> tuple[list, dict]:
-    """``(shown, collapsed)`` for more than ``MAX_CANDIDATES`` candidates (D3).
+def _bounded(candidates: list) -> tuple[list, dict | None]:
+    """At most ``MAX_CANDIDATES`` of more than that many candidates.
 
-    The choosable candidates are grouped by their (positive, negative)
-    texts; groups are ordered by size, largest first, then by first
-    appearance, and the first ``MAX_CANDIDATES`` are shown, each by its first
-    occurrence (a real sampler and hash, so Apply finds it again).
-    ``collapsed`` is ``{shown, total, paths}``: groups shown, distinct
-    choosable texts and candidates in all.
+    One candidate per choosable (positive, negative) text, its first
+    occurrence. With more texts than fit, the most used are shown and
+    ``collapsed`` describes them (``_collapsed``). Otherwise every text is
+    kept, the branches without a prompt fill the remaining places in their
+    order, and ``collapsed`` is None (#657 review: an ordinary item).
     """
+    groups = _text_groups(candidates)
+    if not groups:
+        return [], None  # nothing to choose: limited, never stored
+    if len(groups) > MAX_CANDIDATES:
+        return _collapsed(candidates, groups)
+    shown = {id(group[0]) for group in groups.values()}
+    room = MAX_CANDIDATES - len(groups)
+    kept = []
+    for candidate in candidates:
+        if id(candidate) in shown:
+            kept.append(candidate)
+        elif room > 0 and not choosable(candidate):
+            kept.append(candidate)
+            room -= 1
+    return kept, None
+
+
+def _text_groups(candidates: list) -> dict[str, list]:
+    """The choosable candidates grouped by their (positive, negative)
+    texts, in order of first appearance."""
     groups: dict[str, list] = {}
     for candidate in candidates:
         if not choosable(candidate):
@@ -704,6 +747,19 @@ def _collapsed(candidates: list) -> tuple[list, dict]:
             }
         )
         groups.setdefault(key, []).append(candidate)
+    return groups
+
+
+def _collapsed(candidates: list, groups: dict[str, list]) -> tuple[list, dict]:
+    """``(shown, collapsed)`` for more than ``MAX_CANDIDATES`` texts (D3).
+
+    The ``groups`` of choosable candidates (``_text_groups``) are ordered by
+    size, largest first, then by first
+    appearance, and the first ``MAX_CANDIDATES`` are shown, each by its first
+    occurrence (a real sampler and hash, so Apply finds it again).
+    ``collapsed`` is ``{shown, total, paths}``: groups shown, distinct
+    choosable texts and candidates in all.
+    """
     # A stable sort: equal sizes keep their first-appearance order.
     ranked = sorted(groups.values(), key=len, reverse=True)
     shown = [group[0] for group in ranked[:MAX_CANDIDATES]]

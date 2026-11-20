@@ -110,13 +110,42 @@ class TestCollapsedEvidence(unittest.TestCase):
         self.assertEqual(count, MAX_CANDIDATES)
         self.assertNotIn("collapsed", evidence)
 
-    def test_many_paths_to_few_prompts_show_them_all(self):
-        """Distinct samplers, one text: one group, collapsed shown == total."""
-        texts = [POPULAR] * 20
+    def test_many_paths_to_few_prompts_are_not_collapsed(self):
+        """Distinct samplers, three texts and unresolved branches (#657
+        review): three groups fit, so the item stays ordinary. One candidate
+        per text, and the run-time branches stay listed."""
+        texts = [None, POPULAR, SECOND, "third"] * 5
         evidence, count, limited = review_capture.review_evidence(_resolution(texts))
         self.assertFalse(limited)
-        self.assertEqual(count, 1)
-        self.assertEqual(evidence["collapsed"], {"shown": 1, "total": 1, "paths": 20})
+        self.assertNotIn("collapsed", evidence)
+        shown = [
+            (c["state"], (c["positive"] or {}).get("text"))
+            for c in evidence["candidates"]
+        ]
+        self.assertEqual(
+            shown[:4],
+            [
+                ("unresolved", None),
+                ("resolved", POPULAR),
+                ("resolved", SECOND),
+                ("resolved", "third"),
+            ],
+        )
+        self.assertEqual(count, 8)
+        self.assertEqual(sum(1 for state, _ in shown if state == "resolved"), 3)
+
+    def test_unresolved_branches_fill_up_to_the_bound_after_every_text(self):
+        texts = [None] * 20 + [POPULAR, SECOND, "third"] * 2
+        evidence, count, limited = review_capture.review_evidence(_resolution(texts))
+        self.assertFalse(limited)
+        self.assertNotIn("collapsed", evidence)
+        self.assertEqual(count, MAX_CANDIDATES)
+        resolved = [
+            c["positive"]["text"] for c in evidence["candidates"] if c["positive"]
+        ]
+        self.assertEqual(resolved, [POPULAR, SECOND, "third"])
+        sampler_ids = [c["sampler_id"] for c in evidence["candidates"]]
+        self.assertEqual(sampler_ids, sorted(sampler_ids, key=int))
 
     def test_nothing_choosable_is_still_limited(self):
         texts = [None] * (MAX_CANDIDATES + 1)
@@ -130,6 +159,22 @@ class TestCollapsedEvidence(unittest.TestCase):
         evidence, count, limited = review_capture.review_evidence(resolution)
         self.assertTrue(limited)
         self.assertNotIn("collapsed", evidence)
+
+    def test_apply_accepts_any_offered_candidate_after_a_reorder(self):
+        """Apply checks the chosen hash against every candidate the bytes
+        offer, not against a fresh collapse (#657 review): a reorder that
+        changes the representatives, or a text past the first 16, is still
+        offered."""
+        resolution = _resolution(batch_texts())
+        evidence, _count, _limited = review_capture.review_evidence(resolution)
+        chosen = {c["positive"]["text"]: c["hash"] for c in evidence["candidates"]}
+        reordered = dict(resolution, candidates=resolution["candidates"][::-1])
+        self.assertTrue(_candidate_still_offered(reordered, chosen[POPULAR]))
+        tail = _resolution(batch_texts())["candidates"][-1]
+        tail_hash = review_capture.candidate_hashes({"candidates": [tail]})
+        (only,) = tail_hash
+        self.assertTrue(_candidate_still_offered(resolution, only))
+        self.assertFalse(_candidate_still_offered(resolution, "0" * 64))
 
     def test_apply_still_finds_a_representative(self):
         resolution = _resolution(batch_texts())

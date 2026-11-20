@@ -45,16 +45,20 @@ try:
     from ...database.review_decisions import ReviewCommandError
     from ...utils.media_capture import CaptureError
     from ...utils.review_capture import (
+        candidate_hashes,
         captured_review,
         item_profile,
-        review_evidence,
     )
 except ImportError:
     from database.library import display_title
     from database.library_commands import LibraryCommandError
     from database.review_decisions import ReviewCommandError
     from utils.media_capture import CaptureError
-    from utils.review_capture import captured_review, item_profile, review_evidence
+    from utils.review_capture import (
+        candidate_hashes,
+        captured_review,
+        item_profile,
+    )
 
 ITEMS_URL = "/prompt_manager/review/items"
 DEFAULT_LIMIT = 40
@@ -764,7 +768,6 @@ def _candidate_still_offered(resolution: dict, choice: str) -> bool:
         resolution = {"state": "ambiguous", "candidates": [resolution]}
     if not isinstance(resolution, dict) or resolution.get("state") != "ambiguous":
         return False
-    evidence, _count, limited = review_evidence(resolution)
-    if limited:
-        return False
-    return any(c.get("hash") == choice for c in evidence.get("candidates", ()))
+    # Every candidate the bytes offer, before any bound or collapse: a
+    # reorder that changes the collapsed representatives still applies.
+    return choice in candidate_hashes(resolution)
