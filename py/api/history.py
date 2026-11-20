@@ -31,7 +31,9 @@ from .inspection_service import (
     CurrentFileChanged,
     image_tags_reader,
     inspect_current_file,
+    review_reader,
 )
+from .admin import _scan_roots
 from .images import image_category_key
 
 try:
@@ -717,6 +719,25 @@ class HistoryRoutesMixin:
             )
             return OWN_CATEGORY_UNREAD
 
+    def _history_review(self, target) -> Callable | None:
+        """The ``review`` reader of a reported current file (#659, C4).
+
+        Located as the scan locates it (``_review_location`` over the scan
+        roots, resolved like the canonical target); a file under no scan root
+        gives None. The read closes its
+        connection, as this route's other reads do.
+        """
+        # The target is canonical, so the roots are too (a linked output).
+        roots = _scan_roots(
+            [os.path.realpath(root) for root in self._get_all_output_dirs()]
+        )
+        located = self._review_location(target, roots)
+        if located is None:
+            return None
+        return review_reader(
+            self.db, os.path.normcase(located[3]), self.logger, close=True
+        )
+
     async def _history_current(
         self, request: web.Request, kind: str
     ) -> web.StreamResponse:
@@ -793,6 +814,7 @@ class HistoryRoutesMixin:
                         recorded=recorded_output_lookup(
                             db, close=True, reference=receipt["reference"]
                         ),
+                        review=self._history_review(resolved.canonical_target),
                     )
                     _reauthorize_current_target(resolved, scope)
                     identity = {

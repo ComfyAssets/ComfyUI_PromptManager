@@ -122,6 +122,41 @@ def image_tags_reader(
     return read
 
 
+def review_reader(
+    db: Any, locator: str, logger: Any, *, close: bool = False
+) -> Callable[[int, int], dict | None]:
+    """The inspector's ``review`` reader for one file *locator* (#659, C4).
+
+    The returned function takes the inspection's own stable stat and answers
+    the file's Needs review item at exactly that ``(size, mtime_ns)``
+    (``review_item_at``): pending with its id, decided, or None. A failed
+    read is None, never an error. ``close`` closes the calling thread's
+    connection afterwards, for routes that close theirs (History).
+    """
+
+    def read(size: int, mtime_ns: int) -> dict | None:
+        try:
+            return db.review_item_at(locator, size, mtime_ns)
+        except Exception:
+            logger.warning("Inspection review item could not be read", exc_info=True)
+            return None
+        finally:
+            if close:
+                db.model.close()
+
+    return read
+
+
+def _asks_review(evidence: dict, library: dict) -> bool:
+    """Whether Inspect may offer a choice: an ambiguous role, an unlinked file."""
+    prompts = evidence.get("prompts") or {}
+    ambiguous = any(
+        isinstance(side, dict) and side.get("status") == "ambiguous"
+        for side in prompts.values()
+    )
+    return ambiguous and isinstance(library, dict) and library.get("status") == "none"
+
+
 def inspect_current_file(
     path: Path,
     *,
@@ -130,6 +165,7 @@ def inspect_current_file(
     library: dict,
     image_tags: Callable[[int, int], dict] | None = None,
     recorded: Callable[[Path], Any] | None = None,
+    review: Callable[[int, int], dict | None] | None = None,
 ) -> dict:
     """Current-file evidence read between two equal stats of *path*.
 
@@ -139,6 +175,9 @@ def inspect_current_file(
     *recorded*, when given, is asked within the same stat window for what
     recorded run history knows about *path* (``RecordedOutput`` or None: the
     save node that wrote it and the texts PromptManager recorded, #386).
+    *review*, when given, is called with the same stat only when a role is
+    ambiguous and ``library["status"]`` is ``none``; its answer (or None) is
+    returned as ``review`` (#659).
     """
     before = _current_file_facts(path)
     try:
@@ -172,6 +211,12 @@ def inspect_current_file(
             file_name=path.name,
             recorded_saver_id=run.saver_id if run is not None else None,
             recorded_texts=run.texts if run is not None else None,
+        )
+    if review is not None:
+        facets["review"] = (
+            review(before.st_size, before.st_mtime_ns)
+            if _asks_review(evidence, library)
+            else None
         )
     return {
         "file": {
