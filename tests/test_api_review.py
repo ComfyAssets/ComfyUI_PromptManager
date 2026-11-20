@@ -328,10 +328,20 @@ class TestQueueReads(ReviewRoutesTestCase):
         self._require_routes()
         self._roots()
         limited = self.output_dir / "limited.png"
-        # More than 16 candidates with a prompt: limited, still a choice.
-        many = [f"prompt {n}" for n in range(17)]
-        write_png(limited, prompt=unlinkable_graph(*many))
-        self.assertEqual(self._record_raw(str(limited)), "limited")
+        # Evidence over the 8 MiB bound: limited, still a choice (more than
+        # 16 prompts are collapsed instead, #657 D3).
+        write_png(limited, prompt=unlinkable_graph("cat", "dog"))
+        real = review_capture_module.canonical_evidence
+
+        def capped(value):
+            if value.get("candidates"):
+                raise ValueError("evidence exceeds the bound")
+            return real(value)
+
+        with patch.object(
+            review_capture_module, "canonical_evidence", side_effect=capped
+        ):
+            self.assertEqual(self._record_raw(str(limited)), "limited")
         self._record(self._ambiguous("two.png"))
         items = (await self._list())["items"]
         self.assertEqual([i["limited"] for i in items], [True, False])
@@ -524,7 +534,9 @@ class TestDecisions(ReviewRoutesTestCase):
         self.assertEqual(provenance["kind"], "user-selection")
         self.assertEqual(provenance["candidate_hash"], cat["hash"])
         self.assertEqual(provenance["reviewed_digest"], digest(path))
-        self.assertEqual(provenance["resolver_version"], 1)
+        self.assertEqual(
+            provenance["resolver_version"], review_capture_module.default_item_version()
+        )
         self.assertEqual(provenance["positive"]["text"], "cat")
         (decision,) = self._decisions()
         self.assertEqual(provenance["decision_id"], decision["id"])

@@ -393,12 +393,14 @@ class ReviewRoutesMixin:
             "library_epoch": item["epoch"],
             **view,
             "candidates": candidates,
+            # #657 D3: the most used prompts of an over-full item, or None.
+            "collapsed": _collapsed(item),
             "dependency_fingerprint": fingerprint,
             "sha256": item["sha256"],
             "total": item["total"],
         }
         if len(json.dumps(detail).encode("utf-8")) > MAX_DETAIL_BYTES:
-            detail = {**detail, "candidates": [], "limited": True}
+            detail = {**detail, "candidates": [], "limited": True, "collapsed": None}
         return web.json_response(detail, headers=_NO_STORE)
 
     def _review_detail(self, item_id: str):
@@ -671,6 +673,15 @@ class ReviewRoutesMixin:
         if exc.code == "association-conflict" and exc.changed:
             message = "dependencies-changed"
         return _coded(exc.code, message, **extra)
+
+
+def _collapsed(item: dict) -> dict | None:
+    """``{shown, total, paths}`` of an item whose candidates were collapsed."""
+    evidence = item.get("evidence")
+    collapsed = evidence.get("collapsed") if isinstance(evidence, dict) else None
+    if item.get("limited") or not isinstance(collapsed, dict):
+        return None
+    return collapsed
 
 
 def _verify_and_read(store, capture, item, root, need_metadata: bool):

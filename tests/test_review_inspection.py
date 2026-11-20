@@ -279,7 +279,8 @@ class TestQwenEditBatchIsQueued(InspectionTestCase):
         self.assertEqual(job["scope"]["review_items"], 1)
         self.assertEqual(job["scope"]["review_untraced"], 0)
 
-    async def test_more_than_sixteen_qwen_samplers_make_a_limited_item(self):
+    async def test_more_than_sixteen_qwen_samplers_are_collapsed(self):
+        """#657 addendum D3: the 16 most used prompts, not a limited item."""
         self._roots()
         self._write(graph=qwen_edit_graph(*(f"edit {n}" for n in range(17))))
 
@@ -287,9 +288,9 @@ class TestQwenEditBatchIsQueued(InspectionTestCase):
 
         (item,) = self._items()
         evidence = self._evidence(item)
-        self.assertTrue(item["limited"])
-        self.assertEqual(item["candidate_count"], 0)
-        self.assertEqual(evidence["candidate_total"], 17)
+        self.assertFalse(item["limited"])
+        self.assertEqual(item["candidate_count"], 16)
+        self.assertEqual(evidence["collapsed"], {"shown": 16, "total": 17, "paths": 17})
         self.assertEqual(evidence["profile"], "inspection")
 
     async def test_evidence_over_the_cap_makes_a_limited_item(self):
@@ -335,7 +336,9 @@ class TestDefaultProfileStillDecides(InspectionTestCase):
         evidence = self._evidence(item)
         self.assertNotIn("profile", evidence)
         self.assertNotIn("semantics", evidence)
-        self.assertEqual(item["resolver_version"], review_capture.RESOLVER_VERSION)
+        self.assertEqual(
+            item["resolver_version"], review_capture.default_item_version()
+        )
         self.assertEqual(_texts(evidence), ["cat", "dog"])
 
     async def test_apply_of_a_default_item_inspects_only_for_the_anchor(
@@ -647,14 +650,16 @@ class TestVersionChanges(InspectionTestCase):
         write_png(self.output_dir / "two.png", prompt=unlinkable_graph("cat", "dog"))
         await self._scan()
         (old,) = self._items()
-        self.assertEqual(old["resolver_version"], 1)
+        self.assertEqual(old["resolver_version"], review_capture.default_item_version())
 
         with patch.object(review_capture, "RESOLVER_VERSION", 2):
             await self._scan("all")
+            current = review_capture.default_item_version()
 
         (item,) = self._items()
         self.assertNotEqual(item["id"], old["id"])
-        self.assertEqual(item["resolver_version"], 2)
+        self.assertNotEqual(current, old["resolver_version"])
+        self.assertEqual(item["resolver_version"], current)
         self.assertEqual(self._pending(), 1)
 
     async def test_decided_old_item_is_kept_and_no_duplicate_is_made(self):

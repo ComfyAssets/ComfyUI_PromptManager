@@ -267,12 +267,16 @@ class TestScanRecording(ReviewTestCase):
         self.assertEqual(
             (item["state"], item["revision"], item["limited"]), ("pending", 0, 0)
         )
-        self.assertEqual(item["resolver_version"], 1)
+        self.assertEqual(
+            item["resolver_version"], review_capture.default_item_version()
+        )
         self.assertEqual(item["candidate_count"], 3)
         self.assertEqual(item["evidence_hash"], evidence_digest(item["evidence"]))
         evidence = json.loads(item["evidence"])
         self.assertEqual(canonical_evidence(evidence), item["evidence"])
-        self.assertEqual(evidence["resolver_version"], 1)
+        self.assertEqual(
+            evidence["resolver_version"], review_capture.default_item_version()
+        )
         self.assertEqual(resolved_texts(evidence), ["cat", "dog"])
         for candidate in evidence["candidates"]:
             self.assertEqual(
@@ -474,9 +478,11 @@ class TestScanRecording(ReviewTestCase):
         self.assertEqual(items[0]["locator"], items[1]["locator"])
         self.assertEqual(job["scope"]["review_items"], 1)
 
-    async def test_many_candidates_are_limited_without_candidates(self):
+    async def test_many_candidates_are_collapsed(self):
         """Only ``many.png`` is queued: the A1111 delimiter ambiguity offers
-        no candidate to choose (``tests/test_review_choosable.py``)."""
+        no candidate to choose (``tests/test_review_choosable.py``). Its 17
+        prompts are more than 16: the 16 most used are kept (#657 D3,
+        ``tests/test_review_collapsed.py``)."""
         self._require_module()
         self._roots()
         write_png(
@@ -490,15 +496,14 @@ class TestScanRecording(ReviewTestCase):
 
         items = {Path(item["locator"]).name: item for item in self._items()}
         self.assertEqual(set(items), {"many.png"})
-        for item in items.values():
-            self.assertEqual((item["limited"], item["candidate_count"]), (1, 0))
-            evidence = json.loads(item["evidence"])
-            self.assertEqual(evidence["candidates"], [])
-            self.assertIs(evidence["limited"], True)
+        item = items["many.png"]
+        self.assertEqual((item["limited"], item["candidate_count"]), (0, 16))
+        evidence = json.loads(item["evidence"])
+        self.assertNotIn("limited", evidence)
         self.assertEqual(
             # 17 samplers and the parser's unresolved one.
-            json.loads(items["many.png"]["evidence"])["candidate_total"],
-            18,
+            evidence["collapsed"],
+            {"shown": 16, "total": 17, "paths": 18},
         )
         self.assertEqual(job["scope"]["review_items"], 1)
 
@@ -605,7 +610,7 @@ class TestRecordAmbiguousFile(ReviewTestCase):
         self.assertEqual(self._record("delims.png"), "untraced")
         many = [f"prompt {n}" for n in range(17)]
         write_png(self.output_dir / "many.png", prompt=unlinkable_graph(*many))
-        self.assertEqual(self._record("many.png"), "limited")
+        self.assertEqual(self._record("many.png"), "recorded")  # collapsed (D3)
         self.assertEqual(self._record("many.png"), "duplicate")
         self.assertEqual(self._review_revision(), 2)
 
@@ -748,7 +753,7 @@ class TestReviewEdges(ReviewTestCase):
             review_capture.review_evidence({"state": "ambiguous", "candidates": None}),
             (
                 {
-                    "resolver_version": 1,
+                    "resolver_version": review_capture.default_item_version(),
                     "reason": "",
                     "limited": True,
                     "candidate_total": 0,

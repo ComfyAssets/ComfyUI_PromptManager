@@ -233,7 +233,9 @@ class TestDefaultItemsAnchor(InspectionTestCase):
         evidence = json.loads(item["evidence"])
         self.assertNotIn("profile", evidence)
         self.assertNotIn("anchor", evidence)
-        self.assertEqual(item["resolver_version"], review_capture.RESOLVER_VERSION)
+        self.assertEqual(
+            item["resolver_version"], review_capture.default_item_version()
+        )
 
     async def test_file_the_parser_floor_links_is_not_queued(self):
         """Already linked by the default path: unchanged by the anchor."""
@@ -276,7 +278,7 @@ class TestDefaultItemsAnchor(InspectionTestCase):
         with patch.object(review_capture, "_captured_inspection", return_value=None):
             await self._scan()  # queued from the default profile, as before #390
         (old,) = self._items()
-        self.assertEqual(old["resolver_version"], review_capture.RESOLVER_VERSION)
+        self.assertEqual(old["resolver_version"], review_capture.default_item_version())
 
         await self._scan("all")
 
