@@ -176,7 +176,9 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
             { rootMargin: `${LOAD_AHEAD_PX}px` })
         : null;
     observer?.observe(continuation);
-    let loadFrame = 0;
+    // At one column, Info scrolls the panel into view past the queue: loading waits for the reader's next move, as on
+    // the Images page, since a page appended then would push the panel away.
+    let loadFrame = 0, panelHold = false;
     scope.cleanup(() => { observer?.disconnect(); cancelAnimationFrame(loadFrame); });
 
     const sender = createPromptSender({ scope });
@@ -306,7 +308,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     /** #657 D5: the next page, when the continuation is in view and nothing covers the page or loads already. */
     function maybeLoad() {
         const state = controller.state;
-        if (scope.signal.aborted || !continuation.isConnected || state.status !== 'ready' || !state.nextCursor ||
+        if (panelHold || scope.signal.aborted || !continuation.isConnected || state.status !== 'ready' || !state.nextCursor ||
             state.more !== 'idle' || document.querySelector('dialog[open]')) return;
         const bounds = continuation.getBoundingClientRect();
         if (bounds.top <= window.innerHeight + LOAD_AHEAD_PX && bounds.bottom >= 0) controller.loadMore();
@@ -318,6 +320,14 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     /** After a render or a closed dialog: the continuation may already be in view, where the observer stays silent. */
     function scheduleLoad() {
         if (observer && !loadFrame && !scope.signal.aborted) loadFrame = requestAnimationFrame(runScheduledLoad);
+    }
+    function releasePanel() {
+        if (!panelHold) return;
+        panelHold = false;
+        scheduleLoad();
+    }
+    for (const name of ['wheel', 'touchmove', 'keydown']) {
+        window.addEventListener(name, releasePanel, { passive: true, signal: scope.signal });
     }
     // A closed dialog or viewer (removed, or closed) hands focus back to the page: look again then.
     scope.listen(document, 'focusin', scheduleLoad);
@@ -356,7 +366,10 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         // Info selects the item, as the concept's `inspect` does on this page (app.js a1244–1248).
         controller.select(item.id);
         // D189: at one column the panel cannot stay beside the queue, so Info brings it into view.
-        if (getComputedStyle(panel).position === 'static') panel.scrollIntoView({ block: 'nearest' });
+        if (getComputedStyle(panel).position === 'static') {
+            panelHold = true;
+            panel.scrollIntoView({ block: 'nearest' });
+        }
     });
 
     let shownTotal = null;

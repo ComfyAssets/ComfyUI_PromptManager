@@ -839,6 +839,27 @@ test('#657 D4: typing drops a choice from the image; Link waits for a Library pr
     expect([link.positive, link.negative]).toEqual(['Quiet harbor', 'grainy']);
 });
 
+test('#657 D5: at one column, Info brings the panel into view without loading more until the reader moves', async ({ page, request }) => {
+    await page.setViewportSize({ width: 420, height: 900 });
+    await seed(request, 45);
+    const reads = reviewReads(page);
+    await open(page);
+    await expect(cards(page)).toHaveCount(40);
+    // The first cards are in view and the continuation, past the queue and the panel, is far away.
+    expect(await continuation(page).evaluate(node => node.getBoundingClientRect().top > window.innerHeight + 250)).toBe(true);
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect review_0001.png', exact: true }).click();
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
+    await expect(panel(page)).toBeInViewport();
+    // The continuation is near, but the panel stays put: two frames for the observer and the load it would schedule.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await continuation(page).evaluate(node => node.getBoundingClientRect().top <= window.innerHeight + 250)).toBe(true);
+    expect(reads).not.toContain('more');
+    await expect(cards(page)).toHaveCount(40);
+    // The reader's next move releases it.
+    await page.mouse.wheel(0, 200);
+    await expect(cards(page)).toHaveCount(45);
+});
+
 test('#657 D4: a re-read that no longer offers the chosen image prompt drops it from the dialog', async ({ page, request }) => {
     await seed(request, 1);
     await open(page);
