@@ -31,7 +31,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_review import unlinkable_graph, write_png
 
 from tests.background_stops import close_handler
-from tests.sweep_graphs import sweep_graph
+from tests.sweep_graphs import SWEEP_TEXTS, ambiguous_sweep_graph
 from utils import inspection_semantics, review_capture
 from utils.hashing import generate_prompt_hash
 from utils.image_monitor import ImageGenerationHandler
@@ -1023,19 +1023,16 @@ class TestMonitorRecords(InspectionTestCase):
 
 
 SWEEP = "sweep_00001_.png"
-SWEEP_TEXTS = [
-    "<lora:style:1.00>, a lighthouse on a cliff at dusk",
-    "a lighthouse on a cliff at dusk",
-]
 
 
 class TestDefaultUnresolvedFiles(InspectionTestCase):
     """#659 C1: a file the default profile calls unresolved is queued from
-    the inspection profile when that finds a choice. The sweep graph, before
-    rgthree's Any Switch has a table entry, is the example."""
+    the inspection profile when that finds a choice. The sweep graph with its
+    switch replaced by a class no table lists is the example (the real Any
+    Switch resolves since #657)."""
 
     def _sweep(self):
-        path = self._write(SWEEP, graph=sweep_graph())
+        path = self._write(SWEEP, graph=ambiguous_sweep_graph())
         return path
 
     def test_the_sweep_graph_is_recorded_from_the_inspection_profile(self):
@@ -1061,14 +1058,13 @@ class TestDefaultUnresolvedFiles(InspectionTestCase):
         evidence = self._evidence(item)
         self.assertEqual(evidence["profile"], "inspection")
         self.assertEqual(_texts(evidence), SWEEP_TEXTS)
-        self.assertEqual(item["resolver_version"], _version(sweep_graph()))
+        self.assertEqual(item["resolver_version"], _version(ambiguous_sweep_graph()))
         self.assertEqual(self._capture_files(), [])
 
     def test_a_default_unresolved_file_without_a_choice_is_untraced(self):
         self._roots()
-        graph = sweep_graph()
+        graph = ambiguous_sweep_graph()
         graph["14"]["inputs"].pop("any_02")  # one input: nothing to choose
-        graph["14"]["class_type"] = "PMTest Opaque Switch"
         graph["15"]["class_type"] = "PMTest Opaque Encode"
         self._write(SWEEP, graph=graph)
         outcome = review_capture.record_ambiguous_file(

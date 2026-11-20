@@ -13,7 +13,7 @@ from database.run_attribution import RecordedOutput
 from tests.test_pair_scan import flux_graph, sampled_graph
 from tests.test_prompt_attribution import issue_graph, pair_evidence
 from tests import test_save_to_library as save_tests
-from tests.sweep_graphs import sweep_graph
+from tests.sweep_graphs import ambiguous_sweep_graph
 from utils import file_prompt
 from utils.file_prompt import Policy, decide_file_prompt, junk_text
 from utils.prompt_inspector import InspectionResult
@@ -781,7 +781,7 @@ class TestDefaultUnresolved(unittest.TestCase):
     choices in Needs review."""
 
     def test_the_sweep_graph_is_default_unresolved(self):
-        decision = _decide(_graph(sweep_graph()), lookup=_Lookup())
+        decision = _decide(_graph(ambiguous_sweep_graph()), lookup=_Lookup())
         self.assertEqual(decision.kind, "never")
         self.assertIsNone(decision.review)
         self.assertTrue(decision.default_unresolved)

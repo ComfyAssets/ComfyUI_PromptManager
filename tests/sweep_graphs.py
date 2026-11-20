@@ -1,16 +1,18 @@
 """Graphs of PromptManager runs the monitor asks the ladder for (#659).
 
-``sweep_graph`` is the maintainer's model-compare sweep with placeholder
-text: rgthree's Any Switch picks between a PromptManagerText and the same
-text joined to a LoRA stack. ``joined_prompt_manager_graph`` is resolved only
+``ambiguous_sweep_graph`` is the maintainer's model-compare sweep with its
+rgthree Any Switch replaced by a class no table lists: still ambiguous for
+the inspection profile after #657. ``joined_prompt_manager_graph`` is resolved only
 by the inspection profile; ``prompt_manager_shared_prefix`` only by the
 recorded saver.
 """
 
 try:
     from tests import saver_anchor_graphs as shapes
+    from tests import unknown_node_graphs as switch_graphs
 except ImportError:  # discovered with tests/ as the top-level directory
     import saver_anchor_graphs as shapes
+    import unknown_node_graphs as switch_graphs
 
 PM_TEXT = "a quiet harbor"
 JOINED_TEXT = "a quiet harbor, golden hour"
@@ -72,72 +74,23 @@ def prompt_manager_shared_prefix():
     return graph
 
 
-def sweep_graph(positive="a lighthouse on a cliff at dusk", negative="soft, grainy"):
-    """The maintainer's model-compare sweep (#657) with placeholder text.
+# The never-listed stand-in class of ``tests/unknown_node_graphs.py``
+UNKNOWN_SWITCH = "PMTest Unknown Multi"
+# The inspection profile's two candidate texts of ``ambiguous_sweep_graph``
+SWEEP_TEXTS = sorted(
+    [switch_graphs.POSITIVE, f"{switch_graphs.SWEEP_PREFIX}, {switch_graphs.POSITIVE}"]
+)
 
-    The default profile calls it unresolved ("Unsupported latent
-    ancestry"); without a table entry for rgthree's Any Switch, the
-    inspection profile finds two resolved candidates for the sampler.
+
+def ambiguous_sweep_graph(switch_class=UNKNOWN_SWITCH):
+    """The maintainer's model-compare sweep (``any_switch_sweep_graph``) with
+    its switch's class replaced.
+
+    With the stand-in class no table lists, the default profile calls it
+    unresolved and the inspection profile finds two resolved candidates
+    (``SWEEP_TEXTS``): the shape the sweep had before rgthree's Any Switch
+    got its ``first-present`` entry (#657). The real class resolves it.
     """
-    return {
-        "8": {"class_type": "CLIPLoader", "inputs": {"clip_name": "c.safetensors"}},
-        "9": {"class_type": "VAELoader", "inputs": {"vae_name": "v.safetensors"}},
-        "10": {
-            "class_type": "ModelResolutionPicker",
-            "inputs": {"model": "m", "width": 64, "height": 64, "batch_size": 1},
-        },
-        "11": {
-            "class_type": "Lora Stacker (LoraManager)",
-            "inputs": {"text": "<lora:style:1.00>", "loras": []},
-        },
-        "12": {
-            "class_type": "PromptManagerText",
-            "inputs": {
-                "text": positive,
-                "prepend_text": "",
-                "append_text": "",
-                "save_to_library": True,
-            },
-        },
-        "13": {
-            "class_type": "StringConcatenate",
-            "inputs": {"string_a": ["11", 1], "string_b": ["12", 0], "delimiter": ", "},
-        },
-        "14": {
-            "class_type": "Any Switch (rgthree)",
-            "inputs": {"any_01": ["12", 0], "any_02": ["13", 0]},
-        },
-        "15": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": ["14", 0], "clip": ["8", 0]},
-        },
-        "16": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {"text": negative, "clip": ["8", 0]},
-        },
-        "21": {"class_type": "CheckpointFolderIterator", "inputs": {"folder": "f"}},
-        "23": {
-            "class_type": "LoRA Text Loader (LoraManager)",
-            "inputs": {"model": ["21", 0], "lora_syntax": ["11", 2]},
-        },
-        "26": {
-            "class_type": "KSampler",
-            "inputs": {
-                "seed": 1,
-                "steps": 20,
-                "cfg": 2.5,
-                "model": ["23", 0],
-                "positive": ["15", 0],
-                "negative": ["16", 0],
-                "latent_image": ["10", 0],
-            },
-        },
-        "27": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["26", 0], "vae": ["9", 0]},
-        },
-        "28": {
-            "class_type": "ModelCompareSheet",
-            "inputs": {"run_name": "sweep", "images": ["27", 0]},
-        },
-    }
+    graph = switch_graphs.any_switch_sweep_graph()
+    graph["14"]["class_type"] = switch_class
+    return graph

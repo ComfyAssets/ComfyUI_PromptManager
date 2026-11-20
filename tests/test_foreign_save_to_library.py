@@ -14,11 +14,12 @@ from unittest import mock
 from tests import saver_anchor_graphs as shapes
 from tests import test_run_attribution as attribution
 from tests import test_save_to_library as save_tests
+from tests import unknown_node_graphs as switch_graphs
 from tests.sweep_graphs import (
     JOINED_TEXT,
     joined_prompt_manager_graph,
     prompt_manager_shared_prefix,
-    sweep_graph,
+    ambiguous_sweep_graph,
 )
 from tests.test_pair_scan import sampled_graph
 from utils.foreign_runs import ForeignRecheck
@@ -388,8 +389,19 @@ class TestPromptManagerRunsAskTheLadder(attribution.RecordedRuns, unittest.TestC
         self.assertIn("Auto-scanned from IMG_GEN_00002_.png", prompt["notes"])
         self.assertEqual(self.handler.awaiting_ladder(), [])
 
+    def test_the_rgthree_sweep_links_at_settle_from_the_inspector(self):
+        """#657: the real Any Switch outputs its first proven input, so the
+        maintainer's sweep links to the PromptManagerText text."""
+        self.metadata = {"prompt": switch_graphs.any_switch_sweep_graph()}
+        path = self.image("sweep_00009_.png")
+        with self.assertLogs(LOGGER, "INFO") as logs:
+            self.handler.process_new_image(path)
+        self.assertIn("(inspector)", "\n".join(logs.output))
+        self.assertEqual(self.linked_text(path), switch_graphs.POSITIVE)
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
     def test_an_output_the_inspector_calls_ambiguous_is_not_linked(self):
-        self.metadata = {"prompt": sweep_graph()}
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
         path = self.image("sweep_00001_.png")
         self.handler.process_new_image(path)
         self.assertIsNone(self.linked_text(path))
@@ -503,7 +515,7 @@ class TestFinalUnlinkedOutcomesQueueForReview(
         )
 
     def test_nothing_is_queued_before_the_run_is_sealed(self):
-        self.metadata = {"prompt": sweep_graph()}
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
         path = self.image("sweep_00001_.png")
         self.handler.process_new_image(path)
         self.assertEqual(self.queued, [])
@@ -525,7 +537,7 @@ class TestFinalUnlinkedOutcomesQueueForReview(
         self.assertEqual(self.queued, ["IMG_GEN_00001_.png"])
 
     def test_a_record_found_at_settle_without_a_prompt_queues_at_once(self):
-        self.metadata = {"prompt": sweep_graph()}
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
         path = self.image("sweep_00002_.png")
         self.seal(path, nodes=("28",))
         self.handler.process_new_image(path)
@@ -538,7 +550,7 @@ class TestFinalUnlinkedOutcomesQueueForReview(
             "utils.image_monitor.host_output_directory",
             return_value=os.path.join(self.output, "dataset"),
         ):
-            for graph in (sweep_graph(), shapes.shared_prefix()):
+            for graph in (ambiguous_sweep_graph(), shapes.shared_prefix()):
                 self.metadata = {"prompt": graph}
                 self.handler.process_new_image(outside)
         self.assertEqual(self.queued, ["sweep_00003_.png"] * 2)
@@ -570,7 +582,7 @@ class TestFinalUnlinkedOutcomesQueueForReview(
             raise RuntimeError("recorder broke")
 
         self.handler.review_recorder = broken
-        self.metadata = {"prompt": sweep_graph()}
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
         path = self.image("sweep_00004_.png")
         self.seal(path, nodes=("28",))
         with self.assertLogs(LOGGER, "WARNING") as logs:
