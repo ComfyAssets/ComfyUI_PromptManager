@@ -215,22 +215,24 @@ def choosable(candidate: Any) -> bool:
 
 
 # An item is worth a decision only when at least this many candidates offer
-# a prompt; with fewer there is nothing to choose between (maintainer test of
-# #284/#288: 39 items whose candidates were all "unresolved").
-MIN_CHOOSABLE = 2
+# a prompt; with none there is nothing to choose (maintainer test of
+# #284/#288: 39 items whose candidates were all "unresolved"). One is enough
+# (#657 addendum D1, 2026-11-20): the other branches stay listed, disabled,
+# and the user may still leave the file unresolved.
+MIN_CHOOSABLE = 1
 
 
 def evidence_offers_choice(evidence: Any) -> bool:
     """False when stored evidence provably offers nothing to choose.
 
-    Unlimited evidence must list ``MIN_CHOOSABLE`` choosable candidates. A
-    limited item stores none, only ``candidate_total``; it may offer a choice
-    (more than ``MAX_CANDIDATES`` prompts) unless that total is too small.
+    Unlimited evidence must list ``MIN_CHOOSABLE`` choosable candidates (the
+    saver anchor's one pair, #390, counts like any other). A limited item
+    stores none, only ``candidate_total``; it may offer a choice unless that
+    total is too small.
     """
     if not isinstance(evidence, dict):
         return False
-    # The saver anchor's one pair (#390) is a suggestion to confirm.
-    needed = 1 if evidence.get("anchor") == "saver" else MIN_CHOOSABLE
+    needed = MIN_CHOOSABLE
     if evidence.get("limited"):
         total = evidence.get("candidate_total")
         return type(total) is int and total >= needed

@@ -558,7 +558,7 @@ class ReviewOperations:
         """Remove the pending, undecided items that offer nothing to choose.
 
         ``locators`` are files the caller found ambiguous without a choice
-        (fewer than two candidates carry a prompt). Of their items, one leaves
+        (no candidate carries a prompt). Of their items, one leaves
         the queue only when its own stored evidence offers no choice either
         (``evidence_offers_choice``) and it is still ``pending`` at revision 0
         with no decision row, the same safe delete as

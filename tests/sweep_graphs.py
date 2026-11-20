@@ -94,3 +94,26 @@ def ambiguous_sweep_graph(switch_class=UNKNOWN_SWITCH):
     graph = switch_graphs.any_switch_sweep_graph()
     graph["14"]["class_type"] = switch_class
     return graph
+
+
+# The class of the maintainer's LLM prompt enhancer (no table lists it).
+ENHANCER = "KikoPromptEnhancer"
+# The one readable text of ``enhanced_sweep_graph`` (the joined ``any_02``).
+ENHANCED_TEXT = f"{switch_graphs.SWEEP_PREFIX}, {switch_graphs.POSITIVE}"
+
+
+def enhanced_sweep_graph():
+    """The sweep with an LLM enhancer (17) between PromptManagerText (12) and
+    the switch's ``any_01`` (#657 addendum D1, live test 2026-11-20).
+
+    The inspection profile is ambiguous with two candidates: ``any_01`` is
+    decided at run time (unresolved), ``any_02`` resolves to
+    ``ENHANCED_TEXT``. One readable choice: the file is reviewable.
+    """
+    graph = switch_graphs.any_switch_sweep_graph()
+    graph["17"] = {
+        "class_type": ENHANCER,
+        "inputs": {"prompt": ["12", 0], "seed": 1, "model": "local-llm"},
+    }
+    graph["14"]["inputs"]["any_01"] = ["17", 0]
+    return graph

@@ -1767,7 +1767,7 @@ class AdminRoutesMixin:
         ``ambiguous`` is a list, ``media_file`` is appended to it; only a file
         that then returns ``"ambiguous"`` (nothing linked it) is a Needs
         review case. An ambiguous result with nothing to choose
-        (``reviewable`` is False: fewer than two candidates carry a prompt)
+        (``reviewable`` is False: no candidate carries a prompt)
         goes to ``untraced`` instead and returns ``"unresolved"`` when nothing
         links it. The parsed records of either ambiguous file go to
         ``records["canonical"]`` when ``records`` is a dict, and the ladder's

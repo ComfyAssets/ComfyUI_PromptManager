@@ -6,7 +6,7 @@ final outcome is ambiguous and unlinked. The strict resolver must find it
 ``graph_prompt_text``) must not link it, and no saved row may link it
 already. A file the fallback links, an exact pair the ingester stored and an
 already linked file are never queued. Neither is an ambiguous file with
-nothing to choose: fewer than two of its candidates carry a prompt
+nothing to choose: none of its candidates carries a prompt
 (``utils.review_capture.reviewable``); the scan reports it unresolved ("could
 not be traced") unless the inspection profile finds a choice in it. A file
 the default profile calls unresolved gets the same inspection-profile chance
@@ -398,8 +398,8 @@ class ReviewRecordingMixin:
     def _settle_untraced_reviews(self, media_files, roots, review=None):
         """Remove the pending items without a choice of untraced ``media_files``.
 
-        ``media_files`` are files found ambiguous with fewer than two
-        candidates that carry a prompt. Blocking; best effort like the linked
+        ``media_files`` are files found ambiguous without a candidate that
+        carries a prompt. Blocking; best effort like the linked
         settle (a failure is logged and counted in ``review["errors"]``).
         Returns how many items left.
         """

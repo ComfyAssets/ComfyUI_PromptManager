@@ -9,10 +9,12 @@ reads the metadata again from the capture, resolves it with the default
 (ingestion) profile and stores only an ``ambiguous`` result, bound to the
 capture's byte record. The evidence a reviewer chooses from is therefore the
 evidence of exactly those bytes. An ambiguous result is stored only when it
-is ``reviewable``: at least two candidates carry a resolved prompt text. With
-none the file could not be traced; with exactly one, the untraced branches
-may still have made the file, so that text is not certain and the file stays
-unresolved (the resolver never flattens unknown semantics into a guess).
+is ``reviewable``: at least one candidate carries a resolved prompt text
+(#657 addendum D1). With none the file could not be traced. With exactly
+one, the untraced branches may still have made the file, so the file is
+never linked from it, but the user may confirm it: the other branches stay
+listed, disabled (the resolver never flattens unknown semantics into a
+guess).
 Nothing here links a file, loads a model or decodes pixels; the capture is
 released before the database write.
 
@@ -29,8 +31,8 @@ batches): when the default profile is ambiguous without a choice, or calls a
 file with a prompt graph ``unresolved`` (#659 C1, e.g. "Unsupported latent
 ancestry"), the scan and the review worker (``inspection=True``) ask
 ``INSPECTION_PROFILE``,
-which knows more encoder and string nodes. With at least two choosable
-candidates there, the item is recorded from that profile: its evidence names
+which knows more encoder and string nodes. With a choosable
+candidate there, the item is recorded from that profile: its evidence names
 ``profile: "inspection"`` and ``semantics``, the fingerprint of what the table
 says about the graph's node classes, and its ``resolver_version`` is
 ``inspection_review_version(metadata)``, which folds the profile,
