@@ -1106,7 +1106,8 @@ class TestEnvelopes(AnnotationAPITestCase):
         )
         self.assertEqual(resp.status, 200)
         data = await self.json_of(resp)
-        # Additive only: B3 adds the image_tags facet beside the Library facts.
+        # Additive only: B3 adds the image_tags facet beside the Library facts,
+        # #659 the review facet (null for a file without an ambiguous role).
         self.assertEqual(
             sorted(data),
             [
@@ -1118,10 +1119,12 @@ class TestEnvelopes(AnnotationAPITestCase):
                 "metadata",
                 "prompts",
                 "resolution",
+                "review",
                 "root_scope",
                 "success",
             ],
         )
+        self.assertIsNone(data["review"])
         self.assertEqual(sorted(data["image"]), ["filename", "path", "root_index"])
         self.assertEqual(data["image_tags"], {"state": "none", "tags": []})
         self.assertEqual(
