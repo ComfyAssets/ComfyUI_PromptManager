@@ -1169,6 +1169,42 @@ class TestReviewWorker(ReviewTestCase):
         self.assertTrue(thread.daemon)
         self.assertTrue(self.api.review_worker_started())
 
+    async def test_a_worker_that_dies_is_started_again_by_the_next_output(self):
+        """An unexpected error outside one recording ends the thread with a
+        log line, and the next queued output starts a new one (never a dead
+        worker that keeps answering ``queued``)."""
+        from unittest.mock import patch
+
+        self._roots()
+        worker = self.api._review_worker()
+        real = type(worker)._next_locked
+        broken = []
+
+        def next_once_broken(self_):
+            if not broken:
+                broken.append(True)
+                raise ValueError("boom")
+            return real(self_)
+
+        first = self.output_dir / "one.png"
+        write_png(first, prompt=unlinkable_graph("cat", "dog"))
+        with patch.object(type(worker), "_next_locked", next_once_broken):
+            with self.assertLogs(worker._logger, level="ERROR") as logs:
+                self.assertEqual(self.api.queue_review_file(str(first)), "queued")
+                dead = worker._thread
+                await asyncio.to_thread(dead.join, 5)
+            self.assertFalse(dead.is_alive())
+            self.assertIn("review worker stopped", "\n".join(logs.output))
+            self.assertIsNone(worker._thread)
+            self.assertTrue(self.api.review_worker_started())
+
+            calls = Recorded(self, self.api)
+            second = self.output_dir / "two.png"
+            write_png(second, prompt=unlinkable_graph("bird", "fish"))
+            self.assertEqual(self.api.queue_review_file(str(second)), "queued")
+            await calls.wait_for(2)
+        self.assertEqual(sorted(calls.outcomes), ["recorded", "recorded"])
+
     async def test_a_path_queued_while_it_runs_runs_once_more_never_at_once(self):
         import threading
 

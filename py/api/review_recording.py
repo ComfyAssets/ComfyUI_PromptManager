@@ -590,11 +590,12 @@ class ReviewWorker:
         self._deferred = OrderedDict()  # key -> path
         self._in_hand = None
         self._thread = None
+        self._ever_started = False
         self._stopped = False
 
     @property
     def started(self):
-        return self._thread is not None
+        return self._ever_started
 
     @staticmethod
     def _key(path):
@@ -637,6 +638,7 @@ class ReviewWorker:
             self._stopped = True
             return False
         self._thread = thread
+        self._ever_started = True
         return True
 
     def pending_count(self):
@@ -659,6 +661,25 @@ class ReviewWorker:
             )
 
     def _run(self):
+        """The thread body: an unexpected error ends it with a log line and
+        clears the handle, so the next queued output starts a new thread
+        (the paths still waiting stay queued)."""
+        try:
+            self._loop()
+        except Exception:
+            self._logger.error(
+                "The review worker stopped on an unexpected error; "
+                "the next output starts it again",
+                exc_info=True,
+            )
+        finally:
+            with self._changed:
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                self._in_hand = None
+                self._changed.notify_all()
+
+    def _loop(self):
         while True:
             with self._changed:
                 path = self._next_locked()
