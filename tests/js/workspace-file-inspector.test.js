@@ -748,3 +748,24 @@ test('category chip names its origin visibly and shows an own category for any l
         assert.equal(chips.some(chip => /category: /.test(chip)), false, JSON.stringify(library));
     }
 });
+
+// #658: an ambiguous file whose candidates share one role. The shared role has Copy and Send; the footer
+// "Send to ComfyUI" sends a pair, so it needs both roles resolved and is absent here, in both variants.
+test('one resolved and one ambiguous role: no footer Send to ComfyUI, the resolved role keeps its actions', async () => {
+    const base = await localRecord(localPng('Shared Negative.png'));
+    const record = {...base, prompts:{positive:{status:'ambiguous', text:null, source:null}, negative:{status:'resolved', text:'blurry, lowres', source:'graph-inferred'}}};
+    for (const variant of ['panel', 'full']) {
+        const f = mountedDom(), scope = createScope();
+        const forbidden = new Proxy({}, {get(_, key) {assert.fail(`api.${String(key)} touched by a local record`);}});
+        const view = mountFileInspector(f.container, {api:forbidden, sender:{open() {}}, parentScope:scope, variant});
+        try {
+            view.setState({loading:false, error:false, record});
+            const buttons = f.walk(f.container, n => n.tagName === 'button');
+            assert.equal(buttons.filter(n => n.dataset.sendRole === 'pair').length, 0, variant);
+            assert.equal(f.walk(f.container, n => n.textContent?.includes?.('Send to ComfyUI') && n.tagName === 'button').length, 0, variant);
+            assert.equal(buttons.filter(n => n.dataset.sendRole === 'negative').length, 1, variant);
+            assert.equal(buttons.filter(n => n.dataset.copyRole === 'negative').length, 1, variant);
+            assert.equal(buttons.filter(n => n.dataset.sendRole === 'positive' || n.dataset.copyRole === 'positive').length, 0, variant);
+        } finally { view.dispose(); scope.dispose(); f.restore(); }
+    }
+});

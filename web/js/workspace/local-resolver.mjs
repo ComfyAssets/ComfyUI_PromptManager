@@ -54,7 +54,7 @@ import {
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
-import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage, stagesFrom } from './local-resolver-stages.mjs';
+import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, sharedSide, stage, stagesFrom } from './local-resolver-stages.mjs';
 import { parameters } from './local-parameters.mjs';
 
 export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
@@ -976,9 +976,10 @@ export function resolveLocalEvidence(records, semantics, fileName = null) {
     const resolved = resolve(metadata, semantics, fileName);
     const state = resolved.state, prompts = {};
     for (const role of ['positive', 'negative']) {
-        const side = resolved[role];
+        // A role every candidate agrees on is certain (#658); the pair state stays ambiguous.
+        const side = state === 'ambiguous' ? sharedSide(resolved, role) : resolved[role];
         const present = side !== null && typeof side === 'object';
-        if (state !== 'ambiguous' && present && (role === 'negative' || pyStrip(side.text))) prompts[role] = sideOf('resolved', side.text, side.provenance.text_source);
+        if (present && (role === 'negative' || pyStrip(side.text))) prompts[role] = sideOf('resolved', side.text, side.provenance.text_source);
         else if (state === 'resolved' && present) prompts[role] = { ...sideOf('unresolved'), message: EMPTY_POSITIVE };
         else prompts[role] = sideOf(state !== 'resolved' ? state : 'unresolved');
     }

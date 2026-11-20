@@ -2441,12 +2441,14 @@ class TestDetailerStages(unittest.TestCase):
             ],
         )
         self.assertEqual(_inspect(_detailed(), output_node_id="9"), result)
-        # Neither the upstream prompt nor the detailer prompt is shown as the answer.
+        # Neither the upstream prompt nor the detailer prompt is shown as the
+        # answer; the negative both stages share is (#658).
         prompts = inspect_prompt_evidence({"prompt": _detailed()})["prompts"]
         self.assertEqual(
             [prompts[role]["status"] for role in ("positive", "negative")],
-            ["ambiguous", "ambiguous"],
+            ["ambiguous", "resolved"],
         )
+        self.assertEqual(prompts["negative"]["text"], parity.NEG)
         self.assertNotIn(parity.POS, str(prompts))
 
     def test_detailer_of_a_loaded_image_is_a_single_stage(self):
