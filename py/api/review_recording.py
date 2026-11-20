@@ -594,6 +594,8 @@ class ReviewRecordingMixin:
                 worker = getattr(self, "_review_recorder_worker", None)
                 if worker is None:
                     worker = ReviewWorker(
+                        # Late-bound on purpose: a record_review_file
+                        # replaced after the worker exists still runs.
                         lambda path: self.record_review_file(path),
                         self._review_admitted,
                         self.logger,
