@@ -306,15 +306,23 @@ test('#657 D5: a page that could not be read says so, and Retry reads it', async
     await expect(continuation(page)).toHaveCount(0);
 });
 
+const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
 test('#657 D5: nothing loads behind an open dialog; closing it loads the page in view', async ({ page, request }) => {
+    // Two columns, so Link to a prompt… sits in the sticky panel beside the queue. At one column (touch) the panel
+    // follows the queue just above the continuation: bringing Link into view there loads the next page by itself.
+    await page.setViewportSize({ width: 1280, height: 800 });
     await seed(request, 45);
     const reads = reviewReads(page);
     await open(page);
+    await linkButton(page).scrollIntoViewIfNeeded();
+    await frames(page);
+    expect(await continuation(page).evaluate(node => node.getBoundingClientRect().top > window.innerHeight + 250)).toBe(true);
     await linkButton(page).click();
     await expect(linkDialog(page)).toBeVisible();
     await scrollToContinuation(page);
     // Two frames: the observer's callback and the load it would schedule.
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await frames(page);
     await expect(cards(page)).toHaveCount(40);
     expect(reads).not.toContain('more');
     await linkDialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
