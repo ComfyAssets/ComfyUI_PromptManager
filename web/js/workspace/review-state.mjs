@@ -28,6 +28,10 @@
  *   read; a re-read started during Load more takes the click over and reads that page too.
  * - Apply fences on the epoch of the detail it decides: an observe under another storage releases its capture and
  *   reads the queue and the item again. An unanswered decision that a re-read shows landed finishes as recorded.
+ * - Single-item mode (#659, `itemId`: Inspect's Choose prompt): the controller holds only that item and never reads
+ *   the queue. `load()`, `refresh()` and `sync()` read its detail; a recorded decision (or an item already decided)
+ *   ends in phase `decided` with `decided: true`; a refusal that makes the queue stale (`review-conflict`,
+ *   `review-missing`, a restore) reads the detail again. Leave for later does nothing.
  */
 import { noun } from './plural.mjs';
 
@@ -129,16 +133,17 @@ const isLost = error => !isAbort(error) && !error?.code && !(error?.status >= 40
 const initial = () => ({
     status: 'idle', epoch: null, total: 0, items: Object.freeze([]), nextCursor: null, more: 'idle',
     selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null,
-    unreadable: null, phase: 'idle', warning: '', canRetry: false, toast: null, decisions: 0,
+    unreadable: null, phase: 'idle', warning: '', canRetry: false, toast: null, decisions: 0, decided: false,
 });
 
 /**
- * @param {{api: {get: Function, post: Function, del: Function}}} options
+ * @param {{api: {get: Function, post: Function, del: Function}, itemId?: string}} options `itemId`: single-item mode.
  * @returns the controller: `state`, `subscribe(listener)`, `load()`, `refresh()`, `loadMore()`, `select(id)`, `choose(value)`,
  *   `sync(version)`, `apply()`, `leaveUnresolved()`, `link(choice)`, `retry()`, `leave()`, `dispose()`.
  */
-export function createReviewController({ api }) {
-    let state = Object.freeze(initial());
+export function createReviewController({ api, itemId = null }) {
+    const single = typeof itemId === 'string' && itemId !== '';
+    let state = Object.freeze(single ? { ...initial(), items: Object.freeze([Object.freeze({ id: itemId })]) } : initial());
     const listeners = new Set();
     const lifetime = new AbortController();
     let listRead = null, detailRead = null, pending = null, disposed = false;
@@ -210,6 +215,7 @@ export function createReviewController({ api }) {
      * moved). `quiet` (a refresh) keeps the page as it is while reading and after a failed read.
      */
     function load(options) {
+        if (single) return loadItem(options);
         const run = listing = loadQueue(options);
         run.finally(() => { if (listing === run) listing = null; });
         return run;
@@ -268,6 +274,13 @@ export function createReviewController({ api }) {
         }
     }
 
+    /** Single-item mode: read the item's detail again (the queue is never read). */
+    async function loadItem({ keepWarning = false } = {}) {
+        if (state.phase === 'applying' || state.decided) return;
+        set({ status: 'ready' });
+        await select(itemId, { keepWarning });
+    }
+
     function clearSelection() {
         set({ selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null,
             unreadable: null });
@@ -276,6 +289,7 @@ export function createReviewController({ api }) {
     /** The stream's `ready`: re-read only when the queue shown is older than `version`. */
     function sync(version) {
         if (disposed) return Promise.resolve();
+        if (single) return refresh();
         if (state.status === 'loading') {
             // A second version, or a change, while the first read runs: no longer one version to compare.
             afterLoad = afterLoad === null && isVersion(version) ? version : 'always';
@@ -288,6 +302,7 @@ export function createReviewController({ api }) {
     /** Re-read the queue after a change elsewhere; calls made while one runs collapse into one more read. */
     function refresh() {
         if (disposed) return Promise.resolve();
+        if (single) return state.phase === 'applying' ? Promise.resolve() : loadItem({ keepWarning: true });
         // Before the queue has been read there is nothing to keep: the first read (or Retry) reads the latest.
         if (state.status !== 'ready') {
             if (state.status === 'loading') afterLoad = 'always';
@@ -357,8 +372,12 @@ export function createReviewController({ api }) {
             const chosen = options.find(option => !option.disabled);
             set({ detail: Object.freeze(detail), detailStatus: 'ready', options, choice: chosen?.value ?? null,
                 prompts: promptsOf(chosen), unreadable: unreadableOf(detail), warning: (keepWarning && state.warning) || warningOf(detail) });
+            // Single-item mode: an item decided elsewhere (another tab, Needs review) offers nothing more.
+            if (single && detail.state !== 'pending') { dropPending(); set({ phase: 'decided', decided: true, canRetry: false }); }
         } catch (error) {
             if (read !== detailRead || disposed || isAbort(error)) return;
+            // Single-item mode has no queue to fall back on: the item's own sentence (it was removed, say).
+            if (single && RELOAD.has(error?.code)) { set({ detailStatus: 'error', warning: error.message || COPY.detailFailed }); return; }
             if (RELOAD.has(error?.code)) { set({ warning: error.message }); await load({ keepWarning: true, stale: true }); return; }
             set({ detailStatus: 'error', warning: COPY.detailFailed });
         }
@@ -381,6 +400,11 @@ export function createReviewController({ api }) {
 
     /** The item recorded: it leaves the page's queue, the one after it opens and the queue is read again. */
     async function advance(id, total, toast) {
+        if (single) {
+            set({ phase: 'decided', decided: true, total, warning: '', toast, decisions: state.decisions + 1 });
+            owedRefresh = false;
+            return;
+        }
         const index = state.items.findIndex(entry => entry.id === id);
         const items = Object.freeze(state.items.filter(entry => entry.id !== id));
         const next = items[index] ?? items[index - 1] ?? null;
@@ -490,7 +514,7 @@ export function createReviewController({ api }) {
 
     /** Leave for later: nothing is written; the next item opens, wrapping. */
     function leave() {
-        if (state.phase === 'applying') return Promise.resolve();
+        if (single || state.phase === 'applying') return Promise.resolve();
         dropPending();
         const index = state.items.findIndex(entry => entry.id === state.selectedId);
         const next = state.items[index + 1] ?? state.items[0];

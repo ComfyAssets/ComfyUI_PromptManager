@@ -864,3 +864,175 @@ test('M5: an unanswered decision that landed finishes as recorded, not as decide
     assert.doesNotMatch(c.state.warning, /decided elsewhere/);
     assert.equal(h.of('DELETE', CAPTURE).length, 0, 'the server used the capture');
 });
+
+// #659: the single-item mode Inspect's Choose prompt runs: one named item, its detail, one decision, no queue.
+async function single(extra, itemId = 'one') {
+    const { createReviewController } = await load();
+    const h = harness(routes(extra));
+    const c = createReviewController({ api: h.api, itemId });
+    await c.load();
+    await settle();
+    return { c, h };
+}
+const listReads = h => h.calls.filter(call => call.method === 'GET' && call.url.split('?')[0] === ITEMS);
+const detailReads = (h, id = 'one') => h.of('GET', `${ITEMS}/${id}`);
+
+test('single-item mode never reads the list and loads its item', async () => {
+    const { c, h } = await single();
+    assert.equal(listReads(h).length, 0);
+    assert.equal(detailReads(h).length, 1);
+    assert.equal(c.state.status, 'ready');
+    assert.equal(c.state.selectedId, 'one');
+    assert.equal(c.state.detailStatus, 'ready');
+    assert.equal(c.state.phase, 'idle');
+    assert.equal(c.state.decided, false);
+    assert.deepEqual(c.state.options.map(option => [option.label, option.disabled]), [
+        ['Sampler 9 · No positive / Soft negative', true],
+        ['Sampler 12 · Dunes / Soft negative', false],
+        ['Sampler 28 · Dunes / Harsh negative', false],
+    ]);
+    assert.equal(c.state.choice, HASH_A);
+    assert.equal(c.state.warning, '');
+    c.choose(HASH_B);
+    assert.equal(c.state.prompts.negative.text, 'noise');
+    c.dispose();
+});
+
+test('single-item mode ends decided after a recorded decision, without reading the queue', async () => {
+    const { c, h } = await single();
+    c.choose(HASH_B);
+    assert.equal(await c.apply(), true);
+    await settle();
+    const [decision] = h.of('POST', `${ITEMS}/one/decision`);
+    assert.equal(decision.body.choice, HASH_B);
+    assert.equal(decision.body.capture_token, 'capture-1');
+    assert.equal(decision.body.expected_epoch, EPOCH);
+    assert.equal(c.state.phase, 'decided');
+    assert.equal(c.state.decided, true);
+    assert.equal(c.state.decisions, 1);
+    assert.equal(c.state.toast, 'Association accepted.');
+    assert.equal(listReads(h).length, 0);
+    assert.equal(detailReads(h).length, 1);
+    // A decided controller decides nothing more.
+    assert.equal(await c.apply(), false);
+    assert.equal(await c.leaveUnresolved(), false);
+    assert.equal(h.of('POST', `${ITEMS}/one/decision`).length, 1);
+    c.dispose();
+});
+
+test('single-item Leave unresolved decides the item as unresolved', async () => {
+    const { c, h } = await single();
+    assert.equal(await c.leaveUnresolved(), true);
+    const [decision] = h.of('POST', `${ITEMS}/one/decision`);
+    assert.equal(decision.body.choice, 'unresolved');
+    assert.equal(c.state.decided, true);
+    assert.equal(c.state.toast, 'Left unresolved.');
+    assert.equal(listReads(h).length, 0);
+    c.dispose();
+});
+
+for (const code of ['review-conflict', 'review-missing']) {
+    test(`single-item mode re-reads its detail after a ${code} refusal`, async () => {
+        let reads = 0;
+        const { c, h } = await single({
+            [`GET ${ITEMS}/one`]: () => {
+                reads += 1;
+                return reads === 1 || code === 'review-conflict' ? response(200, detailOf(QUEUE[0], { revision: reads }))
+                    : fail(404, 'review-missing', 'This review item no longer exists. Reload the queue.');
+            },
+            [`POST ${ITEMS}/one/decision`]: () => fail(code === 'review-missing' ? 404 : 409, code, `refused: ${code}`),
+        });
+        assert.equal(await c.apply(), false);
+        await settle();
+        assert.equal(listReads(h).length, 0);
+        assert.equal(detailReads(h).length, 2);
+        assert.equal(c.state.phase, 'idle');
+        assert.equal(c.state.decided, false);
+        // The refused capture is released.
+        assert.equal(h.of('DELETE', CAPTURE).length, 1);
+        if (code === 'review-conflict') {
+            assert.equal(c.state.detailStatus, 'ready');
+            assert.equal(c.state.detail.revision, 2);
+            assert.equal(c.state.warning, `refused: ${code}`);
+        } else {
+            // The item is gone: its sentence, and nothing more is read.
+            assert.equal(c.state.detailStatus, 'error');
+            assert.equal(c.state.warning, 'This review item no longer exists. Reload the queue.');
+            await settle();
+            assert.equal(detailReads(h).length, 2);
+        }
+        c.dispose();
+    });
+}
+
+test('single-item refusal keeps the item open with the server sentence', async () => {
+    const { c, h } = await single({
+        [`POST ${ITEMS}/one/decision`]: () => fail(409, 'file-changed', 'The file changed since it was queued.'),
+    });
+    assert.equal(await c.apply(), false);
+    assert.equal(c.state.phase, 'idle');
+    assert.equal(c.state.warning, 'The file changed since it was queued.');
+    assert.equal(c.state.detailStatus, 'ready');
+    assert.equal(detailReads(h).length, 1);
+    assert.equal(listReads(h).length, 0);
+    c.dispose();
+});
+
+test('single-item unanswered decision resends the same body once', async () => {
+    let attempts = 0;
+    const { c, h } = await single({
+        [`POST ${ITEMS}/one/decision`]: call => {
+            attempts += 1;
+            if (attempts === 1) return Promise.reject(new TypeError('Failed to fetch'));
+            return response(200, { success: true, library_epoch: EPOCH, total: 1, item: { ...QUEUE[0], state: 'selected', revision: 1 } });
+        },
+    });
+    assert.equal(await c.apply(), false);
+    assert.equal(c.state.canRetry, true);
+    assert.equal(c.state.warning, 'The decision may not have been saved. Apply again to send the same decision once more.');
+    assert.equal(await c.retry(), true);
+    const [first, second] = h.of('POST', `${ITEMS}/one/decision`);
+    assert.deepEqual(second.body, first.body);
+    assert.equal(h.of('POST', OBSERVE).length, 1);
+    assert.equal(c.state.decided, true);
+    c.dispose();
+});
+
+test('single-item mode opens an item already decided as decided', async () => {
+    const { c, h } = await single({
+        [`GET ${ITEMS}/one`]: () => response(200, detailOf({ ...QUEUE[0], state: 'selected', revision: 1 })),
+    });
+    assert.equal(c.state.decided, true);
+    assert.equal(c.state.phase, 'decided');
+    assert.equal(await c.apply(), false);
+    assert.equal(h.of('POST', OBSERVE).length, 0);
+    c.dispose();
+});
+
+test('single-item refresh re-reads the detail, never the list; leave does nothing', async () => {
+    const { c, h } = await single();
+    await c.refresh();
+    await c.sync({ library_epoch: EPOCH, review_revision: 9 });
+    await c.leave();
+    await settle();
+    assert.equal(listReads(h).length, 0);
+    assert.ok(detailReads(h).length >= 2);
+    assert.equal(c.state.selectedId, 'one');
+    c.dispose();
+});
+
+test('single-item failed detail read is an error with its retry', async () => {
+    let reads = 0;
+    const { c, h } = await single({
+        [`GET ${ITEMS}/one`]: () => (++reads === 1 ? fail(500, 'review-failed', 'The review queue could not be read.') : response(200, detailOf(QUEUE[0]))),
+    });
+    assert.equal(c.state.detailStatus, 'error');
+    assert.equal(c.state.warning, COPY_DETAIL_FAILED);
+    await c.load();
+    await settle();
+    assert.equal(c.state.detailStatus, 'ready');
+    assert.equal(c.state.warning, '');
+    assert.equal(listReads(h).length, 0);
+    c.dispose();
+});
+const COPY_DETAIL_FAILED = 'This item could not be read. Select it again to retry.';

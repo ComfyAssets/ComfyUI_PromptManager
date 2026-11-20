@@ -31,6 +31,7 @@
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { createReviewController, COPY, noticeTitle } from './review-state.mjs';
+import { renderReviewOptions } from './review-options.mjs';
 import { createImageCard } from './image-card.mjs';
 import { openPromptLink } from './review-link.mjs';
 import { isTagButton, openImageTagging } from './image-tagging.mjs';
@@ -45,6 +46,9 @@ import { navigateTo } from './state.mjs';
 import { noun } from './plural.mjs';
 import { showWorkspaceToast } from './toast.mjs';
 import { imageKey } from './images-state.mjs';
+
+// The option list Inspect's Choose prompt shares (#659); its own module keeps Inspect free of this page's imports.
+export { renderReviewOptions };
 
 export const REVIEW_EVENTS_URL = '/prompt_manager/review/events';
 // I3: reopening a stream the browser closed for good waits this long, doubling up to the maximum.
@@ -167,7 +171,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         sender, onSelect: image => inspection.select(image) });
 
     const cards = new Map();
-    let shownItems = null, shownSelected, shownOptions = null, shownPrompts, shownDetail, shownUnreadable = null, shownDecisions = 0;
+    let shownItems = null, shownSelected, shownPrompts, shownDetail, shownUnreadable = null, shownDecisions = 0;
 
     function createCard(item) {
         // D119: no selection checkbox and no star on a queue card.
@@ -224,17 +228,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         setDisabled(tagButton, !item?.target || state.phase === 'applying');
         setDisabled(linkButton, !item?.target || state.detailStatus !== 'ready' || state.phase !== 'idle');
         renderUnreadable(state);
-        if (state.options !== shownOptions) {
-            shownOptions = state.options;
-            select.replaceChildren(...state.options.map(option => {
-                const node = el('option', option.label);
-                node.value = option.value;
-                node.disabled = option.disabled;
-                return node;
-            }));
-        }
-        if (state.choice !== null && select.value !== state.choice) select.value = state.choice;
-        select.disabled = state.detailStatus !== 'ready' || state.phase === 'applying';
+        renderReviewOptions(select, state, { onChoose: value => controller.choose(value), scope });
         setText(warning, state.warning);
         warning.hidden = !state.warning;
         if (state.prompts !== shownPrompts || state.detailStatus !== shownDetail) {
@@ -285,7 +279,6 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
 
     scope.listen(retryLoad, 'click', () => controller.load());
     scope.listen(more, 'click', () => { if (!isDisabled(more)) controller.loadMore(); });
-    scope.listen(select, 'change', () => controller.choose(select.value));
     scope.listen(apply, 'click', () => { if (!isDisabled(apply)) controller.apply(); });
     scope.listen(later, 'click', () => { if (!isDisabled(later)) controller.leave(); });
     scope.listen(leaveUnresolved, 'click', () => { if (!isDisabled(leaveUnresolved)) controller.leaveUnresolved(); });
