@@ -193,7 +193,7 @@ class LegacyParityGateTest(unittest.TestCase):
     def test_the_reported_graph_reads_better_than_legacy(self):
         # Legacy found no positive here (cf0cef3 showed the positive text as
         # the negative); the floor is met, and the inspector now reads it.
-        graph = unknown.any_switch_graph()
+        graph = unknown.unknown_multi_graph()
         self.assertIsNone(legacy_positive(graph, None))
         result = resolver.resolve_prompt_pair(
             {"prompt": graph}, profile=resolver.INSPECTION_PROFILE
