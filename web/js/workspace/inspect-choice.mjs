@@ -5,7 +5,8 @@
  *
  * - the item's detail (`GET /prompt_manager/review/items/{id}`) gives one "Sampler <id> · <positive> / <negative>"
  *   option per candidate in the shared **Sampler context** select (review-options.mjs), a candidate the server cannot
- *   apply disabled with its reason;
+ *   apply disabled with its reason; a file whose list the server shortened to its most used prompts says so under the
+ *   select (#657 D3);
  * - the chosen option's positive and negative are the shared prompt blocks, with their Copy and Send;
  * - **Use this prompt** runs the Needs review apply flow (a fresh capture, then the decision with the candidate's
  *   hash); **Leave unresolved** decides the item as unresolved. A refusal shows the server's sentence in the section's
@@ -18,7 +19,7 @@
  */
 import { createScope, createButton } from '../shared/toolkit/core.js';
 import { createReviewController } from './review-state.mjs';
-import { renderReviewOptions } from './review-options.mjs';
+import { renderCollapsed, renderReviewOptions } from './review-options.mjs';
 import { mountPromptBlocks } from './prompt-blocks.mjs';
 import { field } from './workspace-dialogs.mjs';
 import { navigateTo } from './state.mjs';
@@ -91,6 +92,8 @@ export function mountInspectChoice({ api, itemId, sender, parentScope, onDecided
     status.setAttribute('role', 'status');
     const select = el('select');
     const context = field('Sampler context', select, `inspect-choice-context-${choiceId}`);
+    const collapsed = el('div', '', 'small review-collapsed'); // #657 D3
+    collapsed.hidden = true;
     const warning = el('p', '', 'warning-note'); // the states the concept lacks, as in Needs review
     warning.setAttribute('role', 'status');
     const blocks = el('div');
@@ -100,7 +103,7 @@ export function mountInspectChoice({ api, itemId, sender, parentScope, onDecided
     const leave = createButton(CHOICE_COPY.leave);
     const use = createButton(CHOICE_COPY.use, 'ca-primary');
     actions.append(retry, openReview, leave, use);
-    root.append(heading, intro, status, context, warning, blocks, actions);
+    root.append(heading, intro, status, context, collapsed, warning, blocks, actions);
 
     const prompts = mountPromptBlocks(blocks, { prompts: null, sender, parentScope: scope, includePairAction: false, contextLabel: 'Chosen' });
     let shownPrompts, shownDecisions = 0, shownDecided = false, disposed = false;
@@ -126,6 +129,7 @@ export function mountInspectChoice({ api, itemId, sender, parentScope, onDecided
         retry.hidden = mode !== 'error';
         openReview.hidden = mode !== 'review' && mode !== 'error';
         renderReviewOptions(select, state, { onChoose: value => controller.choose(value), scope });
+        renderCollapsed(collapsed, choosing ? state : {});
         warning.textContent = state.warning;
         warning.hidden = !state.warning;
         if (state.prompts !== shownPrompts) {

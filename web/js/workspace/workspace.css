@@ -479,6 +479,7 @@ pre.prompt-text { font: inherit; font-size: 12px; line-height: 1.75; margin-bloc
 .review-link-results { display: grid; gap: 6px; max-block-size: 40vh; overflow-y: auto; }
 .review-link-results > button { justify-content: flex-start; inline-size: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .review-link-results > button[aria-pressed="true"] { border-color: var(--ca-accent); background: var(--soft-blue); }
+.review-collapsed { margin-block: 8px; }
 .review-panel button[aria-disabled="true"], .review-link-actions button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 /* Auto-tag selected images (#249 PR D, D85/D90): the Tag image dialog's model panel, then How to apply, a radio group
    in the concept's `.field` row whose radios keep their own size (the concept's `.field input` is a full-width text

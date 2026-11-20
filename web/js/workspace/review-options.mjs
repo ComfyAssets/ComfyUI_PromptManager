@@ -35,3 +35,20 @@ export function renderReviewOptions(select, state, { onChoose, scope }) {
     if (state.choice !== null && select.value !== state.choice) select.value = state.choice;
     select.disabled = state.detailStatus !== 'ready' || state.phase === 'applying';
 }
+
+/**
+ * #657 D3: the line under the options when the server kept only the most used prompts of a file with very many
+ * (`detail.collapsed`: `{shown, total, paths}`), else ''.
+ */
+export function collapsedLine(detail) {
+    const collapsed = detail?.collapsed;
+    if (!collapsed) return '';
+    return `Showing the ${collapsed.shown.toLocaleString('en-US')} most used of ${collapsed.total.toLocaleString('en-US')} prompts in this file.`;
+}
+
+/** Show `collapsedLine(state.detail)` in `node` (hidden without one). */
+export function renderCollapsed(node, state) {
+    const text = collapsedLine(state.detail);
+    if (node.textContent !== text) node.textContent = text;
+    node.hidden = !text;
+}

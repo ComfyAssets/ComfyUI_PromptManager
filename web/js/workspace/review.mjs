@@ -28,10 +28,11 @@
  * - D119: the queue cards carry no selection checkbox and no star (this page has no selection bar, and the queue
  *   carries no favorite state); more than 40 items add the Images page's `.infinite-continuation` Load more after the
  *   layout; the toasts "Association accepted." and "Left unresolved." stand in for the concept's prototype toast.
+ * - #657 D3: a file whose candidates the server shortened to its most used prompts says so under Sampler context.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { createReviewController, COPY, noticeTitle } from './review-state.mjs';
-import { renderReviewOptions } from './review-options.mjs';
+import { renderCollapsed, renderReviewOptions } from './review-options.mjs';
 import { createImageCard } from './image-card.mjs';
 import { openPromptLink } from './review-link.mjs';
 import { isTagButton, openImageTagging } from './image-tagging.mjs';
@@ -139,6 +140,8 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     tagRow.append(tagButton, linkButton);
     const select = el('select');
     const contextField = field('Sampler context', select, 'review-context');
+    const collapsed = el('div', '', 'small review-collapsed'); // #657 D3
+    collapsed.hidden = true;
     const unreadable = el('div', undefined, 'review-unreadable'); // D180
     const warning = el('p', '', 'warning-note'); // D119: the states the concept lacks
     warning.setAttribute('role', 'status');
@@ -149,7 +152,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
     leaveUnresolved.classList.add('review-leave-unresolved');
     const apply = createButton('Apply association', 'ca-primary');
     actions.append(later, leaveUnresolved, apply);
-    panel.append(panelTitle, filename, tagRow, contextField, unreadable, warning, blocks, actions);
+    panel.append(panelTitle, filename, tagRow, contextField, collapsed, unreadable, warning, blocks, actions);
     layout.append(grid, panel);
 
     const live = el('p', NOT_LIVE, 'small review-live'); // D120: the change stream is down
@@ -229,6 +232,7 @@ export function mountReview(main, { api, scope, onDecision = () => {}, onTotal,
         setDisabled(linkButton, !item?.target || state.detailStatus !== 'ready' || state.phase !== 'idle');
         renderUnreadable(state);
         renderReviewOptions(select, state, { onChoose: value => controller.choose(value), scope });
+        renderCollapsed(collapsed, state);
         setText(warning, state.warning);
         warning.hidden = !state.warning;
         if (state.prompts !== shownPrompts || state.detailStatus !== shownDetail) {

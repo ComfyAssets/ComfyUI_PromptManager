@@ -269,3 +269,28 @@ test('an item decided elsewhere hides the section and re-reads the inspection on
         assert.deepEqual(m.decided, [true]);
     } finally { m.done(); }
 });
+
+test('#657 D3: collapsedLine names how many of the file\'s prompts are listed, or nothing', async () => {
+    const { collapsedLine } = await import('../../web/js/workspace/review-options.mjs');
+    assert.equal(collapsedLine({ collapsed: { shown: 16, total: 81, paths: 165 } }),
+        'Showing the 16 most used of 81 prompts in this file.');
+    assert.equal(collapsedLine({ collapsed: { shown: 16, total: 1234, paths: 2000 } }),
+        'Showing the 16 most used of 1,234 prompts in this file.');
+    assert.equal(collapsedLine({ collapsed: null }), '');
+    assert.equal(collapsedLine({}), '');
+    assert.equal(collapsedLine(null), '');
+});
+
+test('#657 D3: a collapsed candidate list says so under the options, and only then', async () => {
+    const m = await mounted({ [`GET ${ITEMS}/${ITEM}`]: () => response(200, detail({ collapsed: { shown: 2, total: 40, paths: 90 } })) });
+    try {
+        const line = m.f.walk(m.view.root, n => /review-collapsed/.test(n.className ?? ''))[0];
+        assert.equal(line.textContent, 'Showing the 2 most used of 40 prompts in this file.');
+        assert.equal(m.visible(line), true);
+    } finally { m.done(); }
+    const plain = await mounted();
+    try {
+        const line = plain.f.walk(plain.view.root, n => /review-collapsed/.test(n.className ?? ''))[0];
+        assert.equal(plain.visible(line), false);
+    } finally { plain.done(); }
+});

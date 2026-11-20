@@ -393,14 +393,13 @@ class ReviewRoutesMixin:
             "library_epoch": item["epoch"],
             **view,
             "candidates": candidates,
-            # #657 D3: the most used prompts of an over-full item, or None.
-            "collapsed": _collapsed(item),
+            "collapsed": self._review_collapsed(item),
             "dependency_fingerprint": fingerprint,
             "sha256": item["sha256"],
             "total": item["total"],
         }
         if len(json.dumps(detail).encode("utf-8")) > MAX_DETAIL_BYTES:
-            detail = {**detail, "candidates": [], "limited": True, "collapsed": None}
+            detail = {**detail, "candidates": [], "collapsed": None, "limited": True}
         return web.json_response(detail, headers=_NO_STORE)
 
     def _review_detail(self, item_id: str):
@@ -414,6 +413,20 @@ class ReviewRoutesMixin:
         aliases, _known = physical_spellings(self.db, image_path, item["locator"])
         fingerprint = self.db.review_dependency_fingerprint(image_path, aliases)
         return item, view, fingerprint, self._review_candidates(item)
+
+    @staticmethod
+    def _review_collapsed(item: dict):
+        """#657 D3: ``{shown, total, paths}`` when the stored list keeps only
+        the most used prompts of the file, else None."""
+        collapsed = None if item["limited"] else item["evidence"].get("collapsed")
+        if not isinstance(collapsed, dict):
+            return None
+        counts = {key: collapsed.get(key) for key in ("shown", "total", "paths")}
+        if not all(
+            isinstance(n, int) and not isinstance(n, bool) for n in counts.values()
+        ):
+            return None
+        return counts
 
     def _review_candidates(self, item: dict) -> list:
         """The detail's candidates: role texts, a label and selectability."""
@@ -673,15 +686,6 @@ class ReviewRoutesMixin:
         if exc.code == "association-conflict" and exc.changed:
             message = "dependencies-changed"
         return _coded(exc.code, message, **extra)
-
-
-def _collapsed(item: dict) -> dict | None:
-    """``{shown, total, paths}`` of an item whose candidates were collapsed."""
-    evidence = item.get("evidence")
-    collapsed = evidence.get("collapsed") if isinstance(evidence, dict) else None
-    if item.get("limited") or not isinstance(collapsed, dict):
-        return None
-    return collapsed
 
 
 def _verify_and_read(store, capture, item, root, need_metadata: bool):

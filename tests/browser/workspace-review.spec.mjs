@@ -683,3 +683,19 @@ test('#536: a refused link stays in the dialog with the server\'s sentence', asy
     expect(await pending(request)).toBe(1);
     expect(await links(request)).toEqual([]);
 });
+
+test('#657 D3: a file whose prompts were shortened to the most used says so', async ({ page, request }) => {
+    await seed(request, 2);
+    await page.route(url => /\/prompt_manager\/review\/items\/[0-9a-f-]{36}$/.test(url.pathname), async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        const collapsed = body.filename === 'review_0000.png' ? { shown: 2, total: 81, paths: 165 } : null;
+        await route.fulfill({ response, json: { ...body, collapsed } });
+    });
+    await open(page);
+    const line = panel(page).locator('.review-collapsed');
+    await expect(line).toHaveText('Showing the 2 most used of 81 prompts in this file.');
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect review_0001.png', exact: true }).click();
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
+    await expect(line).toBeHidden();
+});

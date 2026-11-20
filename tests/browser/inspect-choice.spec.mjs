@@ -108,3 +108,14 @@ test('the viewer details show the same Choose prompt', async ({ page, request })
     // Open in Needs review is offered only when nothing can be chosen.
     await expect(section.getByRole('button', { name: 'Open in Needs review', exact: true })).toBeHidden();
 });
+
+test('#657 D3: Choose prompt says when the file\'s prompts were shortened to the most used', async ({ page, request }) => {
+    await seed(request, { items: 1 });
+    await page.route(url => /\/prompt_manager\/review\/items\/[0-9a-f-]{36}$/.test(url.pathname), async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...(await response.json()), collapsed: { shown: 2, total: 81, paths: 165 } } });
+    });
+    await inspect(page, 'review_0000.png');
+    await expect(context(page).locator('option')).toHaveText(OPTIONS);
+    await expect(choice(page).locator('.review-collapsed')).toHaveText('Showing the 2 most used of 81 prompts in this file.');
+});
