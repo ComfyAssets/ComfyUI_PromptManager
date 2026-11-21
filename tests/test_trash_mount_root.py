@@ -6,7 +6,7 @@ exactly the mount root; every walker and media route ignores them.
 
 Every class runs on a disposable tree with a fake mount table. With
 ``PM_TRASH_MOUNT=<empty folder that is a real mount>`` the same tests run on that
-real mount (``.github/workflows/portability.yml``, ``native-trash-linux``, or
+real mount (``.github/workflows/nightly.yml``, ``native-trash-linux``, or
 locally ``unshare -Urm`` over a tmpfs); that folder is the only real place they
 touch, and the fake-table-only cases skip.
 """

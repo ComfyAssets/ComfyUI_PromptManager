@@ -1,0 +1,407 @@
+name: CI
+
+permissions:
+  contents: read
+
+# The gate (#666): everything a change must pass runs once, here, on the pull request. Nothing runs
+# again in a merge queue or on main; branch protection requires the one context "gate" on a branch
+# that is up to date with main, so the commit that was tested is the commit that merges. What only
+# other browsers, other Pythons, Windows or a real ComfyUI can catch runs in nightly.yml.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to a pull request cancels the older run. A manual run is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONFAULTHANDLER: "1"
+
+# Every job has a time limit: ceil(1.5 x the slowest of three recent green runs) + 3 minutes, never
+# under 5, timed as whole-job wall time. The 3 minutes leave room for the Python runner's watchdog
+# (120 s, tests/run_suite.py) to print its stack dump before GitHub cancels the job. A limit changes
+# only with new measurements written here (TESTING.md "Time limits and hangs"). A job with no three
+# green runs yet has an "estimate" line; replace it with its measurement after three green runs.
+# tests/vendor/ci-workflow.test.mjs recomputes every limit from these lines.
+# Measured 2026-11-21 on runs 44861123845 (a1f7447), 44547399478 (b3bb55f), 44519471869 (fa31644):
+#   python: 7m20s / 7m36s / 7m58s -> 15 min
+#   lint: 0m27s / 0m52s / 0m49s -> 5 min
+#   js-test: 0m27s / 0m35s / 0m36s -> 5 min
+#   changes: 0m10s / 0m06s / 0m07s -> 5 min
+# Measured 2026-11-21 on runs 44861123782 (a1f7447), 44547399248 (b3bb55f), 44519472003 (fa31644):
+#   security: 0m22s / 0m20s / 0m24s -> 5 min
+# Measured 2026-11-21 on runs 44861123725 (a1f7447), 44547398683 (b3bb55f), 44519471975 (fa31644):
+#   frontend-coverage-merge: 0m53s / 0m57s / 0m51s -> 5 min
+#   gate: 0m02s / 0m06s / 0m03s -> 5 min
+# estimate package: one stdlib test module without an install, under 1 minute -> 5 min
+# estimate tooling: the pip and npm installs of a browser shard (about 1 minute) and 2 minutes of tests -> 8 min
+# estimate frontend-coverage: the same four shards ran Chromium and touch together in 7m55s-16m48s;
+#   Chromium alone is about half of that, 9 minutes at most -> 17 min
+#
+# Browser jobs (#425): a job killed at its limit keeps no log and skips its upload steps, so the page
+# test step has its own timeout-minutes, 2 below the job's. At the step limit, SIGTERM makes
+# tools/vendor/running-tests-reporter.mjs print the tests still running and hand over to Playwright's
+# interrupt, which writes the blob report; the always() uploads then run. The limits assume the npm
+# cache hits: a cold cache adds up to 5 minutes to npm ci.
+jobs:
+  # Sorts the change by the files it touches (tools/ci/change_class.py, #639): "inert" and "docs"
+  # (nothing here can break), "release" (only the version line of pyproject.toml), or "code" (anything
+  # else, and every case of doubt). The jobs below run for one class only, and "gate" fails unless
+  # this job succeeded and each job did what the class asks. The clone has every commit but no file
+  # contents (blob:none): the script compares file names, and reads pyproject.toml only when it is
+  # the one file that changed.
+  changes:
+    name: change class
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 tools/ci/change_class.py | tee -a "$GITHUB_OUTPUT"
+
+  # The suite runs once, under coverage: the same run proves the tests pass and the 85% floor holds.
+  python:
+    name: python 3.12 with coverage (85%)
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run the suite under coverage
+        run: python -m coverage run -m tests.run_suite -v
+
+      - name: Coverage gate
+        run: |
+          python -m coverage combine
+          python -m coverage report --fail-under=85
+
+  # A release (only the version line changed) cannot break a test, but it is what the Registry
+  # publishes, so the package-content rules are checked. Standard library only: nothing to install.
+  package:
+    name: package contents
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m unittest -v tests.test_package_contents
+
+  lint:
+    name: black and flake8
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      # The exact black and flake8 pins from requirements-dev.txt, so a new release cannot turn CI red.
+      - run: pip install $(grep -E '^(black|flake8)==' requirements-dev.txt)
+      - run: black --check .
+      - run: flake8 .
+
+  security:
+    name: bandit (high severity)
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install bandit[toml]
+
+      # Medium findings are reported without failing until they are triaged.
+      # High severity is a hard gate.
+      - name: Security report (medium and above, informational)
+        run: bandit -r . -ll -q --exclude ./tests,./reference,./venv,./tools/vendor/node_modules --exit-zero
+      - name: Security scan (high severity gate)
+        run: bandit -r . -lll -q --exclude ./tests,./reference,./venv,./tools/vendor/node_modules
+
+  js-test:
+    name: frontend modules
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tools/vendor/package-lock.json
+
+      - name: Check shipped extension and page modules parse
+        run: |
+          shopt -s globstar nullglob
+          for f in web/comfy/**/*.js web/comfy/**/*.mjs web/js/**/*.js web/js/**/*.mjs; do
+            node --input-type=module --check < "$f" || exit 1
+          done
+
+      - name: Install pinned shared test contracts
+        run: npm ci --prefix tools/vendor --ignore-scripts
+
+      - name: Run JS tests
+        run: node --test tests/js/*.test.js
+
+  # The vendor pins and the tooling tests (tests/vendor). Same image and Python as the browser shards:
+  # some tooling tests start the browser test server.
+  tooling:
+    name: tooling tests and pins
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+      options: --user 1001
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+      - name: Python environment
+        env:
+          PIP_WHEEL: https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl
+          PIP_SHA256: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+        run: |
+          venv="$RUNNER_TEMP/venv" wheel="$RUNNER_TEMP/pip-26.2.1-py3-none-any.whl"
+          python3 -m venv --without-pip "$venv"
+          curl -fsSL --retry 3 -o "$wheel" "$PIP_WHEEL"
+          echo "$PIP_SHA256  $wheel" | sha256sum -c -
+          "$venv/bin/python" "$wheel/pip" install --no-index --no-cache-dir "$wheel"
+          "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
+          echo "$venv/bin" >> "$GITHUB_PATH"
+      - run: python --version && node --version && node --version | grep -q '^v24\.'
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      - run: npm run --prefix tools/vendor check
+      - run: npm run --prefix tools/vendor test
+
+  frontend-coverage:
+    name: frontend coverage (shard ${{ matrix.shard }}/4)
+    needs: changes
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    # Layout comparisons depend on the fonts each browser falls back to, so browser jobs run in the
+    # same pinned Playwright image as local runs (tag = @playwright/test in tools/vendor/package-lock.json;
+    # tests/vendor/browser-image.test.mjs checks it). Browsers and fonts come from the image.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+      options: --user 1001
+    timeout-minutes: 17
+    # Public-repo ubuntu-latest runners have 4 vCPUs: three Playwright workers, each with its own test
+    # server, leave one CPU for the servers and the runner.
+    env:
+      PM_TEST_WORKERS: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+      # The image's own Python 3.12 and Node 24: setup-python/setup-node install the runner's toolcache
+      # builds, whose entry points name host paths that do not exist in the container. The image has no
+      # ensurepip and the job has no root, so a checksum-pinned pip wheel bootstraps a user-space venv.
+      - name: Python environment
+        env:
+          PIP_WHEEL: https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl
+          PIP_SHA256: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+        run: |
+          venv="$RUNNER_TEMP/venv" wheel="$RUNNER_TEMP/pip-26.2.1-py3-none-any.whl"
+          python3 -m venv --without-pip "$venv"
+          curl -fsSL --retry 3 -o "$wheel" "$PIP_WHEEL"
+          echo "$PIP_SHA256  $wheel" | sha256sum -c -
+          "$venv/bin/python" "$wheel/pip" install --no-index --no-cache-dir "$wheel"
+          "$venv/bin/python" -m pip install --no-cache-dir -r requirements-dev.txt
+          echo "$venv/bin" >> "$GITHUB_PATH"
+      - run: python --version && node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      # Desktop Chromium only, without tests tagged @quarantine (tools/vendor/frontend-coverage.mjs).
+      # Shard 1 also runs the node units and the viewer suite.
+      - name: Page workflows with coverage, shard ${{ matrix.shard }}/4
+        timeout-minutes: 15
+        run: npm run --prefix tools/vendor test:coverage:shard -- ${{ matrix.shard }}/4
+      - name: Upload raw coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-raw-${{ matrix.shard }}
+          path: coverage/js/raw/
+          if-no-files-found: error
+          retention-days: 3
+      # Traces and the blob report (test-results/blob/) of a failed, timed-out or cancelled step.
+      - name: Upload Chromium traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-traces-shard-${{ matrix.shard }}
+          path: tools/vendor/test-results/
+          retention-days: 14
+
+  frontend-coverage-merge:
+    name: frontend coverage (merge)
+    # Runs only when every shard succeeded (the implicit success() check).
+    needs: [changes, frontend-coverage]
+    if: ${{ needs.changes.outputs.class == 'code' }}
+    runs-on: ubuntu-latest
+    # Same image as the shards: the raw files name sources by the container's workspace path.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
+      options: --user 1001
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: node --version && node --version | grep -q '^v24\.'
+      # npm's download cache, keyed on the lockfile; inside the container ~ is the job's HOME (/github/home),
+      # which npm also uses. node_modules itself is still built fresh by npm ci.
+      - name: Cache npm downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-playwright-v1.64.1-${{ hashFiles('tools/vendor/package-lock.json') }}
+      - run: npm ci --prefix tools/vendor --ignore-scripts
+      # Each artifact lands in its own coverage-raw-N directory, so the next step can count them.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-raw-*
+          path: ${{ runner.temp }}/coverage-raw
+      # coverage:merge only checks that raw files exist; merging three of four shards would report
+      # partial coverage, so a missing or empty shard artifact fails here.
+      - name: Verify every shard's raw coverage arrived
+        shell: bash
+        env:
+          STAGED_RAW: ${{ runner.temp }}/coverage-raw
+          EXPECTED_SHARDS: 4
+        run: |
+          found=0
+          for shard in $(seq 1 "$EXPECTED_SHARDS"); do
+            directory="$STAGED_RAW/coverage-raw-$shard"
+            count=0
+            if [ -d "$directory" ]; then count=$(find "$directory" -maxdepth 1 -type f -name '*.json' | wc -l); fi
+            echo "coverage-raw-$shard: $count raw files"
+            if [ "$count" -gt 0 ]; then found=$((found + 1)); fi
+          done
+          echo "shard artifacts with raw coverage: $found of $EXPECTED_SHARDS"
+          if [ "$found" -ne "$EXPECTED_SHARDS" ]; then
+            echo "::error::Expected raw coverage from $EXPECTED_SHARDS shards, got $found of $EXPECTED_SHARDS"
+            exit 1
+          fi
+          staged=$(find "$STAGED_RAW" -mindepth 2 -maxdepth 2 -type f -name '*.json' | wc -l)
+          mkdir -p coverage/js/raw
+          # cp -n never overwrites; a clash shows up as fewer merged files than staged ones.
+          find "$STAGED_RAW" -mindepth 2 -maxdepth 2 -type f -name '*.json' -exec cp -n -t coverage/js/raw {} + || true
+          merged=$(find coverage/js/raw -maxdepth 1 -type f -name '*.json' | wc -l)
+          if [ "$merged" -ne "$staged" ]; then
+            echo "::error::Shards wrote clashing raw file names: $staged staged, $merged merged"
+            exit 1
+          fi
+          echo "merged $merged raw files"
+      - name: Frontend coverage report and baseline check
+        run: npm run --prefix tools/vendor coverage:merge
+      - name: Upload frontend coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-test-reports
+          path: |
+            coverage/js/
+            !coverage/js/raw/**
+          retention-days: 14
+
+  # The one required context. Branch protection names only "gate", so renaming or adding a job above
+  # never strands a pull request. It passes only when the classifier succeeded and every job did what
+  # the class asks: for "code" every test job succeeded and the release check was skipped; for
+  # "release" only the package check ran, and it succeeded; for "docs" and "inert" everything was
+  # skipped. A failed, cancelled or wrongly skipped job fails it, and so does a class the classifier
+  # does not print.
+  gate:
+    needs: [changes, python, package, lint, security, js-test, tooling, frontend-coverage, frontend-coverage-merge]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job the change class asks for
+        env:
+          CHANGE_CLASS: ${{ needs.changes.outputs.class }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          JS_RESULT: ${{ needs.js-test.result }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
+          COVERAGE_RESULT: ${{ needs.frontend-coverage.result }}
+          MERGE_RESULT: ${{ needs.frontend-coverage-merge.result }}
+        run: |
+          echo "change class: $CHANGE_CLASS (classifier: $CHANGES_RESULT)"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGE_CLASS" in
+            code) code=success; release=skipped ;;
+            release) code=skipped; release=success ;;
+            docs|inert) code=skipped; release=skipped ;;
+            *) echo "::error::unknown change class"; exit 1 ;;
+          esac
+          failed=0
+          require() {
+            echo "$1: $2 (must be $3)"
+            if [ "$2" != "$3" ]; then echo "::error::$1 is $2, must be $3"; failed=1; fi
+          }
+          require python "$PYTHON_RESULT" "$code"
+          require lint "$LINT_RESULT" "$code"
+          require security "$SECURITY_RESULT" "$code"
+          require js-test "$JS_RESULT" "$code"
+          require tooling "$TOOLING_RESULT" "$code"
+          require frontend-coverage "$COVERAGE_RESULT" "$code"
+          require frontend-coverage-merge "$MERGE_RESULT" "$code"
+          require package "$PACKAGE_RESULT" "$release"
+          exit "$failed"

@@ -12,6 +12,12 @@ const USAGE = 'usage: frontend-coverage.mjs [--update-baseline] | --shard I/N | 
 
 const FORWARDED_SIGNALS = ['SIGTERM', 'SIGINT'];
 
+// What the gate runs and the coverage floors are measured with (#666): desktop Chromium only, without
+// the tests tagged @quarantine (TESTING.md "Quarantine"). Firefox, WebKit, the phone-size touch
+// project and the quarantined tests run nightly, outside coverage.
+export const GATE_PROJECTS = ['chromium'];
+export const QUARANTINE_TAG = '@quarantine';
+
 // Runs one step's node child and waits for it. npm and a CI step timeout signal only this process,
 // so SIGTERM and SIGINT are forwarded to the running child (#425): Playwright then reports the tests
 // still running and writes its blob. The child gets its own process group, so a signal sent to the
@@ -48,7 +54,7 @@ function parseShard(value) {
 }
 
 // Turn the command line into the ordered steps of one coverage run:
-// - no mode: the full run (clean, node units, viewer suite, chromium+touch
+// - no mode: the full run (clean, node units, viewer suite, the gate's
 //   workflows, report, check), exactly as before shards existed;
 // - --shard I/N: one slice of the workflows into coverage/js/raw, without wiping
 //   it or reporting; shard 1 also runs the node units and the viewer suite;
@@ -136,7 +142,8 @@ export async function runCoverage({ argv = process.argv.slice(2), run = runNode,
         },
         workflows({ shard }) {
             return run([playwright, 'test', '--config', join(tools, 'playwright.workflows.config.mjs'),
-                '--project', 'chromium', '--project', 'touch', ...(shard ? ['--shard', shard] : [])], { PM_JS_COVERAGE: raw });
+                ...GATE_PROJECTS.flatMap(project => ['--project', project]), '--grep-invert', QUARANTINE_TAG,
+                ...(shard ? ['--shard', shard] : [])], { PM_JS_COVERAGE: raw });
         },
         report() {
             return run([join(tools, 'node_modules/c8/bin/c8.js'), 'report', '--all', '--src', sourceRoot,

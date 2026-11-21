@@ -8,7 +8,8 @@ export default defineConfig({
     fullyParallel: true,
     workers: 2,
     forbidOnly: Boolean(process.env.CI),
-    retries: process.env.CI ? 1 : 0,
+    // No retries in the gate (#666): a retry hides a race.
+    retries: 0,
     reporter: reporters({ name: 'viewer' }),
     use: { browserName: 'chromium', headless: true, trace: 'retain-on-failure' },
     projects: [

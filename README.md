@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
-![Tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Tests/badge.svg)
+![Nightly tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/actions/workflows/nightly.yml/badge.svg)
 
 Prompt Manager saves your prompts as you generate, links each image back to the prompt that made it, and gives you one page to browse, tag, compare and reuse all of it. Your library is a local SQLite database on your own machine.
 
@@ -246,7 +246,7 @@ The documentation for those pages is in [README-legacy.md](README-legacy.md).
 | Browser | Over 60 Playwright spec files in Chromium, Firefox, WebKit and touch emulation |
 | Real ComfyUI | A pinned CPU ComfyUI, started in Classic and Nodes 2.0, running real workflows |
 
-Linux runs on every pull request and in the merge queue. Windows runs on every push to main and nightly. macOS is not tested; it should work, but support is best-effort. To run the tests yourself, see [TESTING.md](TESTING.md).
+Every pull request runs the Python suite, the frontend tests and the browser tests in Chromium, once. Firefox, WebKit, touch emulation, Python 3.13 and 3.14, Windows and the real ComfyUI run every night. macOS is not tested; it should work, but support is best-effort. To run the tests yourself, see [TESTING.md](TESTING.md).
 
 ## License
 
