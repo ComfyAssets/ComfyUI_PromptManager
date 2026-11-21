@@ -31,6 +31,8 @@ test('a Library link opens the shelf filtered by its tags, shows them in Refine 
     await expect(filtersButton(page)).toHaveText('Filters · 1');
     await expect(page).toHaveURL(libraryUrl);
     await expect(page.locator('#workspace-main h1')).toHaveText('Prompt library');
+    // As for any route, the title takes focus on a navigation inside the workspace, never on the first render.
+    await expect(page.locator('#workspace-main h1')).not.toBeFocused();
     await openRefine(page);
     await expect(refine(page).getByRole('textbox',{name:'Tags',exact:true})).toHaveValue('cats');
     await expect(refine(page).getByRole('combobox',{name:'Tag match',exact:true})).toHaveValue('all');
@@ -51,7 +53,7 @@ test('a Library link replaces the filter of a shelf that is already open, each t
     await expect(page.locator('#workspace-main h1')).toHaveText('Tags & categories');
     await page.evaluate(()=>{window.location.hash='#/library?tag=cats';});
     await expect(caption(page)).toHaveText(/^1 positive prompt · /);await expect(card(page,'Cat portrait')).toHaveCount(1);
-    await expect(page).toHaveURL(libraryUrl);
+    await expect(page).toHaveURL(libraryUrl);await expect(page.locator('#workspace-main h1')).toBeFocused();
     // The open shelf saves its own filter when it is replaced; the link's filter still wins.
     await page.evaluate(()=>{window.location.hash='#/library?tag=dogs';});
     await expect(card(page,'Dog landscape')).toHaveCount(1);await expect(cards(page)).toHaveCount(1);

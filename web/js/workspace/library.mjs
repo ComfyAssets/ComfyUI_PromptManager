@@ -160,13 +160,14 @@ export function mountNewPromptAction(main,api,parentScope) {
 /**
  * `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view.
  * `browse` (`{tags, tagMode}`, a Library link, #668 D207) opens the shelf with exactly that filter, as Browse does. It
- * is an option, not a seeded visit: a shelf that is open saves its own visit while it is replaced by this one.
+ * is an option, not a visit seeded beforehand: a shelf that is open saves its own visit while it is replaced by this
+ * one. The shell focuses the title as for any route (never on the first render).
  */
 export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,browse=null,onSaveView=()=>{}}={}) {
     const scope=createScope();parentScope.cleanup(()=>scope.dispose());
     main.classList.add('library-main');
     const sender=createPromptSender({scope});
-    if(browse) {shelfVisit=browseVisit(browse);focusHeadingOnMount=true;}
+    if(browse) shelfVisit=browseVisit(browse);
     if(positiveId!==undefined) mountHistory();
     else mountShelf();
     if(focusHeadingOnMount) {focusHeadingOnMount=false;focusHeading(main);}
