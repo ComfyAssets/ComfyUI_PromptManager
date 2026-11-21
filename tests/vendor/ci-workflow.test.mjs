@@ -1,15 +1,20 @@
-// Structural checks on .github/workflows/viewerjs-check.yml, plus the time limits of every CI workflow.
+// Structural checks on the CI workflows (#666): ci.yml is the gate that runs once on a pull request,
+// nightly.yml everything that blocks nothing, publish.yml the only workflow a push to main starts.
 // The tooling has no YAML parser, so these read the workflow's fixed two-space layout: jobs at two
 // spaces, their keys at four, steps at six.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const workflow = readFileSync(new URL('../../.github/workflows/viewerjs-check.yml', import.meta.url), 'utf8');
+const readRepoFile = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+const readWorkflow = name => readRepoFile(`.github/workflows/${name}`);
+const workflow = readWorkflow('ci.yml');
+const nightly = readWorkflow('nightly.yml');
 const PINNED_IMAGE = /^\s+image: mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble@sha256:[0-9a-f]{64}$/m;
 
 function jobs(text) {
@@ -62,21 +67,31 @@ function matrixList(jobText, key) {
 }
 
 const allJobs = jobs(workflow);
-const browserJobIds = [...allJobs].filter(([, body]) => /npm run --prefix tools\/vendor test:(workflows|coverage)/.test(body))
-    .map(([id]) => id);
+const nightlyJobs = jobs(nightly);
+const BROWSER_TEST_STEP = /npm run --prefix tools\/vendor test:(workflows|coverage)/;
+const browserJobs = [...allJobs, ...nightlyJobs].filter(([, body]) => BROWSER_TEST_STEP.test(body));
 const mergeJob = () => allJobs.get('frontend-coverage-merge');
 const verifyStep = () => steps(mergeJob()).find(step => /name: Verify every shard's raw coverage arrived/.test(step));
-
-// #639: each workflow classifies the change first (tools/ci/change_class.py). Jobs that only a code
-// change can affect skip for the classes "docs" and "inert", and run when the classifier failed.
 const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const jobIf = condition => new RegExp(`^ {4}if: ${escapeRegExp(`\${{ ${condition} }}`)}$`, 'm');
-const CODE_CLASS = "needs.changes.outputs.class != 'docs' && needs.changes.outputs.class != 'inert'";
-const CODE_ONLY_IF = jobIf(`!cancelled() && ${CODE_CLASS}`);
-// Jobs that run only in the merge queue, on main and on demand (#420): skipped on pull_request.
-const QUEUE_ONLY_IF = jobIf(`!cancelled() && github.event_name != 'pull_request' && ${CODE_CLASS}`);
-const EVENTS = ['pull_request', 'merge_group', 'push', 'workflow_dispatch'];
-const CLASSES = ['code', 'docs', 'inert'];
+const triggersOf = text => {
+    const lines = text.split('\n');
+    const start = lines.indexOf('on:');
+    assert.notEqual(start, -1, 'workflow has an on: section');
+    const events = [];
+    for (const line of lines.slice(start + 1)) {
+        if (/^\S/.test(line)) break;
+        const event = /^ {2}([a-z_]+):/.exec(line);
+        if (event) events.push(event[1]);
+    }
+    return events.sort();
+};
+
+// The classes tools/ci/change_class.py prints, and the jobs each one asks for. Every other job must
+// be skipped; a job that ran when its class did not ask for it is as wrong as one that failed.
+const CODE_JOBS = ['python', 'lint', 'security', 'js-test', 'tooling', 'frontend-coverage', 'frontend-coverage-merge'];
+const RELEASE_JOBS = ['package'];
+const JOBS_OF_CLASS = { code: CODE_JOBS, release: RELEASE_JOBS, docs: [], inert: [] };
 
 function gateVariables(jobText) {
     return new Map([...jobText.matchAll(/^ {10}([A-Z_]+): \$\{\{ needs\.([\w-]+)\.result \}\}$/gm)]
@@ -93,62 +108,179 @@ function runGate(jobText, env) {
     }
 }
 
-// A gate passes only when the classifier succeeded and every job did what the change class and the
-// event ask (#639). For a code change: every always-on and code-only job succeeded, and every
-// queue-only job is skipped on a pull request and succeeded on every other event. For a docs or
-// inert change: every always-on job succeeded and every other job is skipped. Anything else fails
-// it, and so does a class the classifier does not print.
-function assertGateBehaviour(jobText, { queueOnly, codeOnly, always = [] }) {
-    assert.match(jobText, /^ {10}EVENT_NAME: \$\{\{ github\.event_name \}\}$/m, 'the gate knows the event');
-    assert.match(jobText, /^ {10}CHANGE_CLASS: \$\{\{ needs\.changes\.outputs\.class \}\}$/m, 'the gate knows the change class');
-    const variables = gateVariables(jobText);
-    assert.deepEqual([...variables.keys()].sort(), ['changes', ...queueOnly, ...codeOnly, ...always].sort(),
-        'every job the gate reads has an expected result');
-    for (const changeClass of CLASSES) {
-        for (const event of EVENTS) {
-            const expected = id => {
-                if (id === 'changes' || always.includes(id)) return 'success';
-                if (changeClass !== 'code') return 'skipped';
-                return queueOnly.includes(id) && event === 'pull_request' ? 'skipped' : 'success';
-            };
-            const where = `${changeClass} change on ${event}`;
-            const green = { EVENT_NAME: event, CHANGE_CLASS: changeClass,
-                ...Object.fromEntries([...variables].map(([id, name]) => [name, expected(id)])) };
-            assert.equal(runGate(jobText, green), true, `${where}: the expected results pass`);
-            for (const [id, name] of variables) {
-                for (const result of ['success', 'failure', 'cancelled', 'skipped']) {
-                    if (result === expected(id)) continue;
-                    assert.equal(runGate(jobText, { ...green, [name]: result }), false, `${where}: ${id}=${result} must fail the gate`);
-                }
-            }
-            for (const unknown of ['', 'other', 'code ']) {
-                assert.equal(runGate(jobText, { ...green, CHANGE_CLASS: unknown }), false, `${where}: class "${unknown}" must fail the gate`);
+// ---- Triggers: one pass on the pull request, nothing on main but publish -------------------------
+
+test('no workflow runs in a merge queue', () => {
+    const directory = fileURLToPath(new URL('../../.github/workflows/', import.meta.url));
+    const names = readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).sort();
+    assert.deepEqual(names, ['ci.yml', 'nightly.yml', 'publish.yml', 'viewerjs-update.yml'],
+        'the old workflows are gone; a new workflow is added to this list and to the checks below');
+    for (const name of names) {
+        assert.doesNotMatch(readWorkflow(name), /merge_group/, `${name} has no merge_group trigger or condition`);
+    }
+});
+
+test('the gate runs on pull requests and on demand, never on a push', () => {
+    assert.deepEqual(triggersOf(workflow), ['pull_request', 'workflow_dispatch']);
+    assert.match(workflow, /^ {2}pull_request:\n {4}branches: \[main\]$/m);
+    assert.doesNotMatch(workflow, /^ {4}paths(-ignore)?:/m, 'no path filter may leave the required check pending');
+    assert.match(workflow, /^ {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m);
+});
+
+test('nightly runs on its schedule and on demand, never on a pull request or a push', () => {
+    assert.deepEqual(triggersOf(nightly), ['schedule', 'workflow_dispatch']);
+    assert.doesNotMatch(nightly, /cancel-in-progress: true|cancel-in-progress: \$/, 'no nightly run is cancelled');
+    assert.doesNotMatch(nightly, /needs\.changes/, 'nightly tests main as it is: no change class');
+});
+
+test('a push to main starts only publish, and only when pyproject.toml changed', () => {
+    const publish = readWorkflow('publish.yml');
+    assert.deepEqual(triggersOf(publish), ['push', 'workflow_dispatch']);
+    assert.match(publish, /^ {4}paths:\n {6}- "pyproject\.toml"$/m);
+    for (const name of ['ci.yml', 'nightly.yml', 'viewerjs-update.yml']) {
+        assert.ok(!triggersOf(readWorkflow(name)).includes('push'), `${name} does not run on a push`);
+    }
+});
+
+// ---- The change class -----------------------------------------------------------------------------
+
+test('the gate classifies the change first, from file names, and every other job waits for it', () => {
+    assert.equal([...allJobs.keys()][0], 'changes', 'the classifier is the first job');
+    const changes = allJobs.get('changes');
+    assert.match(changes, /^ {4}name: change class$/m);
+    assert.doesNotMatch(changes, /^ {4}(needs|if):/m, 'the classifier waits for nothing and always runs');
+    assert.match(changes, /^ {6}class: \$\{\{ steps\.classify\.outputs\.class \}\}$/m);
+    const [checkout, classify] = steps(changes);
+    assert.match(checkout, /uses: actions\/checkout@v\d+/);
+    assert.match(checkout, /^ {10}fetch-depth: 0$/m, 'the base commit must be in the clone');
+    assert.match(checkout, /^ {10}filter: blob:none$/m, 'file names need no file contents');
+    assert.match(checkout, /^ {10}persist-credentials: false$/m);
+    assert.match(classify, /^ {8}id: classify$/m);
+    assert.match(classify, /^ {10}EVENT_NAME: \$\{\{ github\.event_name \}\}$/m);
+    assert.match(classify, /^ {10}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}$/m);
+    assert.match(classify, /^ {10}HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}$/m);
+    assert.match(classify, /^ {8}run: python3 tools\/ci\/change_class\.py \| tee -a "\$GITHUB_OUTPUT"$/m);
+    for (const [id, body] of allJobs) {
+        if (id !== 'changes') assert.ok(needsOf(body).includes('changes'), `job ${id} waits for the classifier`);
+    }
+});
+
+test('each job runs for exactly one change class', () => {
+    assert.deepEqual([...allJobs.keys()].sort(), ['changes', 'gate', ...CODE_JOBS, ...RELEASE_JOBS].sort());
+    // No status function in the condition, so the implicit success() also holds: a job never runs
+    // after a failed classifier, and the merge never runs after a failed shard.
+    for (const id of CODE_JOBS) assert.match(allJobs.get(id), jobIf("needs.changes.outputs.class == 'code'"), id);
+    for (const id of RELEASE_JOBS) assert.match(allJobs.get(id), jobIf("needs.changes.outputs.class == 'release'"), id);
+    const classes = [...readRepoFile('tools/ci/change_class.py').matchAll(/return "([a-z]+)"|found = "([a-z]+)"/g)]
+        .map(match => match[1] ?? match[2]);
+    assert.deepEqual([...new Set(classes)].sort(), Object.keys(JOBS_OF_CLASS).sort(), 'the gate knows every class the script prints');
+});
+
+test('a release runs the package-content check and nothing else', () => {
+    const body = allJobs.get('package');
+    assert.match(body, /^ {6}- run: python -m unittest -v tests\.test_package_contents$/m);
+    assert.doesNotMatch(body, /pip install/, 'the check needs nothing installed');
+});
+
+// ---- The gate ---------------------------------------------------------------------------------------
+
+test('gate is the one required context and needs every other job', () => {
+    const gate = allJobs.get('gate');
+    assert.ok(gate, 'the required context is the job id gate');
+    assert.doesNotMatch(gate, /^ {4}name:/m, 'no display name may replace the context "gate"');
+    assert.equal([...allJobs.keys()].at(-1), 'gate');
+    const others = [...allJobs.keys()].filter(id => id !== 'gate');
+    assert.deepEqual([...needsOf(gate)].sort(), [...others].sort(), 'gate needs every other job in the workflow');
+    assert.match(gate, /^ {4}if: always\(\)$/m, 'gate runs (and fails) when a needed job failed or was skipped');
+    assert.deepEqual([...gateVariables(gate).keys()].sort(), [...others].sort(), 'every needed result reaches the gate');
+    assert.match(gate, /^ {10}CHANGE_CLASS: \$\{\{ needs\.changes\.outputs\.class \}\}$/m, 'the gate knows the change class');
+    assert.doesNotMatch(gate, /github\.event_name|EVENT_NAME/, 'the gate asks the same of every event');
+});
+
+// The gate passes only when the classifier succeeded and every job did what the class asks: the
+// class's jobs succeeded and every other job was skipped. Any other result of any job fails it, and
+// so does a failed classifier or a class the script does not print.
+test('gate passes only when every job did what the change class asks', () => {
+    const gate = allJobs.get('gate');
+    const variables = gateVariables(gate);
+    for (const [changeClass, running] of Object.entries(JOBS_OF_CLASS)) {
+        const expected = id => (id === 'changes' || running.includes(id) ? 'success' : 'skipped');
+        const green = { CHANGE_CLASS: changeClass, ...Object.fromEntries([...variables].map(([id, name]) => [name, expected(id)])) };
+        assert.equal(runGate(gate, green), true, `${changeClass}: the expected results pass`);
+        for (const [id, name] of variables) {
+            for (const result of ['success', 'failure', 'cancelled', 'skipped', '']) {
+                if (result === expected(id)) continue;
+                assert.equal(runGate(gate, { ...green, [name]: result }), false, `${changeClass}: ${id}=${result || 'nothing'} must fail the gate`);
             }
         }
+        for (const unknown of ['', 'other', `${changeClass} `, 'tests-only']) {
+            assert.equal(runGate(gate, { ...green, CHANGE_CLASS: unknown }), false, `${changeClass}: class "${unknown}" must fail the gate`);
+        }
     }
-}
-
-test('viewerjs keeps its name and needs every frontend job', () => {
-    const viewerjs = allJobs.get('viewerjs');
-    assert.ok(viewerjs, 'the required context is the job id viewerjs');
-    assert.doesNotMatch(viewerjs, /^ {4}name:/m, 'no display name may replace the context "viewerjs"');
-    const needs = needsOf(viewerjs);
-    const others = [...allJobs.keys()].filter(id => id !== 'viewerjs');
-    assert.deepEqual([...needs].sort(), [...others].sort(), 'viewerjs needs every other job in the workflow');
-    assert.deepEqual([...needs].sort(), ['browser-workflows', 'changes', 'frontend-coverage', 'frontend-coverage-merge']);
-    assert.match(viewerjs, /^ {4}if: always\(\)$/m, 'viewerjs runs (and fails) when a needed job failed or was skipped');
-    assert.deepEqual([...gateVariables(viewerjs).keys()].sort(), [...needs].sort(), 'every needed result reaches the check');
 });
 
-test('viewerjs requires the browser shards everywhere but on a pull request, and nothing for a docs or inert change', () => {
-    assertGateBehaviour(allJobs.get('viewerjs'), { queueOnly: ['browser-workflows'], codeOnly: ['frontend-coverage', 'frontend-coverage-merge'] });
+test('branch protection requires only gate, on a branch that is up to date', () => {
+    const protection = JSON.parse(readRepoFile('.github/branch-protection.json'));
+    assert.deepEqual(protection.required_status_checks, { strict: true, contexts: ['gate'] });
+    assert.equal(protection.enforce_admins, true);
+    assert.equal(protection.allow_force_pushes, false);
 });
 
-test('Firefox/WebKit page workflows run only outside pull requests; coverage runs on every event; both for code changes only', () => {
-    assert.match(allJobs.get('browser-workflows'), QUEUE_ONLY_IF);
-    assert.match(allJobs.get('frontend-coverage'), CODE_ONLY_IF);
-    // !cancelled() replaces the implicit success() check, so the merge names the shards' success itself.
-    assert.match(allJobs.get('frontend-coverage-merge'), jobIf(`!cancelled() && needs.frontend-coverage.result == 'success' && ${CODE_CLASS}`));
+// ---- The gate's jobs ------------------------------------------------------------------------------
+
+test('the Python suite runs once, under coverage, through the watchdog runner', () => {
+    const body = allJobs.get('python');
+    const suiteRuns = body.match(/tests\.run_suite/g) ?? [];
+    assert.equal(suiteRuns.length, 1, 'one run proves both the tests and the coverage floor');
+    assert.match(body, /^ {8}run: python -m coverage run -m tests\.run_suite -v$/m);
+    assert.match(body, /^ {10}python -m coverage combine$/m);
+    assert.match(body, /^ {10}python -m coverage report --fail-under=85$/m);
+    assert.doesNotMatch(body, /unittest discover/);
+    assert.match(body, /^ {10}python-version: "3\.12"$/m);
+    assert.doesNotMatch(body, /matrix/, 'other Pythons run nightly');
+});
+
+// CI hygiene (#352): lint tools are pinned, the bandit hook can fail, the JS job caches npm.
+test('black and flake8 are pinned exactly and the lint job installs those pins', () => {
+    const requirements = readRepoFile('requirements-dev.txt');
+    assert.match(requirements, /^black==\d+\.\d+\.\d+$/m, 'black is pinned exactly');
+    assert.match(requirements, /^flake8==\d+\.\d+\.\d+$/m, 'flake8 is pinned exactly');
+    const lint = allJobs.get('lint');
+    assert.match(lint, /pip install \$\(grep -E '\^\(black\|flake8\)==' requirements-dev\.txt\)/);
+    assert.doesNotMatch(lint, /pip install black flake8/, 'lint no longer installs the latest releases');
+});
+
+test('the frontend modules job caches npm keyed on the vendor lockfile', () => {
+    const setupNode = steps(allJobs.get('js-test')).find(step => /uses: actions\/setup-node@v\d+/.test(step));
+    assert.match(setupNode, /^ {10}cache: npm$/m);
+    assert.match(setupNode, /^ {10}cache-dependency-path: tools\/vendor\/package-lock\.json$/m);
+    assert.match(allJobs.get('js-test'), /^ {8}run: node --test tests\/js\/\*\.test\.js$/m);
+});
+
+test('the bandit pre-commit hook fails at the severity CI enforces and passes every file', () => {
+    assert.match(allJobs.get('security'), /^ {8}run: bandit -r \. -lll -q --exclude /m, 'CI fails on high severity');
+    const hook = /- id: bandit\n([\s\S]*?)(?=\n {6}(?:- id:|#)|\n*$)/.exec(readRepoFile('.pre-commit-config.yaml'))?.[1];
+    assert.ok(hook, 'the bandit hook exists');
+    assert.match(hook, /^ {8}entry: bandit -lll -q$/m, 'the hook enforces the same -lll level as CI');
+    assert.doesNotMatch(hook, /true|exit-zero|bash -c/, 'nothing masks the exit code or drops a file');
+    assert.doesNotMatch(hook, /pass_filenames: false/, 'the hook scans the staged files');
+});
+
+test('the pre-push hook runs the suite through the classifier', () => {
+    const hook = /- id: tests\n([\s\S]*?)(?=\n {6}(?:- id:|#)|\n*$)/.exec(readRepoFile('.pre-commit-config.yaml'))?.[1];
+    assert.ok(hook, 'the tests hook exists');
+    assert.match(hook, /^ {8}entry: python tools\/ci\/change_class\.py --unless-inert python -m tests\.run_suite -q$/m);
+    assert.match(hook, /^ {8}stages: \[pre-push\]$/m);
+});
+
+test('the tooling job checks the pins and runs the tooling tests', () => {
+    const body = allJobs.get('tooling');
+    const commands = [...body.matchAll(/^ {6}- run: npm run --prefix tools\/vendor (\w+)$/gm)].map(match => match[1]);
+    assert.deepEqual(commands, ['check', 'test']);
+    assert.match(body, PINNED_IMAGE, 'the tooling tests see the image the browser jobs use');
+    for (const id of ['frontend-coverage', 'frontend-coverage-merge']) {
+        assert.doesNotMatch(allJobs.get(id), /tools\/vendor (check|test)$/m, `${id} runs no tooling step`);
+    }
 });
 
 test('coverage runs as four shards that each upload their raw coverage', () => {
@@ -156,6 +288,7 @@ test('coverage runs as four shards that each upload their raw coverage', () => {
     assert.deepEqual(matrixList(coverage, 'shard'), ['1', '2', '3', '4']);
     assert.match(coverage, /^ {4}name: frontend coverage \(shard \$\{\{ matrix\.shard \}\}\/4\)$/m);
     assert.match(coverage, /npm run --prefix tools\/vendor test:coverage:shard -- \$\{\{ matrix\.shard \}\}\/4/);
+    assert.match(coverage, /^ {6}fail-fast: false$/m);
     const upload = steps(coverage).find(step => /name: coverage-raw-\$\{\{ matrix\.shard \}\}/.test(step));
     assert.ok(upload, 'each shard uploads coverage-raw-N');
     assert.match(upload, /^ {10}path: coverage\/js\/raw\/?$/m);
@@ -222,40 +355,37 @@ test('merge refuses when a shard\'s raw coverage is missing', async t => {
     assert.deepEqual(complete, { ok: true, raw: ['a.json', 'b.json', 'c.json', 'node.json'] });
 });
 
+// ---- Browser jobs, in the gate and nightly --------------------------------------------------------
+
 test('every browser job sets PM_TEST_WORKERS and runs in the pinned image', () => {
-    assert.deepEqual([...browserJobIds].sort(), ['browser-workflows', 'frontend-coverage']);
-    for (const id of browserJobIds) {
-        const body = allJobs.get(id);
+    assert.deepEqual(browserJobs.map(([id]) => id).sort(), ['browser-workflows', 'frontend-coverage']);
+    for (const [id, body] of browserJobs) {
         assert.match(body, /^ {6}PM_TEST_WORKERS: 3$/m, `${id} sets PM_TEST_WORKERS for the whole job`);
         assert.match(body, PINNED_IMAGE, `${id} keeps the pinned Playwright image`);
         assert.match(body, /PIP_SHA256: [0-9a-f]{64}/, `${id} keeps the pinned pip bootstrap`);
-        assert.match(body, /^ {4}timeout-minutes: \d+$/m);
     }
     assert.match(mergeJob(), PINNED_IMAGE, 'the merge sees the same workspace paths as the shards');
 });
 
-// #473: two shards split by test count put the slow concept specs in shard 1, which reached the 18-minute step limit.
-test('page workflows run each browser in three shards', () => {
-    const workflows = allJobs.get('browser-workflows');
-    assert.deepEqual(matrixList(workflows, 'browser'), ['firefox', 'webkit']);
+// #473: two shards split by test count put the slow concept specs in shard 1, which reached its step limit.
+test('nightly page workflows run Firefox, WebKit and touch in three shards each', () => {
+    const workflows = nightlyJobs.get('browser-workflows');
+    assert.deepEqual(matrixList(workflows, 'browser'), ['firefox', 'webkit', 'touch']);
     assert.deepEqual(matrixList(workflows, 'shard'), ['1', '2', '3']);
-    assert.match(workflows, /test:workflows -- --project \$\{\{ matrix\.browser \}\} --shard \$\{\{ matrix\.shard \}\}\/3/);
+    assert.match(workflows, /test:workflows -- --project \$\{\{ matrix\.browser \}\} --shard \$\{\{ matrix\.shard \}\}\/3 /);
     assert.match(workflows, /^ {4}name: page workflows \(\$\{\{ matrix\.browser \}\}, shard \$\{\{ matrix\.shard \}\}\/3\)$/m);
-    assert.match(workflows, /name: Page workflows in \$\{\{ matrix\.browser \}\}, shard \$\{\{ matrix\.shard \}\}\/3$/m);
-    assert.doesNotMatch(workflows, /\/2\b/, 'no step still names two shards');
     assert.match(workflows, /^ {6}fail-fast: false$/m);
     assert.match(workflows, /name: browser-traces-\$\{\{ matrix\.browser \}\}-shard-\$\{\{ matrix\.shard \}\}/);
 });
 
-test('every npm ci restores the npm download cache keyed on the vendor lockfile first', () => {
-    const installing = [...allJobs].filter(([, body]) => /npm ci --prefix tools\/vendor/.test(body));
-    assert.deepEqual(installing.map(([id]) => id).sort(), ['browser-workflows', 'frontend-coverage', 'frontend-coverage-merge']);
+test('every npm ci in a container restores the npm download cache keyed on the vendor lockfile first', () => {
+    const installing = [...allJobs, ...nightlyJobs].filter(([, body]) => /npm ci --prefix tools\/vendor/.test(body) && /^ {4}container:$/m.test(body));
+    assert.deepEqual(installing.map(([id]) => id).sort(), ['browser-workflows', 'comfyui', 'frontend-coverage', 'frontend-coverage-merge', 'tooling']);
     for (const [id, body] of installing) {
         const jobSteps = steps(body);
-        const cacheAt = jobSteps.findIndex(step => /uses: actions\/cache@v\d+/.test(step));
+        const cacheAt = jobSteps.findIndex(step => /uses: actions\/cache@v\d+/.test(step) && /path: ~\/\.npm$/m.test(step));
         const installAt = jobSteps.findIndex(step => /npm ci --prefix tools\/vendor/.test(step));
         assert.ok(cacheAt >= 0 && cacheAt < installAt, `${id} restores the npm cache before npm ci`);
-        assert.match(jobSteps[cacheAt], /^ {10}path: ~\/\.npm$/m, `${id} caches npm's download cache, not node_modules`);
         assert.match(jobSteps[cacheAt], /hashFiles\('tools\/vendor\/package-lock\.json'\)/, `${id} keys the cache on the lockfile`);
         assert.match(jobSteps[installAt], /npm ci --prefix tools\/vendor --ignore-scripts/, `${id} still installs without scripts`);
         // The key names the job's own pinned image, so an image bump starts a fresh cache.
@@ -266,253 +396,111 @@ test('every npm ci restores the npm download cache keyed on the vendor lockfile 
     }
 });
 
-test('browser job timeouts keep a real margin over measured runs', () => {
-    for (const id of ['frontend-coverage', 'browser-workflows']) {
-        const minutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(allJobs.get(id))[1]);
-        assert.ok(minutes >= 20, `${id} allows at least 20 minutes, since runner speed varies`);
-    }
-});
-
 // A hang (#425) must end inside the test step, before the job limit, so the log and the always()
 // uploads survive: the step's timeout-minutes < the job's.
-const BROWSER_TEST_STEP = /npm run --prefix tools\/vendor test:(workflows|coverage)/;
-
 test('each browser test step stops itself before its job limit and its traces upload anyway', () => {
-    for (const id of browserJobIds) {
-        const body = allJobs.get(id);
+    for (const [id, body] of browserJobs) {
         const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(body)[1]);
         const jobSteps = steps(body);
         const testAt = jobSteps.findIndex(step => BROWSER_TEST_STEP.test(step));
         const testStep = jobSteps[testAt];
         const stepMinutes = Number(/^ {8}timeout-minutes: (\d+)$/m.exec(testStep)?.[1]);
         assert.ok(stepMinutes > 0, `${id}: the test step sets its own timeout-minutes`);
-        assert.ok(jobMinutes - stepMinutes >= 2, `${id}: the step limit leaves time for setup and the uploads`);
+        assert.equal(jobMinutes - stepMinutes, 2, `${id}: the step limit leaves 2 minutes for setup and the uploads`);
         const upload = jobSteps.slice(testAt + 1).find(step => /^ {10}path: tools\/vendor\/test-results\/$/m.test(step));
         assert.ok(upload, `${id} uploads tools/vendor/test-results/ (traces and blob report) after the tests`);
         assert.match(upload, /^ {8}if: always\(\)$/m, `${id} uploads them when the step failed or timed out`);
     }
 });
 
-// Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
-const GATING_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
-// #662: every workflow, the publish and the scheduled Viewer.js update too.
-const WORKFLOW_DIR = new URL('../../.github/workflows/', import.meta.url);
-const BOUNDED_WORKFLOWS = readdirSync(WORKFLOW_DIR).filter(name => /\.ya?ml$/.test(name)).sort();
-const readWorkflow = name => readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');
+// ---- Nightly ----------------------------------------------------------------------------------------
 
-test('the time-limit guard reads every workflow', () => {
-    assert.deepEqual(BOUNDED_WORKFLOWS, ['code-quality.yml', 'portability.yml', 'publish.yml', 'test.yml',
-        'viewerjs-check.yml', 'viewerjs-update.yml']);
+test('nightly runs what the gate leaves out: other Pythons, Windows, a real mount, real ComfyUI, the budget', () => {
+    assert.deepEqual([...nightlyJobs.keys()].sort(),
+        ['browser-workflows', 'comfyui', 'native-trash-linux', 'perf-budget', 'python-linux', 'python-windows', 'report']);
+    const linux = nightlyJobs.get('python-linux');
+    assert.deepEqual(matrixList(linux, 'python-version'), ['"3.13"', '"3.14"'], '3.12 is the gate');
+    assert.match(linux, /^ {4}runs-on: ubuntu-latest$/m);
+    const windows = nightlyJobs.get('python-windows');
+    assert.deepEqual(matrixList(windows, 'python-version'), ['"3.12"', '"3.13"', '"3.14"']);
+    assert.match(windows, /^ {4}runs-on: windows-latest$/m);
+    for (const body of [linux, windows]) {
+        assert.match(body, /^ {6}fail-fast: false$/m);
+        assert.match(body, /^ {8}run: python -m tests\.run_suite -v$/m);
+    }
+    assert.doesNotMatch(nightly, /macos-/, 'macOS is not tested in CI (#571)');
+    assert.match(nightlyJobs.get('native-trash-linux'), /PM_TRASH_MOUNT="\$RUNNER_TEMP\/drive" python -m unittest tests\.test_trash_mount_root -v$/m);
+    assert.match(nightlyJobs.get('perf-budget'), /^ {10}PROMPTMANAGER_PERF_BUDGET: "1"$/m);
+    const commands = [...nightlyJobs.get('comfyui').matchAll(/^ {8}run: npm run --prefix tools\/vendor (test:[a-z]+)$/gm)].map(match => match[1]);
+    assert.deepEqual(commands, ['test:comfyui', 'test:executions', 'test:compat']);
 });
 
-test('every job in the CI workflows has a numeric timeout-minutes', () => {
+test('nightly reports by issue after every other job, with the only write permission in CI', () => {
+    const report = nightlyJobs.get('report');
+    const others = [...nightlyJobs.keys()].filter(id => id !== 'report');
+    assert.deepEqual([...needsOf(report)].sort(), others.sort(), 'the report waits for every other job');
+    assert.match(report, jobIf("always() && github.ref == 'refs/heads/main'"), 'a failed job is reported; a branch run files nothing');
+    assert.match(report, /^ {4}permissions:\n {6}actions: read\n {6}contents: read\n {6}issues: write$/m);
+    assert.match(report, /^ {10}GH_TOKEN: \$\{\{ github\.token \}\}$/m);
+    assert.match(report, /^ {8}run: python3 tools\/ci\/nightly_report\.py$/m);
+    assert.match(nightly, /^permissions:\n {2}contents: read$/m, 'every other job only reads');
+    assert.match(workflow, /^permissions:\n {2}contents: read$/m, 'the gate only reads');
+    assert.doesNotMatch(workflow, /: write$/m);
+    for (const [id, body] of nightlyJobs) {
+        if (id !== 'report') assert.doesNotMatch(body, /^ {4}(needs|if):/m, `${id} always runs`);
+    }
+});
+
+// ---- Time limits ------------------------------------------------------------------------------------
+
+// Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
+// The rule (#493): ceil(1.5 x the slowest of three green runs) + 3 minutes, never under 5, with the
+// runs and times written above jobs: as "<job id>: 7m26s / 7m22s / 7m54s -> 15 min". A job without
+// three green runs yet has "estimate <job id>: <why> -> N min" instead. That the runs were green is
+// the author's word; that every job has one line and uses its limit is checked here.
+// #662: viewerjs-update.yml too, so every workflow is bounded.
+const BOUNDED_WORKFLOWS = ['ci.yml', 'nightly.yml', 'publish.yml', 'viewerjs-update.yml'];
+const limitOf = seconds => Math.max(5, Math.ceil(1.5 * Math.max(...seconds) / 60) + 3);
+
+function writtenLimits(name) {
+    const text = readWorkflow(name);
+    const comment = text.slice(0, text.indexOf('\njobs:'));
+    const runs = [...comment.matchAll(/^# Measured \d{4}-\d{2}-\d{2} on runs (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\):$/gm)];
+    assert.ok(runs.length > 0, `${name} names the runs it measured`);
+    for (const run of runs) assert.equal(new Set(run.slice(1)).size, 3, `${name}: three different runs`);
+    const limits = new Map();
+    const time = '(\\d+)m([0-5]\\d)s';
+    for (const match of comment.matchAll(new RegExp(`^#   ([\\w-]+): ${time} / ${time} / ${time} -> (\\d+) min$`, 'gm'))) {
+        const seconds = [2, 4, 6].map(i => Number(match[i]) * 60 + Number(match[i + 1]));
+        assert.equal(Number(match[8]), limitOf(seconds), `${name} ${match[1]}: the written limit follows the rule`);
+        assert.ok(!limits.has(match[1]), `${name} ${match[1]}: one measurement, no older one beside it`);
+        limits.set(match[1], Number(match[8]));
+    }
+    for (const match of comment.matchAll(/^# estimate ([\w-]+): [^\n]*(?:\n#   [^\n]*)*? -> (\d+) min$/gm)) {
+        assert.ok(!limits.has(match[1]), `${name} ${match[1]}: a measurement or an estimate, not both`);
+        assert.ok(Number(match[2]) >= 5, `${name} ${match[1]}: never under 5 minutes`);
+        limits.set(match[1], Number(match[2]));
+    }
+    assert.equal(comment.match(/-> \d+ min/g).length, limits.size, `${name}: every "-> N min" is a job's line`);
+    return limits;
+}
+
+test('every CI job uses the time limit written for it above jobs:', () => {
     for (const name of BOUNDED_WORKFLOWS) {
         const found = jobs(readWorkflow(name));
         assert.ok(found.size > 0, `${name} has jobs`);
+        const limits = writtenLimits(name);
+        assert.deepEqual([...limits.keys()].sort(), [...found.keys()].sort(), `${name}: one limit line per job`);
         for (const [id, body] of found) {
             const limit = /^ {4}timeout-minutes: (\d+)\s*$/m.exec(body);
             assert.ok(limit, `${name} job ${id} sets a numeric timeout-minutes`);
-            assert.ok(Number(limit[1]) >= 5, `${name} job ${id} allows at least 5 minutes`);
+            assert.equal(Number(limit[1]), limits.get(id), `${name} job ${id} uses its written limit`);
         }
     }
 });
 
-test('the Python matrix and coverage run the suite through the watchdog runner', () => {
-    const found = jobs(readWorkflow('test.yml'));
-    assert.match(found.get('test'), /^ {8}run: python -m tests\.run_suite -v$/m);
-    assert.match(found.get('coverage'), /^ {10}python -m coverage run -m tests\.run_suite$/m);
-    for (const id of ['test', 'coverage']) {
-        assert.doesNotMatch(found.get(id), /unittest discover/, `${id} no longer runs the bare unittest discover`);
-    }
-});
-
-// CI hygiene (#352): lint tools are pinned, the bandit hook can fail, the JS job caches npm.
-const readRepoFile = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
-
-test('black and flake8 are pinned exactly and the lint job installs those pins', () => {
-    const requirements = readRepoFile('requirements-dev.txt');
-    assert.match(requirements, /^black==\d+\.\d+\.\d+$/m, 'black is pinned exactly');
-    assert.match(requirements, /^flake8==\d+\.\d+\.\d+$/m, 'flake8 is pinned exactly');
-    const lint = jobs(readWorkflow('test.yml')).get('lint');
-    assert.match(lint, /pip install \$\(grep -E '\^\(black\|flake8\)==' requirements-dev\.txt\)/);
-    assert.doesNotMatch(lint, /pip install black flake8/, 'lint no longer installs the latest releases');
-});
-
-test('the frontend modules job caches npm keyed on the vendor lockfile', () => {
-    const setupNode = steps(jobs(readWorkflow('test.yml')).get('js-test'))
-        .find(step => /uses: actions\/setup-node@v\d+/.test(step));
-    assert.match(setupNode, /^ {10}cache: npm$/m);
-    assert.match(setupNode, /^ {10}cache-dependency-path: tools\/vendor\/package-lock\.json$/m);
-});
-
-test('the bandit pre-commit hook fails at the severity CI enforces and passes every file', () => {
-    const quality = readWorkflow('code-quality.yml');
-    assert.match(quality, /^ {8}run: bandit -r \. -lll -q --exclude /m, 'CI fails on high severity');
-    const hook = /- id: bandit\n([\s\S]*?)(?=\n {6}(?:- id:|#)|\n*$)/.exec(readRepoFile('.pre-commit-config.yaml'))?.[1];
-    assert.ok(hook, 'the bandit hook exists');
-    assert.match(hook, /^ {8}entry: bandit -lll -q$/m, 'the hook enforces the same -lll level as CI');
-    assert.doesNotMatch(hook, /true|exit-zero|bash -c/, 'nothing masks the exit code or drops a file');
-    assert.doesNotMatch(hook, /pass_filenames: false/, 'the hook scans the staged files');
-});
-
-// Event split (#420): pull requests run a fast subset, the merge queue and main run everything.
-const testJobs = () => jobs(readWorkflow('test.yml'));
-
-test('the Python matrix is Linux 3.12 on a pull request or a docs or inert change and Linux 3.12-3.14 otherwise', () => {
-    const body = testJobs().get('test');
-    assert.deepEqual(matrixList(body, 'os'), ['ubuntu-latest'], 'Windows never gates a merge');
-    const match = /^ {8}python-version: \$\{\{ \(github\.event_name == 'pull_request' \|\| needs\.changes\.outputs\.class == 'docs' \|\| needs\.changes\.outputs\.class == 'inert'\) && fromJSON\('(\[[^\]]*\])'\) \|\| fromJSON\('(\[[^\]]*\])'\) \}\}$/m.exec(body);
-    assert.ok(match, 'python-version is chosen by event and change class');
-    assert.deepEqual({ small: JSON.parse(match[1]), other: JSON.parse(match[2]) }, { small: ['3.12'], other: ['3.12', '3.13', '3.14'] });
-    assert.match(body, /^ {6}fail-fast: false$/m);
-    assert.match(body, /^ {4}name: py\$\{\{ matrix\.python-version \}\} on \$\{\{ matrix\.os \}\}$/m);
-});
-
-// #639: a skipped matrix job reports under its unexpanded name, so the required context
-// "py3.12 on ubuntu-latest" would never report. The job therefore always starts, and an inert change
-// skips its steps instead.
-test('the Python matrix always starts and skips its steps for an inert change', () => {
-    const body = testJobs().get('test');
-    assert.deepEqual(needsOf(body), ['changes']);
-    assert.match(body, jobIf('!cancelled()'), 'it also runs, in full, when the classifier failed');
-    const jobSteps = steps(body);
-    const nothing = jobSteps.filter(step => /^ {8}if: needs\.changes\.outputs\.class == 'inert'$/m.test(step));
-    assert.equal(nothing.length, 1, 'one step says nothing needs testing');
-    assert.match(nothing[0], /^ {8}run: echo /m, 'and it only prints that');
-    for (const step of jobSteps.filter(step => step !== nothing[0])) {
-        assert.match(step, /^ {8}if: needs\.changes\.outputs\.class != 'inert'$/m, `every real step is skipped for an inert change: ${step.trim().split('\n')[0]}`);
-    }
-    assert.equal(jobSteps.length, 5);
-});
-
-test('Windows runs 3.12-3.14 on main, nightly and on demand, never on a PR or in the queue', () => {
-    const text = readWorkflow('portability.yml');
-    const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\nconcurrency:'));
-    for (const event of ['push', 'schedule', 'workflow_dispatch']) assert.match(triggers, new RegExp(`^ {2}${event}:`, 'm'));
-    for (const event of ['pull_request', 'merge_group']) assert.doesNotMatch(triggers, new RegExp(`^ {2}${event}`, 'm'));
-    assert.match(triggers, /^ {4}branches: \[main\]$/m, 'push runs only for main');
-    const body = jobs(text).get('test');
-    assert.deepEqual(matrixList(body, 'os'), ['windows-latest'], 'macOS is not tested in CI (#571)');
-    assert.doesNotMatch(text, /macos-/, 'no macOS runner is used');
-    assert.deepEqual(matrixList(body, 'python-version'), ['"3.12"', '"3.13"', '"3.14"']);
-    assert.match(body, /^ {6}fail-fast: false$/m);
-    assert.match(body, /^ {8}run: python -m tests\.run_suite -v$/m);
-    assert.doesNotMatch(text, /cancel-in-progress: true|cancel-in-progress: \$/, 'no portability run is cancelled');
-});
-
-// #493: a single-job workflow's limit follows the rule in its comment: ceil(1.5 x the slowest of
-// three green main runs) + 3 minutes, never under 5, with those runs and times written above jobs:.
-// The times are whole-job wall times. That the runs were green and on main is the author's word.
-// #662: a path the measured runs never took may be given an estimate written the same way
-// ("estimated <path>: XmYYs -> N min"); the job then uses the larger limit.
-const limitFor = seconds => Math.max(5, Math.ceil(1.5 * seconds / 60) + 3);
-
-function assertMeasuredLimit(name, jobId) {
-    const text = readWorkflow(name);
-    const comment = text.slice(0, text.indexOf('\njobs:'));
-    const runs = [...comment.matchAll(/^# Measured \d{4}-\d{2}-\d{2} on main runs (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\):$/gm)];
-    assert.equal(runs.length, 1, `${name}: the comment names the three runs it measured, once`);
-    assert.equal(new Set(runs[0].slice(1)).size, 3, `${name}: three different runs`);
-    const time = '(\\d+)m([0-5]\\d)s \\(([^)]+)\\)';
-    const slowest = new RegExp(`^#\\s+slowest leg: ${time} / ${time} / ${time} -> (\\d+) min$`, 'm').exec(comment);
-    assert.ok(slowest, `${name}: the comment gives the slowest leg of each run and the limit`);
-    const seconds = [1, 4, 7].map(i => Number(slowest[i]) * 60 + Number(slowest[i + 1]));
-    const measured = limitFor(Math.max(...seconds));
-    assert.equal(Number(slowest[10]), measured, `${name}: the written limit follows the rule`);
-    let expected = measured;
-    for (const estimate of comment.matchAll(/^#\s+estimated [\w -]+: (\d+)m([0-5]\d)s -> (\d+) min$/gm)) {
-        const minutes = limitFor(Number(estimate[1]) * 60 + Number(estimate[2]));
-        assert.equal(Number(estimate[3]), minutes, `${name}: the estimated limit follows the rule`);
-        expected = Math.max(expected, minutes);
-    }
-    const written = comment.match(/-> \d+ min/g).length;
-    assert.equal(written, 1 + [...comment.matchAll(/^#\s+estimated /gm)].length, `${name}: no older measurement stays beside it`);
-    const limit = Number(/^ {4}timeout-minutes: (\d+)\s*$/m.exec(jobs(text).get(jobId))[1]);
-    assert.equal(limit, expected, `${name}: the job uses the written limit`);
-}
-
-test('the portability limit is computed from three measured green main runs', () => {
-    assertMeasuredLimit('portability.yml', 'test');
-});
-
-test('the publish and Viewer.js update limits are computed from measured green main runs', () => {
-    assertMeasuredLimit('publish.yml', 'publish-node');
-    assertMeasuredLimit('viewerjs-update.yml', 'update');
-});
-
-test('real ComfyUI runs only outside pull requests; the other test.yml checks run on every event; all for code changes only', () => {
-    const found = testJobs();
-    assert.match(found.get('comfyui'), QUEUE_ONLY_IF);
-    for (const id of ['coverage', 'lint', 'js-test']) {
-        assert.match(found.get(id), CODE_ONLY_IF, `${id} runs on every event for a code change`);
-    }
-    assert.match(found.get('perf-budget'),
-        jobIf(`!cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && ${CODE_CLASS}`));
-});
-
-test('all tests needs every gating test.yml job and requires the full set outside pull requests', () => {
-    const found = testJobs();
-    const gate = found.get('all-tests');
-    assert.ok(gate, 'the aggregate gate exists');
-    assert.match(gate, /^ {4}name: all tests$/m, 'the required context is "all tests"');
-    assert.match(gate, /^ {4}if: always\(\)$/m);
-    const gating = [...found.keys()].filter(id => !['all-tests', 'perf-budget'].includes(id));
-    assert.deepEqual([...needsOf(gate)].sort(), gating.sort(), 'the gate needs every job but the non-gating perf budget');
-    assert.deepEqual([...gateVariables(gate).keys()].sort(), gating.sort(), 'every needed result reaches the gate');
-    assertGateBehaviour(gate, { queueOnly: ['comfyui'], codeOnly: ['coverage', 'lint', 'js-test'], always: ['test'] });
-});
-
-test('the CI workflows run on pull_request, merge_group and push without path filters', () => {
-    for (const name of GATING_WORKFLOWS) {
-        const text = readWorkflow(name);
-        const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\n', text.indexOf('\non:') + 1) + 400);
-        for (const event of ['merge_group', 'pull_request', 'push']) {
-            assert.match(triggers, new RegExp(`^ {2}${event}:`, 'm'), `${name} runs on ${event}`);
-        }
-        assert.doesNotMatch(text, /^ {4}paths(-ignore)?:/m, `${name} has no path filter that would leave a required check pending`);
-    }
-    assert.match(jobs(readWorkflow('code-quality.yml')).get('security'), CODE_ONLY_IF, 'bandit runs on every event for a code change');
-});
-
-// #639: the change is classified once per workflow, before anything else, from file names alone.
-test('each gating workflow classifies the change first and every other job waits for it', () => {
-    for (const name of GATING_WORKFLOWS) {
-        const found = jobs(readWorkflow(name));
-        assert.equal([...found.keys()][0], 'changes', `${name} starts with the classifier`);
-        const changes = found.get('changes');
-        assert.match(changes, /^ {4}name: change class$/m);
-        assert.doesNotMatch(changes, /^ {4}(needs|if):/m, `${name}: the classifier waits for nothing and always runs`);
-        assert.match(changes, /^ {6}class: \$\{\{ steps\.classify\.outputs\.class \}\}$/m);
-        const [checkout, classify] = steps(changes);
-        assert.match(checkout, /uses: actions\/checkout@v\d+/);
-        assert.match(checkout, /^ {10}fetch-depth: 0$/m, 'the base commit must be in the clone');
-        assert.match(checkout, /^ {10}filter: blob:none$/m, 'file names need no file contents');
-        assert.match(checkout, /^ {10}persist-credentials: false$/m);
-        assert.match(classify, /^ {8}id: classify$/m);
-        assert.match(classify, /^ {10}EVENT_NAME: \$\{\{ github\.event_name \}\}$/m);
-        assert.match(classify, /^ {10}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.event\.merge_group\.base_sha \|\| github\.event\.before \}\}$/m);
-        assert.match(classify, /^ {10}HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.event\.merge_group\.head_sha \|\| github\.sha \}\}$/m);
-        assert.match(classify, /^ {8}run: python3 tools\/ci\/change_class\.py \| tee -a "\$GITHUB_OUTPUT"$/m);
-        for (const [id, body] of found) {
-            if (id !== 'changes') assert.ok(needsOf(body).includes('changes'), `${name} job ${id} waits for the classifier`);
-        }
-    }
-});
-
-test('the pre-push hook runs the suite through the classifier', () => {
-    const hook = /- id: tests\n([\s\S]*?)(?=\n {6}(?:- id:|#)|\n*$)/.exec(readRepoFile('.pre-commit-config.yaml'))?.[1];
-    assert.ok(hook, 'the tests hook exists');
-    assert.match(hook, /^ {8}entry: python tools\/ci\/change_class\.py --unless-inert python -m tests\.run_suite -q$/m);
-    assert.match(hook, /^ {8}stages: \[pre-push\]$/m);
-});
-
-test('every required check reports on a pull request and the gates carry the full matrix', () => {
-    const contexts = JSON.parse(readRepoFile('.github/branch-protection.json')).required_status_checks.contexts;
-    assert.deepEqual([...contexts].sort(), [
-        'all tests', 'bandit (high severity)', 'black and flake8', 'coverage gate (85%)', 'frontend modules',
-        'py3.12 on ubuntu-latest', 'real ComfyUI compatibility', 'viewerjs',
-    ].sort());
-    assert.equal(contexts.filter(context => /^py/.test(context)).length, 1,
-        'a dropped matrix leg never reports on a pull request, so it cannot be required');
-    assert.ok(!contexts.some(context => /windows|macos/.test(context)), 'Windows never gates a merge');
+test('the limit rule: 1.5 x the slowest run, rounded up, plus 3, never under 5', () => {
+    assert.equal(limitOf([440, 456, 478]), 15);
+    assert.equal(limitOf([20, 22, 24]), 5);
+    assert.equal(limitOf([1221, 1239, 1266]), 35);
 });

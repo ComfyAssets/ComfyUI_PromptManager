@@ -1,8 +1,8 @@
 """Native proof of the macOS trash backend (#499 design §10.2).
 
-Runs only on macOS with ``PM_NATIVE_TRASH=macos`` (the ``native-trash`` job in
-portability.yml), because it puts files into the real Trash of the user
-running it. With the variable set, a bridge that cannot load fails the test
+Runs only on macOS with ``PM_NATIVE_TRASH=macos`` (by hand: macOS left CI in
+#571), because it puts files into the real Trash of the user running it.
+With the variable set, a bridge that cannot load fails the test
 rather than skipping it. Files moved into a trash folder are left there: the
 runner is disposable and this test never deletes from a trash folder.
 """

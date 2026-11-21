@@ -35,8 +35,8 @@ python -m tests.run_suite -q        # what CI runs; see "Time limits and hangs"
 npm ci --prefix tools/vendor --ignore-scripts
 npx --prefix tools/vendor playwright install --with-deps chromium firefox webkit
 npm run --prefix tools/vendor test
-npm run --prefix tools/vendor test:coverage
-npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit
+npm run --prefix tools/vendor test:coverage                                          # desktop Chromium: what the gate runs
+npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit --project touch   # what nightly runs
 ```
 
 `python -m unittest discover -s tests` still works and finds the same tests;
@@ -191,23 +191,26 @@ exists. It uses the gate's own `discoverSources`, and `npm test` runs the same
 check, so run it before pushing a new or deleted frontend file instead of
 waiting for the `frontend coverage` jobs.
 
-The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job. It requires the four `frontend coverage (shard N/4)` jobs and
-`frontend coverage (merge)` to succeed on every event. The six
-`page workflows (firefox|webkit, shard N/3)` jobs run only in the merge queue,
-on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
-`viewerjs` requires them to be skipped on a pull request and to succeed
-everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+Frontend coverage is measured with desktop Chromium alone (#666): the gate's
+four `frontend coverage (shard N/4)` jobs and `frontend coverage (merge)` run on
+every pull request with a code change, including backend-only ones (see "The
+gate and the nightly run"). The phone-size `touch` project, Firefox and WebKit
+run nightly and add no coverage. Measured on main a1f74470 in the pinned image
+(2026-11-21): with the node units and Chromium alone, without touch, all 126
+files met their floors; the closest were `workspace/images-state.mjs` branches
+(98.05 against 98) and `workspace/viewer-state.mjs` branches (95.06 against 95).
+Every browser job runs with `PM_TEST_WORKERS: 3` (the public
 runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/4`
-(shard 1 also runs the node units and the viewer suite, shard 4 the vendor pins
-and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
-days). The merge job downloads them, fails unless all three arrived with raw
+(shard 1 also runs the node units and the viewer suite) and uploads its raw V8
+files as `coverage-raw-N` (kept 3 days). The merge job downloads them, fails
+unless all four arrived with raw
 files and without clashing names, then runs `coverage:merge` (report plus
-baseline check). `tests/vendor/ci-workflow.test.mjs` checks this shape. GitHub
+baseline check). The vendor pins and the tooling tests run in their own job,
+`tooling tests and pins`. `tests/vendor/ci-workflow.test.mjs` checks this shape. GitHub
 artifacts named `frontend-test-reports` contain the merged HTML coverage and
-JSON summary; `frontend-traces-shard-N` hold the Chromium/touch failure
-screenshots/traces and `browser-traces-<browser>-shard-N` the other browsers'
-traces. Open traces with Playwright's `show-trace` tool.
+JSON summary; `frontend-traces-shard-N` hold the Chromium failure
+screenshots/traces and, from the nightly run, `browser-traces-<browser>-shard-N`
+the other projects' traces. Open traces with Playwright's `show-trace` tool.
 
 Every `npm ci` first restores npm's download cache (`~/.npm`), keyed on the vendor
 lockfile and the job's pinned image tag (`tests/vendor/ci-workflow.test.mjs` checks
@@ -235,8 +238,8 @@ need targeted validation.
 ## Time limits and hangs
 
 CI and the pre-push hook run the Python suite as `python -m tests.run_suite`
-(`-v`, `-q`, `-s START` and `-p PATTERN` as in `unittest discover`), and the
-coverage job as `python -m coverage run -m tests.run_suite`. The runner
+(`-v`, `-q`, `-s START` and `-p PATTERN` as in `unittest discover`); the gate
+runs it once, under coverage, as `python -m coverage run -m tests.run_suite -v`. The runner
 (`tests/run_suite.py`) discovers the same tests with the same `sys.path` and
 warning filters as `python -m unittest discover -s tests`, exits 0, 1, or 5 when
 no tests ran (Python 3.12+ behaviour, on every version), and adds a watchdog: it writes `start: <test id>` to stderr before every test, at every
@@ -264,13 +267,13 @@ the process exits non-zero.
   job fails anyway and the dump is what matters.
 - `PM_TEST_SLOWEST=N` (off by default) lists the N slowest tests after the
   summary, each timed from its `start:` line to the next one like the hang
-  limit. The Windows jobs (`portability.yml`) set it to 40, so every
+  limit. The Windows jobs (`nightly.yml`) set it to 40, so every
   run shows where its time went (#487). The list prints only when the run
   ends: a job GitHub cancels or a watchdog exit prints none, so read the
   timestamps between `start:` lines instead.
 - On the Windows runners `TEMP` sits on the OS disk C:, where a flush took about
   6 ms and a test database's create-to-delete about 111 ms (D: 0.5 ms and 23 ms,
-  macOS 19 ms). `portability.yml` points `TEMP`/`TMP` at a folder under
+  macOS 19 ms). `nightly.yml` points `TEMP`/`TMP` at a folder under
   `RUNNER_TEMP` on D: before the suite. It switches 8.3 short names on for D:
   and spells the folder by its short name, as the runner's own TEMP was
   (`C:\Users\RUNNER~1\...`), logs it, and warns when there is none.
@@ -294,25 +297,26 @@ the process exits non-zero.
   expects no ComfyUI nearby works two folders inside its temp folder, because
   the output-folder fallback looks two levels up.
 
-Every job in every workflow under `.github/workflows/` has `timeout-minutes`
-(`tests/vendor/ci-workflow.test.mjs` checks it; `publish.yml` and
-`viewerjs-update.yml` joined in #662). The rule is ceil(1.5 x the slowest of three recent green runs on
-`main`) + 3 minutes, never under 5, timed as whole-job wall time; the three run
-ids, their times and the resulting limits are written in a comment above
-`jobs:`. For `portability.yml`, `publish.yml` and `viewerjs-update.yml` the
-tooling test recomputes the limit from that comment (#493, #662); portability's
-one matrix job takes the slowest Windows leg. A path no measured run took (the
-Viewer.js update when a release appears) may carry an `estimated <path>: XmYYs
--> N min` line built from its parts by the same rule; the job then uses the
-larger limit until three green runs of that path are measured. The 3 minutes leave room for one watchdog firing, so
-the dump prints before GitHub cancels the job. A job that hits its limit, or a
-watchdog dump, is a failure like any other: read the dump, find the blocking
-call, fix it. Never raise a limit or rerun to get green; a limit changes only
-with new measurements written next to it.
+Every job in `ci.yml`, `nightly.yml`, `publish.yml` and `viewerjs-update.yml`
+(#662) has `timeout-minutes`.
+The rule is ceil(1.5 x the slowest of three recent green runs) + 3 minutes,
+never under 5, timed as whole-job wall time; a matrix job takes its slowest
+leg. The three run ids, their times and the resulting limit are written in a
+comment above `jobs:`, one line per job id
+(`python: 7m20s / 7m36s / 7m58s -> 15 min`). A job that has no three green runs
+yet has an `estimate <job id>: <why> -> N min` line instead; replace it with
+the measurement once three green runs exist. `tests/vendor/ci-workflow.test.mjs`
+recomputes every measured limit from its line and checks that each job has
+exactly one line and uses its limit (#493). The 3 minutes leave room for one
+watchdog firing, so the dump prints before GitHub cancels the job. A job that
+hits its limit, or a watchdog dump, is a failure like any other: read the dump,
+find the blocking call, fix it. Never raise a limit or rerun to get green; a
+limit changes only with new measurements written next to it.
 
 Browser jobs (#425): GitHub keeps no log of a job killed at its limit and skips
-its upload steps, so the test step in each browser job in `viewerjs-check.yml`
-has its own `timeout-minutes` (18, below the job's 20). At the step limit
+its upload steps, so the page test step in each browser job (`frontend coverage`
+in `ci.yml`, `page workflows` in `nightly.yml`) has its own `timeout-minutes`,
+2 below the job's. At the step limit
 GitHub sends SIGTERM, which would end Playwright without any report; under `CI`
 `tools/vendor/running-tests-reporter.mjs` catches the first one, prints
 `Still running when the run ended (SIGTERM): N` and one line per unfinished
@@ -328,10 +332,9 @@ runs the script, and that shell exits without passing it on. Delivery in CI,
 where the step runs through `docker exec`, is not yet observed; the next real
 step timeout will show it. That directory and the traces
 upload with `if: always()`; `npx playwright merge-reports` opens the blob.
-Each test keeps the 30 s default and there is no `globalTimeout`. Two limits
+Each test keeps the 30 s default and there is no `globalTimeout`. One limit
 of this: it assumes the npm cache hits (a cold cache adds up to 5 minutes to
-`npm ci`, and the job limit can then still win), and coverage shard 1 (12m53s
-measured) is the tight one in its 18-minute step. Local runs keep the `list`
+`npm ci`, and the job limit can then still win). Local runs keep the `list`
 reporter only; reproduce with `CI=1 timeout -s TERM 40 npm run --prefix
 tools/vendor test:workflows -- --project=firefox`.
 
@@ -340,18 +343,17 @@ tools/vendor test:workflows -- --project=firefox`.
 Follow the run for the commit you pushed, never an older one:
 
 ```sh
-gh run list --commit <pushed sha> --workflow test.yml     # the run id for that commit
+gh run list --commit <pushed sha> --workflow ci.yml       # the run id for that commit
 gh run watch <run id> --exit-status                       # returns when the run ends
 gh run view <run id> --json jobs                          # shows a job that already failed
 gh run view --job <job id> --log-failed                   # that job's failed log, at once
 ```
 
-Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures first show up in the
-merge queue, on the merge-group commit rather than the
-pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
-(or `viewerjs-check.yml`) and match its head branch
-(`gh-readonly-queue/main/pr-<N>-...`). Windows failures show up only
-after the merge, in `gh run list --workflow portability.yml`.
+Everything that can block the merge is in that one run (#666). Firefox, WebKit,
+touch, Python 3.13/3.14, Windows and real ComfyUI failures show up the next
+morning, as an open `nightly: <job> failing` issue and in
+`gh run list --workflow nightly.yml`; to see them before merging, run
+`gh workflow run nightly.yml --ref <branch>`.
 
 Start fixing as soon as a failed log shows the cause, but push the fix only after
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
@@ -535,20 +537,20 @@ trim; `tests/test_utils_parallel.py` the pool's reuse, resize, nesting and shutd
 `tools/perf/memory_drive.py` (manual, Linux, never in CI) measures RSS, heap, threads
 and arenas under the #523 load against the disposable browser test server.
 
-The `perf budget` job in `.github/workflows/test.yml` is the reference
+The `perf budget` job in `.github/workflows/nightly.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
-It runs on every push to `main` and on `workflow_dispatch`, never on pull
-requests, because shared-runner timing must not block a merge. Dispatch it on a
-branch to measure before merging.
+It runs nightly and on `workflow_dispatch`, never on pull
+requests, because shared-runner timing must not block a merge. Dispatch
+`nightly.yml` on a branch to measure before merging.
 Shared Windows runners do not run them; the structural tests cover
 portability. Run it locally with
 `PROMPTMANAGER_PERF_BUDGET=1 python -m unittest tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget`
 and quote the printed p95 in the PR body.
 
-A red `perf budget` run on `main` means the code got slower: fix the code (or
+A red `perf budget` run means the code got slower: fix the code (or
 change the budget in the spec with a reason) in a follow-up PR. Never rerun it to
-green. It is not a required check, and it cannot be one while it skips pull
-requests (`.github/branch-protection.json`).
+green. It is not a required check: only `gate` is
+(`.github/branch-protection.json`).
 
 ## Images listing cache (#348)
 
@@ -739,114 +741,163 @@ Before changing paths, SQLite, streams, restore or cleanup:
   open with `FirstWriterHold`) and give peers that must all succeed the
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
-- Run native Windows CI early for these changes. Pull requests and the merge
-  queue run only Linux, so start Windows on the branch with
-  `gh workflow run portability.yml --ref <branch>`.
+- Run native Windows CI early for these changes. Pull requests run only Linux,
+  so start Windows on the branch with
+  `gh workflow run nightly.yml --ref <branch>` (a branch run files no issues).
   Include a Windows impact and evidence note in the PR. All three Windows
   legs in that run, every Linux leg and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
-## Pull requests and the merge queue
+## The gate and the nightly run
 
-Each PR runs the full matrix once, in the merge queue (#420). The event decides
-what runs:
+A change is tested once, on its pull request (#666). There is no merge queue
+and a push to `main` runs no test. Three workflows:
 
-| Job | `pull_request` | `merge_group`, push to `main`, `workflow_dispatch` |
+| Workflow | Runs on | Jobs |
 | --- | --- | --- |
-| `py3.12 on ubuntu-latest` | runs | runs |
-| `py3.13 on ubuntu-latest`, `py3.14 on ubuntu-latest` | not created | run |
-| `real ComfyUI compatibility` | skipped | runs |
-| `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
-| `frontend coverage (shard N/4)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 4) | run | run |
-| `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
-| `all tests`, `viewerjs` (gates) | run | run |
-| `perf budget` | skipped | push and dispatch only (not in the queue) |
-| `py3.12-3.14 on windows-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
+| `ci.yml` (the gate) | `pull_request`, `workflow_dispatch` | `change class`; `python 3.12 with coverage (85%)` (the suite, once, under coverage); `black and flake8`; `bandit (high severity)`; `frontend modules` (`tests/js`); `tooling tests and pins` (`tests/vendor`, vendor pins); `frontend coverage (shard N/4)` and `frontend coverage (merge)` (desktop Chromium page workflows with the per-file floors); `package contents` (a release only); `gate` |
+| `nightly.yml` | 03:17 UTC, `workflow_dispatch` | `page workflows (firefox\|webkit\|touch, shard N/3)`; `py3.13`/`py3.14 on ubuntu-latest`; `py3.12`-`3.14 on windows-latest`; `native trash on a real mount`; `real ComfyUI compatibility`; `perf budget`; `report by issue` |
+| `publish.yml` | push to `main` that changes `pyproject.toml`, `workflow_dispatch` | publishes to the Registry when the version is new |
 
-GitHub has one required set for pull requests and the queue. A job skipped by
-its `if:` reports Success. A dropped matrix leg never reports, so it would stay
-pending. That is why `all tests` (in `test.yml`) and `viewerjs` carry the
-guarantee:
-- On a pull request they require the subset to succeed and the queue-only jobs
-  to be skipped.
-- On every other event they require every job to succeed.
+`gate` is the only required check. It needs every other job of `ci.yml` and
+passes only when the classifier succeeded and each job did what the change
+class asks (below): the class's jobs succeeded and every other job was
+skipped. A failed, cancelled or wrongly skipped job fails it, and so does a
+class the classifier does not print. Because branch protection names only
+`gate`, adding or renaming a job never strands a pull request. Protection is
+strict: the branch must be up to date with `main`, so the commit the gate
+tested is the commit that merges. When `main` moved, press "Update branch" and
+the gate runs once more.
 
-So a merge group cannot turn green unless all three Linux Python legs, real
-ComfyUI and the four browser shards passed.
+Only desktop Chromium blocks a merge (maintainer, 2026-11-21). Firefox, WebKit
+and the phone-size `touch` project are not first-class; with Python 3.13/3.14,
+Windows, the real mount, real ComfyUI and the wall-clock budget they run
+nightly on `main`. macOS is not tested in CI (maintainer, 2026-10-31, #571);
+its code stays and support is best-effort. The cost: a break only those can
+see is found the next morning, not before the merge. To see it before merging
+a risky change, run `gh workflow run nightly.yml --ref <branch>`.
 
-Windows (Python 3.12-3.14) is out of the blocking path for now
-(maintainer, 2026-10-28). macOS is not tested in CI (maintainer, 2026-10-31, #571);
-its code stays and support is best-effort. They run in `portability.yml` on every push to `main`,
-nightly and on demand, and no context there is required. A red portability run
-is still a failure: fix it at its cause, not by rerunning, and have every one
-green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
-event split and runs both gate scripts for each event.
+### Nightly reports by issue
+
+Nothing waits for the nightly run, so it reports by issue
+(`tools/ci/nightly_report.py`, the `report by issue` job, the only job in CI
+with a write permission: `issues: write`). For each job of the run:
+
+- a failed or timed-out leg opens `nightly: <job> failing`, or comments on the
+  open issue with that exact title, naming the run, the commit and the failed
+  legs;
+- every leg green closes that issue with a comment naming the run;
+- a cancelled or skipped job changes nothing.
+
+Shards of one browser are one job (`nightly: page workflows (webkit) failing`).
+Only a run of `main` reports; a manual run of a branch files nothing. A red
+nightly job is a failure like any other: read the log, fix the cause. It blocks
+no merge, and it is never rerun to green.
+
+### Flaky tests and quarantine
+
+- **No retries in the gate.** A retry hides a race. A gate test passes or fails
+  on its one attempt (`retries: 0` in both Playwright configs).
+- **No rerun-to-green.** A red job is read and fixed at its cause. The one
+  exception is unchanged: a pure timeout with every test passing may be rerun.
+- **A gate test that fails without a code cause is fixed or quarantined the
+  same day.** Open an issue, then tag the test with that issue, in exactly this
+  spelling (`tests/vendor/flake-policy.test.mjs` checks it):
+
+  ```js
+  test('closing the viewer never blocks the page', { tag: '@quarantine', annotation: { type: 'issue', description: '#613' } }, async ({ page }) => {
+  ```
+
+  The gate's page run passes `--grep-invert @quarantine`
+  (`tools/vendor/frontend-coverage.mjs`), so the test no longer blocks a merge;
+  the nightly run still runs it in Firefox, WebKit and touch. To run it in
+  Chromium while fixing it: `npm run --prefix tools/vendor test:workflows --
+  --project chromium --grep @quarantine`. Remove the tag in the PR that fixes
+  the test and closes the issue. A quarantined test adds no coverage, so a
+  floor that depended on it fails the merge job: that is the signal to fix
+  the test rather than leave it.
+- **Nightly retries once** (`--retries 1`). A test that fails and then passes
+  does not turn its job red; `tools/vendor/flaky-tests-reporter.mjs` lists it
+  in the job summary under "Flaky tests". Treat a test listed there twice as a
+  bug to fix.
+
+Nothing is quarantined today. Measured at the switch (the last 100
+pull-request runs of the frontend workflow, 2026-10-31 to 2026-11-21): 9
+failed. Six were caused by the pull request's own change (three coverage
+floors, a tooling test, a new test that failed in touch, a Playwright bump),
+one by a re-pushed image tag (fixed by the digest pin, #609), and two by
+Chromium tests that failed without a cause in the pull request; both were
+fixed at their cause (a production race, #611, and a spec that read a status
+before its save answered, #631).
 
 ### Only changes that can affect code are tested (#639)
 
-The table above is for a code change. Each of the three workflows starts with a
-`change class` job that runs `tools/ci/change_class.py` over the files the pull
-request, merge group or push touches, and the other jobs follow its answer:
+The table above is for a code change. `ci.yml` starts with a `change class` job
+that runs `tools/ci/change_class.py` over the files the pull request touches,
+and every other job runs for one class only:
 
-| Class | Files (allowlists in the script) | What runs |
+| Class | Files | What runs |
 | --- | --- | --- |
-| `inert` | `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and the two gates. `py3.12 on ubuntu-latest` starts and skips its steps, because a skipped matrix job would never report that required context. |
-| `docs` | `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | The above plus the real `py3.12 on ubuntu-latest` suite, which holds the tests that read them (`tests/test_brand_assets.py`, `tests/test_package_contents.py`). |
-| `code` | Anything else | Everything in the table above. |
+| `inert` | Only `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and `gate`: green in seconds. |
+| `docs` | Only `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | `change class` and `gate`: green in seconds. |
+| `release` | `pyproject.toml` alone, and in it only the `version = "..."` line rewritten | The above and `package contents` (`tests/test_package_contents.py`). |
+| `code` | Anything else | The whole gate. |
 
 A file on no list is code, and so is every case of doubt: no changed files, a
-manual run, a range git cannot read. `docs/` is code, because the browser suite
-compares production against `docs/concepts/workspace/`; `TESTING.md` is code,
-because the tooling tests read its tables. Before adding a file to a list,
-check that no test and no shipped code opens it.
+manual run, a range git cannot read, a `pyproject.toml` change that is more
+than the version line. `docs/` is code, because the browser suite compares
+production against `docs/concepts/workspace/`; `TESTING.md` is code, because
+the tooling tests read its tables; a test-only change is code. Before adding a
+file to a list, check that no shipped code opens it.
 
-The gates enforce the class: for `docs` and `inert` they require the classifier
-to have succeeded, the Python matrix to have succeeded and every other job to
-have been skipped; a class the script does not print fails them. `bandit` has no
-gate, so it runs unless the class is `docs` or `inert`, which means a failed
-classifier gets a full scan. The required contexts do not change.
+Two Python tests read the `docs` files (`tests/test_brand_assets.py`,
+`tests/test_package_contents.py`). CI no longer runs them for a `docs` change
+(maintainer, 2026-11-21: documentation and image changes run no tests), so a
+README or brand-asset edit that breaks one is caught by the pre-push hook, or
+else by the next code change's gate. Run
+`python -m unittest tests.test_brand_assets tests.test_package_contents` after
+editing those files.
 
 The pre-push hook uses the same script: it skips the Python suite when the
 pushed commits are `inert` and runs it otherwise.
 
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks:
-`py3.12 on ubuntu-latest`, `coverage gate (85%)`, `black and flake8`,
-`frontend modules`, `all tests`, `viewerjs`, `real ComfyUI compatibility` and
-`bandit (high severity)`. Each one reports on a pull request.
+`.github/branch-protection.json` records the required checks: the one context
+`gate`, with `strict` (the branch must be up to date with `main`). It reports
+on every pull request, whatever the change class.
 The same set lives in two places, and both must change together: the `main`
-ruleset (25960526, which also holds the merge queue) and the classic branch
-protection on `main`, which the manifest mirrors. GitHub requires the union of
-the two, so a context left in either one blocks every PR that does not report it.
-It does not require an additional human approval.
+ruleset (25960526) and the classic branch protection on `main`, which the
+manifest mirrors. GitHub requires the union of the two, so a context left in
+either one blocks every PR that does not report it. The ruleset has no
+`merge_queue` rule (#666). Merging is the squash button. It does not require an
+additional human approval.
 
-A repository administrator applies the configuration after the new workflow is
-passing, then verifies it:
+A repository administrator applies the configuration, then verifies it:
 
 ```sh
 gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 \
-  | jq '.rules[] | select(.type == "required_status_checks") | [.parameters.required_status_checks[].context]'
+  | jq '.rules[] | select(.type == "required_status_checks") | .parameters'
 ```
 
 A PUT replaces the whole `rules` array, so edit the current ruleset in place.
-Keep the `deletion`, `non_fast_forward` and `merge_queue` rules, and give every
-context `integration_id` 15368 (GitHub Actions), so no other integration can
-post a required check. Save the current ruleset first; it is the rollback:
+Keep the `deletion` and `non_fast_forward` rules, and give the context
+`integration_id` 15368 (GitHub Actions), so no other integration can
+post the required check. Save the current ruleset first; it is the rollback:
 
 ```sh
 gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 > ruleset-before.json
 jq '{name, target, enforcement, conditions, bypass_actors, rules: [.rules[]
+     | select(.type != "merge_queue")
      | if .type == "required_status_checks"
-       then .parameters.required_status_checks = [$ARGS.positional[] | {context: ., integration_id: 15368}]
-       else . end]}' ruleset-before.json --args "py3.12 on ubuntu-latest" "..." > ruleset-new.json
+       then .parameters.required_status_checks = [{context: "gate", integration_id: 15368}]
+          | .parameters.strict_required_status_checks_policy = true
+       else . end]}' ruleset-before.json > ruleset-new.json
 gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 --input ruleset-new.json
 ```
 
-Afterwards, read it back. Check that the `merge_queue` rule is still there and
-that every context keeps its `integration_id`. Then apply the manifest to the
-classic protection and read both back:
+Then apply the manifest to the classic protection and read both back:
 
 ```sh
 gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection \
@@ -854,9 +905,9 @@ gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protec
 gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required_status_checks
 gh api repos/ComfyAssets/ComfyUI_PromptManager/rules/branches/main
 ```
- Update the manifest whenever
-required job names change. Keep the frontend check
-free of path filters so a required check is never silently skipped.
+
+Update the manifest whenever the required context changes. Keep `ci.yml`
+free of path filters so the required check is never silently skipped.
 
 ## Unified workspace
 
@@ -2657,7 +2708,7 @@ job after `file_check` confirms containment and non-symlink, and the review step
   checks intact. A root above the mount, a mount nested under the root, a source that is or
   sits in the trash folder, and a link in place of the trash folder stay refused. Tests:
   `tests/test_trash_mount_root.py`, on a fake mount table in the suite and, with
-  `PM_TRASH_MOUNT=<real mount>`, in portability.yml's `native-trash-linux` job (loop-mounted
+  `PM_TRASH_MOUNT=<real mount>`, in nightly.yml's `native-trash-linux` job (loop-mounted
   ext4). Locally, without root: `unshare -Urm` over a tmpfs.
 - **D190** (#543, beyond the concept): a trash review where nothing can move shows a primary
   that clearly cannot act: `aria-disabled`, no danger colors (also on hover), and a press does
@@ -2794,7 +2845,7 @@ Recorded deviations on this page:
   drive, UNC, non-ASCII, symlinked root, the any-tag union), `test_api_library.py`,
   `test_saved_views.py`, the library-state and saved-views JS units, and
   `tests/browser/workspace-library-filters.spec.mjs` (behavior, the Refine dialog against
-  the concept Filters dialog, artifact captures). Windows: run `portability.yml` on the PR.
+  the concept Filters dialog, artifact captures). Windows: run `nightly.yml` on the PR's branch.
 
 `tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
 concept-shaped fixture, which creates the concept's prompts last to first so Recently

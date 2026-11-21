@@ -11,11 +11,11 @@ on:
 permissions:
   issues: write
 
-# Time limit rule as in test.yml (#662): ceil(1.5 x the slowest of three recent green runs on main)
-# + 3 minutes, never under 5, timed as whole-job wall time (tests/vendor/ci-workflow.test.mjs
-# recomputes it). The runs are the last three green release publishes.
-# Measured 2026-11-21 on main runs 44547398738 (b3bb55f), 44189688689 (1d509c8), 41519786847 (71b55bc):
-#   slowest leg: 0m33s (publish) / 0m31s (publish) / 1m16s (publish) -> 5 min
+# The only workflow a push to main starts (#666): the pull request's gate already tested the commit.
+# It runs when pyproject.toml changed, and the action publishes when the version is new.
+# Time limit rule as in ci.yml: ceil(1.5 x the slowest of three recent green runs) + 3 minutes, never under 5.
+# Measured 2026-11-21 on runs 44547398738 (b3bb55f), 44189688689 (1d509c8), 41519786847 (71b55bc):
+#   publish-node: 0m33s / 0m31s / 1m16s -> 5 min
 jobs:
   publish-node:
     name: Publish Custom Node to registry
