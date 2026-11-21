@@ -1619,8 +1619,7 @@ The Images page renders the concept's DOM with real data. Its controls, top to b
   (a "Media controls" group), the shared file inspector beside the stage, and Escape
   returns focus to the opening image.
 
-How the earlier workspace Images filters moved (old → new). The legacy `/gallery`,
-`/admin` and `/metadata` pages are unchanged.
+How the earlier workspace Images filters moved (old → new).
 
 | Before PR C | Now |
 | --- | --- |
@@ -2864,8 +2863,8 @@ applied), D35 (singular captions), D36 (sorted categories), D40 (the continuatio
 the grid) and D43 (sorted chips, checked against the concept with its chips sorted).
 D44 needs no mapping: the comparison runs with no Refine filter active, so the button
 reads "Filters" as the concept's does. Nothing else follows the grid: the legacy
-"Current prompt library" link is removed from the shelf; the legacy Library stays at
-`/prompt_manager/admin` by direct URL (#525, #620)
+"Current prompt library" link is removed from the shelf, and `/prompt_manager/admin` now
+leads to this page (#668, D207)
 (`tests/browser/workspace.spec.mjs`). `library comparison detects
 mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
 
@@ -3248,8 +3247,8 @@ appears in four places, and production draws none of them:
 
 Data and API are unchanged: the `rating` column (`CHECK` 1–5), `PUT
 /prompt_manager/prompts/{id}/rating`, `rating` in Library, Images and statistics
-answers, and the server's `rating` sorts. The legacy pages keep their ratings until the
-cutover (#334). Favorites (the image star) are unchanged.
+answers, and the server's `rating` sorts. The old pages, which showed ratings, are gone (#668); the stored
+ratings and the routes stay. Favorites (the image star) are unchanged.
 
 Tests: units `tests/js/workspace-library-editor-state.test.js` (a prompt rated 4 edited
 and saved keeps 4, no `rating` in any body, no rating field),
@@ -3372,8 +3371,8 @@ npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
 ### Inspect a file page and recorded deviations (#249 local Inspect, PR L2)
 
 `#/inspect` ("Inspect a file") is a native workspace route; it no longer hands off to
-the legacy metadata page, which stays at its URL
-(`/prompt_manager/gallery.html`) at its URL only (#525, #620). The page is the concept's `#metadata`
+the legacy metadata page, whose URL (`/prompt_manager/gallery.html`) now leads here (#668,
+D207). The page is the concept's `#metadata`
 (app.js `renderMetadata` a740–748, selection a1715–1729; style.css 709–722, 1180–1194,
 1543–1545, 1559–1564) in the concept's own classes (`.surface`, `.file-drop`,
 `.spaced-20`, `.local-file-preview`, all from the synced `concept.css`), with no
@@ -3576,8 +3575,8 @@ mapped differences"):
   differ: numbers keep the server's spelling ("8.0" where the legacy page wrote 8); a fact
   the legacy parse could not read can be known; and a negative the #249 ZeroOut guard
   zeroed reads "No negative prompt found" where the legacy parse read the positive's text
-  through the zero-out. `workspace-file-inspector.test.js` runs the template taken from
-  `web/metadata.html` itself on the legacy parse of every parity PNG: 22 of 25 are
+  through the zero-out. `workspace-file-inspector.test.js` runs that template (a frozen copy of
+  `web/metadata.html`'s, taken at 3.7.2 before the page was removed in #668) on the legacy parse of every parity PNG: 22 of 25 are
   byte-equal, f01b and f23 differ by the ZeroOut guard and f17 by facts the legacy parse
   missed. Copying works as the concept's prompt copy: the toast "Settings summary
   copied.", or, without a clipboard or when it is refused, the select-to-copy dialog
@@ -3848,13 +3847,10 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
-System is the home for settings and maintenance (#330 System S13). The legacy pages keep
-their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
-Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
-thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
-System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
-keeps only its own settings in Page options. What left the legacy pages is listed in
-"Legacy System UI removed by S13".
+System is the home for settings and maintenance (#330 System S13). The old admin and
+gallery pages, which first handed these jobs to System through links, are gone (#668,
+D207); "Legacy System capability coverage" names the System control or the ruling for
+each capability they had.
 
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
@@ -3875,8 +3871,7 @@ Optimized→`medium`, Original→`high`, Fast→`low`; the thumbnail dialog's pr
 once S5 lands), the three video rows (`videoAutoplay`, `videoMute`, `videoLoop`) and Show
 file paths (`showFilePaths`). A write re-reads the stored object and writes back only the
 changed keys, every other key (legacy paging, thumbnail state, unknown keys) as stored;
-the legacy gallery's Save also keeps the keys it does not edit, so the two pages stay in
-sync. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
+so a key the old gallery page stored (removed in #668, D209) is never lost. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
 `infiniteScroll`; README continuous-browsing ruling). A browser that refuses storage
 (denied, or a full quota that leaves the stored bytes as they were) keeps the change for
 this tab only and the status says "Saved for this tab only; browser storage is
@@ -4003,7 +3998,7 @@ batch and all 9 previews are written, where a stream that stops on disconnect le
 The gallery's Cancel (its settings panel and the startup dialog) cancels by that id,
 and only a job its own stream started: a Cancel before the `job` frame keeps the stream
 open until it arrives, a double Cancel posts once, and a job another tab or System
-started keeps running while the gallery stops following it (`tests/js/gallery-thumbnails.test.js`).
+started keeps running while the gallery stops following it. The gallery page that used this stream is gone (#668); the route stays.
 A job cancelled from Activity ends the stream with the error frame "Thumbnail
 generation was cancelled". The blocking
 `POST /images/generate-thumbnails` and the clear stay legacy holds.
@@ -5615,8 +5610,9 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
   table, optional in old backups, refused without the annotation group).
 
-- **The legacy pages (#379, PR 2)** write image tags, never prompt tags.
-  `POST /autotag/start` (the admin and gallery batch) reads `model_type`, `prompt`,
+- **The old pages' auto-tag routes (#379, PR 2)** write image tags, never prompt tags.
+  The pages that called them are gone (#668); the routes stay until each is reviewed.
+  `POST /autotag/start` (the old admin and gallery batch) reads `model_type`, `prompt`,
   `skip_tagged` (Skip or Merge), `keep_in_memory` and the thresholds (else the saved
   ones), checks them with `validate_options` (WD14: both thresholds; GGUF/HF:
   `instructions` = the non-blank `prompt`, else the saved template; the saved
@@ -5624,8 +5620,7 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   page)" (gate owner `legacy-batch`) through the native start, so the safety backup and
   the disk check apply. A second legacy batch answers JSON 409 `{success: false, error:
   "Auto-tagging is already running"}` (also when another legacy start wins the race past
-  that check); `SseStream` hands a non-2xx JSON `error` to `onerror` as `serverMessage`,
-  which both pages show instead of "Connection lost during auto tagging". Any other refusal (a job in the way: "<title>
+  that check). Any other refusal (a job in the way: "<title>
   already running", `model-unavailable`, `insufficient-space`, `model-busy`, a bad
   option) is one `{type: "error", status: "error", message}` frame. The stream relays
   the job: the phases as `{type: "progress", progress: 0 | 5 | 8, status: "Taking a
@@ -5650,15 +5645,7 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   added_tags, total_tags}`; an empty list only marks the image. A body with `prompt_id`
   is `400` "This page is out of date. Reload it."; a changed file `409 file-changed`
   ("The image changed since its tags were generated."); a full set `409 tag-limit`; a
-  restore `409 storage-changed`. The admin review asks each image with Skip first: an
-  auto-tagged one shows "Image Already Auto-tagged" / "A tagging model already tagged
-  this image. Generate new tags?" with its image tags (Skip, Skip All Tagged, Re-tag asks
-  again with Merge); the gallery review always merges. Apply & Next sends the image and
-  its `sha256` (linked or not). The batch copy: "Skip images already auto-tagged",
-  "Auto tagging complete! Tagged N images." ("1 image"), and under both progress bars
-  "Closing this window stops tagging. Tags already added are kept. Prompt Manager's
-  Activity page shows the time left.". Pinned by `tests/test_autotag_legacy.py`,
-  `tests/js/image-helpers.test.js` and `legacy-autotag.spec`.
+  restore `409 storage-changed`. Pinned by `tests/test_autotag_legacy.py`.
 - **Tag image dialog marks (DEC4).** A save after Generate suggestions ran on that
   capture marks the image auto-tagged (also a replayed save, and a saved retry after
   `tag-conflict`); a save without Generate does not. The API keeps the suggested capture
@@ -5758,9 +5745,10 @@ line read `database_info.size_bytes`, a key the report does not have, so it alwa
 
 ### Legacy System capability coverage
 
-Every System capability of the legacy admin and gallery pages has an owner (#249 System
-S12, #329). Status is `covered` (a native control replaces it), `kept in legacy` (it stays
-on the legacy page, which keeps working) or `approved removal` (a ruling retired it). Native
+Every System capability the old admin and gallery pages had has an owner (#249 System
+S12, #329). Status is `covered` (a native control replaces it) or `approved removal` (a
+ruling retired it). The old pages are gone (#668, D207), so nothing is "kept in legacy" any
+more: D209 records where its four rows went. Native
 control is `` `<section>` · <role> · "<accessible name>" ``, `<section>` a System hash id
 and `<role>` one of button, combobox, switch, slider, spinbutton, textbox, group, status or
 term, followed by ` · in "<row title>"` when several rows of the section share the name.
@@ -5768,13 +5756,10 @@ Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
 (`tools/vendor/legacy-coverage.mjs`), each with its reason: today only "Gallery per-image
 auto-tag / review", which the Images selection bar owns, not a System section. A row that
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
-file. Anchors are line numbers on `main` at this PR.
-
-S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
-"Legacy System UI removed by S13" below lists every removed element against its row.
+file. Legacy anchor is history: the lines are those of the deleted files in 3.7.2.
 
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
-- no owner, or a status outside the three;
+- no owner, or a status outside the two;
 - a malformed Native control cell;
 - a covered row without a control (unless exempt), or a control on a row that is not
   covered;
@@ -5796,7 +5781,7 @@ list stay unscoped: any row's control proves them.
 | Monitoring enabled | `py/config.py:212,248` | S4 Sources | covered | `sources` · switch · "Watch for new outputs" | Watch for new outputs saves monitoring_enabled; a restart applies it (workspace-system-sources.spec.mjs) |
 | Search results auto-hide `result_timeout` | `admin.html:407–412` | S3 Appearance | covered | `appearance` · spinbutton · "Node search auto-hide (seconds)" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
 | Web UI display mode | `admin.html:414–422` | S3 Appearance | covered | `appearance` · combobox · "Open from ComfyUI" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Legacy prompt list (README continuous browsing); read-only in the report | kept in legacy | — | shouldLoadMore asks for the next page only near the bottom with pages left (list-state.test.js) |
+| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Retired with the old prompt list (D209): the Library always continues; `web_ui.infinite_scroll` stays read-only in the report | approved removal | — | library infinite loading keeps unique parents and keyboard-accessible history controls (workspace-library.spec.mjs) |
 | Worker threads | `admin.html:437–445` | S4 Sources | covered | `sources` · slider · "Worker threads" | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
 | LoraManager badge, enable, path, trigger words, CivitAI key, clear key | `admin.html:448–490`; `admin.js:1052–1156` | S10 Integrations | covered | `integrations` · switch · "LoraManager integration" | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
 | LoRA data import with progress | `admin.html:492–498,517–541`; `admin.js:1157` | S10 Integrations | covered | `integrations` · button · "Review import" | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
@@ -5839,68 +5824,12 @@ list stay unscoped: any row's control proves them.
 | Video autoplay, mute, loop | `gallery-settings.js:40–42` | S3 Appearance | covered | `appearance` · switch · "Autoplay videos" | video defaults reach the viewer (workspace-system.spec.mjs) |
 | Image info on cards; sidebar collapsed | `gallery-settings.js:30,34` | S3 Appearance | covered | `appearance` · switch · "Show image details on cards" | added rows reach their consumers (workspace-system.spec.mjs) |
 | Reset gallery settings | `gallery.js:1813` | S3 Appearance | covered | `appearance` · button · "Reset" | reset restores defaults without touching other keys (workspace-system.spec.mjs) |
-| Lazy loading | `gallery-settings.js:25` | Legacy gallery (native always lazy) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
+| Lazy loading | `gallery-settings.js:25` | Retired with the old gallery (D209): Images always loads lazily; the stored key is kept | approved removal | — | stored values override defaults and unknown keys are kept (gallery-settings.test.js) |
 | Results per page / grid columns / paged mode | `gallery-settings.js:28–29,35` | README continuous browsing | approved removal | — | numeric strings from <select> values are accepted and columns are clamped (gallery-settings.test.js) |
 | Startup thumbnail prompt | `gallery-settings.js:38–39`; `gallery.js:2578` | README; Overview thumbnail row | approved removal | — | thumbnail row reflects the status endpoint (workspace-system.spec.mjs) |
-| Client debug output `debugMode` | `gallery-settings.js:36` | Legacy gallery (S12-10) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
-| API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
+| Client debug output `debugMode` | `gallery-settings.js:36` | Retired with the old gallery (D209, S12-10): Diagnostics & logs is the workspace's tool; the stored key is kept | approved removal | — | stored values override defaults and unknown keys are kept (gallery-settings.test.js) |
+| API timeout `apiTimeout` | `gallery-settings.js:37` | Retired with the old gallery (D209, S12-10): no request ever read it; the stored key is kept | approved removal | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
-
-### Legacy System UI removed by S13
-
-System S13 (#330) points the legacy pages' System buttons at native System (a link that
-opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
-only when its row above is `covered`. One row per removed capability: Capability is the
-exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
-Removed methods list what went (`—` for none), and Native test copies that row's Test
-cell. An id that stays on a System link is not listed, only its handler. The gallery's
-Default View Mode left Page options too: System › Appearance's Default layout is the one
-default-layout control. Nothing writes the legacy `defaultViewMode` any more; a stored
-value still picks the view the legacy gallery opens in (grid otherwise), and Page options
-Save and Reset keep it.
-
-`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
-`covered` or copies another test, when an id or method is listed twice for one page, or
-when a listed id is still on its page (`id="…"` in the markup or the script, a
-`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
-method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
-kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
-legacy page workflows), not by this check.
-
-| Capability | Page | Removed ids | Removed methods | Native test |
-| --- | --- | --- | --- | --- |
-| Diagnostics run | admin | `#diagnosticsModal`, `#runDiagnosticsBtn`, `#diagnosticsContent` | `showDiagnosticsModal()`, `closeDiagnostics()`, `runDiagnostics()`, `renderDiagnostics()` | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
-| Synthetic image-link test | admin | `#testImageLinkBtn` | `testImageLink()` | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
-| View logs with level and limit | admin | `#logsModal`, `#logLevel`, `#logLimit`, `#refreshLogsBtn`, `#logsContainer` | `showLogsModal()`, `closeLogs()`, `refreshLogs()`, `displayLogs()` | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
-| Log statistics | admin | `#logStatsTotal`, `#logStatsErrors`, `#logStatsWarnings`, `#logStatsLevel`, `#logStatsSize` | `loadLogStats()`, `formatBytes()` | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
-| Log files list and download | admin | `#downloadLogsBtn`, `#logFilesList` | `loadLogFiles()`, `downloadLogs()`, `downloadLogFile()` | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
-| Clear/truncate logs | admin | `#clearLogsBtn` | `clearLogs()` | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
-| Set log level (incl. CRITICAL), console logging | admin | `#updateLogConfigBtn`, `#setLogLevel`, `#consoleLogging` | `loadLogConfig()`, `updateLogConfig()` | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
-| Image scan directories add/remove | admin | `#scanPathsList`, `#addScanPathBtn` | `renderScanPaths()`, `addScanPath()`, `removeScanPath()`, `_collectScanPaths()` | Add source validates on the server, then marks the host draft dirty; Save persists (workspace-system-sources.spec.mjs) |
-| Currently monitoring list + Refresh | admin | `#refreshMonitoringStatus`, `#monitoringStatus` | `updateMonitoringStatus()` | watching only with a live observer; restart pending otherwise (workspace-system-sources.spec.mjs) |
-| Search results auto-hide `result_timeout` | admin | `#resultTimeout` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Web UI display mode | admin | `#webuiDisplayMode` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Worker threads | admin | `#workerThreads`, `#workerThreadsValue` | `renderWorkerThreads()` | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
-| LoraManager badge, enable, path, trigger words, CivitAI key, clear key | admin | `#loraDetectionBadge`, `#loraEnabled`, `#loraSettings`, `#loraManagerPath`, `#loraTriggerWords`, `#civitaiApiKey`, `#clearCivitaiKey` | `detectLoraManager()`, `_bindLoraEvents()`, `saveLoraSettings()` | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
-| LoRA data import with progress | admin | `#loraImportModal`, `#loraImportBtn`, `#loraImportStatus`, `#loraImportPercent`, `#loraImportBar`, `#loraImportProcessed`, `#loraImportImported` | `runLoraImport()` | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
-| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | admin | `#maintenanceModal`, `#cleanup_duplicates`, `#vacuum`, `#cleanup_orphaned_images`, `#prune_orphaned_prompts`, `#runMaintenanceBtn`, `#maintenanceResults` | `showMaintenanceModal()`, `closeMaintenance()`, `runMaintenance()`, `renderMaintenanceResults()` | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
-| Maintenance check_hash_duplicates, check_consistency | admin | `#check_hash_duplicates`, `#check_consistency` | — | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
-| Maintenance statistics (database info) | admin | `#statistics` | — | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
-| Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
-| Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
-| Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
-| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
-| Default view mode, image quality | gallery | `#defaultViewModeSelect`, `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
-| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
-| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
-| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
-| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
-| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
-| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
-| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
-| Auto-tag model download | admin | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
-| Auto-tag model download | gallery | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
-| Unload model | gallery | — | `unloadModel()` | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -5921,8 +5850,8 @@ storage` pins those patterns. It skips `web/lib` (third-party builds) and the pi
 Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
 its storage belongs to the Toolkit repository and a new pin is reviewed on its own). Since
 System S13 (#330) the legacy gallery no longer offers Clear cache: System › Maintenance's
-Metadata cache and Thumbnail cache reviews own both parts (removal table above), and
-`cache-ownership.js` serves the native review.
+Metadata cache and Thumbnail cache reviews own both parts, and
+`cache-ownership.js` serves the native review. The old gallery itself is gone (#668).
 
 The duplicates dialog's View Full named its source (`?root=<index>`, with the path
 URL-encoded) when the gallery's output folder is a listed source
@@ -6078,8 +6007,7 @@ anywhere else. The setting is `thumbnails.location` in config.json, and only the
 - **Remove thumbnails of removed sources** (`scope.mode` `prune`). It is offered in Thumbnail maintenance only in
   folder mode, and it touches only this install's keys.
 - **Page tests.** `tests/browser/workspace-thumbnail-location.spec.mjs` covers the row, both moves, the in-place
-  refusal, the confirmation, the notice with Recreate and with Use this folder. The legacy gallery runs once in
-  folder mode (`workflows.spec.mjs`). The hooks are `tests/browser/thumbnail_location_fixture.py`.
+  refusal, the confirmation, the notice with Recreate and with Use this folder. The hooks are `tests/browser/thumbnail_location_fixture.py`.
 
 Beyond the concept, against the approved static mock `docs/egm/post-3.4.1/320-mock`:
 
@@ -7732,13 +7660,13 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 ## Native vocabulary UI (#236)
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
-longer hands off to the legacy tag manager. That page stays at
-`/prompt_manager/admin#/tags` at its URL only (#525, #620); tag search and sort, the untagged
+longer hands off to the legacy tag manager, whose URL `/prompt_manager/admin#/tags` now leads
+here and whose tag-filter bookmarks open the filtered Library (#668, D207); tag search and sort, the untagged
 entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
-(#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
-library's selection bar, D151). A prompt's category is changed in the Prompt library
-editor, on many prompts at once with the Prompt library's selection bar (D148, #437), or
-with the legacy admin page's "Set Category" (both `POST /prompt_manager/bulk/category`);
+(#444); bulk prompt delete is the Prompt library's Delete… (#443, D152) and bulk tags its
+selection bar (D151). A prompt's category is changed in the Prompt library
+editor, or on many prompts at once with the Prompt library's selection bar (D148, #437;
+`POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
 above and adds no route, so PR B needed no ComfyUI restart; D149 (#444) adds read
@@ -7861,9 +7789,8 @@ floors in `frontend-coverage-baseline.json`.
 The top-bar PM button, both Web UI buttons and `/prompt_manager/web` open
 `/prompt_manager/workspace#/library` (`web/js/workspace-entry.js`; `web/index.html` keeps its
 own copy, pinned by `tests/js/workspace-entry.test.js`). Overview's cards open native hashes.
-The legacy pages (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.html`) stay at
-their URLs, and admin's Metadata and Gallery buttons still open their legacy pages (maintainer
-ruling; pinned by `legacy-system-links.spec.mjs`).
+The old pages' URLs (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.html`) lead into
+the workspace since #668 ("Old pages retired" below).
 
 - **D165 retired** (#620): the old pages show their removal notice since 3.5.1, so System no longer links them and the load failure below offers a reload and ComfyUI. The original ruling:
   **D165** (beyond the concept, maintainer ruling 2026-10-30): System's Overview section ends
@@ -7871,8 +7798,101 @@ ruling; pinned by `legacy-system-links.spec.mjs`).
   (`.legacy-pages`, new tabs), outside `.settings-layout`. The concept has no such line;
   `mapOverviewConcept` adds it to the page tree.
 - **Load failure** (maintainer ruling 2026-10-30): `web/workspace.html` holds static
-  `#workspace-boot-failure` with the same four links, styled inline so it needs no stylesheet.
+  `#workspace-boot-failure` (since #620 a reload link and a link back to ComfyUI), styled inline so it needs no stylesheet.
   An inline guard shows it at `load` unless `index.mjs` set `data-workspace-booted`, so a failed
   fetch of any module and a throw while starting are both covered; `workspace.spec.mjs` tests
   both. Editing `workspace.html` needs a ComfyUI restart, because the server caches it. The PM button has no
 page-fixture test; it is proven on the managed host (`tests/comfyui/prompt-manager.spec.mjs`).
+
+## Old pages retired (#668)
+
+The old admin, gallery and metadata pages, their controllers (`admin.js`, `gallery.js`,
+`tags-page.js`), the ten helper modules only they loaded and the vendored Tailwind build are
+deleted. The removal notice shipped in 3.5.1. Backend routes only those pages called are
+unchanged; each is reviewed on its own later, and
+`tests/test_legacy_contract_snapshot.py` still pins the whole route table and the settings
+keys. Older sections of this file still say "legacy route" or "legacy page" where they
+describe those routes' contracts.
+
+- **D207** (maintainer ruling 2026-11-02; bookmark form ruled 2026-11-21): every old URL leads
+  into the workspace.
+
+  | Old URL | Lands on |
+  | --- | --- |
+  | `/prompt_manager/gallery` | `workspace#/images` (HTTP 302) |
+  | `/prompt_manager/gallery.html` | `workspace#/inspect` (HTTP 302) |
+  | `/prompt_manager/admin`, or with a hash that is not a tags route | `workspace#/library` |
+  | `/prompt_manager/admin#/tags`, or `#/tags/` with an empty list | `workspace#/tags` |
+  | `/prompt_manager/admin#/tags/a,b` | `workspace#/library?tag=a&tag=b` |
+  | `/prompt_manager/admin#/tags/a,b?mode=or` | `workspace#/library?tag=a&tag=b&tag_mode=any` |
+  | `/prompt_manager/admin#/tags/__untagged__` (alone or among tags) | `workspace#/library?tag_mode=untagged` |
+
+  The two 302 answers carry a relative `Location`, so a reverse-proxy prefix is kept, and
+  are never stored for good (`test_old_gallery_urls_redirect_into_the_workspace`). The
+  server never sees a hash, so `/prompt_manager/admin` serves `web/admin-redirect.html`,
+  which maps `location.hash` with `web/js/legacy-links.js` and replaces the address (Back
+  does not bounce through it). Its link to the Library is always visible, and a failed
+  script still leaves for the Library. The mapping follows the old page's own parsing
+  (`tests/js/legacy-links.test.js`): tags before the first `?`, split on commas, each
+  decoded; any `mode` but `or` matches all. It differs on purpose in three places: a tag
+  is trimmed after decoding too; a segment that cannot be decoded is used as written (the
+  old page failed on it); and `tag_mode=any` is written only for two or more tags.
+
+  The workspace form `#/library?tag=<name>&tag=<name>&tag_mode=all|any|untagged` is the
+  Prompt library with those Tags and that Tag match, as Refine and Browse set them (`tag`
+  repeats, one name each, trimmed, without empties or repeats; no comma splitting; the
+  first `tag_mode` counts; other keys are ignored). No tag with `all` or `any` is the
+  plain Library. An unknown `tag_mode`, or `untagged` with a tag, opens the whole Library
+  at `#/library` with the toast "This link's tag filter couldn't be read. Showing the
+  whole prompt library." Count and length limits are the server's (30 tags, 200
+  characters), shown by the shelf's own error.
+
+  The tag filter stays in the address (maintainer ruling 2026-11-21, after the live test:
+  with the first version, which replaced the hash with `#/library`, Reload and
+  Back then Forward showed the whole Library):
+  - The address is canonical: tags in the shelf's order, `tag_mode` left out for All
+    (`libraryLinkHash`, read back by `libraryLinkFilters`; the router replaces another
+    spelling). Reload, Back and Forward restore exactly that filter.
+  - The address is the truth for Tags and Tag match. `#/library` (the sidebar link, the
+    old dashboard URL) is the Library without a tag filter, whatever the last visit had.
+    Only those two are in the address: search, category, folder, sort and the archived
+    shelf stay in memory and return with the last visit as before. The loaded cards and
+    the scroll place return only when the last visit's tag filter is the address's (Back
+    from a prompt).
+  - When Tags or Tag match change in Refine (Clear filters included), the shelf replaces
+    the address (`replaceRouteHash`: `history.replaceState`, no history entry, no
+    render; the router learns the new address, so the plain Library link is a new route
+    afterwards). With no tag filter left it is `#/library`.
+  - Ways back to the shelf from inside the Library ("← Prompt library" on a prompt's
+    page, after a delete there) go to the address of the remembered visit, and Browse on
+    Tags & categories goes to the filtered address too.
+  - A saved view keeps its own address (`#/saved/<id>`): its tag filter comes from the
+    view, filter changes inside it never rewrite the address, and the Library link after
+    it is the whole Library.
+
+  Pinned by `tests/js/workspace-state.test.js`, `workspace-library-links.spec.mjs` and
+  `old-urls.spec.mjs`.
+- **D208** (maintainer ruling 2026-11-02, audit item B2): a record used only as the
+  negative of saved pairs gets no editing surface of its own. The workspace groups by
+  positive prompt and offers no edit of such a record's own category, tags, notes or
+  text; the old admin page, which listed it as a prompt, is gone. Its data stays, and it
+  is still in every export ("Export all prompts JSON", "Export saved pairs JSON") and
+  backup. No new screen.
+- **D209** (#668): the four System rows that were "kept in legacy" are approved removals,
+  retired with their pages. No native setting replaces them, and every stored key stays
+  readable (`gallery-settings.js` is unchanged; `web_ui.infinite_scroll` stays in
+  `config.json`, `/settings` and the diagnostic report).
+
+  | Row | What it was | Now |
+  | --- | --- | --- |
+  | Infinite scrolling default | The old prompt list scrolled on or paged | The Library always continues (it loads the next page near the end, with "Load more prompts") |
+  | Lazy loading | A gallery page option | Images always loads lazily |
+  | Client debug output `debugMode` | Console output of the gallery page | System › Diagnostics & logs |
+  | API timeout `apiTimeout` | A gallery page option no request read | Nothing: it never had an effect |
+
+**Tests that went with the pages:** the four browser specs that drove them
+(`workflows`, `legacy-autotag`, `legacy-removal-notice`, `legacy-system-links`), the unit
+tests of the deleted modules, and the Viewer.js fixture suite's controller tests. The
+fixture suite (`npm run --prefix tools/vendor test:browser`) is now a smoke of the vendored
+Viewer.js build alone; the workspace viewer is proven by `workspace-viewer-keys.spec.mjs`,
+`workspace-viewer-mode.spec.mjs` and the Images and history specs.

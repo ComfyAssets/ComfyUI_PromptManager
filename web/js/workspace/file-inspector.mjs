@@ -33,7 +33,7 @@ const REVEAL_BUSY = 'The folder is already opening.';
 const REVEAL_FAILED = 'The folder could not be opened. Try again.';
 const FACTS = [['seed', 'Seed'], ['steps', 'Steps'], ['cfg', 'CFG'], ['sampler', 'Sampler'], ['scheduler', 'Scheduler'], ['model', 'Model']];
 
-// D117 (LI-4): the legacy metadata page's COPY ALL (web/metadata.html copyAllData), its lines and placeholders.
+// D117 (LI-4): the COPY ALL of the old metadata page (removed in #668), its lines and placeholders.
 const SUMMARY_LINES = [['Checkpoint', 'model'], ['Positive Prompt', 'positive'], ['Negative Prompt', 'negative'], ['Steps', 'steps'],
     ['CFG Scale', 'cfg'], ['Sampler', 'sampler'], ['Seed', 'seed']];
 const SUMMARY_MISSING = {positive:'No prompt found', negative:'No negative prompt found'};

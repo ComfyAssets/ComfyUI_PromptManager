@@ -1109,7 +1109,8 @@ class TestBulkRoutes(RouteCoverageCase):
         self.assertEqual(self.api.db.get_prompt_by_id(ids[0])["category"], "Sea")
 
     async def test_bulk_set_category_keeps_the_legacy_admin_request(self):
-        # web/js/admin.js posts parseInt ids and a trimmed, non-empty category.
+        # The old admin page (removed in #668) posted parseInt ids and a trimmed,
+        # non-empty category; the route still takes that request.
         ids = [self._save_prompt(f"bulk cat legacy {i}") for i in range(3)]
         status, data = await self._set_category(
             {"prompt_ids": ids, "category": "Portraits"}

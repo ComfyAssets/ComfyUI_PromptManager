@@ -2,7 +2,8 @@
 
 ComfyUI serves the committed files in `web/lib/viewerjs/`. Node and npm are only
 needed by maintainers and CI. Keep upstream files pristine; application behavior
-belongs in `web/js/`, and theme overrides belong in `comfyui-theme.css`.
+belongs in `web/js/`, and theme overrides belong in the workspace's own stylesheet
+(`web/js/workspace/workspace.css`).
 
 ## Install and verify
 
@@ -18,9 +19,10 @@ npm run --prefix tools/vendor test:browser
 ```
 
 On Linux, use `playwright install --with-deps chromium` when browser system
-libraries are missing. The browser tests use synthetic images and mock the
-ComfyUI API boundary; they run production viewer methods and the committed
-Viewer.js JS/CSS, without a running ComfyUI instance.
+libraries are missing. The browser tests are a smoke of the committed Viewer.js
+JS/CSS on a synthetic page, without a running ComfyUI instance: open at an image,
+move on, close, destroy, and a touch swipe. The workspace's own viewer is proven
+by the real-page workflows.
 
 `check` is read-only and fails if any JS, CSS, license, or provenance file differs
 from the installed package. The manifest, lockfile, installed package, and asset

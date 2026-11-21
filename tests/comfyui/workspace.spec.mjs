@@ -37,12 +37,14 @@ test('workspace serves real library data beside either ComfyUI renderer', async 
             await expect(workspace.getByText('No matching images · 0 images', { exact: true })).toBeVisible();
             await expect(workspace.locator('.gallery-body > .empty')).toHaveText('No matching images. Try another search or category.');
         }
-        // D29: Images no longer links the legacy gallery; #525: nor does Overview. The page stays at its URL.
+        // D29: Images no longer links the old gallery; #525: nor does Overview. #668: its URL leads to the workspace.
         await expect(workspace.locator('#workspace-main a[href="/prompt_manager/gallery"]')).toHaveCount(0);
         await workspace.evaluate(() => { location.hash = '/overview'; });
         const imagesCard = workspace.locator('#workspace-main').getByRole('link', { name: 'Open Images', exact: true });
         await expect(imagesCard).toHaveAttribute('href', '#/images');
-        expect((await workspace.request.get('/prompt_manager/gallery')).ok()).toBe(true);
+        const oldGallery = await workspace.request.get('/prompt_manager/gallery');
+        expect(oldGallery.ok()).toBe(true);
+        expect(new URL(oldGallery.url()).pathname).toMatch(/\/prompt_manager\/workspace$/);
         await workspace.evaluate(() => { location.hash = '/images'; });
         await workspace.reload();
         await expect(workspace.locator('#workspace-main h1')).toHaveText('Images');

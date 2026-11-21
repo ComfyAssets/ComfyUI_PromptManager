@@ -7,7 +7,6 @@ into the download, or a rule that drops something ComfyUI needs at run time.
 
 import ast
 import fnmatch
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -87,16 +86,6 @@ class TestPackageContents(unittest.TestCase):
                     names = [node.module or ""]
                 for name in names:
                     self.assertNotIn(name.split(".")[0], ("tests", "tools"), source)
-
-    def test_the_old_pages_name_their_replacement(self):
-        for page, section in (
-            ("admin", "library"),
-            ("gallery", "images"),
-            ("metadata", "inspect"),
-        ):
-            html = (ROOT / "web" / f"{page}.html").read_text(encoding="utf-8")
-            self.assertRegex(html, r'id="legacy-removal-notice"')
-            self.assertRegex(html, re.escape(f'href="workspace#/{section}"'))
 
 
 if __name__ == "__main__":

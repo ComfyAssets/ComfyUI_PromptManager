@@ -26,8 +26,11 @@ import { createRestoreReload, onRestoreFinished, onRestoreHandedBack, showRestor
 import { mountLibraryBanner } from './library-location.mjs';
 import { mountOlderImagesNotice } from './older-images-notice.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
+import { showWorkspaceToast } from './toast.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
+// #668 (D207): a Library link whose filter cannot be read opens the whole shelf, and says so.
+const LIBRARY_LINK_UNREADABLE = "This link's tag filter couldn't be read. Showing the whole prompt library.";
 
 function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -471,7 +474,10 @@ function mountWorkspace() {
             return;
         }
         if (route.id === 'library') {
-            mountLibrary(main, api, view, {positiveId:route.positiveId, savedState:saved?.state, onSaveView:saveView('library', view)});
+            mountLibrary(main, api, view, {positiveId:route.positiveId, savedState:saved?.state, browse:route.browse,
+                onSaveView:saveView('library', view)});
+            // #668 (D207): an unreadable Library link is the whole shelf at the plain address (the router replaced it).
+            if (route.browseInvalid) showWorkspaceToast(LIBRARY_LINK_UNREADABLE);
             return;
         }
         if (route.id === 'tags') {
@@ -556,7 +562,7 @@ function mountWorkspace() {
 }
 
 mountWorkspace();
-// #525: web/workspace.html shows its legacy-page fallback at `load` unless the shell got this far.
+// #525: web/workspace.html shows its load-failure message at `load` unless the shell got this far.
 document.documentElement.dataset.workspaceBooted = 'true';
 window.addEventListener('pageshow', event => {
     if (event.persisted) mountWorkspace();

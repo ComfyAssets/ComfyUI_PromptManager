@@ -244,7 +244,7 @@ class ParsesLikeJavaScript(unittest.TestCase):
         )
 
     def test_page_parse_reads_nan_numbers_as_null(self):
-        # gallery.js and admin.js replace NaN with null before JSON.parse.
+        # The old pages (removed in #668) replaced NaN with null before JSON.parse.
         self.assertEqual(
             parse_page_json('{"a": NaN, "b": [NaN], "t": "NaN"}'),
             {"a": None, "b": [None], "t": "NaN"},
@@ -258,7 +258,8 @@ class ParsesLikeJavaScript(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "Node is not installed")
     def test_page_parse_equals_the_legacy_pages_for_nan_numbers(self):
-        # gallery.js/admin.js: two NaN regexes, then JSON.parse (Infinity throws).
+        # The old pages (removed in #668): two NaN regexes, then JSON.parse
+        # (Infinity throws).
         texts = [
             '{"1": {"is_changed": [NaN]}, "2": {"is_changed": NaN, "v": 1.5}}',
             '{"a":NaN,"b":[NaN, 2]}',

@@ -9,15 +9,11 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const MODULES = {
-    "html-escape.js": ["HtmlEscape", "escapeHtml", "escapeAttr"],
-    "data-actions.js": ["DataActions"],
     "api-client.js": ["ApiClient"],
-    "list-state.js": ["ListState"],
-    "sse-stream.js": ["SseStream"],
     "png-metadata.js": ["PngMetadata"],
-    "view-router.js": ["ViewRouter"],
-    "prompt-list-sort.js": ["PromptListSort"],
     "comfy-metadata.js": ["ComfyMetadata"],
+    "gallery-settings.js": ["GallerySettings"],
+    "legacy-links.js": ["LegacyLinks"],
 };
 
 function loadInFakeBrowser(file) {
@@ -60,15 +56,3 @@ for (const [file, globals] of Object.entries(MODULES)) {
         }
     });
 }
-
-test("the browser escapeHtml global is the same function as HtmlEscape.escapeHtml", () => {
-    const window = loadInFakeBrowser("html-escape.js");
-    assert.equal(window.escapeHtml, window.HtmlEscape.escapeHtml);
-    assert.equal(window.escapeAttr, window.escapeHtml);
-    assert.equal(window.escapeHtml(`<a href="x">`), "&lt;a href=&quot;x&quot;&gt;");
-});
-
-test("the browser ViewRouter global resolves the tags deep link", () => {
-    const window = loadInFakeBrowser("view-router.js");
-    assert.equal(window.ViewRouter.resolveView("#/tags/a"), "tags");
-});

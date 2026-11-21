@@ -293,13 +293,18 @@ test('an empty tag source draws no section', async () => {
     try { assert.equal(tagSections(view.f).length, 0); } finally { view.done(); }
 });
 
-// LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the legacy metadata
-// page's COPY ALL (web/metadata.html copyAllData). The legacy template is read from that page itself and run on the
-// legacy parse, so the summary's text is the legacy page's, line for line, wherever the two agree on the values.
-const METADATA_PAGE = fs.readFileSync(new URL('../../web/metadata.html', import.meta.url), 'utf8');
-function legacyCopyAll(params) {
-    const template = METADATA_PAGE.match(/const allData = `([\s\S]*?)`;/)[1];
-    return new Function('currentWorkflowData', `return \`${template}\`;`)(params);
+// LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the old metadata page's
+// COPY ALL. That page is gone (#668); this is its template, copied unchanged from `copyAllData` in web/metadata.html
+// as of 3.7.2, and run on the legacy parse, so the summary's text stays the old page's, line for line, wherever the
+// two agree on the values.
+function legacyCopyAll(currentWorkflowData) {
+    return `Checkpoint: ${currentWorkflowData.checkpoint || 'Unknown'}
+Positive Prompt: ${currentWorkflowData.positivePrompt}
+Negative Prompt: ${currentWorkflowData.negativePrompt}
+Steps: ${currentWorkflowData.steps || 'Unknown'}
+CFG Scale: ${currentWorkflowData.cfgScale || 'Unknown'}
+Sampler: ${currentWorkflowData.sampler || 'Unknown'}
+Seed: ${currentWorkflowData.seed || 'Unknown'}`;
 }
 const legacyParams = record => ComfyMetadata.extractGenerationParams({prompt:record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null,
     workflow:record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null});

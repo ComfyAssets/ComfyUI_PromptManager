@@ -214,18 +214,21 @@ Set `PROMPT_MANAGER_DATA_DIR` to an absolute folder to keep the library somewher
 - **Older images:** a one-time notice offers a metadata scan that links them to prompts and negatives. Scans don't count as new runs.
 - **Going back isn't supported.** Workflows are now stored once, and an older version shows new records without their workflow or prompt graph. Back up first in System > Backup & export. See [the old README's changelog](README-legacy.md#changelog) for the manual way back.
 
-## The old pages will be removed
+## The old pages are gone
 
-They still work at their URLs for now and will be removed in a future release. Everything they do is moving to the workspace.
+The dashboard, tags page, gallery and metadata viewer have been removed. Everything they did is in the workspace, and their URLs and bookmarks still work: each one opens the matching workspace page.
 
-| Page | URL |
+| Old URL | Opens |
 | --- | --- |
-| Dashboard | `/prompt_manager/admin` |
-| Tags | `/prompt_manager/admin#/tags` |
-| Gallery | `/prompt_manager/gallery` |
-| Metadata viewer | `/prompt_manager/gallery.html` |
+| `/prompt_manager/admin` | Prompt library |
+| `/prompt_manager/admin#/tags` | Tags & categories |
+| `/prompt_manager/admin#/tags/cats,dogs?mode=or` | Prompt library, filtered to prompts tagged `cats` or `dogs` |
+| `/prompt_manager/gallery` | Images |
+| `/prompt_manager/gallery.html` | Inspect a file |
 
-The documentation for those pages is in [README-legacy.md](README-legacy.md).
+A tag bookmark opens the Prompt library with that filter, and the filter stays in the address: `/prompt_manager/workspace#/library?tag=cats&tag=dogs&tag_mode=any`. Reload, Back and Forward keep it, the address follows the tags you set in **Filters**, and you can bookmark or write such a link yourself (leave out `tag_mode` to match all the tags; `tag_mode=untagged` lists prompts without a tag). The sidebar's Prompt library link always shows the whole library. Search, category and sort aren't part of the address; **Save view** keeps those.
+
+[README-legacy.md](README-legacy.md) still describes the old pages, for reference.
 
 ## Known limits
 

@@ -360,3 +360,88 @@ test('collection links resolve to their id, title Collection, and re-render only
     assert.deepEqual(seen,[['collection',3],['collection',4],['saved',undefined],['collection',4]]);
     dispose();
 });
+
+// #668 (D207): `#/library?tag=…&tag_mode=…` is the shelf with those Tags and that Tag match, and stays the address.
+test('a Library link with tags resolves to the shelf with its filter and its canonical hash', async () => {
+    const { resolveRoute } = await source;
+    const browse = hash => { const route = resolveRoute(hash); return [route.id, route.browse, route.hash, route.positiveId]; };
+    assert.deepEqual(browse('#/library?tag=cats&tag=dogs&tag_mode=any'),
+        ['library', { tags: ['cats', 'dogs'], tagMode: 'any' }, '#/library?tag=cats&tag=dogs&tag_mode=any', undefined]);
+    assert.deepEqual(browse('#/library?tag=cats'), ['library', { tags: ['cats'], tagMode: 'all' }, '#/library?tag=cats', undefined]);
+    // Canonical: tags in their order, tag_mode left out for All, other keys dropped.
+    assert.deepEqual(browse('#/library?tag_mode=all&x=1&tag=cats'), ['library', { tags: ['cats'], tagMode: 'all' }, '#/library?tag=cats', undefined]);
+    assert.deepEqual(browse('#/library?tag_mode=untagged'), ['library', { tags: [], tagMode: 'untagged' }, '#/library?tag_mode=untagged', undefined]);
+    // One tag per parameter, decoded the standard way, trimmed; empty values and repeats dropped; a comma is part of a name.
+    assert.deepEqual(resolveRoute('#/library?tag=%20red%20fox+&tag=&tag=a%2Cb&tag=red+fox&tag=%zz').browse,
+        { tags: ['red fox', 'a,b', '%zz'], tagMode: 'all' });
+    // The first tag_mode counts.
+    assert.deepEqual(browse('#/library?tag_mode=any&tag_mode=all&tag=a&tag=b&sort=name'),
+        ['library', { tags: ['a', 'b'], tagMode: 'any' }, '#/library?tag=a&tag=b&tag_mode=any', undefined]);
+});
+
+test('the Library address of a filter is canonical and reads back as the same filter', async () => {
+    const { libraryLinkHash, libraryLinkFilters, resolveRoute } = await source;
+    assert.equal(libraryLinkHash({ tags: [], tagMode: 'all' }), '#/library');
+    assert.equal(libraryLinkHash({}), '#/library');
+    assert.equal(libraryLinkHash(), '#/library');
+    // Any of no tags filters nothing.
+    assert.equal(libraryLinkHash({ tags: [], tagMode: 'any' }), '#/library');
+    assert.equal(libraryLinkHash({ tags: ['cats'], tagMode: 'all' }), '#/library?tag=cats');
+    assert.equal(libraryLinkHash({ tags: ['dogs', 'cats'], tagMode: 'any' }), '#/library?tag=dogs&tag=cats&tag_mode=any');
+    assert.equal(libraryLinkHash({ tags: [], tagMode: 'untagged' }), '#/library?tag_mode=untagged');
+    // Only tags and the match are in the address.
+    assert.equal(libraryLinkHash({ tags: ['a'], tagMode: 'all', text: 'fox', category: 'c', folder: 'f', sort: 'name', shelf: 'archived' }), '#/library?tag=a');
+    for (const filter of [{ tags: ['red fox', 'a,b', '★&=?#', '100%', 'a+b'], tagMode: 'any' }, { tags: ['x'], tagMode: 'all' },
+        { tags: ['x'], tagMode: 'any' }, { tags: [], tagMode: 'untagged' }]) {
+        const hash = libraryLinkHash(filter);
+        assert.deepEqual(libraryLinkFilters(hash.slice('#/library?'.length)), filter, hash);
+        assert.deepEqual([resolveRoute(hash).browse, resolveRoute(hash).hash], [filter, hash], hash);
+    }
+});
+
+test('a Library link with nothing to filter is the plain shelf, and an unreadable one says so', async () => {
+    const { resolveRoute } = await source;
+    for (const hash of ['#/library?', '#/library?tag=', '#/library?tag_mode=any', '#/library?tag_mode=all', '#/library?other=1']) {
+        const route = resolveRoute(hash);
+        assert.deepEqual([route.id, route.browse, route.browseInvalid, route.hash], ['library', undefined, undefined, undefined], hash);
+    }
+    for (const hash of ['#/library?tag=a&tag_mode=either', '#/library?tag_mode=', '#/library?tag=a&tag_mode=untagged', '#/library?tag_mode=UNTAGGED']) {
+        const route = resolveRoute(hash);
+        assert.deepEqual([route.id, route.browse, route.browseInvalid, route.hash], ['library', undefined, true, undefined], hash);
+    }
+    // Only the shelf takes the form: a prompt's own page and other routes do not.
+    assert.equal(resolveRoute('#/library/7?tag=a').id, 'images');
+    assert.equal(resolveRoute('#/tags?tag=a').id, 'images');
+});
+
+test('the router renders the shelf again when its address filter changes, and keeps the filter in the address', async () => {
+    const { mountRouter, replaceRouteHash } = await source;
+    const win = new EventTarget();
+    win.location = { hash: '#/library' };
+    const replacements = [];
+    win.history = { state: null, replaceState(state, unused, hash) { replacements.push(hash); win.location.hash = hash; } };
+    const seen = [];
+    const dispose = mountRouter(win, route => seen.push([route.id, route.browse?.tags.join('+'), route.browseInvalid]));
+    const go = hash => { win.location.hash = hash; win.dispatchEvent(new Event('hashchange')); };
+    go('#/library?tag=a');
+    go('#/library?tag=a');
+    // Another spelling of the same filter is made canonical and is not a new route.
+    go('#/library?tag_mode=all&tag=a');
+    go('#/library?tag=a&tag=b');
+    go('#/library');
+    go('#/library?tag=a&tag_mode=nope');
+    go('#/library');
+    assert.deepEqual(seen, [['library', undefined, undefined], ['library', 'a', undefined], ['library', 'a+b', undefined],
+        ['library', undefined, undefined], ['library', undefined, true]]);
+    assert.deepEqual(replacements, ['#/library?tag=a', '#/library']);
+    // The shelf changed its own filter and replaced the address: no render, and the router knows the new address, so
+    // the plain Library link is a new route afterwards (the filter must not stick).
+    replaceRouteHash('#/library?tag=z', win);
+    assert.deepEqual([win.location.hash, replacements.at(-1), seen.length], ['#/library?tag=z', '#/library?tag=z', 5]);
+    replaceRouteHash('#/library?tag=z', win);
+    assert.equal(replacements.length, 3, 'the same address is not replaced again');
+    go('#/library');
+    assert.deepEqual(seen.at(-1), ['library', undefined, undefined]);
+    assert.equal(seen.length, 6);
+    dispose();
+});

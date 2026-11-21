@@ -1042,3 +1042,31 @@ test("Split workflow-only metadata recovers serialized fields and connected comp
     assert.equal(result.negativePrompt, "avoid blurry watermark");
     assert.equal(result.checkpoint, "model.safetensors");
 });
+
+// PromptManagerPair roles (moved from pair-metadata.test.js when the old gallery was retired, #668).
+function pairGraph(positive = 0, negative = 1) {
+    return {
+        1:{class_type:'PromptManagerPair',inputs:{text:'cat',negative_text:'blur',prepend_text:'trigger',append_text:'detail'}},
+        2:{class_type:'KSampler',inputs:{positive:['1',positive],negative:['1',negative],model:['3',0]}},
+        3:{class_type:'CheckpointLoaderSimple',inputs:{ckpt_name:'m.safetensors'}},
+    };
+}
+
+test('paired conditioning uses actual output roles and composes only positive', () => {
+    const metadata = extractGenerationParams({prompt:pairGraph()});
+    assert.equal(metadata.positivePrompt,'trigger cat detail');
+    assert.equal(metadata.negativePrompt,'blur');
+    const swapped = extractGenerationParams({prompt:pairGraph(1,0)});
+    assert.equal(swapped.positivePrompt,'blur');
+    assert.equal(swapped.negativePrompt,'trigger cat detail');
+});
+
+test('paired strings passed through encoders retain the connected output slot', () => {
+    const prompt=pairGraph();
+    prompt[4]={class_type:'CLIPTextEncode',inputs:{text:['1',2]}};
+    prompt[5]={class_type:'CLIPTextEncode',inputs:{text:['1',3]}};
+    prompt[2].inputs.positive=['4',0];prompt[2].inputs.negative=['5',0];
+    const metadata=extractGenerationParams({prompt});
+    assert.equal(metadata.positivePrompt,'trigger cat detail');
+    assert.equal(metadata.negativePrompt,'blur');
+});

@@ -1,10 +1,4 @@
 {
-  "admin.js": {
-    "lines": 47,
-    "branches": 64,
-    "functions": 50,
-    "statements": 47
-  },
   "api-client.js": {
     "lines": 98,
     "branches": 96,
@@ -29,12 +23,6 @@
     "functions": 98,
     "statements": 97
   },
-  "data-actions.js": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
   "focused-node.js": {
     "lines": 97,
     "branches": 87,
@@ -47,29 +35,11 @@
     "functions": 98,
     "statements": 98
   },
-  "gallery.js": {
-    "lines": 54,
-    "branches": 72,
-    "functions": 58,
-    "statements": 54
-  },
-  "html-escape.js": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "image-helpers.js": {
+  "legacy-links.js": {
     "lines": 96,
-    "branches": 92,
+    "branches": 88,
     "functions": 98,
     "statements": 96
-  },
-  "list-state.js": {
-    "lines": 98,
-    "branches": 92,
-    "functions": 98,
-    "statements": 98
   },
   "metadata-autocomplete.js": {
     "lines": 98,
@@ -101,12 +71,6 @@
     "functions": 98,
     "statements": 98
   },
-  "prompt-list-sort.js": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
   "workspace-entry.js": {
     "lines": 80,
     "branches": 80,
@@ -114,12 +78,6 @@
     "statements": 80
   },
   "save-to-library.js": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "scan-progress.js": {
     "lines": 98,
     "branches": 98,
     "functions": 98,
@@ -143,37 +101,7 @@
     "functions": 98,
     "statements": 98
   },
-  "sse-stream.js": {
-    "lines": 98,
-    "branches": 92,
-    "functions": 98,
-    "statements": 98
-  },
-  "tag-autocomplete.js": {
-    "lines": 98,
-    "branches": 94,
-    "functions": 98,
-    "statements": 98
-  },
-  "tags-page.js": {
-    "lines": 57,
-    "branches": 48,
-    "functions": 56,
-    "statements": 57
-  },
   "text-links.js": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
-  },
-  "theme-bridge.js": {
-    "lines": 90,
-    "branches": 53,
-    "functions": 98,
-    "statements": 90
-  },
-  "view-router.js": {
     "lines": 98,
     "branches": 98,
     "functions": 98,

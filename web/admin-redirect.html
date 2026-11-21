@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" sizes="32x32" href="lib/brand/icon-32.png">
+    <link rel="apple-touch-icon" sizes="128x128" href="lib/brand/icon-128.png">
+    <meta name="color-scheme" content="light dark">
+    <title>Prompt Manager · Opening the workspace</title>
+    <style>
+        body { margin: 0; padding: 24px; font: 14px/1.5 system-ui, sans-serif; background: #1b1b1f; color: #eee; }
+        a { color: inherit; }
+    </style>
+</head>
+<body>
+    <!-- #668 (D207): the old dashboard and Tags page moved to the workspace. The link stays visible, so a browser
+         without scripts, or one where the script below fails, still has the way on. -->
+    <p>This page moved to the workspace. <a href="workspace#/library">Open the Prompt library</a></p>
+    <script src="js/legacy-links.js"></script>
+    <script>
+        // The server never sees the hash, so an old tag bookmark (admin#/tags/a,b?mode=or) is mapped here.
+        // Replace, so Back does not return here and bounce.
+        (function () {
+            var target = "workspace#/library";
+            try { target = window.LegacyLinks.adminTarget(window.location.hash); } catch (error) { /* the Library */ }
+            window.location.replace(target);
+        })();
+    </script>
+</body>
+</html>

@@ -6,8 +6,8 @@
  * keywords in the text. Falls back to the UI `workflow` graph only for
  * fields the API graph could not provide.
  *
- * Shared by admin.js, gallery.js and metadata.html; also loadable in Node
- * for tests.
+ * Loaded by the workspace (web/workspace.html); also loadable in Node for
+ * tests.
  */
 (function (root) {
     "use strict";
