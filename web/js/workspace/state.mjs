@@ -1,3 +1,5 @@
+import { LIBRARY_TAG_MODES } from './library-state.mjs';
+
 export const routes = [
     // `href` and `action` are Overview's card (#525): every card opens its native page, never a legacy one.
     { id: 'images', label: 'Images', href: '#/images',
@@ -63,6 +65,20 @@ export function isHandoff(route) {
     return !NATIVE_ROUTES.has(route.id);
 }
 
+/**
+ * The filter of a Library link `#/library?tag=<name>&tag=<name>&tag_mode=all|any|untagged` (#668 D207, the form old
+ * tag bookmarks are sent to): one tag per `tag`, trimmed, without empties or repeats; the first `tag_mode` counts and
+ * other keys are ignored. Returns `{tags, tagMode}`, `null` when there is nothing to filter, or `false` for a link that
+ * cannot be read (an unknown match, or Untagged together with a tag, which the server refuses).
+ */
+export function libraryLinkFilters(query) {
+    const params = new URLSearchParams(query);
+    const tags = [...new Set(params.getAll('tag').map(tag => tag.trim()).filter(Boolean))];
+    const tagMode = params.get('tag_mode') ?? 'all';
+    if (!LIBRARY_TAG_MODES.includes(tagMode) || (tagMode === 'untagged' && tags.length)) return false;
+    return tags.length || tagMode === 'untagged' ? { tags, tagMode } : null;
+}
+
 export function resolveRoute(hash) {
     const saved = /^#\/saved\/([1-9]\d*)$/.exec(hash);
     if (saved && Number.isSafeInteger(Number(saved[1]))) return {...SAVED_ROUTE, savedId:Number(saved[1]), hash};
@@ -83,6 +99,15 @@ export function resolveRoute(hash) {
     const match = /^#\/library\/([1-9]\d*)$/.exec(hash);
     if (match && Number.isSafeInteger(Number(match[1]))) {
         return {...routes.find(route => route.id === 'library'), positiveId:Number(match[1]), hash};
+    }
+    // A Library link keeps its hash: the shell replaces it once the shelf has mounted with the filter, so a held or
+    // repeated render still finds the filter. An unreadable link is the plain shelf, and the shell says so.
+    const link = /^#\/library\?([^]*)$/.exec(hash);
+    if (link) {
+        const library = routes.find(route => route.id === 'library');
+        const browse = libraryLinkFilters(link[1]);
+        if (browse === false) return {...library, browseInvalid:true};
+        return browse ? {...library, browse, hash} : library;
     }
     return routes.find(route => hash === `#/${route.id}`) || routes[0];
 }
@@ -172,7 +197,9 @@ export function mountRouter(win, onRoute) {
         const route = resolveRoute(win.location.hash);
         const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
-        if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
+        // A Library link is always rendered: its filter is new even when the shelf is already shown.
+        if (!route.browse && !route.browseInvalid &&
+            current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
             current?.collectionId === route.collectionId && current?.jobId === route.jobId && current?.section === route.section) return;
         current = route;
         onRoute(route);

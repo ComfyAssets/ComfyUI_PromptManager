@@ -92,10 +92,14 @@ export function onLibraryWrite(listener) {
  * with the existing Library filters, and the heading takes focus as after a save.
  */
 export function browseLibrary(filters) {
+    shelfVisit=browseVisit(filters);
+    focusHeadingOnMount=true;window.location.hash='#/library';
+}
+/** The visit a Browse or a Library link starts the shelf from: exactly these filters, page one, no remembered place. */
+function browseVisit(filters) {
     const {text='',category='',tags=[],sort='newest',tagMode='all',folder=''}=filters || {};
     if(typeof text!=='string' || typeof category!=='string' || !Array.isArray(tags) || tags.some(tag=>typeof tag!=='string') || typeof sort!=='string' || !LIBRARY_TAG_MODES.includes(tagMode) || typeof folder!=='string') throw new TypeError('Invalid Library filters');
-    shelfVisit={filters:{text,category,tags:[...tags],sort,tagMode,folder},anchor:null};
-    focusHeadingOnMount=true;window.location.hash='#/library';
+    return {filters:{text,category,tags:[...tags],sort,tagMode,folder},anchor:null};
 }
 /** Remember the selection a reconciled save names, so the destination history opens on it once. */
 export function rememberLibraryResult(result) {
@@ -153,11 +157,16 @@ export function mountNewPromptAction(main,api,parentScope) {
     return button;
 }
 
-/** `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view. */
-export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,onSaveView=()=>{}}={}) {
+/**
+ * `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view.
+ * `browse` (`{tags, tagMode}`, a Library link, #668 D207) opens the shelf with exactly that filter, as Browse does. It
+ * is an option, not a seeded visit: a shelf that is open saves its own visit while it is replaced by this one.
+ */
+export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,browse=null,onSaveView=()=>{}}={}) {
     const scope=createScope();parentScope.cleanup(()=>scope.dispose());
     main.classList.add('library-main');
     const sender=createPromptSender({scope});
+    if(browse) {shelfVisit=browseVisit(browse);focusHeadingOnMount=true;}
     if(positiveId!==undefined) mountHistory();
     else mountShelf();
     if(focusHeadingOnMount) {focusHeadingOnMount=false;focusHeading(main);}

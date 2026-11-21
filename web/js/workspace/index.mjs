@@ -26,8 +26,11 @@ import { createRestoreReload, onRestoreFinished, onRestoreHandedBack, showRestor
 import { mountLibraryBanner } from './library-location.mjs';
 import { mountOlderImagesNotice } from './older-images-notice.mjs';
 import { detectJxlSupport } from './thumbnail-support.mjs';
+import { showWorkspaceToast } from './toast.mjs';
 
 const { createApiClient, resolveUrl } = window.ApiClient;
+// #668 (D207): a Library link whose filter cannot be read opens the whole shelf, and says so.
+const LIBRARY_LINK_UNREADABLE = "This link's tag filter couldn't be read. Showing the whole prompt library.";
 
 function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -471,7 +474,13 @@ function mountWorkspace() {
             return;
         }
         if (route.id === 'library') {
-            mountLibrary(main, api, view, {positiveId:route.positiveId, savedState:saved?.state, onSaveView:saveView('library', view)});
+            mountLibrary(main, api, view, {positiveId:route.positiveId, savedState:saved?.state, browse:route.browse,
+                onSaveView:saveView('library', view)});
+            // #668 (D207): a Library link's filter is on the shelf now, so the address becomes the plain Library (the
+            // workspace keeps filters in memory, never in the address). Until here the hash still held the filter,
+            // so a render that was held or run again found it.
+            if (route.browse && window.location.hash === route.hash) window.history.replaceState(window.history.state, '', '#/library');
+            if (route.browseInvalid) showWorkspaceToast(LIBRARY_LINK_UNREADABLE);
             return;
         }
         if (route.id === 'tags') {

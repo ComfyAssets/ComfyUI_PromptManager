@@ -360,3 +360,57 @@ test('collection links resolve to their id, title Collection, and re-render only
     assert.deepEqual(seen,[['collection',3],['collection',4],['saved',undefined],['collection',4]]);
     dispose();
 });
+
+// #668 (D207): `#/library?tag=…&tag_mode=…` opens the shelf with those Tags and that Tag match (old tag bookmarks).
+test('a Library link with tags resolves to the shelf with its filter and keeps its hash', async () => {
+    const { resolveRoute } = await source;
+    const browse = hash => { const route = resolveRoute(hash); return [route.id, route.browse, route.hash, route.positiveId]; };
+    assert.deepEqual(browse('#/library?tag=cats&tag=dogs&tag_mode=any'),
+        ['library', { tags: ['cats', 'dogs'], tagMode: 'any' }, '#/library?tag=cats&tag=dogs&tag_mode=any', undefined]);
+    assert.deepEqual(resolveRoute('#/library?tag=cats').browse, { tags: ['cats'], tagMode: 'all' });
+    assert.deepEqual(resolveRoute('#/library?tag=cats&tag_mode=all').browse, { tags: ['cats'], tagMode: 'all' });
+    assert.deepEqual(resolveRoute('#/library?tag_mode=untagged').browse, { tags: [], tagMode: 'untagged' });
+    // One tag per parameter, decoded the standard way, trimmed; empty values and repeats dropped; a comma is part of a name.
+    assert.deepEqual(resolveRoute('#/library?tag=%20red%20fox+&tag=&tag=a%2Cb&tag=red+fox&tag=%zz').browse,
+        { tags: ['red fox', 'a,b', '%zz'], tagMode: 'all' });
+    // The first tag_mode counts and other keys are ignored.
+    assert.deepEqual(resolveRoute('#/library?tag_mode=any&tag_mode=all&tag=a&tag=b&sort=name').browse, { tags: ['a', 'b'], tagMode: 'any' });
+});
+
+test('a Library link with nothing to filter is the plain shelf, and an unreadable one says so', async () => {
+    const { resolveRoute } = await source;
+    for (const hash of ['#/library?', '#/library?tag=', '#/library?tag_mode=any', '#/library?tag_mode=all', '#/library?other=1']) {
+        const route = resolveRoute(hash);
+        assert.deepEqual([route.id, route.browse, route.browseInvalid, route.hash], ['library', undefined, undefined, undefined], hash);
+    }
+    for (const hash of ['#/library?tag=a&tag_mode=either', '#/library?tag_mode=', '#/library?tag=a&tag_mode=untagged', '#/library?tag_mode=UNTAGGED']) {
+        const route = resolveRoute(hash);
+        assert.deepEqual([route.id, route.browse, route.browseInvalid, route.hash], ['library', undefined, true, undefined], hash);
+    }
+    // Only the shelf takes the form: a prompt's own page and other routes do not.
+    assert.equal(resolveRoute('#/library/7?tag=a').id, 'images');
+    assert.equal(resolveRoute('#/tags?tag=a').id, 'images');
+});
+
+test('the router always renders a Library link, leaves its hash for the shell and replaces an unreadable one', async () => {
+    const { mountRouter } = await source;
+    const win = new EventTarget();
+    win.location = { hash: '#/library' };
+    const replacements = [];
+    win.history = { state: null, replaceState(state, unused, hash) { replacements.push(hash); win.location.hash = hash; } };
+    const seen = [];
+    const dispose = mountRouter(win, route => seen.push([route.id, route.browse?.tags.join('+'), route.browseInvalid]));
+    const go = hash => { win.location.hash = hash; win.dispatchEvent(new Event('hashchange')); };
+    go('#/library?tag=a');
+    assert.deepEqual(replacements, [], 'the filter stays in the hash until the shell has mounted the shelf');
+    // The shell replaces the hash once mounted; the same link again renders again.
+    win.location.hash = '#/library';
+    go('#/library?tag=a');
+    go('#/library');
+    go('#/library?tag=a&tag_mode=nope');
+    go('#/library');
+    assert.deepEqual(seen, [['library', undefined, undefined], ['library', 'a', undefined], ['library', 'a', undefined],
+        ['library', undefined, true]]);
+    assert.deepEqual(replacements, ['#/library']);
+    dispose();
+});
