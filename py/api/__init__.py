@@ -30,7 +30,6 @@ import asyncio
 import datetime
 import functools
 import gzip as gzip_module
-import json
 import math
 import ntpath
 import os
@@ -41,6 +40,7 @@ from pathlib import Path
 from aiohttp import web
 from PIL import Image
 
+from . import json_body as _json_body
 from .prompts import PromptRoutesMixin
 from .revalidation import revalidated_response
 from .pairs import PairRoutesMixin
@@ -214,44 +214,10 @@ def _resolve_static_file(root, filepath, allowed=STATIC_MIME_TYPES):
 
 
 # ── JSON request bodies ────────────────────────────────────────────────
-JSON_BODY_MAX_BYTES = 1_000_000
-_JSON_READ_CHUNK = 64 * 1024
-
-
-def _json_error(message, status):
-    return web.json_response({"success": False, "error": message}, status=status)
-
-
-async def _read_json_body(request, max_bytes=JSON_BODY_MAX_BYTES):
-    """Read and parse a JSON object body of at most ``max_bytes``.
-
-    The body is read in chunks so an oversized or chunked upload is refused
-    as soon as it crosses the cap rather than buffered whole.
-
-    Returns:
-        (data, None) on success, or (None, response) where ``response`` is a
-        413 (body too large) or 400 (invalid JSON, or not a JSON object).
-    """
-    too_large = _json_error(f"Request body too large (max {max_bytes} bytes)", 413)
-    declared = request.content_length
-    if declared is not None and declared > max_bytes:
-        return None, too_large
-
-    chunks = []
-    size = 0
-    async for chunk in request.content.iter_chunked(_JSON_READ_CHUNK):
-        size += len(chunk)
-        if size > max_bytes:
-            return None, too_large
-        chunks.append(chunk)
-
-    try:
-        data = json.loads(b"".join(chunks).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None, _json_error("Request body must be valid JSON", 400)
-    if not isinstance(data, dict):
-        return None, _json_error("Request body must be a JSON object", 400)
-    return data, None
+# One bounded reader (json_body.py); these names stay for the mixins and tests.
+JSON_BODY_MAX_BYTES = _json_body.JSON_BODY_MAX_BYTES
+_json_error = _json_body.json_error
+_read_json_body = _json_body.read_json_body
 
 
 # ── Gzip compression middleware ────────────────────────────────────────
