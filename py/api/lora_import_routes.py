@@ -466,6 +466,12 @@ class LoraImportRoutesMixin:
             return _fail_job(job, "plan-changed", f"{SOURCE_CHANGED} {CACHE_NOTE}")
         job.update(status_line="Replacing the LoRA collection", progress=95)
         await self._replace_in_job(job, db, plan, staged)
+        # #619: the replace is one transaction and has committed by now, so
+        # the import is finished even when ComfyUI is exiting: end it here,
+        # before the exit signal can relabel it "cancelled" on the way out.
+        # A failed replace already ended the job "failed"; a second finish
+        # is a no-op.
+        job.finish("finished")
         return None
 
     def _count_downloads(self, job, staged):
