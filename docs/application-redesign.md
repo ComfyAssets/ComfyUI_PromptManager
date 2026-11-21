@@ -12,7 +12,7 @@ code. This plan proposes implementation order and acceptance gates.
 - The native Prompt Library merged in [#210](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/210) for [#208](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/208): one positive parent, saved negative variants, full selected text and a shared filtered image gallery. It does not invent chronological runs from counters or scan dates.
 - [Durable history storage](prompt-history-storage.md) records job attempts and outcomes from [#212](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/212), frozen prompt contexts from [#213](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/213), and observed run-owned output locators from [#214](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/214). Those locators do not verify file bytes or establish gallery-image associations. That association contract and the chronological execution timeline remain pending under [#209](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/209).
 - [#215](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/215) brings the shell, Images and natural-height Prompt Library presentation into the approved geometry and themes while retaining their existing operations. [#216](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/216) adds the shared current-file inspector with exact generation facts, scoped provenance, raw/download evidence and loaded-collection viewer controls, including a slideshow that pauses at native video. This delivery does not establish whole-application parity, change the default entry point or constitute a release. Recorded chronological run/context browsing continues under [#209](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/209); image tagging/review, System consolidation and remaining organization capabilities continue under #196.
-- Local Inspect (#249, PRs L1–L3) replaces the `#/inspect` handoff with the concept's native "Inspect a file" page: one local image or video previews inline and opens the shared viewer and full inspector on a record read entirely in the browser, with nothing uploaded, imported or stored. The legacy metadata page (`web/metadata.html`, served at `/prompt_manager/gallery.html`) stays reachable from Overview; its capabilities map to the shared inspector, including its one-click COPY ALL summary, which is the shared inspector's "Copy settings summary" (D117, LI-4). PR L3 ([#286](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/286)) shipped that button and local roles equal to the server's resolver (`web/js/workspace/local-resolver.mjs`, TESTING.md "Local roles (#249 PR L3, decision LI-1)"). Recorded deviations D60–D66 and D117 are in [TESTING.md](../TESTING.md).
+- Local Inspect (#249, PRs L1–L3) replaces the `#/inspect` handoff with the concept's native "Inspect a file" page: one local image or video previews inline and opens the shared viewer and full inspector on a record read entirely in the browser, with nothing uploaded, imported or stored. The legacy metadata page (`web/metadata.html`, served at `/prompt_manager/gallery.html`) stays reachable by its address and from the legacy admin page; the workspace no longer links it (#621); its capabilities map to the shared inspector, including its one-click COPY ALL summary, which is the shared inspector's "Copy settings summary" (D117, LI-4). PR L3 ([#286](https://github.com/ComfyAssets/ComfyUI_PromptManager/pull/286)) shipped that button and local roles equal to the server's resolver (`web/js/workspace/local-resolver.mjs`, TESTING.md "Local roles (#249 PR L3, decision LI-1)"). Recorded deviations D60–D66 and D117 are in [TESTING.md](../TESTING.md).
 - Collections ([#331](https://github.com/ComfyAssets/ComfyUI_PromptManager/issues/331), three PRs) adds named, hand-picked groups of images, stored in the library database by file location as favorites are: a COLLECTIONS sidebar group whose rows open Images filtered to one collection (`#/collection/<id>`) with rename and delete, Add to collection and Remove from collection in the Images selection bar, a Collections… checklist in the shared inspector for the side panel and the viewer, and saved views that keep a collection. Membership survives restarts, source reordering and System › Maintenance duplicate cleanup; no file is copied, moved or changed.
 
 ## Scope and compatibility
@@ -69,14 +69,16 @@ regression coverage with mockup-only tests.
 
 ## GitHub and release gates
 
-Extend existing required workflows: the Python 3.10–3.13 matrix on Linux,
-Windows and macOS; 85% Python coverage; formatting; frontend units and per-file
-coverage floors; vendor checks; browser workflows; real ComfyUI compatibility.
+Extend existing required workflows: the Python suite on Linux (3.12 on a pull
+request, 3.12–3.14 in the merge queue; Windows 3.12–3.14 runs in `portability.yml`
+and does not gate a merge; macOS is not tested in CI, #571); 85% Python coverage;
+formatting; frontend units and per-file coverage floors; vendor checks; browser
+workflows; real ComfyUI compatibility. Python 3.12 is the floor.
 Publish traces, screenshots, logs and coverage artifacts on failures. See
 [TESTING.md](../TESTING.md) for commands and fixture isolation requirements.
 
-Every PR must map acceptance criteria to tests, report relevant checks and include
-screenshots for visual changes. All required checks must pass before merging.
+Every PR must map acceptance criteria to tests, report relevant checks and describe
+visual changes in words; never attach screenshots or other images to a PR. All required checks must pass before merging.
 Use maintainer live review at meaningful visual and host-integration milestones;
 capture discovered regressions in automated tests. Notify the maintainer when
 Python changes require a ComfyUI restart.

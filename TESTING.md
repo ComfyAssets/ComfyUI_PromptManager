@@ -4744,7 +4744,7 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   concept row's), `skipped tags add, preview, remove, save and reload (D202)`, `skipped
   tags preview checks library tags only …` (workspace-system-tagging.spec) and
   `suggestions omit skipped tags and say how many were hidden` (workspace-tagging.spec).
-- **D205** (Prompt library, #620, beyond the concept): the sort menu appends Recently used, Most used and Name Z–A
+- **D206** (Prompt library, #620, beyond the concept; numbered D205 until #662 found the id taken by #431): the sort menu appends Recently used, Most used and Name Z–A
   after Oldest first. These are the old Dashboard's sorts, kept before its removal because the community asked for
   them. A prompt never run sorts last in both use orders.
 - **D203** (Auto-tagging, #431, beyond the concept): "Saved instructions" replaces the
