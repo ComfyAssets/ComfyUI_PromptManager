@@ -17,9 +17,21 @@ concurrency:
   group: viewerjs-update
   cancel-in-progress: false
 
+# Time limit rule as in test.yml (#662): ceil(1.5 x the slowest of three recent green runs on main)
+# + 3 minutes, never under 5, timed as whole-job wall time (tests/vendor/ci-workflow.test.mjs
+# recomputes it). The measured runs are nightly runs that found no new release:
+# Measured 2026-11-21 on main runs 44771628562 (b3bb55f), 44568715421 (b3bb55f), 44349316383 (1d509c8):
+#   slowest leg: 0m09s (no release) / 0m13s (no release) / 0m12s (no release) -> 5 min
+#   None of the 35 green runs since 2026-10-17 found a release, so the update path (tests, Chromium,
+#   the PR) is not measured. Estimated from its parts: npm ci on a cold cache up to 5m (as recorded in
+#   viewerjs-check.yml), Playwright Chromium with its system packages about 2m, the pin check, tooling
+#   and unit tests about 1m, the viewer suite (38s locally, 2 workers) and setup about 2m:
+#   estimated update path: 10m00s -> 18 min
+#     Recalibrate from the first three green update runs.
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 18
     permissions:
       contents: write
       pull-requests: write

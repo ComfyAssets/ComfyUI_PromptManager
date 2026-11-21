@@ -64,6 +64,7 @@ from database.maintenance import _delete_ids  # noqa: E402
 from database.operations import PromptDatabase  # noqa: E402
 from database.pair_ingestion import blank_positive  # noqa: E402
 from database.run_attribution import stored_run_prompt  # noqa: E402
+from database.sqlite_uri import readonly_uri  # noqa: E402
 from utils.generation_params import (  # noqa: E402
     PLACEHOLDERS,
     GenerationParamsError,
@@ -253,9 +254,8 @@ def apply(db, verdicts, ids):
 
 def backup_database(source, target):
     """SQLite online backup of ``source`` (opened read-only) into ``target``."""
-    uri = Path(os.path.abspath(source)).as_uri() + "?mode=ro"
     with (
-        closing(sqlite3.connect(uri, uri=True)) as src,
+        closing(sqlite3.connect(readonly_uri(source), uri=True)) as src,
         closing(sqlite3.connect(target)) as dst,
     ):
         src.backup(dst)

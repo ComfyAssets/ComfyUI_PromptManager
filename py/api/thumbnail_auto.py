@@ -388,7 +388,6 @@ class AutoThumbnailer:
         self._worker_running = False
         self._closed = False
         self._busy = False
-        self._batch = 0
 
     @property
     def failure_count(self):
@@ -548,7 +547,6 @@ class AutoThumbnailer:
             with self._changed:
                 self._worker_running = False
                 self._busy = False
-                self._batch = 0
                 self._changed.notify_all()
 
     def _drain(self):
@@ -563,7 +561,6 @@ class AutoThumbnailer:
                 workers = max(1, int(self._workers() or 1))
                 take = min(len(self._queue), workers)
                 batch = [self._queue.popleft() for _ in range(take)]
-                self._batch = len(batch)
                 self._changed.notify_all()
             try:
                 # The job pool's size is the setting; a smaller batch uses
@@ -571,7 +568,6 @@ class AutoThumbnailer:
                 map_parallel(self._write_queued, batch, workers)
             finally:
                 with self._changed:
-                    self._batch = 0
                     for key, *_rest in batch:
                         self._queued.discard(key)
 

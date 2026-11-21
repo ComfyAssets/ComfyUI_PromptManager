@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -295,8 +295,15 @@ test('each browser test step stops itself before its job limit and its traces up
 
 // Every job is bounded (#350): a hang ends at a measured limit instead of GitHub's 6-hour default.
 const GATING_WORKFLOWS = ['test.yml', 'code-quality.yml', 'viewerjs-check.yml'];
-const BOUNDED_WORKFLOWS = [...GATING_WORKFLOWS, 'portability.yml'];
-const readWorkflow = name => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
+// #662: every workflow, the publish and the scheduled Viewer.js update too.
+const WORKFLOW_DIR = new URL('../../.github/workflows/', import.meta.url);
+const BOUNDED_WORKFLOWS = readdirSync(WORKFLOW_DIR).filter(name => /\.ya?ml$/.test(name)).sort();
+const readWorkflow = name => readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');
+
+test('the time-limit guard reads every workflow', () => {
+    assert.deepEqual(BOUNDED_WORKFLOWS, ['code-quality.yml', 'portability.yml', 'publish.yml', 'test.yml',
+        'viewerjs-check.yml', 'viewerjs-update.yml']);
+});
 
 test('every job in the CI workflows has a numeric timeout-minutes', () => {
     for (const name of BOUNDED_WORKFLOWS) {
@@ -393,24 +400,44 @@ test('Windows runs 3.12-3.14 on main, nightly and on demand, never on a PR or in
     assert.doesNotMatch(text, /cancel-in-progress: true|cancel-in-progress: \$/, 'no portability run is cancelled');
 });
 
-// #493: the portability limit follows the rule in its comment: ceil(1.5 x the slowest of three
-// green main runs) + 3 minutes, never under 5, with those runs and times written above jobs:.
+// #493: a single-job workflow's limit follows the rule in its comment: ceil(1.5 x the slowest of
+// three green main runs) + 3 minutes, never under 5, with those runs and times written above jobs:.
 // The times are whole-job wall times. That the runs were green and on main is the author's word.
-test('the portability limit is computed from three measured green main runs', () => {
-    const text = readWorkflow('portability.yml');
+// #662: a path the measured runs never took may be given an estimate written the same way
+// ("estimated <path>: XmYYs -> N min"); the job then uses the larger limit.
+const limitFor = seconds => Math.max(5, Math.ceil(1.5 * seconds / 60) + 3);
+
+function assertMeasuredLimit(name, jobId) {
+    const text = readWorkflow(name);
     const comment = text.slice(0, text.indexOf('\njobs:'));
     const runs = [...comment.matchAll(/^# Measured \d{4}-\d{2}-\d{2} on main runs (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\), (\d+) \([0-9a-f]{7}\):$/gm)];
-    assert.equal(runs.length, 1, 'the comment names the three runs it measured, once');
-    assert.equal(new Set(runs[0].slice(1)).size, 3, 'three different runs');
+    assert.equal(runs.length, 1, `${name}: the comment names the three runs it measured, once`);
+    assert.equal(new Set(runs[0].slice(1)).size, 3, `${name}: three different runs`);
     const time = '(\\d+)m([0-5]\\d)s \\(([^)]+)\\)';
     const slowest = new RegExp(`^#\\s+slowest leg: ${time} / ${time} / ${time} -> (\\d+) min$`, 'm').exec(comment);
-    assert.ok(slowest, 'the comment gives the slowest leg of each run and the limit');
+    assert.ok(slowest, `${name}: the comment gives the slowest leg of each run and the limit`);
     const seconds = [1, 4, 7].map(i => Number(slowest[i]) * 60 + Number(slowest[i + 1]));
-    const expected = Math.max(5, Math.ceil(1.5 * Math.max(...seconds) / 60) + 3);
-    assert.equal(Number(slowest[10]), expected, 'the written limit follows the rule');
-    assert.equal(comment.match(/-> \d+ min/g).length, 1, 'no older measurement stays beside it');
-    const limit = Number(/^ {4}timeout-minutes: (\d+)\s*$/m.exec(jobs(text).get('test'))[1]);
-    assert.equal(limit, expected, 'the job uses the written limit');
+    const measured = limitFor(Math.max(...seconds));
+    assert.equal(Number(slowest[10]), measured, `${name}: the written limit follows the rule`);
+    let expected = measured;
+    for (const estimate of comment.matchAll(/^#\s+estimated [\w -]+: (\d+)m([0-5]\d)s -> (\d+) min$/gm)) {
+        const minutes = limitFor(Number(estimate[1]) * 60 + Number(estimate[2]));
+        assert.equal(Number(estimate[3]), minutes, `${name}: the estimated limit follows the rule`);
+        expected = Math.max(expected, minutes);
+    }
+    const written = comment.match(/-> \d+ min/g).length;
+    assert.equal(written, 1 + [...comment.matchAll(/^#\s+estimated /gm)].length, `${name}: no older measurement stays beside it`);
+    const limit = Number(/^ {4}timeout-minutes: (\d+)\s*$/m.exec(jobs(text).get(jobId))[1]);
+    assert.equal(limit, expected, `${name}: the job uses the written limit`);
+}
+
+test('the portability limit is computed from three measured green main runs', () => {
+    assertMeasuredLimit('portability.yml', 'test');
+});
+
+test('the publish and Viewer.js update limits are computed from measured green main runs', () => {
+    assertMeasuredLimit('publish.yml', 'publish-node');
+    assertMeasuredLimit('viewerjs-update.yml', 'update');
 });
 
 test('real ComfyUI runs only outside pull requests; the other test.yml checks run on every event; all for code changes only', () => {

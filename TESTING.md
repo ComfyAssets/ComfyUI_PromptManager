@@ -294,13 +294,17 @@ the process exits non-zero.
   expects no ComfyUI nearby works two folders inside its temp folder, because
   the output-folder fallback looks two levels up.
 
-Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
-`portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
-checks it). The rule is ceil(1.5 x the slowest of three recent green runs on
+Every job in every workflow under `.github/workflows/` has `timeout-minutes`
+(`tests/vendor/ci-workflow.test.mjs` checks it; `publish.yml` and
+`viewerjs-update.yml` joined in #662). The rule is ceil(1.5 x the slowest of three recent green runs on
 `main`) + 3 minutes, never under 5, timed as whole-job wall time; the three run
 ids, their times and the resulting limits are written in a comment above
-`jobs:`. For `portability.yml` the tooling test recomputes the limit from that
-comment (#493); its one matrix job takes the slowest Windows or macOS leg. The 3 minutes leave room for one watchdog firing, so
+`jobs:`. For `portability.yml`, `publish.yml` and `viewerjs-update.yml` the
+tooling test recomputes the limit from that comment (#493, #662); portability's
+one matrix job takes the slowest Windows leg. A path no measured run took (the
+Viewer.js update when a release appears) may carry an `estimated <path>: XmYYs
+-> N min` line built from its parts by the same rule; the job then uses the
+larger limit until three green runs of that path are measured. The 3 minutes leave room for one watchdog firing, so
 the dump prints before GitHub cancels the job. A job that hits its limit, or a
 watchdog dump, is a failure like any other: read the dump, find the blocking
 call, fix it. Never raise a limit or rerun to get green; a limit changes only
@@ -968,7 +972,7 @@ default string adapters) or an entry of the table's `encoders`, `strings`,
 `conditioning` or `composites` (`PROVEN_VALUE_CATEGORIES`). That allowlist is a rule
 for every future table entry: a class that can return `None` (a selector, an
 unknown node, a `runtime`, `facts` or `lineage` class) never goes into those four
-categories, and a test pins them. Otherwise the switch offers one candidate per distinct outcome of its inputs, and no PromptManager path is preferred. When a sampler is `ambiguous`, Inspect still shows a role every candidate resolves alike (same text, recipe and left-out parts) as resolved (#658); `resolution.state` stays `ambiguous`, so pair actions and ingestion are unchanged. ConditioningCombine/Concat/Average resolve only when every
+categories, and a test pins them. Both resolvers read the constant (`Semantics.proves_value`; the browser's copy in `local-resolver-support.mjs`), and `tests/test_proven_value_parity.py` fails when the browser copy drifts from it (#662). Otherwise the switch offers one candidate per distinct outcome of its inputs, and no PromptManager path is preferred. When a sampler is `ambiguous`, Inspect still shows a role every candidate resolves alike (same text, recipe and left-out parts) as resolved (#658); `resolution.state` stays `ambiguous`, so pair actions and ingestion are unchanged. ConditioningCombine/Concat/Average resolve only when every
 part has the same text, otherwise `unresolved` with `composite` naming the node
 (but see the added-conditioning floor below for a later stage).
 Results that depend on a forced choice are never memoized. A `FaceDetailer`
@@ -4740,7 +4744,7 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   concept row's), `skipped tags add, preview, remove, save and reload (D202)`, `skipped
   tags preview checks library tags only …` (workspace-system-tagging.spec) and
   `suggestions omit skipped tags and say how many were hidden` (workspace-tagging.spec).
-- **D205** (Prompt library, #620, beyond the concept): the sort menu appends Recently used, Most used and Name Z–A
+- **D206** (Prompt library, #620, beyond the concept; numbered D205 until #662 found the id taken by #431): the sort menu appends Recently used, Most used and Name Z–A
   after Oldest first. These are the old Dashboard's sorts, kept before its removal because the community asked for
   them. A prompt never run sorts last in both use orders.
 - **D203** (Auto-tagging, #431, beyond the concept): "Saved instructions" replaces the

@@ -259,7 +259,8 @@ def parse_image_tag_request(data: dict):
     ``filter`` (a listing query object, parse_listing_filter) may stand in for
     ``targets``; the start resolves it.
     """
-    fields = _FIELDS.get(data.get("mode"))
+    mode = data.get("mode")
+    fields = _FIELDS.get(mode) if isinstance(mode, str) else None
     if fields is None:
         return None, bad_request('mode must be "add" or "auto"')
     fields = fields | {"filter" if "filter" in data else "targets"}
