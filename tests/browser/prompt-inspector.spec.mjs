@@ -102,11 +102,16 @@ test('inspection failures retry and a delayed previous selection cannot replace 
     release();await expect(role(details(page),'Positive')).toContainText('Dog landscape');
 });
 
-test('sender requires explicit destination, previews full changes and acknowledges only the applied pair',async({page,context},testInfo)=>{
+test('sender chooses the only destination, previews full changes and acknowledges only the applied pair',async({page,context},testInfo)=>{
     const host=await fakeHost(context,page);
     try {
         await page.goto(workspace);await select(page,'0:shared/same.png');await details(page).getByRole('button',{name:/^Send prompt pair to ComfyUI: /}).click();
-        const sender=dialog(page);await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeDisabled();
+        const sender=dialog(page);
+        // "One eligible node selects that node" (TESTING.md, D173); wait for discovery's
+        // answer, since Apply is disabled only while the sender is still looking for windows.
+        await expect(sender).toContainText('Sending to #pair-1 My prompt pair in Test ComfyUI.');
+        await expect(sender.getByRole('button',{name:'Apply to ComfyUI',exact:true})).toBeEnabled();
+        expect(await host.evaluate(()=>window.applied)).toEqual([]);
         const chosen=await chooseDestination(page);await chosen.getByRole('button',{name:'Preview changes',exact:true}).click();
         for(const text of ['Existing positive','Existing negative','Cat portrait','blurry, watermark','trigger Cat portrait detail'])await expect(chosen).toContainText(text);
         expect(await host.evaluate(()=>window.applied)).toEqual([]);
