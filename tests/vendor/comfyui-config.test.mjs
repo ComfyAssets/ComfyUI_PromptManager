@@ -59,7 +59,7 @@ test('execution config refuses live-host URLs and binds a managed loopback port'
 });
 
 test('CI retains stock, execution and pack suites in order with uploaded execution reports', () => {
-    const workflow = readFileSync(new URL('../../.github/workflows/test.yml', import.meta.url), 'utf8');
+    const workflow = readFileSync(new URL('../../.github/workflows/nightly.yml', import.meta.url), 'utf8');
     const commands = [...workflow.matchAll(/^        run: npm run --prefix tools\/vendor (test:[a-z]+)$/gm)].map(match => match[1]);
     assert.deepEqual(commands, ['test:comfyui', 'test:executions', 'test:compat']);
     assert.match(workflow, /path: tools\/vendor\/test-results\//);
