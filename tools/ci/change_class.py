@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Sort a change by the files it touches, so CI tests only what can break (#639).
 
-Three classes, decided from allowlists:
+Four classes. Two come from allowlists:
 
 - ``inert``: every file is one nothing reads at run or test time (the funding
   file, the security policy, the old README's screenshots, issue templates).
-  No test job runs.
-- ``docs``: every file is inert or a document a Python test reads (the
-  READMEs and their images, checked by ``tests/test_brand_assets.py`` and
-  ``tests/test_package_contents.py``). Only the Python 3.12 suite runs.
+  No test job runs, and the pre-push hook skips the suite.
+- ``docs``: every file is inert or a document (the READMEs and their images).
+  No test job runs in CI (#666). Two Python tests read these files
+  (``tests/test_brand_assets.py``, ``tests/test_package_contents.py``), so
+  the pre-push hook still runs the suite for them.
+- ``release``: ``pyproject.toml`` is the only file, and its ``version`` line
+  the only line, that changed. CI runs the package-content check only.
 - ``code``: anything else. A file on no list is code, and so is every case of
   doubt: no files, an unknown event, a range git cannot read.
 
@@ -20,10 +23,10 @@ code opens it.
 Usage:
 
 ``change_class.py``
-    Prints ``class=<inert|docs|code>`` for the workflow's ``$GITHUB_OUTPUT``,
-    from ``EVENT_NAME``, ``BASE_SHA`` and ``HEAD_SHA``. A pull request is
-    compared with its merge base, so commits that landed on main meanwhile
-    do not count; a merge group and a push are compared end to end.
+    Prints ``class=<inert|docs|release|code>`` for the workflow's
+    ``$GITHUB_OUTPUT``, from ``EVENT_NAME``, ``BASE_SHA`` and ``HEAD_SHA``.
+    A pull request is compared with its merge base, so commits that landed on
+    main meanwhile do not count; a push is compared end to end.
 
 ``change_class.py --unless-inert <command...>``
     The pre-push hook: runs the command unless pre-commit's pushed range
@@ -34,6 +37,7 @@ Usage:
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -44,7 +48,10 @@ INERT_FOLDERS = ("images/", ".github/ISSUE_TEMPLATE/")
 DOCS_FILES = frozenset({"README.md", "README-legacy.md"})
 DOCS_FOLDERS = ("assets/readme/", "assets/brand/")
 
-RANGE_EVENTS = frozenset({"pull_request", "merge_group", "push"})
+VERSION_FILE = "pyproject.toml"
+VERSION_LINE = re.compile(r'version = "[^"]+"')
+
+RANGE_EVENTS = frozenset({"pull_request", "push"})
 ENVIRONMENT = frozenset(
     {
         "EVENT_NAME",
@@ -70,27 +77,59 @@ def classify(paths: Iterable[str]) -> str:
     return found
 
 
-def changed_paths(base: str, head: str, three_dot: bool) -> Optional[list[str]]:
-    """Paths that differ between two commits, or None when git cannot say.
+def is_version_bump(diff: str) -> bool:
+    """Whether a zero-context diff of one file changes only its version line.
 
-    Renames are listed under both names, so a file moved onto a listed name
-    still counts as the code file it was.
+    True for exactly one removed and one added line that are both
+    ``version = "..."`` at the start of the line. A second changed line, an
+    added or removed line without its pair, or a changed mode is not a bump.
     """
-    if not base or not head or not base.strip("0") or not head.strip("0"):
-        return None
-    span = f"{base}...{head}" if three_dot else f"{base}..{head}"
+    removed, added = [], []
+    for line in diff.splitlines():
+        if line.startswith(("old mode", "new mode", "deleted file", "new file")):
+            return False
+        if line.startswith("-") and not line.startswith("--- "):
+            removed.append(line[1:])
+        elif line.startswith("+") and not line.startswith("+++ "):
+            added.append(line[1:])
+    if len(removed) != 1 or len(added) != 1 or removed == added:
+        return False
+    return all(VERSION_LINE.fullmatch(line.rstrip("\r")) for line in removed + added)
+
+
+def _git_diff(span: str, *options: str) -> Optional[str]:
+    """``git diff`` output for a range, or None when git cannot say."""
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames", "-z", span, "--"],
+            ["git", "diff", *options, span, "--"],
             capture_output=True,
             text=True,
             check=False,
         )
     except OSError:
         return None
-    if result.returncode != 0:
+    return result.stdout if result.returncode == 0 else None
+
+
+def _span(base: str, head: str, three_dot: bool) -> Optional[str]:
+    if not base or not head or not base.strip("0") or not head.strip("0"):
         return None
-    return [path for path in result.stdout.split("\0") if path]
+    return f"{base}...{head}" if three_dot else f"{base}..{head}"
+
+
+def changed_paths(base: str, head: str, three_dot: bool) -> Optional[list[str]]:
+    """Paths that differ between two commits, or None when git cannot say.
+
+    Renames are listed under both names, so a file moved onto a listed name
+    still counts as the code file it was.
+    """
+    span = _span(base, head, three_dot)
+    if span is None:
+        return None
+    names = _git_diff(span, "--name-only", "--no-renames", "-z")
+    if names is None:
+        return None
+    return [path for path in names.split("\0") if path]
 
 
 def class_of_range(base: str, head: str, three_dot: bool = False) -> str:
@@ -99,6 +138,10 @@ def class_of_range(base: str, head: str, three_dot: bool = False) -> str:
         return "code"
     for path in paths:
         print(f"changed: {path}", file=sys.stderr)
+    if paths == [VERSION_FILE]:
+        diff = _git_diff(_span(base, head, three_dot), "--unified=0", "--no-color")
+        if diff is not None and is_version_bump(diff):
+            return "release"
     return classify(paths)
 
 

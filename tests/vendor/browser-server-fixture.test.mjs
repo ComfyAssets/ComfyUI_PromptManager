@@ -260,10 +260,11 @@ test('worker count follows PM_TEST_WORKERS, then one in CI, then a quarter of th
 
 test('CI adds the running-tests reporter and a blob report under test-results/blob/, which the trace upload covers; local runs keep list', () => {
     assert.equal(reporters({ env: {}, name: 'workflows' }), 'list');
-    const [list, running, blob] = reporters({ env: { CI: '1' }, name: 'workflows' });
+    const [list, running, flaky, blob] = reporters({ env: { CI: '1' }, name: 'workflows' });
     assert.deepEqual(list, ['list']);
     // Absolute: a config imported from another directory (workflow-artifacts.test.mjs) still finds it.
     assert.ok(isAbsolute(running[0]) && running[0].endsWith('running-tests-reporter.mjs'), running[0]);
+    assert.ok(isAbsolute(flaky[0]) && flaky[0].endsWith('flaky-tests-reporter.mjs'), flaky[0]);
     assert.deepEqual(blob, ['blob', { outputDir: './test-results/blob/workflows' }]);
 });
 

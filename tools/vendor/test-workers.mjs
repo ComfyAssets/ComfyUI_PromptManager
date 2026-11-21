@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 // Absolute, so a config that imports this one from another directory still finds it.
 const RUNNING_TESTS_REPORTER = fileURLToPath(new URL('./running-tests-reporter.mjs', import.meta.url));
+const FLAKY_TESTS_REPORTER = fileURLToPath(new URL('./flaky-tests-reporter.mjs', import.meta.url));
 
 const MAX_LOCAL_WORKERS = 8;
 const CPUS_PER_WORKER = 4;
@@ -22,8 +23,10 @@ export function workflowWorkers({ env = process.env, cpus = availableParallelism
 }
 
 // Under CI, running-tests-reporter.mjs names the tests a step timeout's signal cut off (`list`
-// cannot: they never end), and a blob report beside the traces is uploaded with them.
+// cannot: they never end), flaky-tests-reporter.mjs lists in the job summary the tests that passed
+// only on a retry (the nightly run retries once, the gate never), and a blob report beside the traces
+// is uploaded with them.
 export function reporters({ env = process.env, name } = {}) {
     if (!env.CI) return 'list';
-    return [['list'], [RUNNING_TESTS_REPORTER], ['blob', { outputDir: `./test-results/blob/${name}` }]];
+    return [['list'], [RUNNING_TESTS_REPORTER], [FLAKY_TESTS_REPORTER], ['blob', { outputDir: `./test-results/blob/${name}` }]];
 }
