@@ -744,6 +744,67 @@ class TestPromptInspector(ImageAPITestCase):
             },
         )
 
+    def _comfyui_webp(self, name, prompt=None, workflow=None, animated=False):
+        # A WebP the way Save Animated WEBP writes it: prompt on EXIF tag
+        # 0x0110, workflow on 0x010F. The animated form carries the records
+        # on the first frame only.
+        exif = Image.Exif()
+        if prompt is not None:
+            exif[0x0110] = f"prompt:{json.dumps(prompt)}"
+        if workflow is not None:
+            exif[0x010F] = f"workflow:{json.dumps(workflow)}"
+        path = self.output_dir / name
+        first = Image.new("RGB", (8, 8), "red")
+        if animated:
+            second = Image.new("RGB", (8, 8), "blue")
+            first.save(
+                path, "WEBP", exif=exif, save_all=True, append_images=[second]
+            )
+        else:
+            first.save(path, "WEBP", exif=exif)
+        return path
+
+    async def test_webp_prompt_and_workflow_are_read_from_exif(self):
+        from utils.prompt_inspector import read_inspection_file
+
+        path = self._comfyui_webp(
+            "a.webp", prompt=graph(), workflow={"nodes": []}
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(read.format, "WEBP")
+        self.assertEqual(json.loads(read.metadata["prompt"]), graph())
+        self.assertEqual(json.loads(read.metadata["workflow"]), {"nodes": []})
+        self.assertEqual(read.record_formats["prompt"], "original-text")
+        self.assertEqual(read.record_formats["workflow"], "original-text")
+        self.assertEqual(read.limited_records, frozenset())
+
+    async def test_animated_webp_reads_the_first_frame_exif(self):
+        from utils.prompt_inspector import read_inspection_file
+
+        path = self._comfyui_webp(
+            "anim.webp", prompt=graph(), workflow={"nodes": []}, animated=True
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(read.format, "WEBP")
+        self.assertEqual(json.loads(read.metadata["prompt"]), graph())
+        self.assertEqual(json.loads(read.metadata["workflow"]), {"nodes": []})
+
+    async def test_webp_workflow_over_budget_is_limited_not_read(self):
+        from utils.prompt_inspector import (
+            WORKFLOW_METADATA_BYTES,
+            read_inspection_file,
+        )
+
+        oversized = {"nodes": [], "pad": "x" * (WORKFLOW_METADATA_BYTES + 1)}
+        path = self._comfyui_webp(
+            "big.webp", prompt=graph(), workflow=oversized
+        )
+        read = read_inspection_file(path)
+        self.assertEqual(json.loads(read.metadata["prompt"]), graph())
+        self.assertNotIn("workflow", read.metadata)
+        self.assertEqual(read.limited_records, frozenset({"workflow"}))
+        self.assertEqual(read.record_formats["workflow"], "limited")
+
     async def test_invalid_or_execution_only_video_evidence_never_uses_saved_fallback(
         self,
     ):
