@@ -36,6 +36,8 @@ import {
     PASSED_UNVERIFIABLE,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
+    PROVEN_BY_CLASS,
+    PROVEN_VALUE_CATEGORIES,
     ROLE_METADATA_KEYS,
     RUNTIME_REASON,
     SAMPLER_LIKE_INPUTS,
@@ -475,15 +477,15 @@ class GraphResolver {
 
     /**
      * `proves_value` (#657): every node on the path always outputs a value: own, coded and adapter classes, and the
-     * table's `PROVEN_VALUE_CATEGORIES` (inspection_semantics.py: composites by class, the rest by output slot).
+     * table's `PROVEN_VALUE_CATEGORIES` (`Semantics.proves_value`: `PROVEN_BY_CLASS` by class, the rest by output slot).
      */
     provesValue(path) {
         this.scan(path.length);
         const semantics = this.semantics;
         return path.every(step => {
             const name = this.node(step.node_id)[0], key = slotKey(name, step.output_slot);
-            if (OWN_CLASSES.has(name) || CODED_CLASSES.includes(name) || semantics.composites.has(name)) return true;
-            return ADAPTERS.has(key) || semantics.encoders.has(key) || semantics.strings.has(key) || semantics.conditioning.has(key);
+            if (OWN_CLASSES.has(name) || CODED_CLASSES.includes(name) || ADAPTERS.has(key)) return true;
+            return PROVEN_VALUE_CATEGORIES.some(category => semantics[category].has(PROVEN_BY_CLASS.has(category) ? name : key));
         });
     }
 
