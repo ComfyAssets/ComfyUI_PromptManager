@@ -458,7 +458,8 @@ test('nightly reports by issue after every other job, with the only write permis
 // runs and times written above jobs: as "<job id>: 7m26s / 7m22s / 7m54s -> 15 min". A job without
 // three green runs yet has "estimate <job id>: <why> -> N min" instead. That the runs were green is
 // the author's word; that every job has one line and uses its limit is checked here.
-const BOUNDED_WORKFLOWS = ['ci.yml', 'nightly.yml', 'publish.yml'];
+// #662: viewerjs-update.yml too, so every workflow is bounded.
+const BOUNDED_WORKFLOWS = ['ci.yml', 'nightly.yml', 'publish.yml', 'viewerjs-update.yml'];
 const limitOf = seconds => Math.max(5, Math.ceil(1.5 * Math.max(...seconds) / 60) + 3);
 
 function writtenLimits(name) {

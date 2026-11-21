@@ -25,12 +25,14 @@ class TestReadonlyUri(unittest.TestCase):
 
     def test_no_reader_builds_its_own_uri(self):
         offenders = []
-        for folder in ("database", "py", "utils"):
+        # #662: the repair and review tools open libraries too.
+        for folder in ("database", "py", "utils", "tools"):
             for path in (ROOT / folder).rglob("*.py"):
                 if path.name == "sqlite_uri.py":
                     continue
                 text = path.read_text(encoding="utf-8")
-                if re.search(r"as_uri\(\)\s*\+\s*[\"']\?mode=ro", text):
+                # Also ``as_uri() + ("?mode=ro" if ... else "")``.
+                if re.search(r"as_uri\(\)\s*\+\s*\(?\s*[\"']\?mode=ro", text):
                     offenders.append(path.relative_to(ROOT).as_posix())
         self.assertEqual(offenders, [])
 

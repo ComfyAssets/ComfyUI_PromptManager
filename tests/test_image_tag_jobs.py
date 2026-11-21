@@ -589,6 +589,9 @@ class TestStartAndExclusion(ImageTagJobTestCase):
             {"mode": "add", "targets": [target], "tags": ["x"], "extra": 1},
             {"mode": "add", "targets": [target], "tags": ["x"], "model_type": "hf"},
             {"mode": "remove", "targets": [target], "tags": ["x"]},
+            # #662: a mode that is no text is a refusal, not a server error.
+            {"mode": [], "targets": [target], "tags": ["x"]},
+            {"mode": {}, "targets": [target], "tags": ["x"]},
             {"targets": [target], "tags": ["x"]},
             {"mode": "auto", "targets": [target], "model_type": "wd14-vit"},
             {"mode": "auto", "targets": [target], "model_type": "x", "options": {}},

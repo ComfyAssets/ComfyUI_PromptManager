@@ -1063,28 +1063,17 @@ class _GraphResolver:
         """Whether every node on a followed path always outputs a value (#657).
 
         PromptManager and code-traced classes, the default adapters and the
-        table's ``PROVEN_VALUE_CATEGORIES``; class-keyed sets by class, slot-keyed
-        ones by ``(class, output slot)``.
+        table's ``PROVEN_VALUE_CATEGORIES`` (``Semantics.proves_value``).
         """
         self.scan(len(path))
-        semantics = self.semantics
         for step in path:
             name, slot = self.node(step["node_id"])[0], step["output_slot"]
             if name in _OWN_CLASSES or name in _CODED_CLASSES:
                 continue
-            if name in semantics.composites:
+            if (name, slot) in _DEFAULT_ADAPTERS:
                 continue
-            output = (name, slot)
-            if output in _DEFAULT_ADAPTERS or any(
-                output in table
-                for table in (
-                    semantics.encoders,
-                    semantics.strings,
-                    semantics.conditioning,
-                )
-            ):
-                continue
-            return False
+            if not self.semantics.proves_value(name, slot):
+                return False
         return True
 
     def owned(self, path: list) -> bool:

@@ -33,19 +33,25 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_documents():
-    """``database/workflow_documents.py`` alone, without the ``database`` package."""
-    path = _ROOT / "database" / "workflow_documents.py"
-    spec = importlib.util.spec_from_file_location("_pm_workflow_documents", path)
+def _load_database_module(name):
+    """``database/<name>.py`` alone, without the ``database`` package."""
+    path = _ROOT / "database" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"_pm_{name}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def _load_documents():
+    """``database/workflow_documents.py`` alone, without the ``database`` package."""
+    return _load_database_module("workflow_documents")
+
+
 def database_uri(db_path):
     """``mode=ro``, plus ``immutable=1`` when nothing has the database open."""
     path = os.path.abspath(db_path)
-    uri = Path(path).as_uri() + "?mode=ro"
+    # #662: the one read-only URI helper, so a library on a network share opens.
+    uri = _load_database_module("sqlite_uri").readonly_uri(path)
     if not any(os.path.exists(path + suffix) for suffix in ("-wal", "-shm")):
         uri += "&immutable=1"
     return uri
