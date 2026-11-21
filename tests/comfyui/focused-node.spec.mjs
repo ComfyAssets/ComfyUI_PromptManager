@@ -210,7 +210,7 @@ test(`${label} follows actual ComfyUI light and dark palettes`, async ({ page },
     }
 });
 
-test(`${label} Web UI button opens the workspace; legacy pages still load`, async ({ page }) => {
+test(`${label} Web UI button opens the workspace; the old gallery URL leads to Images`, async ({ page }) => {
     await addEditor(page, type);
     const popupPromise = page.waitForEvent('popup');
     await page.locator('.pm-focused').getByRole('button', { name: 'Web UI ↗', exact: true }).click();
@@ -219,8 +219,10 @@ test(`${label} Web UI button opens the workspace; legacy pages still load`, asyn
     await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
     await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
     await expect(page.locator('.pm-focused').getByRole('status').filter({ hasText: 'Web UI opened.' })).toHaveText('Web UI opened.');
+    // #668: the old gallery URL leads to the workspace's Images page.
     await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
-    await expect(popup.locator('#addPromptBtn')).toBeVisible();
+    await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/images$/);
+    await expect(popup.locator('#workspace-main h1')).toHaveText('Images');
     await popup.close();
 });
 

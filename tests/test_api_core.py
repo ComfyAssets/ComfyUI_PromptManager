@@ -396,13 +396,18 @@ class CoreRoutesTestCase(AioHTTPTestCase):
         return web_dir
 
 
+# Pages read from web/: the workspace, the /web redirect page and the page that
+# sends an old /admin bookmark on (#668).
 UI_PATHS = (
     "/prompt_manager/workspace",
     "/prompt_manager/web",
-    "/prompt_manager/gallery.html",
     "/prompt_manager/admin",
-    "/prompt_manager/gallery",
 )
+# The old gallery and metadata pages (#668, D207): where each URL lands now.
+OLD_PAGE_REDIRECTS = {
+    "/prompt_manager/gallery": "workspace#/images",
+    "/prompt_manager/gallery.html": "workspace#/inspect",
+}
 
 
 class TestUiRoutes(CoreRoutesTestCase):
@@ -416,9 +421,44 @@ class TestUiRoutes(CoreRoutesTestCase):
 
     async def test_pages_are_cached_after_first_read(self):
         await self.client.request("GET", "/prompt_manager/admin")
-        self.assertTrue(any(p.endswith("admin.html") for p in self.api._html_cache))
+        self.assertTrue(
+            any(p.endswith("admin-redirect.html") for p in self.api._html_cache)
+        )
         resp = await self.client.request("GET", "/prompt_manager/admin")
         self.assertEqual(resp.status, 200)
+
+    async def test_old_admin_url_serves_the_page_that_maps_its_hash(self):
+        """The server never sees ``#/tags/a,b``, so the browser maps it."""
+        resp = await self.client.request(
+            "GET", "/prompt_manager/admin", allow_redirects=False
+        )
+        self.assertEqual(resp.status, 200)
+        html = await resp.text()
+        self.assertIn('<script src="js/legacy-links.js"></script>', html)
+        self.assertIn('href="workspace#/library"', html)
+        self.assertNotIn("js/admin.js", html)
+        module = await self.client.request("GET", "/prompt_manager/js/legacy-links.js")
+        self.assertEqual(module.status, 200)
+
+    async def test_old_gallery_urls_redirect_into_the_workspace(self):
+        for path, target in OLD_PAGE_REDIRECTS.items():
+            for method in ("GET", "HEAD"):
+                resp = await self.client.request(method, path, allow_redirects=False)
+                self.assertEqual(resp.status, 302, path)
+                # Relative, so the browser keeps a reverse-proxy mount prefix;
+                # temporary, so no browser stores it for good.
+                self.assertEqual(resp.headers["Location"], target, path)
+                self.assertNotIn("Cache-Control", resp.headers, path)
+        followed = await self.client.request("GET", "/prompt_manager/gallery")
+        self.assertEqual(followed.status, 200)
+        self.assertEqual(followed.url.path, "/prompt_manager/workspace")
+        self.assertIn("js/workspace/index.mjs", await followed.text())
+
+    async def test_old_gallery_urls_redirect_without_reading_a_page(self):
+        self._fake_root()
+        for path, target in OLD_PAGE_REDIRECTS.items():
+            resp = await self.client.request("GET", path, allow_redirects=False)
+            self.assertEqual((resp.status, resp.headers["Location"]), (302, target))
 
     async def test_missing_pages_are_404(self):
         self._fake_root()
@@ -428,13 +468,7 @@ class TestUiRoutes(CoreRoutesTestCase):
 
     async def test_unreadable_pages_are_500(self):
         web_dir = self._fake_root()
-        for name in (
-            "workspace.html",
-            "index.html",
-            "metadata.html",
-            "admin.html",
-            "gallery.html",
-        ):
+        for name in ("workspace.html", "index.html", "admin-redirect.html"):
             (web_dir / name).mkdir()  # a directory cannot be read as a file
         for path in UI_PATHS:
             resp = await self.client.request("GET", path)

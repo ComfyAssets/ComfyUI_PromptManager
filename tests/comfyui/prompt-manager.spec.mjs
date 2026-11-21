@@ -84,7 +84,7 @@ test('all node schemas and extension entrypoints load from the real host', async
 });
 
 for (const type of ['PromptManager', 'PromptManagerText']) {
-    test(`${type} Web UI button opens the workspace; legacy pages still load`, async ({ page }) => {
+    test(`${type} Web UI button opens the workspace; the old gallery URL leads to Images`, async ({ page }) => {
         await page.evaluate(async type => {
             const { app } = await import('/scripts/app.js');
             const node = LiteGraph.createNode(type);
@@ -97,8 +97,10 @@ for (const type of ['PromptManager', 'PromptManagerText']) {
         await popup.waitForLoadState('domcontentloaded');
         await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/library$/);
         await expect(popup.locator('#workspace-main h1')).toHaveText('Prompt library');
+        // #668: the old gallery URL leads to the workspace's Images page.
         await popup.goto(new URL('/prompt_manager/gallery', page.url()).href);
-        await expect(popup.locator('#addPromptBtn')).toBeVisible();
+        await expect(popup).toHaveURL(/\/prompt_manager\/workspace#\/images$/);
+        await expect(popup.locator('#workspace-main h1')).toHaveText('Images');
         await popup.close();
     });
 }

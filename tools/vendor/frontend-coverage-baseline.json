@@ -65,6 +65,12 @@
     "functions": 98,
     "statements": 96
   },
+  "legacy-links.js": {
+    "lines": 96,
+    "branches": 88,
+    "functions": 98,
+    "statements": 96
+  },
   "list-state.js": {
     "lines": 98,
     "branches": 92,

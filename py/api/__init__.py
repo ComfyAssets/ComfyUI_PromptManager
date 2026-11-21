@@ -274,6 +274,17 @@ async def _gzip_middleware(request, handler):
     return response
 
 
+def _workspace_redirect(route: str) -> web.Response:
+    """Send the browser of a retired page's URL to a workspace route (#668).
+
+    The Location is relative to the old URL, so a reverse-proxy mount prefix
+    in front of ``/prompt_manager/`` is kept, and 302 is not stored for good.
+    A plain response, not a raised ``HTTPFound``, so the host's middlewares
+    see it like any other.
+    """
+    return web.Response(status=302, headers={"Location": f"workspace{route}"})
+
+
 class PromptManagerAPI(
     PairRoutesMixin,
     LibraryRoutesMixin,
@@ -621,17 +632,24 @@ class PromptManagerAPI(
         async def serve_web_ui(request):
             return self._serve_html_page(request, "index.html", "Web UI", cache=False)
 
-        @routes.get("/prompt_manager/gallery.html")
-        async def serve_gallery_ui(request):
-            return self._serve_html_page(request, "metadata.html", "Gallery")
+        # The old admin, gallery and metadata pages are gone (#668, D207); their
+        # URLs stay and lead into the workspace.
 
-        @routes.get("/prompt_manager/admin")
-        async def serve_admin_ui(request):
-            return self._serve_html_page(request, "admin.html", "Admin UI")
+        @routes.get("/prompt_manager/gallery.html")
+        async def redirect_old_metadata_page(request):
+            return _workspace_redirect("#/inspect")
 
         @routes.get("/prompt_manager/gallery")
-        async def serve_gallery_admin_ui(request):
-            return self._serve_html_page(request, "gallery.html", "Gallery")
+        async def redirect_old_gallery_page(request):
+            return _workspace_redirect("#/images")
+
+        # The dashboard's tag bookmarks (admin#/tags/a,b?mode=or) live in the
+        # hash, which only the browser sees: this page maps it and moves on.
+        @routes.get("/prompt_manager/admin")
+        async def serve_old_admin_redirect(request):
+            return self._serve_html_page(
+                request, "admin-redirect.html", "Workspace redirect"
+            )
 
         # ── Static file serving ───────────────────────────────────────
 
