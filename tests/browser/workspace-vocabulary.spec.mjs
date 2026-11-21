@@ -23,7 +23,9 @@ async function seed(request,data={}) {
     const response=await request.post('/__test__/vocabulary/reset',{data});await expect(response).toBeOK();return response.json();
 }
 async function expectLibrary(page,{tags='',category='',count}) {
-    await expect(page).toHaveURL(/#\/library$/);
+    // #668 (D207): a tag Browse lands on the filtered address; a category is not in the address.
+    const hash=tags?`#/library?${new URLSearchParams({tag:tags})}`:'#/library';
+    await expect(page).toHaveURL(url=>url.hash===hash);
     await expect(main(page).getByRole('heading',{level:1})).toHaveText('Prompt library');
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
     await expect(page.getByRole('searchbox',{name:'Search workspace',exact:true})).toHaveValue('');

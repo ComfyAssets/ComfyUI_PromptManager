@@ -226,7 +226,7 @@ The dashboard, tags page, gallery and metadata viewer have been removed. Everyth
 | `/prompt_manager/gallery` | Images |
 | `/prompt_manager/gallery.html` | Inspect a file |
 
-A tag bookmark opens the Prompt library with that filter each time you use it. The filter isn't kept in the workspace's address, so to keep one, use **Save view**. You can also write such a link yourself: `/prompt_manager/workspace#/library?tag=cats&tag=dogs&tag_mode=any` (leave out `tag_mode` to match all the tags; `tag_mode=untagged` lists prompts without a tag).
+A tag bookmark opens the Prompt library with that filter, and the filter stays in the address: `/prompt_manager/workspace#/library?tag=cats&tag=dogs&tag_mode=any`. Reload, Back and Forward keep it, the address follows the tags you set in **Filters**, and you can bookmark or write such a link yourself (leave out `tag_mode` to match all the tags; `tag_mode=untagged` lists prompts without a tag). The sidebar's Prompt library link always shows the whole library. Search, category and sort aren't part of the address; **Save view** keeps those.
 
 [README-legacy.md](README-legacy.md) still describes the old pages, for reference.
 

@@ -7838,18 +7838,39 @@ describe those routes' contracts.
   is trimmed after decoding too; a segment that cannot be decoded is used as written (the
   old page failed on it); and `tag_mode=any` is written only for two or more tags.
 
-  The workspace form `#/library?tag=<name>&tag=<name>&tag_mode=all|any|untagged` opens
-  the Prompt library with those Tags and that Tag match, as Refine and Browse do (`tag`
+  The workspace form `#/library?tag=<name>&tag=<name>&tag_mode=all|any|untagged` is the
+  Prompt library with those Tags and that Tag match, as Refine and Browse set them (`tag`
   repeats, one name each, trimmed, without empties or repeats; no comma splitting; the
   first `tag_mode` counts; other keys are ignored). No tag with `all` or `any` is the
   plain Library. An unknown `tag_mode`, or `untagged` with a tag, opens the whole Library
-  with the toast "This link's tag filter couldn't be read. Showing the whole prompt
-  library." The filter stays in the hash until the shelf has mounted with it, then the
-  address becomes `#/library`: the workspace keeps filters in memory, so a reload shows
-  the whole Library, and Save view is the way to keep a filter. A link is applied even
-  when the shelf is already open, over that shelf's own filter. Count and length limits
-  are the server's (30 tags, 200 characters), shown by the shelf's own error. Pinned by
-  `tests/js/workspace-state.test.js`, `workspace-library-links.spec.mjs` and
+  at `#/library` with the toast "This link's tag filter couldn't be read. Showing the
+  whole prompt library." Count and length limits are the server's (30 tags, 200
+  characters), shown by the shelf's own error.
+
+  The tag filter stays in the address (maintainer ruling 2026-11-21, after the live test:
+  with the first version, which replaced the hash with `#/library`, Reload and
+  Back then Forward showed the whole Library):
+  - The address is canonical: tags in the shelf's order, `tag_mode` left out for All
+    (`libraryLinkHash`, read back by `libraryLinkFilters`; the router replaces another
+    spelling). Reload, Back and Forward restore exactly that filter.
+  - The address is the truth for Tags and Tag match. `#/library` (the sidebar link, the
+    old dashboard URL) is the Library without a tag filter, whatever the last visit had.
+    Only those two are in the address: search, category, folder, sort and the archived
+    shelf stay in memory and return with the last visit as before. The loaded cards and
+    the scroll place return only when the last visit's tag filter is the address's (Back
+    from a prompt).
+  - When Tags or Tag match change in Refine (Clear filters included), the shelf replaces
+    the address (`replaceRouteHash`: `history.replaceState`, no history entry, no
+    render; the router learns the new address, so the plain Library link is a new route
+    afterwards). With no tag filter left it is `#/library`.
+  - Ways back to the shelf from inside the Library ("← Prompt library" on a prompt's
+    page, after a delete there) go to the address of the remembered visit, and Browse on
+    Tags & categories goes to the filtered address too.
+  - A saved view keeps its own address (`#/saved/<id>`): its tag filter comes from the
+    view, filter changes inside it never rewrite the address, and the Library link after
+    it is the whole Library.
+
+  Pinned by `tests/js/workspace-state.test.js`, `workspace-library-links.spec.mjs` and
   `old-urls.spec.mjs`.
 - **D208** (maintainer ruling 2026-11-02, audit item B2): a record used only as the
   negative of saved pairs gets no editing surface of its own. The workspace groups by

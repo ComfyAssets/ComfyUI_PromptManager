@@ -476,10 +476,7 @@ function mountWorkspace() {
         if (route.id === 'library') {
             mountLibrary(main, api, view, {positiveId:route.positiveId, savedState:saved?.state, browse:route.browse,
                 onSaveView:saveView('library', view)});
-            // #668 (D207): a Library link's filter is on the shelf now, so the address becomes the plain Library (the
-            // workspace keeps filters in memory, never in the address). Until here the hash still held the filter,
-            // so a render that was held or run again found it.
-            if (route.browse && window.location.hash === route.hash) window.history.replaceState(window.history.state, '', '#/library');
+            // #668 (D207): an unreadable Library link is the whole shelf at the plain address (the router replaced it).
             if (route.browseInvalid) showWorkspaceToast(LIBRARY_LINK_UNREADABLE);
             return;
         }

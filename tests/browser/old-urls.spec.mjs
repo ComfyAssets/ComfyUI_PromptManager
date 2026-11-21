@@ -8,7 +8,7 @@ const card=(page,text)=>cards(page).filter({has:page.getByText(text,{exact:true}
 const filtersButton=page=>page.locator('#workspace-main search.toolbar').getByRole('button',{name:/^Filters(?: · \d)?$/});
 const caption=page=>page.locator('#workspace-main .section-caption > span').first();
 const heading=page=>page.locator('#workspace-main h1').first();
-/** The workspace at exactly this hash (the filter of a link is gone from the address by then). */
+/** The workspace at exactly this hash. */
 const at=hash=>url=>url.pathname.endsWith('/prompt_manager/workspace')&&url.search===''&&url.hash===hash;
 
 test.beforeEach(async({page,request,browserName})=>{
@@ -39,7 +39,7 @@ for(const [url,hash,title] of [
 
 test('an old one-tag bookmark opens the Library filtered by that tag',async({page})=>{
     await page.goto('/prompt_manager/admin#/tags/cats');
-    await expect(page).toHaveURL(at('#/library'));
+    await expect(page).toHaveURL(at('#/library?tag=cats'));
     await expect(caption(page)).toHaveText(/^1 positive prompt · /);
     await expect(card(page,'Cat portrait')).toHaveCount(1);await expect(cards(page)).toHaveCount(1);
     await expect(filtersButton(page)).toHaveText('Filters · 1');
@@ -50,7 +50,7 @@ test('an old two-tag bookmark matches all of the tags, and any of them with ?mod
     await expect(caption(page)).toHaveText(/^0 positive prompts · /);await expect(filtersButton(page)).toHaveText('Filters · 1');
     await page.goto('about:blank');
     await page.goto('/prompt_manager/admin#/tags/cats,dogs?mode=or');
-    await expect(page).toHaveURL(at('#/library'));
+    await expect(page).toHaveURL(at('#/library?tag=cats&tag=dogs&tag_mode=any'));
     await expect(caption(page)).toHaveText(/^2 positive prompts · /);
     await expect(card(page,'Cat portrait')).toHaveCount(1);await expect(card(page,'Dog landscape')).toHaveCount(1);
     await expect(filtersButton(page)).toHaveText('Filters · 2');
@@ -60,7 +60,15 @@ test('an old untagged bookmark asks the Library for the prompts without a tag',a
     const listed=page.waitForResponse(item=>{const url=new URL(item.url());return url.pathname==='/prompt_manager/library'&&url.searchParams.get('tag_mode')==='untagged';});
     await page.goto('/prompt_manager/admin#/tags/__untagged__');
     expect((await (await listed).json()).tag_mode).toBe('untagged');
-    await expect(page).toHaveURL(at('#/library'));await expect(filtersButton(page)).toHaveText('Filters · 1');
+    await expect(page).toHaveURL(at('#/library?tag_mode=untagged'));await expect(filtersButton(page)).toHaveText('Filters · 1');
+});
+
+test('the old dashboard URL shows the whole Library even after a tag bookmark in the same tab',async({page})=>{
+    await page.goto('/prompt_manager/admin#/tags/cats');
+    await expect(caption(page)).toHaveText(/^1 positive prompt · /);
+    await page.goto('/prompt_manager/admin');
+    await expect(page).toHaveURL(at('#/library'));
+    await expect(caption(page)).toHaveText(/^3 positive prompts · /);await expect(filtersButton(page)).toHaveText('Filters');
 });
 
 test('Back from the workspace skips the old URL instead of bouncing through it',async({page})=>{

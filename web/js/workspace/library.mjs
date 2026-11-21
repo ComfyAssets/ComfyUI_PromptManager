@@ -3,6 +3,7 @@ import {createPromptSender} from './prompt-sender.mjs';
 import {mountPromptBlocks} from './prompt-inspector.mjs';
 import {mountImages} from './images.mjs';
 import {createLibraryStream,createLibraryDetail,libraryPromptRoles,LIBRARY_TAG_MODES,libraryFolderOptions} from './library-state.mjs';
+import {libraryLinkHash,replaceRouteHash} from './state.mjs';
 import {promptRoles} from './prompt-blocks.mjs';
 import {createLibraryEditor,showWorkspaceToast} from './library-editor.mjs';
 import {createLibraryEditorController} from './library-editor-state.mjs';
@@ -93,8 +94,16 @@ export function onLibraryWrite(listener) {
  */
 export function browseLibrary(filters) {
     shelfVisit=browseVisit(filters);
-    focusHeadingOnMount=true;window.location.hash='#/library';
+    focusHeadingOnMount=true;window.location.hash=shelfHash();
 }
+/**
+ * The shelf's address (#668 D207): its Tags and Tag match are in the hash, so Reload, Back and Forward keep them.
+ * Ways back to the shelf from inside the Library go to the address of the visit it remembers.
+ */
+function shelfHash() {
+    return libraryLinkHash(shelfVisit?.filters);
+}
+const sameTagFilter=(left,right)=>libraryLinkHash(left)===libraryLinkHash(right);
 /** The visit a Browse or a Library link starts the shelf from: exactly these filters, page one, no remembered place. */
 function browseVisit(filters) {
     const {text='',category='',tags=[],sort='newest',tagMode='all',folder=''}=filters || {};
@@ -159,15 +168,15 @@ export function mountNewPromptAction(main,api,parentScope) {
 
 /**
  * `savedState` opens a saved view (#249 D16) instead of the last visit; `onSaveView(trigger, state)` is Save view.
- * `browse` (`{tags, tagMode}`, a Library link, #668 D207) opens the shelf with exactly that filter, as Browse does. It
- * is an option, not a visit seeded beforehand: a shelf that is open saves its own visit while it is replaced by this
- * one. The shell focuses the title as for any route (never on the first render).
+ * `browse` (`{tags, tagMode}` or nothing, #668 D207) is the tag filter the address names: the shelf at `#/library`
+ * has no tag filter, whatever the last visit had, and `#/library?tag=…` has exactly that one. Search, category, folder,
+ * sort and the archived shelf are not in the address and come from the last visit; its loaded cards and place are kept
+ * only when its tag filter is the address's (Back from a prompt). The shell focuses the title as for any route.
  */
 export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,browse=null,onSaveView=()=>{}}={}) {
     const scope=createScope();parentScope.cleanup(()=>scope.dispose());
     main.classList.add('library-main');
     const sender=createPromptSender({scope});
-    if(browse) shelfVisit=browseVisit(browse);
     if(positiveId!==undefined) mountHistory();
     else mountShelf();
     if(focusHeadingOnMount) {focusHeadingOnMount=false;focusHeading(main);}
@@ -177,10 +186,13 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,br
     function mountShelf() {
         const saved=savedState?libraryFilters(savedState):null;
         const visit=saved?null:shelfVisit, mountedGeneration=writeGeneration;
-        // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again.
-        const restorable=visit?.state?visit:null;
+        // The address is the truth for Tags and Tag match (never inside a saved view, whose address is its own).
+        const address=saved?null:{tags:[...(browse?.tags ?? [])],tagMode:browse?.tagMode ?? 'all'};
+        // An invalidated visit keeps only filters and anchor: the stream restarts and heights are measured again. So
+        // does a visit under another tag filter than the address's.
+        const restorable=visit?.state && sameTagFilter(visit.filters,address)?visit:null;
         // #443 D152: `shelf` ('active' or 'archived', Show archived prompts) lives in the visit's filters, never in a saved view.
-        const filters={text:'',category:'',tags:[],sort:'newest',tagMode:'all',folder:'',shelf:'active',...visit?.filters,...saved};
+        const filters={text:'',category:'',tags:[],sort:'newest',tagMode:'all',folder:'',shelf:'active',...visit?.filters,...saved,...address};
         // D153: a sort the shelf no longer offers (an older "Highest rated" visit) reads as Recently added.
         if(!LIBRARY_SORTS.some(([value])=>value===filters.sort)) filters.sort='newest';
         const section=el('section',undefined,'library-shelf');section.setAttribute('aria-label','Prompt library');
@@ -481,7 +493,10 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,br
             // "Prompts without tags" takes no Tags (the dialog disables them).
             const next=tagMode==='untagged'?[]:[...new Set(tags.split(',').map(tag=>tag.trim()).filter(Boolean))];
             if(category===filters.category && tagMode===filters.tagMode && folder===filters.folder && next.length===filters.tags.length && next.every((tag,index)=>tag===filters.tags[index])) return;
-            filters.category=category;filters.tags=next;filters.tagMode=tagMode;filters.folder=folder;reset();
+            filters.category=category;filters.tags=next;filters.tagMode=tagMode;filters.folder=folder;
+            // The address follows the tag filter without a history entry (a saved view keeps its own address).
+            if(!saved && /^#\/library(?:\?|$)/.test(window.location.hash)) replaceRouteHash(libraryLinkHash(filters));
+            reset();
         }
         scope.listen(more,'click',()=>stream.loadMore());
         // Retry also re-reads a category list that failed (D15: Refresh is gone).
@@ -545,11 +560,11 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,br
                     showWorkspaceToast(outcome.toast);
                     // Restored storage: the whole Library view reads again, as the editor's own restore path.
                     if(failure?.code==='storage-changed') {reloadView();return;}
-                    if(result && Number.isSafeInteger(result.deleted) && result.deleted>0) {focusHeadingOnMount=true;window.location.hash='#/library';return;}
+                    if(result && Number.isSafeInteger(result.deleted) && result.deleted>0) {focusHeadingOnMount=true;window.location.hash=shelfHash();return;}
                     if(outcome.reload) {detail=null;loader.load(positiveId);focusHeading(main);}
                 }});
         }
-        scope.listen(back,'click',()=>{window.location.hash='#/library';});
+        scope.listen(back,'click',()=>{window.location.hash=shelfHash();});
         scope.listen(edit,'click',()=>{
             if(deleting) return;
             const draft=metadataDrafts.get(positiveId);metadataDrafts.delete(positiveId);
@@ -604,7 +619,7 @@ export function mountLibrary(main,api,parentScope,{positiveId,savedState=null,br
             const gone=state.error?.status===404;description.textContent=gone?'':HISTORY_DESCRIPTION;description.hidden=gone;
             if(gone) {
                 const message=el('p',PROMPT_GONE,'library-status');message.setAttribute('role','status');body.append(message);
-                const open=createButton('Open the Prompt library');contentScope.listen(open,'click',()=>{window.location.hash='#/library';});body.append(open);
+                const open=createButton('Open the Prompt library');contentScope.listen(open,'click',()=>{window.location.hash=shelfHash();});body.append(open);
                 // A focused control that was just disabled hands focus to the way back (review M3).
                 if(hadFocus) open.focus({preventScroll:true});
                 return;
