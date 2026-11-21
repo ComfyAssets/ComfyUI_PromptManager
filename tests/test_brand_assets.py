@@ -19,7 +19,7 @@ except ImportError:  # discovered with tests/ as the top-level directory
     from test_package_contents import _ignored
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGES = ("workspace.html", "admin.html", "gallery.html", "metadata.html", "index.html")
+PAGES = ("workspace.html", "admin-redirect.html", "index.html")
 ICON_LINK = re.compile(
     r'<link rel="(icon|apple-touch-icon)"(?: type="image/png")?'
     r' sizes="(\d+)x(\d+)" href="(lib/brand/[a-z0-9-]+\.png)">'

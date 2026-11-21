@@ -3848,13 +3848,10 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
-System is the home for settings and maintenance (#330 System S13). The legacy pages keep
-their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
-Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
-thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
-System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
-keeps only its own settings in Page options. What left the legacy pages is listed in
-"Legacy System UI removed by S13".
+System is the home for settings and maintenance (#330 System S13). The old admin and
+gallery pages, which first handed these jobs to System through links, are gone (#668,
+D207); "Legacy System capability coverage" names the System control or the ruling for
+each capability they had.
 
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
@@ -5758,9 +5755,10 @@ line read `database_info.size_bytes`, a key the report does not have, so it alwa
 
 ### Legacy System capability coverage
 
-Every System capability of the legacy admin and gallery pages has an owner (#249 System
-S12, #329). Status is `covered` (a native control replaces it), `kept in legacy` (it stays
-on the legacy page, which keeps working) or `approved removal` (a ruling retired it). Native
+Every System capability the old admin and gallery pages had has an owner (#249 System
+S12, #329). Status is `covered` (a native control replaces it) or `approved removal` (a
+ruling retired it). The old pages are gone (#668, D207), so nothing is "kept in legacy" any
+more: D209 records where its four rows went. Native
 control is `` `<section>` · <role> · "<accessible name>" ``, `<section>` a System hash id
 and `<role>` one of button, combobox, switch, slider, spinbutton, textbox, group, status or
 term, followed by ` · in "<row title>"` when several rows of the section share the name.
@@ -5768,13 +5766,10 @@ Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
 (`tools/vendor/legacy-coverage.mjs`), each with its reason: today only "Gallery per-image
 auto-tag / review", which the Images selection bar owns, not a System section. A row that
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
-file. Anchors are line numbers on `main` at this PR.
-
-S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
-"Legacy System UI removed by S13" below lists every removed element against its row.
+file. Legacy anchor is history: the lines are those of the deleted files in 3.7.2.
 
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
-- no owner, or a status outside the three;
+- no owner, or a status outside the two;
 - a malformed Native control cell;
 - a covered row without a control (unless exempt), or a control on a row that is not
   covered;
@@ -5796,7 +5791,7 @@ list stay unscoped: any row's control proves them.
 | Monitoring enabled | `py/config.py:212,248` | S4 Sources | covered | `sources` · switch · "Watch for new outputs" | Watch for new outputs saves monitoring_enabled; a restart applies it (workspace-system-sources.spec.mjs) |
 | Search results auto-hide `result_timeout` | `admin.html:407–412` | S3 Appearance | covered | `appearance` · spinbutton · "Node search auto-hide (seconds)" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
 | Web UI display mode | `admin.html:414–422` | S3 Appearance | covered | `appearance` · combobox · "Open from ComfyUI" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Legacy prompt list (README continuous browsing); read-only in the report | kept in legacy | — | shouldLoadMore asks for the next page only near the bottom with pages left (list-state.test.js) |
+| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Retired with the old prompt list (D209): the Library always continues; `web_ui.infinite_scroll` stays read-only in the report | approved removal | — | library infinite loading keeps unique parents and keyboard-accessible history controls (workspace-library.spec.mjs) |
 | Worker threads | `admin.html:437–445` | S4 Sources | covered | `sources` · slider · "Worker threads" | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
 | LoraManager badge, enable, path, trigger words, CivitAI key, clear key | `admin.html:448–490`; `admin.js:1052–1156` | S10 Integrations | covered | `integrations` · switch · "LoraManager integration" | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
 | LoRA data import with progress | `admin.html:492–498,517–541`; `admin.js:1157` | S10 Integrations | covered | `integrations` · button · "Review import" | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
@@ -5839,68 +5834,12 @@ list stay unscoped: any row's control proves them.
 | Video autoplay, mute, loop | `gallery-settings.js:40–42` | S3 Appearance | covered | `appearance` · switch · "Autoplay videos" | video defaults reach the viewer (workspace-system.spec.mjs) |
 | Image info on cards; sidebar collapsed | `gallery-settings.js:30,34` | S3 Appearance | covered | `appearance` · switch · "Show image details on cards" | added rows reach their consumers (workspace-system.spec.mjs) |
 | Reset gallery settings | `gallery.js:1813` | S3 Appearance | covered | `appearance` · button · "Reset" | reset restores defaults without touching other keys (workspace-system.spec.mjs) |
-| Lazy loading | `gallery-settings.js:25` | Legacy gallery (native always lazy) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
+| Lazy loading | `gallery-settings.js:25` | Retired with the old gallery (D209): Images always loads lazily; the stored key is kept | approved removal | — | stored values override defaults and unknown keys are kept (gallery-settings.test.js) |
 | Results per page / grid columns / paged mode | `gallery-settings.js:28–29,35` | README continuous browsing | approved removal | — | numeric strings from <select> values are accepted and columns are clamped (gallery-settings.test.js) |
 | Startup thumbnail prompt | `gallery-settings.js:38–39`; `gallery.js:2578` | README; Overview thumbnail row | approved removal | — | thumbnail row reflects the status endpoint (workspace-system.spec.mjs) |
-| Client debug output `debugMode` | `gallery-settings.js:36` | Legacy gallery (S12-10) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
-| API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
+| Client debug output `debugMode` | `gallery-settings.js:36` | Retired with the old gallery (D209, S12-10): Diagnostics & logs is the workspace's tool; the stored key is kept | approved removal | — | stored values override defaults and unknown keys are kept (gallery-settings.test.js) |
+| API timeout `apiTimeout` | `gallery-settings.js:37` | Retired with the old gallery (D209, S12-10): no request ever read it; the stored key is kept | approved removal | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
-
-### Legacy System UI removed by S13
-
-System S13 (#330) points the legacy pages' System buttons at native System (a link that
-opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
-only when its row above is `covered`. One row per removed capability: Capability is the
-exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
-Removed methods list what went (`—` for none), and Native test copies that row's Test
-cell. An id that stays on a System link is not listed, only its handler. The gallery's
-Default View Mode left Page options too: System › Appearance's Default layout is the one
-default-layout control. Nothing writes the legacy `defaultViewMode` any more; a stored
-value still picks the view the legacy gallery opens in (grid otherwise), and Page options
-Save and Reset keep it.
-
-`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
-`covered` or copies another test, when an id or method is listed twice for one page, or
-when a listed id is still on its page (`id="…"` in the markup or the script, a
-`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
-method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
-kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
-legacy page workflows), not by this check.
-
-| Capability | Page | Removed ids | Removed methods | Native test |
-| --- | --- | --- | --- | --- |
-| Diagnostics run | admin | `#diagnosticsModal`, `#runDiagnosticsBtn`, `#diagnosticsContent` | `showDiagnosticsModal()`, `closeDiagnostics()`, `runDiagnostics()`, `renderDiagnostics()` | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
-| Synthetic image-link test | admin | `#testImageLinkBtn` | `testImageLink()` | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
-| View logs with level and limit | admin | `#logsModal`, `#logLevel`, `#logLimit`, `#refreshLogsBtn`, `#logsContainer` | `showLogsModal()`, `closeLogs()`, `refreshLogs()`, `displayLogs()` | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
-| Log statistics | admin | `#logStatsTotal`, `#logStatsErrors`, `#logStatsWarnings`, `#logStatsLevel`, `#logStatsSize` | `loadLogStats()`, `formatBytes()` | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
-| Log files list and download | admin | `#downloadLogsBtn`, `#logFilesList` | `loadLogFiles()`, `downloadLogs()`, `downloadLogFile()` | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
-| Clear/truncate logs | admin | `#clearLogsBtn` | `clearLogs()` | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
-| Set log level (incl. CRITICAL), console logging | admin | `#updateLogConfigBtn`, `#setLogLevel`, `#consoleLogging` | `loadLogConfig()`, `updateLogConfig()` | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
-| Image scan directories add/remove | admin | `#scanPathsList`, `#addScanPathBtn` | `renderScanPaths()`, `addScanPath()`, `removeScanPath()`, `_collectScanPaths()` | Add source validates on the server, then marks the host draft dirty; Save persists (workspace-system-sources.spec.mjs) |
-| Currently monitoring list + Refresh | admin | `#refreshMonitoringStatus`, `#monitoringStatus` | `updateMonitoringStatus()` | watching only with a live observer; restart pending otherwise (workspace-system-sources.spec.mjs) |
-| Search results auto-hide `result_timeout` | admin | `#resultTimeout` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Web UI display mode | admin | `#webuiDisplayMode` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Worker threads | admin | `#workerThreads`, `#workerThreadsValue` | `renderWorkerThreads()` | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
-| LoraManager badge, enable, path, trigger words, CivitAI key, clear key | admin | `#loraDetectionBadge`, `#loraEnabled`, `#loraSettings`, `#loraManagerPath`, `#loraTriggerWords`, `#civitaiApiKey`, `#clearCivitaiKey` | `detectLoraManager()`, `_bindLoraEvents()`, `saveLoraSettings()` | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
-| LoRA data import with progress | admin | `#loraImportModal`, `#loraImportBtn`, `#loraImportStatus`, `#loraImportPercent`, `#loraImportBar`, `#loraImportProcessed`, `#loraImportImported` | `runLoraImport()` | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
-| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | admin | `#maintenanceModal`, `#cleanup_duplicates`, `#vacuum`, `#cleanup_orphaned_images`, `#prune_orphaned_prompts`, `#runMaintenanceBtn`, `#maintenanceResults` | `showMaintenanceModal()`, `closeMaintenance()`, `runMaintenance()`, `renderMaintenanceResults()` | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
-| Maintenance check_hash_duplicates, check_consistency | admin | `#check_hash_duplicates`, `#check_consistency` | — | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
-| Maintenance statistics (database info) | admin | `#statistics` | — | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
-| Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
-| Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
-| Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
-| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
-| Default view mode, image quality | gallery | `#defaultViewModeSelect`, `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
-| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
-| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
-| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
-| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
-| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
-| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
-| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
-| Auto-tag model download | admin | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
-| Auto-tag model download | gallery | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
-| Unload model | gallery | — | `unloadModel()` | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
 
 ### Browser cache ownership (#222)
 

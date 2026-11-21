@@ -71,13 +71,6 @@ test("every target is relative and resolves in the workspace router to the filte
     }
 });
 
-test("the module is a window global in the browser", () => {
-    const source = fs.readFileSync(path.join(__dirname, "../../web/js/legacy-links.js"), "utf8");
-    const window = {};
-    vm.runInContext(source, vm.createContext({ window, URLSearchParams }));
-    assert.equal(window.LegacyLinks.adminTarget("#/tags"), "workspace#/tags");
-});
-
 test("the redirect page loads the module, replaces the address and always offers the Library link", () => {
     const html = fs.readFileSync(path.join(__dirname, "../../web/admin-redirect.html"), "utf8");
     assert.match(html, /<script src="js\/legacy-links\.js"><\/script>/);

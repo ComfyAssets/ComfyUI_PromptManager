@@ -454,6 +454,21 @@ class TestUiRoutes(CoreRoutesTestCase):
         self.assertEqual(followed.url.path, "/prompt_manager/workspace")
         self.assertIn("js/workspace/index.mjs", await followed.text())
 
+    async def test_the_old_pages_and_their_assets_are_gone(self):
+        for asset in (
+            "js/admin.js",
+            "js/gallery.js",
+            "js/tags-page.js",
+            "lib/tailwind/styles.css",
+        ):
+            resp = await self.client.request("GET", f"/prompt_manager/{asset}")
+            self.assertEqual(resp.status, 404, asset)
+        web_dir = Path(api_module._get_project_root()) / "web"
+        self.assertEqual(
+            sorted(page.name for page in web_dir.glob("*.html")),
+            ["admin-redirect.html", "index.html", "workspace.html"],
+        )
+
     async def test_old_gallery_urls_redirect_without_reading_a_page(self):
         self._fake_root()
         for path, target in OLD_PAGE_REDIRECTS.items():
@@ -519,7 +534,7 @@ class TestUiRoutes(CoreRoutesTestCase):
 class TestStaticRoutes(CoreRoutesTestCase):
 
     async def test_js_served_with_mime(self):
-        resp = await self.client.request("GET", "/prompt_manager/js/admin.js")
+        resp = await self.client.request("GET", "/prompt_manager/js/api-client.js")
         self.assertEqual(resp.status, 200)
         self.assertIn("application/javascript", resp.headers["Content-Type"])
 
@@ -685,7 +700,7 @@ class TestStaticRoutes(CoreRoutesTestCase):
         self.assertEqual(resp.status, 404)
 
     async def test_root_of_static_dir_is_not_listed(self):
-        resp = await self.client.request("GET", "/prompt_manager/lib/tailwind")
+        resp = await self.client.request("GET", "/prompt_manager/lib/viewerjs")
         self.assertEqual(resp.status, 403)
 
 
@@ -699,7 +714,7 @@ class TestRevalidatedCaching(CoreRoutesTestCase):
 
     STATIC_PATHS = (
         "/prompt_manager/js/workspace/index.mjs",
-        "/prompt_manager/js/admin.js",
+        "/prompt_manager/js/api-client.js",
         "/prompt_manager/js/inspection-semantics.json",
         "/prompt_manager/lib/viewerjs/viewer.min.css",
     )
@@ -759,7 +774,7 @@ class TestRevalidatedCaching(CoreRoutesTestCase):
 
     async def test_gzipped_and_plain_bodies_share_a_weak_etag(self):
         """The gzip middleware changes the bytes, so the tag must be weak."""
-        resp = await self.client.request("GET", "/prompt_manager/js/admin.js")
+        resp = await self.client.request("GET", "/prompt_manager/js/api-client.js")
         self.assertTrue(resp.headers["ETag"].startswith('W/"'))
 
     async def test_errors_carry_no_validator(self):
@@ -793,7 +808,7 @@ class TestRevalidatedCachingBehindMiddlewares(CoreRoutesTestCase):
     async def test_gzipped_files_keep_no_cache_and_answer_304(self):
         for path in (
             "/prompt_manager/js/workspace/index.mjs",
-            "/prompt_manager/js/admin.js",
+            "/prompt_manager/js/api-client.js",
             "/prompt_manager/lib/viewerjs/viewer.min.css",
             "/prompt_manager/workspace",
         ):

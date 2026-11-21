@@ -16,7 +16,7 @@ test('browser coverage maps nested JS/MJS and excludes unrelated and traversal p
         rmSync(directory, { recursive: true, force: true });
     });
     const urls = [
-        '/prompt_manager/js/gallery.js',
+        '/prompt_manager/js/api-client.js',
         '/prompt_manager/js/shared/controls/button.mjs?v=1',
         '/prompt_manager/js/shared/panel.js',
         '/scripts/app.js', '/prompt_manager/js/../private.js',
@@ -25,7 +25,7 @@ test('browser coverage maps nested JS/MJS and excludes unrelated and traversal p
     await saveCoverage({ coverage: { stopJSCoverage: async () => urls.map(url => ({ url: `http://127.0.0.1:8765${url}`, functions: [] })) } }, 'chromium');
     const report = JSON.parse(readFileSync(join(directory, readdirSync(directory)[0]), 'utf8'));
     const root = fileURLToPath(new URL('../../web/js/', import.meta.url));
-    assert.deepEqual(report.result.map(entry => fileURLToPath(entry.url)), [join(root, 'gallery.js'), join(root, 'shared/controls/button.mjs'), join(root, 'shared/panel.js')]);
+    assert.deepEqual(report.result.map(entry => fileURLToPath(entry.url)), [join(root, 'api-client.js'), join(root, 'shared/controls/button.mjs'), join(root, 'shared/panel.js')]);
 });
 
 // #432: every raw file repeated each script's full source (about 84% of its bytes) and the coverage merge ran out of
@@ -40,7 +40,7 @@ test('browser coverage writes no script source, only what c8 maps', async t => {
         rmSync(directory, { recursive: true, force: true });
     });
     const functions = [{ functionName: 'f', isBlockCoverage: true, ranges: [{ startOffset: 0, endOffset: 9, count: 1 }] }];
-    await saveCoverage({ coverage: { stopJSCoverage: async () => [{ url: 'http://127.0.0.1:8765/prompt_manager/js/gallery.js',
+    await saveCoverage({ coverage: { stopJSCoverage: async () => [{ url: 'http://127.0.0.1:8765/prompt_manager/js/api-client.js',
         scriptId: '7', source: 'x'.repeat(100_000), functions }] } }, 'chromium');
     const report = JSON.parse(readFileSync(join(directory, readdirSync(directory)[0]), 'utf8'));
     assert.equal(report.result.length, 1);

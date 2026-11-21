@@ -74,6 +74,12 @@ test('Back from the workspace skips the old URL instead of bouncing through it',
     }
 });
 
+test('the old pages\' scripts and stylesheet are no longer served',async({request})=>{
+    for(const asset of ['js/admin.js','js/gallery.js','js/tags-page.js','lib/tailwind/styles.css']) {
+        expect((await request.get(`/prompt_manager/${asset}`)).status(),asset).toBe(404);
+    }
+});
+
 test('the server itself redirects the two old pages that had no hash routes',async({request})=>{
     for(const [url,target] of [['/prompt_manager/gallery','workspace#/images'],['/prompt_manager/gallery.html','workspace#/inspect']]) {
         const response=await request.get(url,{maxRedirects:0});
