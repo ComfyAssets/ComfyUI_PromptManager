@@ -1,15 +1,8 @@
 {
   "required_status_checks": {
-    "strict": false,
+    "strict": true,
     "contexts": [
-      "py3.12 on ubuntu-latest",
-      "coverage gate (85%)",
-      "black and flake8",
-      "frontend modules",
-      "all tests",
-      "viewerjs",
-      "real ComfyUI compatibility",
-      "bandit (high severity)"
+      "gate"
     ]
   },
   "enforce_admins": true,

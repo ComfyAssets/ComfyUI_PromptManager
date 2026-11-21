@@ -5,19 +5,22 @@ import { readFileSync } from 'node:fs';
 // Concept comparisons measure layout, and layout depends on the fonts a browser falls back to (the concept names Inter,
 // which neither environment ships). Page-workflow jobs therefore run in the same pinned Playwright image as local runs,
 // so CI and a developer machine resolve identical fonts and engines.
-const workflow = readFileSync(new URL('../../.github/workflows/viewerjs-check.yml', import.meta.url), 'utf8');
+const workflows = {
+    'frontend-coverage': readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+    'browser-workflows': readFileSync(new URL('../../.github/workflows/nightly.yml', import.meta.url), 'utf8'),
+};
 const lock = JSON.parse(readFileSync(new URL('../../tools/vendor/package-lock.json', import.meta.url), 'utf8'));
 const version = lock.packages['node_modules/@playwright/test'].version;
 // The tag alone is not a pin: v1.64.1-noble was re-pushed with Node 26 (#609). The digest fixes the image's contents.
 const pinnedImage = `^    container:\\n      image: mcr\\.microsoft\\.com/playwright:v${version.replaceAll('.', '\\.')}-noble@sha256:[0-9a-f]{64}$`;
 
 function job(name) {
-    const match = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:\\n|(?![\\s\\S]))`, 'm'));
+    const match = workflows[name].match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:\\n|(?![\\s\\S]))`, 'm'));
     assert.ok(match, `${name} job exists`);
     return match[1];
 }
 
-for (const name of ['frontend-coverage', 'browser-workflows']) {
+for (const name of Object.keys(workflows)) {
     test(`${name} runs in the pinned Playwright image matching @playwright/test`, () => {
         const body = job(name);
         assert.match(body, new RegExp(pinnedImage, 'm'));
@@ -36,7 +39,7 @@ for (const name of ['frontend-coverage', 'browser-workflows']) {
 // the job hit its limit after every test had passed. The pinned image ships Chromium and its libraries, so the job runs
 // there; the image Python must be the reviewed host Python from tools/vendor/comfyui-runtime.json.
 test('real ComfyUI compatibility runs in the pinned Playwright image on the reviewed host Python', () => {
-    const testWorkflow = readFileSync(new URL('../../.github/workflows/test.yml', import.meta.url), 'utf8');
+    const testWorkflow = workflows['browser-workflows'];
     const runtime = JSON.parse(readFileSync(new URL('../../tools/vendor/comfyui-runtime.json', import.meta.url), 'utf8'));
     const match = testWorkflow.match(/^ {2}comfyui:\n([\s\S]*?)(?=^ {2}[a-z][a-z-]*:\n|(?![\s\S]))/m);
     assert.ok(match, 'comfyui job exists');

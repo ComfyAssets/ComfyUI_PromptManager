@@ -11,10 +11,16 @@ on:
 permissions:
   issues: write
 
+# The only workflow a push to main starts (#666): the pull request's gate already tested the commit.
+# It runs when pyproject.toml changed, and the action publishes when the version is new.
+# Time limit rule as in ci.yml: ceil(1.5 x the slowest of three recent green runs) + 3 minutes, never under 5.
+# Measured 2026-11-21 on runs 44547398738 (b3bb55f), 44189688689 (1d509c8), 41519786847 (71b55bc):
+#   publish-node: 0m33s / 0m31s / 1m16s -> 5 min
 jobs:
   publish-node:
     name: Publish Custom Node to registry
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: ${{ github.repository_owner == 'ComfyAssets' }}
     steps:
       - name: Check out code
