@@ -73,12 +73,15 @@ test("every target is relative and resolves in the workspace router to the filte
 
 test("the redirect page loads the module, replaces the address and always offers the Library link", () => {
     const html = fs.readFileSync(path.join(__dirname, "../../web/admin-redirect.html"), "utf8");
-    assert.match(html, /<script src="js\/legacy-links\.js"><\/script>/);
-    assert.match(html, /location\.replace\(/);
-    // Visible without scripts and when the script fails: not inside <noscript>.
-    assert.match(html.replace(/<noscript>[\s\S]*?<\/noscript>/g, ""), /<a href="workspace#\/library">/);
-    // The inline script on a page where the module failed to load still leaves for the Library.
-    const inline = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+    const moduleTag = '<script src="js/legacy-links.js"></script>';
+    assert.ok(html.includes(moduleTag), "the page loads the mapping module");
+    // The link is plain markup, visible without scripts and when the script fails: the page has no <noscript> at all.
+    assert.ok(html.includes('<a href="workspace#/library">'));
+    assert.equal(html.toLowerCase().includes("<noscript"), false);
+    // The inline script follows the module tag; on a page where the module failed to load it still leaves for the Library.
+    const open = html.indexOf("<script>", html.indexOf(moduleTag));
+    const inline = html.slice(open + "<script>".length, html.indexOf("</script>", open));
+    assert.ok(open > 0 && inline.includes("location.replace("));
     for (const [globals, expected] of [
         [{}, "workspace#/library"],
         [{ LegacyLinks: { adminTarget() { throw new Error("broken"); } } }, "workspace#/library"],

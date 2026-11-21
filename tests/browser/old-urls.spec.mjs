@@ -8,7 +8,8 @@ const card=(page,text)=>cards(page).filter({has:page.getByText(text,{exact:true}
 const filtersButton=page=>page.locator('#workspace-main search.toolbar').getByRole('button',{name:/^Filters(?: · \d)?$/});
 const caption=page=>page.locator('#workspace-main .section-caption > span').first();
 const heading=page=>page.locator('#workspace-main h1').first();
-const at=hash=>new RegExp(`/prompt_manager/workspace${hash.replace(/[/#]/g,'\\$&')}$`);
+/** The workspace at exactly this hash (the filter of a link is gone from the address by then). */
+const at=hash=>url=>url.pathname.endsWith('/prompt_manager/workspace')&&url.search===''&&url.hash===hash;
 
 test.beforeEach(async({page,request,browserName})=>{
     await startCoverage(page,browserName);await expect(await request.post('/__test__/reset',{data:{native_library:true}})).toBeOK();
