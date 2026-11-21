@@ -38,6 +38,10 @@ export const PASS_THROUGH = 'pass-through';
 // #657: the divergence tag of a `first-present` switch (rgthree Any Switch), apart from selector and pass-through keys.
 export const FIRST_PRESENT = 'first-present';
 export const NO_SWITCH_INPUT = 'Switch has no connected input';
+// `PROVEN_VALUE_CATEGORIES` (inspection_semantics.py): tables whose outputs always hold a value (#657); class-keyed ones
+// match by class, the rest by output slot. tests/test_proven_value_parity.py checks both against the server (#662).
+export const PROVEN_VALUE_CATEGORIES = Object.freeze(['composites', 'conditioning', 'encoders', 'strings']);
+export const PROVEN_BY_CLASS = new Set(['composites']);
 export const SWITCH_UNVERIFIABLE = 'Switch output is not verifiable';
 // `_NAME_LENGTH` (inspection_semantics.py), in code points.
 export const NAME_LENGTH = 128;

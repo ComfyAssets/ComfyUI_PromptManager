@@ -83,6 +83,7 @@ from database.pair_ingestion import (  # noqa: E402
     mark_created,
 )
 from database.run_attribution import recorded_output  # noqa: E402
+from database.sqlite_uri import readonly_uri  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from tools.comfyui_stopped import (  # noqa: E402
     NO_PROC,
@@ -452,8 +453,10 @@ def counts(path, readonly=True):
     Read-only for a library; the tool's own backup is opened read-write so
     a WAL file leaves no side files behind once it closes.
     """
-    uri = Path(os.path.abspath(path)).as_uri() + ("?mode=ro" if readonly else "")
-    conn = sqlite3.connect(uri, uri=True)
+    if readonly:
+        conn = sqlite3.connect(readonly_uri(path), uri=True)
+    else:
+        conn = sqlite3.connect(path)
     try:
         found = {
             table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
@@ -628,8 +631,7 @@ def _stamp():
 
 def schema_of(path):
     """``sqlite_master`` and ``user_version`` from a read-only connection."""
-    uri = Path(os.path.abspath(path)).as_uri() + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(readonly_uri(path), uri=True)
     try:
         master = conn.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"

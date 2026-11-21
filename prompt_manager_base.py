@@ -7,7 +7,7 @@ duplicate code in prompt_manager.py and prompt_manager_text.py.
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 try:
     from .utils.logging_config import get_logger
@@ -395,40 +395,6 @@ class PromptManagerBase:
 
         tags = [tag.strip() for tag in tags_string.split(",") if tag.strip()]
         return tags if tags else None
-
-    def _search_prompts(self, search_text: str = "") -> List[Dict[str, Any]]:
-        """Search for past prompts by text content.
-
-        Args:
-            search_text: Text to search for in prompt database
-
-        Returns:
-            List of matching prompt dictionaries with metadata
-        """
-        try:
-            if not search_text or not search_text.strip():
-                return []
-
-            try:
-                from .py.config import PromptManagerConfig
-
-                max_results = PromptManagerConfig.MAX_SEARCH_RESULTS
-            except Exception:
-                max_results = 100
-
-            results = self.db.search_prompts(
-                text=search_text.strip(),
-                category=None,
-                tags=None,
-                rating_min=None,
-                limit=max_results,
-            )
-
-            return results
-
-        except Exception as e:
-            self.logger.error(f"Error searching prompts: {e}")
-            return []
 
     def _start_gallery_system(self):
         """Initialize and start the gallery monitoring system."""

@@ -25,6 +25,7 @@ from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
 from .jobs import MAX_OUTCOME_ROWS, THUMBNAILS_JOB_KIND
+from .json_body import BodyTooLarge, json_error, read_json_object
 from . import gallery_listing
 from .gallery_listing import (
     DISCARDED,
@@ -549,7 +550,6 @@ def _thumbnail_is_fresh(src, dst):
 MAX_GALLERY_FILES = 50_000
 MAX_BULK_LIMIT = 5_000
 MAX_JSON_BODY_BYTES = 1024 * 1024
-_READ_CHUNK = 64 * 1024
 
 
 # Guards the first load of an API's workspace keys (#430, _workspace_keys).
@@ -718,36 +718,17 @@ def _workspace_cursor_key(token: str, scope: str, order: str, secret: bytes) -> 
         raise ValueError("Invalid gallery cursor; refresh the gallery") from None
 
 
-class _BodyTooLarge(Exception):
-    """Raised when a request body exceeds MAX_JSON_BODY_BYTES."""
-
-
-def _json_error(message, status):
-    return web.json_response({"success": False, "error": message}, status=status)
+# The shared bounded reader, at this module's own cap.
+_BodyTooLarge = BodyTooLarge
+_json_error = json_error
 
 
 async def _read_json_body(request):
-    """Read a JSON object body in bounded chunks.
+    """The JSON object body, or raise _BodyTooLarge past MAX_JSON_BODY_BYTES.
 
-    Raises _BodyTooLarge past MAX_JSON_BODY_BYTES (declared or streamed) and
-    ValueError when the body is not a JSON object.
+    Raises ValueError when the body is not a JSON object.
     """
-    limit = MAX_JSON_BODY_BYTES
-    if request.content_length is not None and request.content_length > limit:
-        raise _BodyTooLarge()
-    chunks, size = [], 0
-    while True:
-        chunk = await request.content.read(_READ_CHUNK)
-        if not chunk:
-            break
-        size += len(chunk)
-        if size > limit:
-            raise _BodyTooLarge()
-        chunks.append(chunk)
-    data = json.loads(b"".join(chunks).decode("utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("JSON body must be an object")
-    return data
+    return await read_json_object(request, MAX_JSON_BODY_BYTES)
 
 
 async def _json_body_or_error(request):

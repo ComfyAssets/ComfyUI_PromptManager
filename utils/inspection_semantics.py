@@ -156,6 +156,18 @@ class Semantics:
     # The canonical table JSON itself, for ``class_version``.
     source: str = ""
 
+    def proves_value(self, name: str, slot: int) -> bool:
+        """Whether a ``PROVEN_VALUE_CATEGORIES`` table lists this output (#657).
+
+        Class-keyed categories match by class, slot-keyed ones by
+        ``(class, slot)``.
+        """
+        return any(
+            (name if category in _CLASS_CATEGORIES else (name, slot))
+            in getattr(self, category)
+            for category in PROVEN_VALUE_CATEGORIES
+        )
+
 
 def _freeze(value: Any) -> Frozen:
     if isinstance(value, dict):

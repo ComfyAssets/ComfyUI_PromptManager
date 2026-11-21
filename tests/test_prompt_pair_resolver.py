@@ -1735,6 +1735,17 @@ class TestFirstPresentSelector(unittest.TestCase):
             with self.subTest(name):
                 self.assertResolved(self.shape(name), positive)
 
+    def test_the_proven_tables_are_the_semantics_constant(self):
+        # #662 (N1): proves_value follows PROVEN_VALUE_CATEGORIES, so a table
+        # left out of it no longer proves that a switch input held a value.
+        self.assertEqual(self.shape("through-encoder-chain")["state"], "resolved")
+        with mock.patch.object(
+            inspection_semantics, "PROVEN_VALUE_CATEGORIES", frozenset()
+        ):
+            result = self.shape("through-encoder-chain")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["reason"], resolver.SELECTOR_BRANCHES_REASON)
+
     def test_an_unproven_first_input_offers_each_input(self):
         result = self.shape("through-unknown")
         self.assertEqual(result["state"], "ambiguous")

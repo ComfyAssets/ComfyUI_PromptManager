@@ -618,6 +618,32 @@ class ValidationTest(_TableCase):
             frozenset({"encoders", "strings", "conditioning", "composites"}),
         )
 
+    def test_proves_value_reads_each_proven_category(self):
+        # #662 (N1): one entry of each table; only the proven categories prove,
+        # class-keyed ones by class, slot-keyed ones by (class, slot).
+        table = semantics.get_semantics()
+        outputs = {
+            "composites": (next(iter(table.composites)), 0),
+            "conditioning": next(iter(table.conditioning)),
+            "encoders": next(iter(table.encoders)),
+            "strings": next(iter(table.strings)),
+            "selectors": (next(iter(table.selectors)), 0),
+        }
+        for category, (name, slot) in outputs.items():
+            with self.subTest(category):
+                proven = category in semantics.PROVEN_VALUE_CATEGORIES
+                self.assertEqual(table.proves_value(name, slot), proven)
+                with unittest.mock.patch.object(
+                    semantics, "PROVEN_VALUE_CATEGORIES", frozenset({category})
+                ):
+                    self.assertTrue(table.proves_value(name, slot))
+                with unittest.mock.patch.object(
+                    semantics, "PROVEN_VALUE_CATEGORIES", frozenset()
+                ):
+                    self.assertFalse(table.proves_value(name, slot))
+        name, slot = outputs["encoders"]
+        self.assertFalse(table.proves_value(name, slot + 99))
+
     def test_first_present_entry_shape_is_strict(self):
         valid = {"strategy": "first-present", "input_prefix": "any_"}
         doc = _minimal()
