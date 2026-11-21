@@ -294,13 +294,17 @@ the process exits non-zero.
   expects no ComfyUI nearby works two folders inside its temp folder, because
   the output-folder fallback looks two levels up.
 
-Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
-`portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
-checks it). The rule is ceil(1.5 x the slowest of three recent green runs on
+Every job in every workflow under `.github/workflows/` has `timeout-minutes`
+(`tests/vendor/ci-workflow.test.mjs` checks it; `publish.yml` and
+`viewerjs-update.yml` joined in #662). The rule is ceil(1.5 x the slowest of three recent green runs on
 `main`) + 3 minutes, never under 5, timed as whole-job wall time; the three run
 ids, their times and the resulting limits are written in a comment above
-`jobs:`. For `portability.yml` the tooling test recomputes the limit from that
-comment (#493); its one matrix job takes the slowest Windows or macOS leg. The 3 minutes leave room for one watchdog firing, so
+`jobs:`. For `portability.yml`, `publish.yml` and `viewerjs-update.yml` the
+tooling test recomputes the limit from that comment (#493, #662); portability's
+one matrix job takes the slowest Windows leg. A path no measured run took (the
+Viewer.js update when a release appears) may carry an `estimated <path>: XmYYs
+-> N min` line built from its parts by the same rule; the job then uses the
+larger limit until three green runs of that path are measured. The 3 minutes leave room for one watchdog firing, so
 the dump prints before GitHub cancels the job. A job that hits its limit, or a
 watchdog dump, is a failure like any other: read the dump, find the blocking
 call, fix it. Never raise a limit or rerun to get green; a limit changes only

@@ -11,10 +11,16 @@ on:
 permissions:
   issues: write
 
+# Time limit rule as in test.yml (#662): ceil(1.5 x the slowest of three recent green runs on main)
+# + 3 minutes, never under 5, timed as whole-job wall time (tests/vendor/ci-workflow.test.mjs
+# recomputes it). The runs are the last three green release publishes.
+# Measured 2026-11-21 on main runs 44547398738 (b3bb55f), 44189688689 (1d509c8), 41519786847 (71b55bc):
+#   slowest leg: 0m33s (publish) / 0m31s (publish) / 1m16s (publish) -> 5 min
 jobs:
   publish-node:
     name: Publish Custom Node to registry
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: ${{ github.repository_owner == 'ComfyAssets' }}
     steps:
       - name: Check out code
