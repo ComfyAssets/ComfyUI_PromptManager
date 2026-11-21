@@ -112,9 +112,11 @@ def failure_text(legs: list[dict], run_url: str, sha: str) -> str:
             "",
             *lines,
             "",
-            "Nothing is blocked by this. Read the job log, fix the cause, and the"
-            " next green nightly run closes this issue. Do not rerun to get green"
-            ' (TESTING.md "Nightly").',
+            (
+                "Nothing is blocked by this. Read the job log, fix the cause, and the"
+                " next green nightly run closes this issue. Do not rerun to get green"
+                ' (TESTING.md "Nightly").'
+            ),
         ]
     )
 
