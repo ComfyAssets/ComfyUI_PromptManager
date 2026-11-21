@@ -1,8 +1,9 @@
 """CI runs tests only for changes that can affect code (#639).
 
 ``tools/ci/change_class.py`` sorts a change by the files it touches: ``inert``
-(nothing reads the file at run or test time), ``docs`` (a Python test reads
-it) or ``code`` (everything else, and every case of doubt).
+(nothing reads the file at run or test time), ``docs`` (a document),
+``release`` (only the version line of ``pyproject.toml``, #666) or ``code``
+(everything else, and every case of doubt).
 """
 
 import os
@@ -73,6 +74,29 @@ class TestClassify(unittest.TestCase):
 
     def test_no_files_is_code(self):
         self.assertEqual(change_class.classify([]), "code")
+
+    def test_a_version_bump_is_one_rewritten_version_line(self):
+        head = (
+            "diff --git a/pyproject.toml b/pyproject.toml\n"
+            "--- a/pyproject.toml\n+++ b/pyproject.toml\n@@ -4 +4 @@\n"
+        )
+        bump = head + '-version = "3.7.1"\n+version = "3.7.2"\n'
+        self.assertTrue(change_class.is_version_bump(bump))
+        self.assertTrue(change_class.is_version_bump(bump.replace("\n", "\r\n")))
+        for diff in (
+            "",
+            head,
+            head + '-version = "3.7.1"\n',
+            head + '+version = "3.7.2"\n',
+            bump + '+name = "x"\n',
+            bump + "@@ -9 +9 @@\n-a\n+b\n",
+            head + '-version = "3.7.1"\n+version = "3.7.1"\n',
+            head + '-version = "3.7.1"\n+ version = "3.7.2"\n',
+            head + '-version = "3.7.1"\n+version = "3.7.2" # x\n',
+            head + '-target-version = "a"\n+target-version = "b"\n',
+            "old mode 100644\nnew mode 100755\n" + bump,
+        ):
+            self.assertFalse(change_class.is_version_bump(diff), diff)
 
     def test_every_document_a_test_reads_exists(self):
         for name in change_class.DOCS_FILES:
@@ -155,17 +179,21 @@ class TestCommandLine(unittest.TestCase):
             "class=inert",
         )
 
-    def test_a_merge_group_and_a_push_are_classed_by_their_range(self):
+    def test_a_push_is_classed_by_its_range(self):
         self.commit({"README.md": "r2\n"})
-        for event in ("merge_group", "push"):
-            self.assertEqual(
-                self.class_of(
-                    EVENT_NAME=event, BASE_SHA=self.base, HEAD_SHA=self.head()
-                ),
-                "class=docs",
-                event,
-            )
+        self.assertEqual(
+            self.class_of(EVENT_NAME="push", BASE_SHA=self.base, HEAD_SHA=self.head()),
+            "class=docs",
+        )
         self.commit({"py/a.py": "c\n"})
+        self.assertEqual(
+            self.class_of(EVENT_NAME="push", BASE_SHA=self.base, HEAD_SHA=self.head()),
+            "class=code",
+        )
+
+    def test_no_merge_group_is_classed(self):
+        # The merge queue is gone (#666): its event is unknown, and doubt is code.
+        self.commit({"README.md": "r2\n"})
         self.assertEqual(
             self.class_of(
                 EVENT_NAME="merge_group", BASE_SHA=self.base, HEAD_SHA=self.head()
@@ -173,13 +201,60 @@ class TestCommandLine(unittest.TestCase):
             "class=code",
         )
 
+    PROJECT = '[project]\nname = "promptmanager"\nversion = "{}"\nrequires = []\n'
+
+    def bump(self, text, **more):
+        """The class of a pull request whose one commit rewrites pyproject.toml."""
+        if not (self.repo / "pyproject.toml").exists():
+            self.commit({"pyproject.toml": self.PROJECT.format("3.7.1")})
+        base = self.head()
+        self.git("checkout", "-q", "-b", "release")
+        self.commit({"pyproject.toml": text, **more})
+        found = self.class_of(
+            EVENT_NAME="pull_request", BASE_SHA=base, HEAD_SHA=self.head()
+        )
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "release")
+        return found
+
+    def test_only_the_version_line_is_a_release(self):
+        self.assertEqual(self.bump(self.PROJECT.format("3.7.2")), "class=release")
+
+    def test_a_release_with_any_other_change_is_code(self):
+        bumped = self.PROJECT.format("3.7.2")
+        for text, more in (
+            # Another line of the same file.
+            (bumped.replace("requires = []", 'requires = ["x"]'), {}),
+            # Another file, even an inert one.
+            (bumped, {".github/FUNDING.yml": "x\n"}),
+            (bumped, {"py/a.py": "b\n"}),
+            # The version line removed or doubled, never rewritten.
+            (bumped.replace('version = "3.7.2"\n', ""), {}),
+            (bumped.replace("requires", 'version = "9"\nrequires'), {}),
+            # A line that only looks like the version.
+            (
+                self.PROJECT.format("3.7.1").replace("requires = []", "requires = [1]"),
+                {},
+            ),
+            (self.PROJECT.format("3.7.1").replace("version =", "target-version ="), {}),
+        ):
+            with self.subTest(text=text, more=more):
+                self.assertEqual(self.bump(text, **more), "class=code")
+
+    def test_a_pushed_release_is_a_release(self):
+        self.commit({"pyproject.toml": self.PROJECT.format("3.7.1")})
+        base = self.head()
+        self.commit({"pyproject.toml": self.PROJECT.format("3.8.0")})
+        self.assertEqual(
+            self.class_of(EVENT_NAME="push", BASE_SHA=base, HEAD_SHA=self.head()),
+            "class=release",
+        )
+
     def test_a_deleted_or_renamed_file_counts_under_both_names(self):
         self.git("mv", "py/a.py", "SECURITY.md")
         self.git("commit", "-q", "-m", "rename")
         self.assertEqual(
-            self.class_of(
-                EVENT_NAME="merge_group", BASE_SHA=self.base, HEAD_SHA=self.head()
-            ),
+            self.class_of(EVENT_NAME="push", BASE_SHA=self.base, HEAD_SHA=self.head()),
             "class=code",
         )
 

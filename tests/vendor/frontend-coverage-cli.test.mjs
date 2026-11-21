@@ -77,7 +77,9 @@ test('a shard keeps raw coverage other shards wrote and passes its shard to Play
     assert.ok(existsSync(earlier), 'raw files from another shard survive');
     assert.equal(calls.length, 1, 'shard 2 runs only the workflows');
     const [{ args, env }] = calls;
-    assert.deepEqual(args.slice(-6), ['--project', 'chromium', '--project', 'touch', '--shard', '2/3']);
+    // #666: the gate is desktop Chromium without quarantined tests; touch runs nightly, outside coverage.
+    assert.deepEqual(args.slice(-6), ['--project', 'chromium', '--grep-invert', '@quarantine', '--shard', '2/3']);
+    assert.ok(!args.includes('touch'));
     assert.equal(env.PM_JS_COVERAGE, paths.raw);
 });
 

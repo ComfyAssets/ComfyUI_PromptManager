@@ -3,6 +3,7 @@ import { reporters, workflowWorkers } from './test-workers.mjs';
 
 // No global webServer: tests/browser/fixtures.mjs starts one server per worker
 // on an OS-chosen port. Files run in parallel; tests inside a file keep their order.
+// Retries stay off here, so the gate never hides a race; the nightly run passes --retries 1 (#666).
 export default defineConfig({
     testDir: '../../tests/browser',
     outputDir: './test-results/workflows',
