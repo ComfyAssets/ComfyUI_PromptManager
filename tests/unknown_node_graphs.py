@@ -1,9 +1,11 @@
 """Synthetic graphs with unknown nodes between the prompt and the sampler (#381).
 
-``any_switch_graph`` reproduces the shape of the maintainer's krea2 run
-(PromptManagerPair -> Any Switch (rgthree) -> KSampler, a LoraManager loader
-with its own lora ``text``, custom latent, filename and saver nodes) with
-neutral texts. ``shapes()`` names one graph per pass-through rule; the resolver
+``unknown_multi_graph`` reproduces the shape of the maintainer's krea2 run
+(PromptManagerPair -> an unknown multi-input node -> KSampler, a LoraManager
+loader with its own lora ``text``, custom latent, filename and saver nodes) with
+neutral texts. The krea2 run had rgthree's Any Switch there; the table now
+describes that class (#657), so the stand-in is ``PMTest Unknown Multi``, a
+class no table lists. ``shapes()`` names one graph per pass-through rule; the resolver
 tests and the browser-port parity vectors share them. No user file is involved.
 """
 
@@ -34,8 +36,8 @@ def pair(text=POSITIVE, negative=""):
     }
 
 
-def any_switch_graph(**switch_inputs):
-    """The shape of #381: PromptManagerPair -> Any Switch (rgthree) -> KSampler.
+def unknown_multi_graph(**switch_inputs):
+    """The shape of #381: PromptManagerPair -> an unknown node -> KSampler.
 
     Classes and links reproduce the maintainer's krea2 run (a LoraManager
     loader with its own lora ``text``, a project-path filename node, a custom
@@ -61,7 +63,7 @@ def any_switch_graph(**switch_inputs):
             },
         },
         "10": pair(),
-        "15": {"class_type": "Any Switch (rgthree)", "inputs": inputs},
+        "15": {"class_type": "PMTest Unknown Multi", "inputs": inputs},
         "16": {
             "class_type": "EmptyLatentBatch",
             "inputs": {"width": 1024, "height": 1536, "batch_size": 1},
@@ -105,7 +107,7 @@ def generated_text_graph():
     The generator (``sampling_mode.seed``, ``prompt``, ``system_prompt``)
     writes new text at run time: its inputs are not the prompt.
     """
-    graph = any_switch_graph()
+    graph = unknown_multi_graph()
     graph["10"]["inputs"]["text"] = ["30", 0]
     graph["30"] = {
         "class_type": "VendorTextGenerate",
@@ -123,7 +125,7 @@ def generated_text_graph():
 
 def transformed_text_graph():
     """PromptManagerPair whose ``text`` passes an unknown string transform."""
-    graph = any_switch_graph()
+    graph = unknown_multi_graph()
     graph["10"]["inputs"]["text"] = ["30", 0]
     graph["30"] = {
         "class_type": "VendorRegexReplace",
@@ -181,22 +183,24 @@ def shapes():
         },
     }
     return {
-        "any-switch-pair": any_switch_graph(),
-        "any-switch-same-pair": any_switch_graph(any_01=["10", 0], any_02=["10", 0]),
-        "any-switch-equal-texts": with_nodes(
-            any_switch_graph(any_01=["20", 0], any_02=["21", 0]),
+        "unknown-multi-pair": unknown_multi_graph(),
+        "unknown-multi-same-pair": unknown_multi_graph(
+            any_01=["10", 0], any_02=["10", 0]
+        ),
+        "unknown-multi-equal-texts": with_nodes(
+            unknown_multi_graph(any_01=["20", 0], any_02=["21", 0]),
             **{"20": encode(OTHER), "21": encode(OTHER)},
         ),
-        "any-switch-candidates": with_nodes(
-            any_switch_graph(any_01=["20", 0], any_02=["21", 0]),
+        "unknown-multi-candidates": with_nodes(
+            unknown_multi_graph(any_01=["20", 0], any_02=["21", 0]),
             **{"20": encode(POSITIVE), "21": encode(OTHER)},
         ),
-        "any-switch-prompt-manager-wins": with_nodes(
-            any_switch_graph(any_01=["20", 0], any_02=["10", 0]),
+        "unknown-multi-prompt-manager-wins": with_nodes(
+            unknown_multi_graph(any_01=["20", 0], any_02=["10", 0]),
             **{"20": encode(OTHER)},
         ),
-        "any-switch-runtime-blocks": with_nodes(
-            any_switch_graph(any_01=["20", 0], any_02=["22", 0]),
+        "unknown-multi-runtime-blocks": with_nodes(
+            unknown_multi_graph(any_01=["20", 0], any_02=["22", 0]),
             **{
                 "20": {
                     "class_type": "CLIPTextEncode",
@@ -206,9 +210,9 @@ def shapes():
                 "22": encode(OTHER),
             },
         ),
-        "any-switch-no-text": any_switch_graph(any_01=["7", 0]),
+        "unknown-multi-no-text": unknown_multi_graph(any_01=["7", 0]),
         "unknown-chain": with_nodes(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "Router Node (vendor)",
@@ -217,7 +221,7 @@ def shapes():
             },
         ),
         "unknown-text-input": with_nodes(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "VendorTextEncode",
@@ -227,14 +231,14 @@ def shapes():
         ),
         "unknown-role-inputs": _sampler_inputs(
             with_nodes(
-                any_switch_graph(),
+                unknown_multi_graph(),
                 **{"20": control, "21": encode(POSITIVE), "22": encode(NEGATIVE)},
             ),
             ["20", 0],
             ["20", 1],
         ),
         "unknown-conditioning-input": with_nodes(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "VendorStyleApply",
@@ -246,7 +250,7 @@ def shapes():
         "generated-text-runtime": generated_text_graph(),
         "transformed-text": transformed_text_graph(),
         "unknown-skips-clip": with_nodes(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": vendor_encode,
                 "21": {"class_type": "PrimitiveString", "inputs": {"value": OTHER}},
@@ -263,7 +267,7 @@ def review_shapes():
     """Record sets for the review findings on the first #381 commit."""
 
     def recorded(source):
-        graph = any_switch_graph()
+        graph = unknown_multi_graph()
         graph["10"]["inputs"]["text"] = ["30", 0]
         graph.update(source)
         return {
@@ -272,7 +276,7 @@ def review_shapes():
         }
 
     seeded = with_nodes(
-        any_switch_graph(any_01=["20", 0]),
+        unknown_multi_graph(any_01=["20", 0]),
         **{
             "20": {"class_type": "XNoise", "inputs": {"conditioning": ["21", 0]}},
             "21": {
@@ -281,7 +285,7 @@ def review_shapes():
             },
         },
     )
-    unlinked = any_switch_graph()
+    unlinked = unknown_multi_graph()
     unlinked["20"] = {
         "class_type": "XApply",
         "inputs": {"positive": ["21", 0], "negative_opt": ""},
@@ -290,7 +294,7 @@ def review_shapes():
     unlinked["17"]["inputs"]["positive"] = ["20", 0]
     unlinked["17"]["inputs"]["negative"] = ["20", 1]
     twice = with_nodes(
-        any_switch_graph(any_01=["20", 0], any_02=["23", 0]),
+        unknown_multi_graph(any_01=["20", 0], any_02=["23", 0]),
         **{
             "20": {"class_type": "XB", "inputs": {"p": ["21", 0], "q": ["22", 0]}},
             "21": encode(POSITIVE),
@@ -318,4 +322,213 @@ def review_shapes():
         "seeded-encoder-behind-noise": {"prompt": json.dumps(seeded)},
         "unlinked-role-input": {"prompt": json.dumps(unlinked)},
         "one-text-twice": {"prompt": json.dumps(twice)},
+    }
+
+
+# #657: rgthree Any Switch outputs the first ``any_*`` input that is not None.
+SWEEP_PREFIX = "<lora:style-demo:1>"
+
+
+def any_switch_sweep_graph():
+    """The maintainer's model-compare sweep (2026-11-19), with neutral texts.
+
+    PromptManagerText (12) feeds the switch's ``any_01`` directly and, joined
+    after a LoraManager stacker's trigger text, its ``any_02`` (13). The switch
+    (14) feeds the positive encoder (15) of KSampler 26; the negative is a plain
+    CLIPTextEncode. A checkpoint iterator, a LoRA text loader and a
+    model-compare sheet (all unknown classes) surround it, as in the file.
+    """
+    return {
+        "4": {"class_type": "SeedHistory", "inputs": {"seed": 1000}},
+        "8": {"class_type": "CLIPLoader", "inputs": {"clip_name": "clip.safetensors"}},
+        "9": {"class_type": "VAELoader", "inputs": {"vae_name": "vae.safetensors"}},
+        "10": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 1088, "height": 1920, "batch_size": 1},
+        },
+        "11": {
+            "class_type": "Lora Stacker (LoraManager)",
+            "inputs": {
+                "text": SWEEP_PREFIX,
+                "loras": [{"name": "style-demo", "strength": "1.00", "active": True}],
+            },
+        },
+        "12": {
+            "class_type": "PromptManagerText",
+            "inputs": {
+                "text": POSITIVE,
+                "category": "",
+                "tags": "",
+                "search_text": "",
+                "prepend_text": "",
+                "append_text": "",
+                "save_to_library": True,
+            },
+        },
+        "13": {
+            "class_type": "StringConcatenate",
+            "inputs": {"string_a": ["11", 1], "string_b": ["12", 0], "delimiter": ", "},
+        },
+        "14": {
+            "class_type": "Any Switch (rgthree)",
+            "inputs": {"any_01": ["12", 0], "any_02": ["13", 0]},
+        },
+        "15": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": ["14", 0], "clip": ["8", 0]},
+        },
+        "16": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": NEGATIVE, "clip": ["8", 0]},
+        },
+        "21": {
+            "class_type": "CheckpointFolderIterator",
+            "inputs": {"folder": "demo", "index": 1, "model_type": "checkpoint"},
+        },
+        "23": {
+            "class_type": "LoRA Text Loader (LoraManager)",
+            "inputs": {"model": ["21", 0], "lora_syntax": ["11", 2]},
+        },
+        "26": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": ["4", 0],
+                "steps": 25,
+                "cfg": 2.5,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1.0,
+                "model": ["23", 0],
+                "positive": ["15", 0],
+                "negative": ["16", 0],
+                "latent_image": ["10", 0],
+            },
+        },
+        "27": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["26", 0], "vae": ["9", 0]},
+        },
+        "28": {
+            "class_type": "ModelCompareSheet",
+            "inputs": {"run_name": "sweep", "columns": 3, "images": ["27", 0]},
+        },
+    }
+
+
+def switched(switch_inputs, **nodes):
+    """The sweep graph with the switch's inputs replaced and nodes added."""
+    graph = with_nodes(any_switch_sweep_graph(), **nodes)
+    graph["14"] = {"class_type": "Any Switch (rgthree)", "inputs": dict(switch_inputs)}
+    return graph
+
+
+def _string(text):
+    return {"class_type": "PrimitiveString", "inputs": {"value": text}}
+
+
+def _vendor(**inputs):
+    """An unknown node that passes its one linked input through."""
+    return {"class_type": "VendorPassText", "inputs": inputs}
+
+
+def _reroutes(count, start, target):
+    """``count`` chained Reroutes ``r{start}..``, the last reading ``target``."""
+    nodes = {}
+    for index in range(count):
+        upstream = target if index == count - 1 else [f"r{start + index + 1}", 0]
+        nodes[f"r{start + index}"] = {
+            "class_type": "Reroute",
+            "inputs": {"input": upstream},
+        }
+    return nodes
+
+
+def _conditioning_switch(**switch_inputs):
+    """A switch in the sampler's positive conditioning input (any_* conditioning)."""
+    graph = switched(
+        switch_inputs,
+        **{
+            "40": encode(OTHER),
+            "41": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["40", 0]}},
+            "42": encode(POSITIVE),
+        },
+    )
+    graph["26"]["inputs"]["positive"] = ["14", 0]
+    return graph
+
+
+def first_present_shapes():
+    """One named graph per ``first-present`` rule (#657); limits are built in tests."""
+    inner = {
+        "class_type": "Any Switch (rgthree)",
+        "inputs": {"any_01": ["12", 0], "any_02": ["13", 0]},
+    }
+    upstream_selector = {
+        "class_type": "easy ifElse",
+        "inputs": {"boolean": ["81", 0], "on_true": ["31", 0], "on_false": ["12", 0]},
+    }
+    return {
+        "sweep": any_switch_sweep_graph(),
+        "through-reroute": switched(
+            {"any_01": ["30", 0], "any_02": ["13", 0]},
+            **{"30": {"class_type": "Reroute", "inputs": {"input": ["12", 0]}}},
+        ),
+        "through-primitive": switched(
+            {"any_01": ["31", 0], "any_02": ["13", 0]}, **{"31": _string(OTHER)}
+        ),
+        "through-encoder-chain": _conditioning_switch(
+            any_01=["41", 0], any_02=["42", 0]
+        ),
+        "through-unknown": switched(
+            {"any_01": ["50", 0], "any_02": ["13", 0]}, **{"50": _vendor(src=["12", 0])}
+        ),
+        "runtime-first": switched(
+            {"any_01": ["60", 0], "any_02": ["12", 0]},
+            **{
+                "60": {
+                    "class_type": "VendorTextGenerate",
+                    "inputs": {"prompt": "x", "seed": 3},
+                }
+            },
+        ),
+        "same-text": switched(
+            {"any_01": ["50", 0], "any_02": ["32", 0]},
+            **{
+                "50": _vendor(src=["31", 0]),
+                "31": _string(OTHER),
+                "32": _string(OTHER),
+            },
+        ),
+        "literal-text": switched({"any_01": "literal words", "any_02": ["12", 0]}),
+        "literal-conditioning": _conditioning_switch(
+            any_01="literal words", any_02=["42", 0]
+        ),
+        "one-input-unknown": switched(
+            {"any_01": ["50", 0], "other": ["13", 0]}, **{"50": _vendor(src=["12", 0])}
+        ),
+        "no-input": switched({}),
+        "null-first": switched({"any_01": None, "any_02": ["13", 0]}),
+        "selector-upstream": switched(
+            {"any_01": ["80", 0], "any_02": ["13", 0]},
+            **{
+                "80": upstream_selector,
+                "81": {"class_type": "PrimitiveBoolean", "inputs": {"value": True}},
+                "31": _string(OTHER),
+            },
+        ),
+        "nested-switch": switched(
+            {"any_01": ["90", 0], "any_02": ["31", 0]},
+            **{"90": inner, "31": _string(OTHER)},
+        ),
+        "repeated-text": switched(
+            {"any_01": ["50", 0], "any_02": ["13", 0], "any_03": ["12", 0]},
+            **{"50": _vendor(src=["12", 0])},
+        ),
+        "repeated-text-failed-middle": switched(
+            {"any_01": ["50", 0], "any_02": ["missing", 0], "any_03": ["12", 0]},
+            **{"50": _vendor(src=["12", 0])},
+        ),
+        "depth-limit": switched(
+            {"any_01": ["r0", 0], "any_02": ["13", 0]}, **_reroutes(70, 0, ["12", 0])
+        ),
     }

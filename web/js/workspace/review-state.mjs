@@ -8,6 +8,8 @@
  *   ones disabled with the server's reason, the first workable one chosen (rulings R2/R3). "Leave unresolved" is its
  *   own action (#536 D179, `leaveUnresolved()`). With nothing workable `unreadable` says why (D180).
  * - `link(choice)` (#536) records the Library prompt the reviewer chose, under the same capture and retry rules.
+ * - `applyCandidate({itemId, hash})` (#657 D4) is Apply association for one of the item's own candidates, as Link to a
+ *   prompt's "From this image" list chooses it (`imageChoices`).
  * - A recorded decision opens the item after it (else the one before) and re-reads the queue quietly: the page stays
  *   (#536, overturning ruling R7). `decisions` counts them, for the page's toast.
  * - Apply takes a fresh capture of the file (`observe`), then posts the decision; the server releases a capture it
@@ -28,6 +30,10 @@
  *   read; a re-read started during Load more takes the click over and reads that page too.
  * - Apply fences on the epoch of the detail it decides: an observe under another storage releases its capture and
  *   reads the queue and the item again. An unanswered decision that a re-read shows landed finishes as recorded.
+ * - Single-item mode (#659, `itemId`: Inspect's Choose prompt): the controller holds only that item and never reads
+ *   the queue. `load()`, `refresh()` and `sync()` read its detail; a recorded decision (or an item already decided)
+ *   ends in phase `decided` with `decided: true`; a refusal that makes the queue stale (`review-conflict`,
+ *   `review-missing`, a restore) reads the detail again. Leave for later does nothing.
  */
 import { noun } from './plural.mjs';
 
@@ -56,6 +62,8 @@ export const COPY = Object.freeze({
     unreadable: count => `${count === 1 ? "This file's sampler path" : `None of this file's ${count} sampler paths`} could be traced to a complete prompt, so there is nothing to apply. Choose the prompt yourself, or leave it unresolved.`,
     lostLink: 'The link may not have been saved. Press Link image again to send the same choice once more.',
     unavailable: 'This file is not under a current image source, so it cannot be opened. You can leave it unresolved.',
+    // #657 D4: Link to a prompt's choice from the image is no longer among the item's candidates.
+    notOffered: 'This prompt is no longer offered for this file. Choose again.',
     lost: 'The decision may not have been saved. Apply again to send the same decision once more.',
     storageChanged: 'Prompt storage was restored; reload the review queue.',
     // D119 (F2): the open item left the queue in a re-read, and a failed re-read.
@@ -97,6 +105,24 @@ export function contextOptions(detail) {
 }
 
 /**
+ * #657 D4: the candidates Link to a prompt offers "From this image": the choosable options with a non-blank positive,
+ * one per (positive, negative) pair (the first seen).
+ */
+export function imageChoices(options) {
+    const seen = new Set();
+    const choices = [];
+    for (const { value, disabled, candidate } of options) {
+        if (disabled) continue;
+        const positive = candidate.positive.text, negative = candidate.negative.text;
+        const key = JSON.stringify([positive, negative]);
+        if (!positive.trim() || seen.has(key)) continue;
+        seen.add(key);
+        choices.push(Object.freeze({ value, positive, negative }));
+    }
+    return Object.freeze(choices);
+}
+
+/**
  * When no candidate of an available, listed file can be applied: their count and each distinct reason with its count
  * (first seen first). Null otherwise.
  */
@@ -129,16 +155,18 @@ const isLost = error => !isAbort(error) && !error?.code && !(error?.status >= 40
 const initial = () => ({
     status: 'idle', epoch: null, total: 0, items: Object.freeze([]), nextCursor: null, more: 'idle',
     selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null,
-    unreadable: null, phase: 'idle', warning: '', canRetry: false, toast: null, decisions: 0,
+    unreadable: null, phase: 'idle', warning: '', canRetry: false, toast: null, decisions: 0, decided: false,
 });
 
 /**
- * @param {{api: {get: Function, post: Function, del: Function}}} options
+ * @param {{api: {get: Function, post: Function, del: Function}, itemId?: string}} options `itemId`: single-item mode.
  * @returns the controller: `state`, `subscribe(listener)`, `load()`, `refresh()`, `loadMore()`, `select(id)`, `choose(value)`,
- *   `sync(version)`, `apply()`, `leaveUnresolved()`, `link(choice)`, `retry()`, `leave()`, `dispose()`.
+ *   `sync(version)`, `apply()`, `applyCandidate(choice)`, `leaveUnresolved()`, `link(choice)`, `retry()`, `leave()`,
+ *   `dispose()`.
  */
-export function createReviewController({ api }) {
-    let state = Object.freeze(initial());
+export function createReviewController({ api, itemId = null }) {
+    const single = typeof itemId === 'string' && itemId !== '';
+    let state = Object.freeze(single ? { ...initial(), items: Object.freeze([Object.freeze({ id: itemId })]) } : initial());
     const listeners = new Set();
     const lifetime = new AbortController();
     let listRead = null, detailRead = null, pending = null, disposed = false;
@@ -210,6 +238,7 @@ export function createReviewController({ api }) {
      * moved). `quiet` (a refresh) keeps the page as it is while reading and after a failed read.
      */
     function load(options) {
+        if (single) return loadItem(options);
         const run = listing = loadQueue(options);
         run.finally(() => { if (listing === run) listing = null; });
         return run;
@@ -268,6 +297,13 @@ export function createReviewController({ api }) {
         }
     }
 
+    /** Single-item mode: read the item's detail again (the queue is never read). */
+    async function loadItem({ keepWarning = false } = {}) {
+        if (state.phase === 'applying' || state.decided) return;
+        set({ status: 'ready' });
+        await select(itemId, { keepWarning });
+    }
+
     function clearSelection() {
         set({ selectedId: null, detail: null, detailStatus: 'idle', options: Object.freeze([]), choice: null, prompts: null,
             unreadable: null });
@@ -276,6 +312,7 @@ export function createReviewController({ api }) {
     /** The stream's `ready`: re-read only when the queue shown is older than `version`. */
     function sync(version) {
         if (disposed) return Promise.resolve();
+        if (single) return refresh();
         if (state.status === 'loading') {
             // A second version, or a change, while the first read runs: no longer one version to compare.
             afterLoad = afterLoad === null && isVersion(version) ? version : 'always';
@@ -288,6 +325,7 @@ export function createReviewController({ api }) {
     /** Re-read the queue after a change elsewhere; calls made while one runs collapse into one more read. */
     function refresh() {
         if (disposed) return Promise.resolve();
+        if (single) return state.phase === 'applying' ? Promise.resolve() : loadItem({ keepWarning: true });
         // Before the queue has been read there is nothing to keep: the first read (or Retry) reads the latest.
         if (state.status !== 'ready') {
             if (state.status === 'loading') afterLoad = 'always';
@@ -357,8 +395,12 @@ export function createReviewController({ api }) {
             const chosen = options.find(option => !option.disabled);
             set({ detail: Object.freeze(detail), detailStatus: 'ready', options, choice: chosen?.value ?? null,
                 prompts: promptsOf(chosen), unreadable: unreadableOf(detail), warning: (keepWarning && state.warning) || warningOf(detail) });
+            // Single-item mode: an item decided elsewhere (another tab, Needs review) offers nothing more.
+            if (single && detail.state !== 'pending') { dropPending(); set({ phase: 'decided', decided: true, canRetry: false }); }
         } catch (error) {
             if (read !== detailRead || disposed || isAbort(error)) return;
+            // Single-item mode has no queue to fall back on: the item's own sentence (it was removed, say).
+            if (single && RELOAD.has(error?.code)) { set({ detailStatus: 'error', warning: error.message || COPY.detailFailed }); return; }
             if (RELOAD.has(error?.code)) { set({ warning: error.message }); await load({ keepWarning: true, stale: true }); return; }
             set({ detailStatus: 'error', warning: COPY.detailFailed });
         }
@@ -381,6 +423,11 @@ export function createReviewController({ api }) {
 
     /** The item recorded: it leaves the page's queue, the one after it opens and the queue is read again. */
     async function advance(id, total, toast) {
+        if (single) {
+            set({ phase: 'decided', decided: true, total, warning: '', toast, decisions: state.decisions + 1 });
+            owedRefresh = false;
+            return;
+        }
         const index = state.items.findIndex(entry => entry.id === id);
         const items = Object.freeze(state.items.filter(entry => entry.id !== id));
         const next = items[index] ?? items[index - 1] ?? null;
@@ -463,10 +510,20 @@ export function createReviewController({ api }) {
         } });
     }
 
-    function apply() {
+    function apply(lost = COPY.lost) {
         const { choice } = state;
         if (!choice) return Promise.resolve(false);
-        return decide({ key: choice, path: 'decision', fields: { choice }, toast: COPY.applied });
+        return decide({ key: choice, path: 'decision', fields: { choice }, toast: COPY.applied, lost });
+    }
+
+    /** Apply candidate `hash` of item `itemId`, which must still be the open one (#657 D4). */
+    function applyCandidate({ itemId, hash }) {
+        if (state.selectedId !== itemId) return Promise.resolve(false);
+        choose(hash);
+        if (state.choice === hash) return apply(COPY.lostLink);
+        // The detail was read again meanwhile and no longer offers it (the dialog lists the item's candidates again).
+        set({ warning: COPY.notOffered });
+        return Promise.resolve(false);
     }
 
     function leaveUnresolved() {
@@ -490,7 +547,7 @@ export function createReviewController({ api }) {
 
     /** Leave for later: nothing is written; the next item opens, wrapping. */
     function leave() {
-        if (state.phase === 'applying') return Promise.resolve();
+        if (single || state.phase === 'applying') return Promise.resolve();
         dropPending();
         const index = state.items.findIndex(entry => entry.id === state.selectedId);
         const next = state.items[index + 1] ?? state.items[0];
@@ -504,7 +561,8 @@ export function createReviewController({ api }) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply, leaveUnresolved, link, retry, leave,
+        load: () => load(), refresh, sync, loadMore, select: id => select(id), choose, apply: () => apply(), applyCandidate,
+        leaveUnresolved, link, retry, leave,
         dispose() {
             if (disposed) return;
             dropPending();

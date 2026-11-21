@@ -1,17 +1,20 @@
 """Capture-bound Needs review items for ambiguous files (#249 E2).
 
-The output scan hands every unlinked file the ingestion resolver finds
-``ambiguous`` to :func:`record_ambiguous_file` (only scans add items; the
-live monitor records nothing). It captures the file
+The output scan, and the live monitor's review worker at a file's final
+unlinked outcome (#659, maintainer decision 2026-11-19: the monitor queues
+what the scan would), hand every unlinked file the ingestion resolver finds
+``ambiguous`` to :func:`record_ambiguous_file`. It captures the file
 (the bounded private copy of ``utils.media_capture``, hashed while copied),
 reads the metadata again from the capture, resolves it with the default
 (ingestion) profile and stores only an ``ambiguous`` result, bound to the
 capture's byte record. The evidence a reviewer chooses from is therefore the
 evidence of exactly those bytes. An ambiguous result is stored only when it
-is ``reviewable``: at least two candidates carry a resolved prompt text. With
-none the file could not be traced; with exactly one, the untraced branches
-may still have made the file, so that text is not certain and the file stays
-unresolved (the resolver never flattens unknown semantics into a guess).
+is ``reviewable``: at least one candidate carries a resolved prompt text
+(#657 addendum D1). With none the file could not be traced. With exactly
+one, the untraced branches may still have made the file, so the file is
+never linked from it, but the user may confirm it: the other branches stay
+listed, disabled (the resolver never flattens unknown semantics into a
+guess).
 Nothing here links a file, loads a model or decodes pixels; the capture is
 released before the database write.
 
@@ -19,15 +22,24 @@ Evidence is small on purpose (startup validates every row): the resolver's
 reason and, per candidate sampler, ``{sampler_id, state, reason, positive,
 negative}`` where each side is ``{text, storage_text, provenance}``. A
 candidate's ``hash`` is the SHA-256 of its canonical JSON without the hash.
-More than ``MAX_CANDIDATES`` candidates or evidence over the 8 MiB bound make
-a ``limited`` item without candidates (a result without any candidate is not
-``reviewable`` and is never stored).
+More than ``MAX_CANDIDATES`` candidates are collapsed (#657 addendum D3): the
+``MAX_CANDIDATES`` most used choosable prompts are kept, one candidate each,
+and the evidence names ``collapsed: {shown, total, paths}``. Evidence that
+cannot be projected or is over the 8 MiB bound makes a ``limited`` item
+without candidates (a result without any candidate is not ``reviewable`` and
+is never stored).
 
 Inspection-profile choices (ruling a, after the maintainer's Qwen image-edit
-batches): when the default profile is ambiguous without a choice, the scan
-(``inspection=True``) asks ``INSPECTION_PROFILE``,
-which knows more encoder and string nodes. With at least two choosable
-candidates there, the item is recorded from that profile: its evidence names
+batches): when the default profile is ambiguous without a choice, or calls a
+file with a prompt graph ``unresolved`` (#659 C1, e.g. "Unsupported latent
+ancestry"), the scan and the review worker (``inspection=True``) ask
+``INSPECTION_PROFILE``,
+which knows more encoder and string nodes. With a choosable
+candidate there, the item is recorded from that profile. A default choice
+beside unresolved branches (``partial_choice``) yields to the inspection
+profile's when that offers more choosable candidates (``offers_more``, #657
+review): one readable choice no longer hides the branches only the
+inspection profile reads. The inspection item's evidence names
 ``profile: "inspection"`` and ``semantics``, the fingerprint of what the table
 says about the graph's node classes, and its ``resolver_version`` is
 ``inspection_review_version(metadata)``, which folds the profile,
@@ -127,6 +139,22 @@ _INSPECTION_VERSION_HEX = 10
 # How the scan and Apply use the inspection profile, folded into inspection
 # item versions. 1: they resolve with the file's name (the saver anchor, #390).
 REVIEW_RULE_VERSION = 1
+# How a resolution is stored as evidence, folded into every item version so
+# the next record of a file supersedes its pending, undecided items of the
+# older shape (decided ones are never touched). 0: the shape before it was
+# versioned; 1: more than ``MAX_CANDIDATES`` candidates are collapsed, not
+# limited (#657 addendum D3). ``RESOLVER_VERSION`` stays the ingestion's.
+REVIEW_EVIDENCE_VERSION = 1
+
+
+def default_item_version() -> int:
+    """The ``resolver_version`` of an item recorded from the default profile.
+
+    ``RESOLVER_VERSION`` plus ``REVIEW_EVIDENCE_VERSION``: both only ever
+    grow, so a bump of either gives a version no older item carries. Items
+    recorded before the evidence version existed carry ``RESOLVER_VERSION``.
+    """
+    return RESOLVER_VERSION + REVIEW_EVIDENCE_VERSION
 
 
 # Above this many distinct node classes the whole table is the fingerprint.
@@ -173,10 +201,11 @@ def inspection_review_version(metadata: Any = None) -> int | None:
     """The ``resolver_version`` of an item recorded from the inspection profile.
 
     Folds the profile with its budgets, ``RESOLVER_VERSION``,
-    ``INSPECTION_RESOLVER_VERSION``, ``REVIEW_RULE_VERSION`` and
-    ``semantics_version(metadata)``, so a change of either resolver, of how
-    review uses the profile, of the profile's bounds or of the table about
-    the graph's classes moves it. None when the table cannot be loaded.
+    ``INSPECTION_RESOLVER_VERSION``, ``REVIEW_RULE_VERSION``,
+    ``REVIEW_EVIDENCE_VERSION`` and ``semantics_version(metadata)``, so a
+    change of either resolver, of how review uses the profile or stores its
+    evidence, of the profile's bounds or of the table about the graph's
+    classes moves it. None when the table cannot be loaded.
     """
     table = semantics_version(metadata)
     if table is None:
@@ -185,6 +214,8 @@ def inspection_review_version(metadata: Any = None) -> int | None:
     seed = f"{profile}:{RESOLVER_VERSION}:{INSPECTION_RESOLVER_VERSION}:{table}"
     if REVIEW_RULE_VERSION:  # 0 is the seed items had before the rule existed
         seed += f":review-rule-{REVIEW_RULE_VERSION}"
+    if REVIEW_EVIDENCE_VERSION:  # 0: before the evidence shape was versioned
+        seed += f":evidence-{REVIEW_EVIDENCE_VERSION}"
     folded = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return INSPECTION_VERSION_BASE + int(folded[:_INSPECTION_VERSION_HEX], 16)
 
@@ -203,8 +234,9 @@ def resolve_inspection(metadata: dict, file_name: str | None = None) -> dict:
 def inspection_choice(metadata: dict, file_name: str | None = None) -> dict | None:
     """The inspection profile's result when the file is a review case.
 
-    The scan asks only for a file the default profile found ambiguous
-    without a choice that nothing links. The result is ambiguous with a
+    The scan and the review worker ask only for a file nothing links that
+    the default profile found ambiguous without a choice, or unresolved
+    (#659 C1). The result is ambiguous with a
     choice, or ``resolved`` when ``file_name`` anchors the file on its saver
     and only that anchor resolves it (``saver_anchored``): the item then
     offers the anchor's pair. None otherwise.
@@ -269,10 +301,11 @@ def item_profile(evidence: Any) -> str:
 def item_versions(metadata: Any = None) -> tuple:
     """The item versions a file with ``metadata`` may already be queued under.
 
-    Without ``metadata``, only the ingestion version.
+    Without ``metadata``, only the default item version.
     """
     version = inspection_review_version(metadata) if metadata is not None else None
-    return (RESOLVER_VERSION,) if version is None else (RESOLVER_VERSION, version)
+    default = default_item_version()
+    return (default,) if version is None else (default, version)
 
 
 def _same_records(captured: dict, scanned: dict) -> bool:
@@ -293,9 +326,11 @@ def record_ambiguous_file(
 ) -> str:
     """Persist the ambiguous evidence of one rooted file.
 
-    With ``inspection`` (the scan), a default result without a choice is
-    resolved again with the inspection profile, and recorded from it when
-    that offers a choice. ``scanned`` is the
+    With ``inspection`` (the scan and the review worker), a default result
+    without a choice, or an ``unresolved`` one of a file with a prompt graph
+    (#659 C1), is resolved again with the inspection profile, and recorded
+    from it when that offers a choice (or only the saver anchor resolves
+    it); otherwise the answer is ``untraced``. ``scanned`` is the
     scan's ``(metadata, inspection_resolution_or_None)`` for the file: its
     metadata names the item versions that count, and when the capture holds
     the same records its resolution is reused instead of resolving again.
@@ -344,9 +379,18 @@ def record_ambiguous_file(
     finally:
         store.release(capture.token)
     resolution = captured[1] if captured is not None else None
-    if resolution is None or resolution.get("state") != "ambiguous":
+    if resolution is None:
         return "skipped"
-    profile, version = DEFAULT, RESOLVER_VERSION
+    # #659 C1: a graph the default profile cannot read at all may still be
+    # one the inspection profile offers a choice in.
+    unreadable = (
+        inspection
+        and resolution.get("state") == "unresolved"
+        and isinstance(captured[0].get("prompt"), dict)
+    )
+    if not unreadable and resolution.get("state") != "ambiguous":
+        return "skipped"
+    profile, version = DEFAULT, default_item_version()
     named = _captured_inspection(captured[0], relative, scanned) if inspection else None
     anchored = named is not None and named[0].get("anchor") == SAVER_ANCHOR
     if anchored:
@@ -357,12 +401,16 @@ def record_ambiguous_file(
             "reason": ANCHOR_REASON,
             "candidates": [named[0]],
         }
-    elif not reviewable(resolution):
+    elif unreadable or not reviewable(resolution):
         if named is None:
             return "untraced"
         profile, (resolution, version) = INSPECTION, named
         if resolution.get("state") != "ambiguous" or not reviewable(resolution):
             return "untraced"
+    elif named is not None and offers_more(named[0], resolution):
+        # The default result left branches unread that the inspection
+        # profile reads (#657 review): offer its fuller choice.
+        profile, (resolution, version) = INSPECTION, named
     evidence, count, limited = review_evidence(
         resolution, profile, version, captured[0], anchored=anchored
     )
@@ -389,8 +437,9 @@ def record_ambiguous_file(
 
 
 def _default_item_to_anchor(db, queued: tuple, scanned, relative: str) -> bool:
-    """True when the bytes' only pending item is a default item recorded
-    before #390 and the saver anchor alone resolves the scanned records.
+    """True when the bytes' only pending item is a current default item
+    (recorded without the anchor, as before #390) and the saver anchor alone
+    resolves the scanned records.
 
     The file is then captured again so the anchored item supersedes that
     pending, undecided item. Decided bytes and bytes already queued under
@@ -401,7 +450,7 @@ def _default_item_to_anchor(db, queued: tuple, scanned, relative: str) -> bool:
     version = inspection_review_version(scanned[0])
     if version is None or db.review_pending_at(*queued, version):
         return False
-    if not db.review_pending_at(*queued, RESOLVER_VERSION):
+    if not db.review_pending_at(*queued, default_item_version()):
         return False
     return _anchored(scanned[0], _file_name(relative)) is not None
 
@@ -552,6 +601,30 @@ def reviewable(resolution: Any) -> bool:
     return False
 
 
+def _choosable_count(resolution: Any) -> int:
+    if not isinstance(resolution, dict):
+        return 0
+    return sum(1 for c in _flattened(resolution.get("candidates"), 0) if choosable(c))
+
+
+def partial_choice(resolution: Any) -> bool:
+    """True when an ambiguous result left a branch without a prompt to
+    choose, or offers fewer than two: another profile may read more."""
+    candidates = list(_flattened((resolution or {}).get("candidates"), 0))
+    offered = sum(1 for c in candidates if choosable(c))
+    return offered < 2 or offered < len(candidates)
+
+
+def offers_more(inspected: Any, default: Any) -> bool:
+    """True when the inspection result ``inspected`` is a review case that
+    offers more choosable candidates than the partial ``default`` result."""
+    if not isinstance(inspected, dict) or inspected.get("state") != "ambiguous":
+        return False
+    if not partial_choice(default) or not reviewable(inspected):
+        return False
+    return _choosable_count(inspected) > _choosable_count(default)
+
+
 def review_evidence(
     resolution: dict,
     profile: str = DEFAULT,
@@ -567,7 +640,7 @@ def review_evidence(
     anchor's one pair, #390) also names ``anchor: "saver"``.
     """
     base = {
-        "resolver_version": RESOLVER_VERSION if version is None else version,
+        "resolver_version": default_item_version() if version is None else version,
         "reason": _text(resolution.get("reason")),
     }
     if profile == INSPECTION:
@@ -575,6 +648,30 @@ def review_evidence(
         base["semantics"] = semantics_version(metadata)
     if anchored:
         base["anchor"] = SAVER_ANCHOR
+    candidates, total, projected = _projected(resolution)
+    if not projected:
+        return _limited(base, total), 0, True
+    if len(candidates) > MAX_CANDIDATES:
+        candidates, collapsed = _bounded(candidates)
+        if collapsed is not None:
+            base["collapsed"] = collapsed
+    if not candidates:
+        return _limited(base, total), 0, True
+    evidence = {**base, "candidates": candidates}
+    try:
+        canonical_evidence(evidence)
+    except ValueError:
+        return _limited(base, total), 0, True
+    return evidence, len(candidates), False
+
+
+def _projected(resolution: dict) -> tuple[list, int, bool]:
+    """``(candidates, total, projected)``: each selectable candidate of
+    ``resolution`` projected with its ``hash``, duplicates dropped.
+
+    ``projected`` is False when a candidate cannot be projected; ``total``
+    then counts the candidates read up to it.
+    """
     candidates: list[dict] = []
     seen: set[str] = set()
     total = 0
@@ -586,24 +683,92 @@ def review_evidence(
                 canonical_evidence(projected).encode("utf-8")
             ).hexdigest()
         except (ValueError, TypeError, KeyError):
-            return _limited(base, total), 0, True
+            return candidates, total, False
         if digest in seen:
             total -= 1
             continue
         seen.add(digest)
         candidates.append({**projected, "hash": digest})
-    if not candidates or len(candidates) > MAX_CANDIDATES:
-        return _limited(base, total), 0, True
-    evidence = {**base, "candidates": candidates}
-    try:
-        canonical_evidence(evidence)
-    except ValueError:
-        return _limited(base, total), 0, True
-    return evidence, len(candidates), False
+    return candidates, total, True
+
+
+def candidate_hashes(resolution: Any) -> frozenset:
+    """Every candidate hash ``resolution`` offers, before any bound or
+    collapse (Apply's still-offered check); empty when it cannot be
+    projected."""
+    if not isinstance(resolution, dict):
+        return frozenset()
+    candidates, _total, projected = _projected(resolution)
+    return frozenset(c["hash"] for c in candidates) if projected else frozenset()
 
 
 def _limited(base: dict, total: int) -> dict:
+    base = {key: value for key, value in base.items() if key != "collapsed"}
     return {**base, "limited": True, "candidate_total": total, "candidates": []}
+
+
+def _bounded(candidates: list) -> tuple[list, dict | None]:
+    """At most ``MAX_CANDIDATES`` of more than that many candidates.
+
+    One candidate per choosable (positive, negative) text, its first
+    occurrence. With more texts than fit, the most used are shown and
+    ``collapsed`` describes them (``_collapsed``). Otherwise every text is
+    kept, the branches without a prompt fill the remaining places in their
+    order, and ``collapsed`` is None (#657 review: an ordinary item).
+    """
+    groups = _text_groups(candidates)
+    if not groups:
+        return [], None  # nothing to choose: limited, never stored
+    if len(groups) > MAX_CANDIDATES:
+        return _collapsed(candidates, groups)
+    shown = {id(group[0]) for group in groups.values()}
+    room = MAX_CANDIDATES - len(groups)
+    kept = []
+    for candidate in candidates:
+        if id(candidate) in shown:
+            kept.append(candidate)
+        elif room > 0 and not choosable(candidate):
+            kept.append(candidate)
+            room -= 1
+    return kept, None
+
+
+def _text_groups(candidates: list) -> dict[str, list]:
+    """The choosable candidates grouped by their (positive, negative)
+    texts, in order of first appearance."""
+    groups: dict[str, list] = {}
+    for candidate in candidates:
+        if not choosable(candidate):
+            continue
+        key = canonical_evidence(
+            {
+                "positive": _side_text(candidate["positive"]),
+                "negative": _side_text(candidate["negative"]),
+            }
+        )
+        groups.setdefault(key, []).append(candidate)
+    return groups
+
+
+def _collapsed(candidates: list, groups: dict[str, list]) -> tuple[list, dict]:
+    """``(shown, collapsed)`` for more than ``MAX_CANDIDATES`` texts (D3).
+
+    The ``groups`` of choosable candidates (``_text_groups``) are ordered by
+    size, largest first, then by first
+    appearance, and the first ``MAX_CANDIDATES`` are shown, each by its first
+    occurrence (a real sampler and hash, so Apply finds it again).
+    ``collapsed`` is ``{shown, total, paths}``: groups shown, distinct
+    choosable texts and candidates in all.
+    """
+    # A stable sort: equal sizes keep their first-appearance order.
+    ranked = sorted(groups.values(), key=len, reverse=True)
+    shown = [group[0] for group in ranked[:MAX_CANDIDATES]]
+    collapsed = {"shown": len(shown), "total": len(groups), "paths": len(candidates)}
+    return shown, collapsed
+
+
+def _side_text(side: Any) -> Any:
+    return side.get("text") if isinstance(side, dict) else None
 
 
 def _flattened(candidates: Any, depth: int):

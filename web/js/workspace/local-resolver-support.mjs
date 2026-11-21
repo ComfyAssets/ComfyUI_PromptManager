@@ -35,6 +35,12 @@ export const SELECTOR_BRANCHES_REASON = 'Selector branches have different prompt
 // Failures that bound the work: never skipped by a pass-through walk (`_LIMIT_CODES`).
 export const PASS_LIMIT_CODES = new Set(['work-limit', 'depth-limit', 'text-limit']);
 export const PASS_THROUGH = 'pass-through';
+// #657: the divergence tag of a `first-present` switch (rgthree Any Switch), apart from selector and pass-through keys.
+export const FIRST_PRESENT = 'first-present';
+export const NO_SWITCH_INPUT = 'Switch has no connected input';
+export const SWITCH_UNVERIFIABLE = 'Switch output is not verifiable';
+// `_NAME_LENGTH` (inspection_semantics.py), in code points.
+export const NAME_LENGTH = 128;
 export const PASSED_UNVERIFIABLE = 'Text passed through an unknown node is not verifiable';
 // Classes traced by code, not by the table (`_CODED_CLASSES`).
 export const CODED_CLASSES = ['Reroute', 'StringConcatenate', 'Text Concatenate'];
@@ -124,12 +130,14 @@ export class Unresolved extends Error {
 }
 export class Diverging extends Error {
     /** A selector's choices are [true, false]; an unknown node's are 0..n-1, one per distinct text (#381). */
-    constructor(key, choices, sources = false) {
+    constructor(key, choices, sources = false, unique = false) {
         super('diverging');
         this.key = key;
         this.choices = choices;
         // Raised by an unknown node passing several texts (the outcome's reason).
         this.sources = sources;
+        // Choices may repeat an outcome (a switch's inputs, #657): list it once.
+        this.unique = sources || unique;
     }
 }
 
@@ -247,6 +255,14 @@ export function compileSemantics(doc) {
         return set;
     };
     const samplers = byClass('samplers'), guiders = byClass('guiders'), selectors = byClass('selectors');
+    // `_check_selector`: a `first-present` entry has exactly `strategy` and a non-empty `input_prefix` (#657).
+    for (const [name, entry] of selectors) {
+        if (entry.strategy !== 'first-present') continue;
+        const keys = Object.keys(entry).sort();
+        if (keys.length !== 2 || keys[0] !== 'input_prefix' || keys[1] !== 'strategy') fail(`selectors[${name}] fields`);
+        const prefix = entry.input_prefix;
+        if (typeof prefix !== 'string' || !prefix || pyLen(prefix) > NAME_LENGTH) fail(`selectors[${name}] input prefix`);
+    }
     const composites = byClass('composites'), savers = byClass('savers');
     const conditioning = bySlot('conditioning'), encoders = bySlot('encoders'), strings = bySlot('strings');
     const runtime = bySet('runtime'), nonFileOutputs = bySet('non_file_outputs');

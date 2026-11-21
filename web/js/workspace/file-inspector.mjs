@@ -8,6 +8,7 @@ import { openCopyFallback } from './workspace-dialogs.mjs';
 import { displayPreferences } from './preferences.mjs';
 import { fallBackToOriginal, thumbnailSource } from './thumbnail-support.mjs';
 import { openCollectionsDialog } from './inspector-collections.mjs';
+import { mountInspectChoice } from './inspect-choice.mjs';
 
 const RAW_KEYS = ['prompt', 'workflow', 'parameters', 'comfyassets_prompt_pairs'];
 const RAW_LIMIT = 'Raw metadata exceeds the response limit. Download the original file to inspect it externally.';
@@ -231,12 +232,15 @@ export const DEFERRED_TEXT = 'Metadata loads when you ask for it.';
 /**
  * #331 D139: with the client store `collections`, a listed file's footer ends with "Collections…", which opens its
  * collections checklist; `onCollectionsChanged({added, removed})` hears the confirmed changes.
+ * #659: while the record names a pending Needs review item, Choose prompt (inspect-choice.mjs) follows the prompt
+ * blocks; it needs `api` and `onReviewDecided()`, which re-reads the inspection after a decision. The section lives
+ * across renders of the same item, so a re-render keeps its choice.
  */
 export function mountFileInspector(container, {api, sender, parentScope, variant, inline = false, promptContext = '', onTagFilter, onRetry, onRefresh, onLoad, onInteraction = () => {}, copyFallback = openCopyFallback,
-    collections = null, onCollectionsChanged = null, onDelete = null, onReturn = null}) {
+    collections = null, onCollectionsChanged = null, onDelete = null, onReturn = null, onReviewDecided = null}) {
     if (parentScope.signal.aborted) return {setState() {}, dispose() {}};
     const scope = childScope(parentScope);
-    let contentScope;
+    let contentScope, choice = null;
     container.classList.add('file-inspector');
     scope.listen(container, 'pointerdown', onInteraction);
     scope.listen(container, 'keydown', onInteraction);
@@ -271,6 +275,9 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
      */
     function render(state) {
         const inner = el('div', undefined, full ? undefined : 'detail-inner');
+        // #659: a read of another file, a failed read or a deferred one ends the shown Choose prompt (a quiet re-read
+        // after a decision keeps the record, and so the section, until its answer lands).
+        if (state.loading || state.error || state.deferred || !state.record) reviewChoice(null);
         if (state.loading || state.error) {container.append(inner); statusView(state, inner); return;}
         // D124: "Load metadata on selection" is off, so the file's details wait for an explicit request.
         if (state.deferred) {
@@ -298,6 +305,8 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
         const prompts = el('div'); inner.append(prompts);
         const blocks = mountPromptBlocks(prompts, {sender, parentScope:contentScope, includePairAction:false, contextLabel:promptContext, title});
         blocks.setState({prompts:record.prompts}); contentScope.cleanup(blocks.dispose);
+        const picker = reviewChoice(record);
+        if (picker) inner.append(picker.root);
         // D21: a chip sets the Images Tags filter, which matches the linked positive's tags; a recipe's own tags are
         // not what it matches, so they (and chips where no Tags filter exists, as in the viewer) stay plain. With the
         // D39 fallback a recipe without tags shows its positive's, which are filter buttons again. D88: the file's own
@@ -349,6 +358,15 @@ export function mountFileInspector(container, {api, sender, parentScope, variant
             footer.append(button);
         }
         if (!full && footer.childNodes.length) container.append(footer);
+    }
+    /** #659: the Choose prompt section of the record's pending review item, kept while the item stays the same. */
+    function reviewChoice(record) {
+        const review = record?.review;
+        const itemId = review?.state === 'pending' && api && onReviewDecided ? review.item_id : null;
+        if (choice?.itemId === itemId) return choice;
+        choice?.dispose();
+        choice = itemId ? mountInspectChoice({api, itemId, sender, parentScope:scope, onDecided:onReviewDecided}) : null;
+        return choice;
     }
     /**
      * D154: `section.tag-section` in the prompt sections' frame, its `.role-label` heading naming the source and count.

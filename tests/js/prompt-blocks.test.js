@@ -289,3 +289,19 @@ test('a fallback after a re-render returns focus to the same-role copy button, n
     const {fallbacks,copy,current}=await copyWithClipboard({writeText:async()=>{throw new Error('Denied');}},{detach:true});
     assert.equal(fallbacks.length,1);assert.notEqual(current,copy);assert.equal(fallbacks[0].trigger,current);
 });
+// #658: an ambiguous file whose candidates share one role shows that role resolved; the other keeps the ambiguous
+// line. The shared role has Copy and Send; the pair action needs both roles, so it is absent.
+test('one shared role beside an ambiguous one has its own actions and no pair action',()=>{
+    const f=dom(),scope=createScope(),container=new f.Element('div'),sent=[];
+    try{
+        module.mountPromptBlocks(container,{parentScope:scope,sender:{open:roles=>sent.push(roles)},
+            prompts:{positive:{status:'ambiguous',text:null,source:null},negative:{status:'resolved',text:'shared negative',source:'graph-inferred'}}});
+        assert.deepEqual(statusLines(f,container),['Multiple possible prompts. Source could not be determined.']);
+        assert.equal(f.walk(container,node=>node.dataset.sendRole==='pair').length,0);
+        assert.equal(f.walk(container,node=>node.dataset.sendRole==='positive').length,0);
+        assert.equal(f.walk(container,node=>node.dataset.copyRole==='positive').length,0);
+        assert.equal(f.walk(container,node=>node.dataset.copyRole==='negative').length,1);
+        const send=f.walk(container,node=>node.dataset.sendRole==='negative')[0];container.click(send);
+        assert.deepEqual(sent,[{negative:'shared negative'}]);
+    }finally{scope.dispose();f.restore();}
+});

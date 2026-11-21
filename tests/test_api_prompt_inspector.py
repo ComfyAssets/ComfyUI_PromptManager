@@ -188,11 +188,13 @@ class TestPromptInspector(ImageAPITestCase):
         for expected in ("ambiguous", "unresolved"):
             source = graph()
             if expected == "ambiguous":
-                # Branches with different prompts (#249: identical ones resolve).
+                # Branches with different prompts (#249: identical ones resolve;
+                # #658: a role every branch shares is shown, so both differ).
                 source["5"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "x"}}
+                source["6"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "y"}}
                 source["4"] = {
                     "class_type": "KSampler",
-                    "inputs": {"positive": ["5", 0], "negative": ["2", 0]},
+                    "inputs": {"positive": ["5", 0], "negative": ["6", 0]},
                 }
             else:
                 # No text and no links: nothing passes through it (#381).
@@ -208,6 +210,95 @@ class TestPromptInspector(ImageAPITestCase):
             for side in result["prompts"].values():
                 self.assertEqual(side["status"], expected)
                 self.assertIsNone(side["text"])
+
+    def two_samplers(self, negative=("2", 0), positive=("5", 0)):
+        """Two unanchored samplers: node 3 reads 1 and 2, node 4 the given inputs."""
+        source = graph()
+        source["5"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "x"}}
+        source["6"] = {"class_type": "CLIPTextEncode", "inputs": {"text": "y"}}
+        source["4"] = {
+            "class_type": "KSampler",
+            "inputs": {"positive": list(positive), "negative": list(negative)},
+        }
+        return source
+
+    async def test_a_role_every_candidate_shares_is_shown_resolved(self):
+        # #658: the negative is one text in every branch, so it is certain.
+        png(self.output_dir / "image.png", prompt=self.two_samplers())
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "ambiguous")
+        self.assertEqual(result["prompts"]["negative"], self.side("blurry"))
+        self.assertEqual(
+            result["prompts"]["positive"],
+            {"status": "ambiguous", "text": None, "source": None},
+        )
+
+    async def test_a_role_with_an_unresolved_candidate_is_not_shared(self):
+        # The second branch's positive fails, so its negative is never read.
+        source = self.two_samplers(positive=("missing", 0))
+        png(self.output_dir / "image.png", prompt=source)
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "ambiguous")
+        for role in ("positive", "negative"):
+            self.assertEqual(result["prompts"][role]["status"], "ambiguous", role)
+            self.assertIsNone(result["prompts"][role]["text"], role)
+
+    async def test_a_shared_role_needs_the_same_recipe(self):
+        # Both positives read "a portrait", but one is a PromptManager recipe
+        # ("portrait" with a prepend): the pair is ambiguous and the positive
+        # is not shared; the negative is.
+        source = self.two_samplers(positive=("7", 0))
+        source["1"]["inputs"]["text"] = "a portrait"
+        source["7"] = {
+            "class_type": "PromptManager",
+            "inputs": {"text": "portrait", "prepend_text": "a", "append_text": ""},
+        }
+        png(self.output_dir / "image.png", prompt=source)
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "ambiguous")
+        self.assertEqual(result["prompts"]["positive"]["status"], "ambiguous")
+        self.assertEqual(result["prompts"]["negative"], self.side("blurry"))
+
+    async def test_a_blank_shared_positive_is_withheld(self):
+        from utils import prompt_inspector
+
+        def blank(item):
+            return {
+                **item,
+                "positive": {**item["positive"], "text": "  ", "storage_text": "  "},
+            }
+
+        png(self.output_dir / "image.png", prompt=self.two_samplers())
+        real = prompt_inspector.inspection_resolution
+
+        def blanked(*args, **kwargs):
+            inspected = real(*args, **kwargs)
+            resolution = inspected.resolution
+            resolution["candidates"] = [blank(c) for c in resolution["candidates"]]
+            return inspected
+
+        with patch.object(prompt_inspector, "inspection_resolution", blanked):
+            _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "ambiguous")
+        self.assertEqual(result["prompts"]["positive"]["status"], "ambiguous")
+        self.assertIsNone(result["prompts"]["positive"]["text"])
+        self.assertEqual(result["prompts"]["negative"], self.side("blurry"))
+
+    async def test_any_switch_branches_share_their_negative(self):
+        # #658 with #657: an unproven switch input offers two positives; the
+        # negative encoder is the same in both, so it is shown.
+        try:
+            from tests import unknown_node_graphs as switch_graphs
+        except ImportError:  # discovered with ``-s tests``
+            import unknown_node_graphs as switch_graphs
+        source = switch_graphs.first_present_shapes()["through-unknown"]
+        png(self.output_dir / "image.png", prompt=source)
+        _, result = await self.inspect()
+        self.assertEqual(result["resolution"]["state"], "ambiguous")
+        self.assertEqual(result["prompts"]["positive"]["status"], "ambiguous")
+        self.assertEqual(
+            result["prompts"]["negative"], self.side(switch_graphs.NEGATIVE)
+        )
 
     async def test_parameters_and_partial_resolution_are_conservative(self):
         path = self.output_dir / "image.png"

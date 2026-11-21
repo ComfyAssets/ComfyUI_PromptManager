@@ -56,6 +56,7 @@ from .inspection_service import (
     VIDEO_EXTENSIONS,
     image_tags_reader,
     inspect_current_file,
+    review_reader,
 )
 
 try:
@@ -4149,6 +4150,9 @@ class ImageRoutesMixin:
                             roots[index], Path(relative).parts
                         ),
                         recorded=recorded_output_lookup(self.db),
+                        review=self._inspection_review(
+                            index, outputs, roots[index], Path(relative).parts
+                        ),
                     )
                 except CurrentFileChanged:
                     return None
@@ -4192,6 +4196,27 @@ class ImageRoutesMixin:
         """The inspector's ``image_tags`` reader for one rooted file (S1)."""
         locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
         return image_tags_reader(self.db, locator, self.logger)
+
+    def _inspection_review(
+        self, index: int, outputs: list, root: Path, parts: tuple
+    ) -> Callable | None:
+        """The inspector's ``review`` reader for one rooted file (#659, C4).
+
+        Keyed as review items are (the normcased realpath of the root joined
+        with the relative path). Only an output root is a scan root; a root
+        past the output folders (a LoRA root) gives None. A file without an
+        item is recorded first through the review worker's path (#657 D2).
+        """
+        if index >= len(outputs):
+            return None
+        locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
+        path = os.path.join(str(root), *parts)
+        return review_reader(
+            self.db,
+            locator,
+            self.logger,
+            record=functools.partial(self.inspect_review_file, path),
+        )
 
     def _read_own_category(self, sources, path):
         """One file's own category, None, or OWN_CATEGORY_UNREAD (blocking).

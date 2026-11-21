@@ -29,6 +29,8 @@ from .prompt_pair_resolver import (
     INSPECTION_PROFILE,
     MALFORMED_EVIDENCE_REASON,
     ResolverProfile,
+    _left_out,
+    _role_text,
     resolve_prompt_pair,
 )
 from .video_metadata import (
@@ -485,6 +487,30 @@ _EMPTY_POSITIVE = outcome_message(
 )
 
 
+def _shared_side(resolved: dict, role: str) -> dict | None:
+    """The side every candidate of an ambiguous result has alike, else None (#658).
+
+    A role is shared when every candidate is ``resolved`` with the same text,
+    stored recipe and left-out parts for it; an unresolved candidate's text is
+    unknown, so it shares nothing. The first candidate's side is returned, so
+    its ``text_source`` labels the shared text.
+    """
+    candidates = resolved.get("candidates") or []
+    sides = [
+        item.get(role)
+        for item in candidates
+        if isinstance(item, dict) and item.get("state") == "resolved"
+    ]
+    if not candidates or len(sides) != len(candidates):
+        return None
+    if not all(isinstance(side, dict) for side in sides):
+        return None
+    keys = [
+        (_role_text(side), side.get("storage_text"), _left_out(side)) for side in sides
+    ]
+    return sides[0] if all(key == keys[0] for key in keys) else None
+
+
 def _explained(prompts: dict, resolution: dict) -> dict:
     """Each unresolved role carries the outcome's line; other roles are kept."""
     message = outcome_message(resolution)
@@ -742,8 +768,14 @@ def inspect_prompt_evidence(
     result = {}
     for role in ("positive", "negative"):
         side = resolved[role]
+        shown = state != "ambiguous"
+        if not shown:
+            # A role every candidate agrees on is certain (#658); the pair
+            # state stays ambiguous for every consumer of ``resolution``.
+            side = _shared_side(resolved, role)
+            shown = side is not None
         if (
-            state != "ambiguous"
+            shown
             and isinstance(side, dict)
             and (role == "negative" or side["text"].strip())
         ):

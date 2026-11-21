@@ -966,3 +966,30 @@ test('a backslash inside a name is accepted only from a POSIX listing (#646)', (
     for (const bad of ['../a.png', 'a/../b.png', 'C:\\a.png', 'a//b.png', '/a.png'])
         assert.throws(() => inspectPath({root_index:0, path:bad, root_scope:scopeA, path_style:'posix'}), /Invalid inspection identity/);
 });
+
+// #659: the file's Needs review item (`review`), kept as the server names it.
+test('record keeps the review facet: a pending item, decided, or null', () => {
+    const toInspectionRecord = contract('toInspectionRecord'), entry = image();
+    const item = '0a1b2c3d-0000-4000-8000-00000000abcd';
+    const of = review => {
+        const data = envelope(entry);
+        if (review !== undefined) data.review = review;
+        return toInspectionRecord(data, entry, extractGenerationFacts).review;
+    };
+    assert.deepEqual(of({ state: 'pending', item_id: item }), { state: 'pending', item_id: item });
+    assert.deepEqual(of({ state: 'decided' }), { state: 'decided' });
+    assert.equal(of(null), null);
+    assert.equal(of(undefined), null);
+    // Anything else offers no choice (and never fails the inspection).
+    for (const review of ['pending', [], {}, { state: 'pending' }, { state: 'pending', item_id: 7 }, { state: 'pending', item_id: 'x' },
+        { state: 'pending', item_id: item.toUpperCase() }, { state: 'pending', item_id: item, extra: 1 }, { state: 'decided', item_id: item },
+        { state: 'unresolved' }]) assert.equal(of(review), null, JSON.stringify(review));
+    const record = of({ state: 'pending', item_id: item });
+    assert.ok(Object.isFrozen(record));
+});
+
+test('a legacy payload carries no review facet', () => {
+    const data = envelope(); delete data.inspection_version;
+    const record = contract('projectInspectionPayload')({ ...data, review: { state: 'decided' } }, {}, null, () => ({}), true);
+    assert.equal(record.review, null);
+});

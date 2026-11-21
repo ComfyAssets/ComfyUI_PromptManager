@@ -45,16 +45,20 @@ try:
     from ...database.review_decisions import ReviewCommandError
     from ...utils.media_capture import CaptureError
     from ...utils.review_capture import (
+        candidate_hashes,
         captured_review,
         item_profile,
-        review_evidence,
     )
 except ImportError:
     from database.library import display_title
     from database.library_commands import LibraryCommandError
     from database.review_decisions import ReviewCommandError
     from utils.media_capture import CaptureError
-    from utils.review_capture import captured_review, item_profile, review_evidence
+    from utils.review_capture import (
+        candidate_hashes,
+        captured_review,
+        item_profile,
+    )
 
 ITEMS_URL = "/prompt_manager/review/items"
 DEFAULT_LIMIT = 40
@@ -393,12 +397,13 @@ class ReviewRoutesMixin:
             "library_epoch": item["epoch"],
             **view,
             "candidates": candidates,
+            "collapsed": self._review_collapsed(item),
             "dependency_fingerprint": fingerprint,
             "sha256": item["sha256"],
             "total": item["total"],
         }
         if len(json.dumps(detail).encode("utf-8")) > MAX_DETAIL_BYTES:
-            detail = {**detail, "candidates": [], "limited": True}
+            detail = {**detail, "candidates": [], "collapsed": None, "limited": True}
         return web.json_response(detail, headers=_NO_STORE)
 
     def _review_detail(self, item_id: str):
@@ -412,6 +417,20 @@ class ReviewRoutesMixin:
         aliases, _known = physical_spellings(self.db, image_path, item["locator"])
         fingerprint = self.db.review_dependency_fingerprint(image_path, aliases)
         return item, view, fingerprint, self._review_candidates(item)
+
+    @staticmethod
+    def _review_collapsed(item: dict):
+        """#657 D3: ``{shown, total, paths}`` when the stored list keeps only
+        the most used prompts of the file, else None."""
+        collapsed = None if item["limited"] else item["evidence"].get("collapsed")
+        if not isinstance(collapsed, dict):
+            return None
+        counts = {key: collapsed.get(key) for key in ("shown", "total", "paths")}
+        if not all(
+            isinstance(n, int) and not isinstance(n, bool) for n in counts.values()
+        ):
+            return None
+        return counts
 
     def _review_candidates(self, item: dict) -> list:
         """The detail's candidates: role texts, a label and selectability."""
@@ -749,7 +768,6 @@ def _candidate_still_offered(resolution: dict, choice: str) -> bool:
         resolution = {"state": "ambiguous", "candidates": [resolution]}
     if not isinstance(resolution, dict) or resolution.get("state") != "ambiguous":
         return False
-    evidence, _count, limited = review_evidence(resolution)
-    if limited:
-        return False
-    return any(c.get("hash") == choice for c in evidence.get("candidates", ()))
+    # Every candidate the bytes offer, before any bound or collapse: a
+    # reorder that changes the collapsed representatives still applies.
+    return choice in candidate_hashes(resolution)

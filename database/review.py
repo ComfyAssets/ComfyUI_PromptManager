@@ -114,6 +114,10 @@ _PENDING_AT_STAT = (
     f"JOIN {ITEMS_TABLE} i ON i.byte_id=b.id "
     "WHERE f.locator=? AND b.size=? AND b.mtime_ns=? AND i.state='pending'"
 )
+# The newest pending item of the bytes verified at one stat (Inspect, #659).
+_NEWEST_PENDING_AT_STAT = (
+    _PENDING_AT_STAT + " ORDER BY i.created_at DESC, i.rowid DESC LIMIT 1"
+)
 # Pending items of one file: the candidates a link settles.
 _PENDING_OF_LOCATOR = (
     f"SELECT i.id FROM {FILES_TABLE} f "  # nosec B608
@@ -459,6 +463,24 @@ class ReviewOperations:
         )
         return row is not None
 
+    def review_item_at(self, locator: str, size: int, mtime_ns: int) -> dict | None:
+        """Inspect's ``review`` facet of the bytes verified at this stat (#659).
+
+        ``{"state": "pending", "item_id": ...}`` names the newest pending item
+        (any version); otherwise ``{"state": "decided"}`` when such bytes carry
+        a decided item; else None. Two indexed reads, no file access.
+        """
+        _validate_locator(locator)
+        conn = self.model.get_connection()
+        row = conn.execute(
+            _NEWEST_PENDING_AT_STAT, (locator, size, mtime_ns)
+        ).fetchone()
+        if row is not None:
+            return {"state": "pending", "item_id": row[0]}
+        if conn.execute(_DECIDED_AT, (locator, size, mtime_ns)).fetchone() is not None:
+            return {"state": "decided"}
+        return None
+
     def review_file_linked(self, spellings) -> bool:
         """True when a saved row links the file under any of ``spellings``."""
         with self._annotation_read() as conn:
@@ -536,7 +558,7 @@ class ReviewOperations:
         """Remove the pending, undecided items that offer nothing to choose.
 
         ``locators`` are files the caller found ambiguous without a choice
-        (fewer than two candidates carry a prompt). Of their items, one leaves
+        (no candidate carries a prompt). Of their items, one leaves
         the queue only when its own stored evidence offers no choice either
         (``evidence_offers_choice``) and it is still ``pending`` at revision 0
         with no decision row, the same safe delete as

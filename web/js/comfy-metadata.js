@@ -471,7 +471,7 @@
         "ControlNetInpaintingAliMamaApply", "LTXVConditioning", "FluxKontextMultiReferenceLatentMethod", "Text to Conditioning",
         "TextInput", "DisplayText", "ClownsharKSampler_Beta", "KSampler (Efficient)", "ttN KSampler_v2",
         "SeedVarianceEnhancer", "ApplyInstantIDAdvanced", "Switch conditioning [Crystools]", "smZ CLIPTextEncode", "ttN text",
-        "CR Text", "CR Prompt Text", "TextBoxMira",
+        "CR Text", "CR Prompt Text", "TextBoxMira", "Any Switch (rgthree)",
     ]);
     // The table's `stage_inputs` (the resolver reads the same lists): inputs that make an
     // unlisted node a possible stage, and those that do so beside a linked `model`.

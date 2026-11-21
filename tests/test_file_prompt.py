@@ -13,6 +13,7 @@ from database.run_attribution import RecordedOutput
 from tests.test_pair_scan import flux_graph, sampled_graph
 from tests.test_prompt_attribution import issue_graph, pair_evidence
 from tests import test_save_to_library as save_tests
+from tests.sweep_graphs import ambiguous_sweep_graph
 from utils import file_prompt
 from utils.file_prompt import Policy, decide_file_prompt, junk_text
 from utils.prompt_inspector import InspectionResult
@@ -20,9 +21,11 @@ from utils.prompt_inspector import InspectionResult
 try:
     from tests import inspection_parity as parity
     from tests import saver_anchor_graphs as shapes
+    from tests import unknown_node_graphs as switch_graphs
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import inspection_parity as parity
     import saver_anchor_graphs as shapes
+    import unknown_node_graphs as switch_graphs
 
 SHARED_NAME = "IMG_GEN_00371_.png"
 LORA = "<lora:style:1.00>"
@@ -418,6 +421,17 @@ class TestUndecidedGraph(unittest.TestCase):
         self.assertEqual(decision.text, parity.POS)
         self.assertEqual(decision.resolution["state"], "unresolved")
 
+    def test_step_8_1_the_inspector_links_the_any_switch_sweep(self):
+        # #657: the default profile cannot read rgthree's Any Switch; the
+        # inspector proves its first input and links it under both policies.
+        graph = switch_graphs.any_switch_sweep_graph()
+        for policy in (Policy.SCAN, Policy.MONITOR):
+            with self.subTest(policy=policy):
+                decision = _decide(_graph(graph), policy=policy, lookup=_Lookup())
+                self.assertEqual(decision.kind, "positive")
+                self.assertEqual(decision.source, "inspector")
+                self.assertEqual(decision.text, switch_graphs.POSITIVE)
+
     def test_step_8_1_the_recorded_saver_names_its_branch(self):
         lookup = _Lookup("23")
         decision = _decide(_graph(shapes.shared_prefix()), lookup=lookup)
@@ -759,6 +773,38 @@ class TestParseComfyuiPrompt(unittest.TestCase):
     def test_non_string_parameters_are_ignored(self):
         parsed = file_prompt.parse_comfyui_prompt({"parameters": {"a": 1}})
         self.assertIsNone(parsed["positive_prompt"])
+
+
+class TestDefaultUnresolved(unittest.TestCase):
+    """#659 C2: ``default_unresolved`` marks a graph the default profile
+    itself calls unresolved, so a scan can still offer its inspection
+    choices in Needs review."""
+
+    def test_the_sweep_graph_is_default_unresolved(self):
+        decision = _decide(_graph(ambiguous_sweep_graph()), lookup=_Lookup())
+        self.assertEqual(decision.kind, "never")
+        self.assertIsNone(decision.review)
+        self.assertTrue(decision.default_unresolved)
+        self.assertEqual(decision.unlinked_status, "unresolved")
+
+    def test_a_blank_positive_is_not_default_unresolved(self):
+        meta = {
+            "prompt": json.dumps(issue_graph()),
+            "comfyassets_prompt_pairs": json.dumps(pair_evidence()),
+        }
+        decision = _decide(meta, lookup=_Lookup())
+        self.assertEqual(decision.resolution["state"], "unresolved")
+        self.assertFalse(decision.default_unresolved)
+
+    def test_resolved_and_ambiguous_graphs_are_not_default_unresolved(self):
+        for name, graph in (
+            ("resolved", sampled_graph("cat", "blur")),
+            ("ambiguous", shapes.shared_prefix()),
+        ):
+            with self.subTest(name=name):
+                decision = _decide(_graph(graph), lookup=_Lookup())
+                self.assertFalse(decision.default_unresolved)
+        self.assertFalse(_decide({}).default_unresolved)
 
 
 if __name__ == "__main__":

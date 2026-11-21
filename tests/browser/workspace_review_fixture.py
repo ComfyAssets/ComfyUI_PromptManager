@@ -15,8 +15,9 @@ after the plain ones in this order:
 - ``conflict``: an item whose file was linked to another prompt ("Misty
   forest path") after it was queued (the next scan or monitor pass would
   remove the item); applying a sampler path then conflicts with that link.
-- ``limited``: a graph of 17 samplers, each with its own prompt, which the
-  recorder stores ``limited`` (more than 16 candidates, so none are stored).
+- ``limited``: an item recorded while its evidence is over the 8 MiB bound
+  (simulated), so the recorder stores it ``limited`` without candidates.
+  More than 16 candidates are collapsed instead (#657 addendum D3).
   An A1111 block with two negative lines is not queued any more: it offers
   no candidate to choose (#284).
 - ``unreadable`` (#536): an item whose stored candidates are all
@@ -79,8 +80,6 @@ CONCEPT_POSITIVE = (
     "mountain peaks, cinematic composition, atmospheric mist, fine detail"
 )
 CONCEPT_NEGATIVE = "blurry, low quality, low resolution"
-# More candidates than an item stores (16): the ``limited`` item.
-LIMITED_SAMPLERS = 17
 # More than one queue page (40), so Load more has a second page.
 MAX_ITEMS = 45
 _TABLES = (
@@ -210,6 +209,23 @@ def _linked_after_queueing(api: PromptManagerAPI, path: Path) -> None:
     api.db.link_image_to_prompt(prompt_id, str(path))
 
 
+def _limited(api: PromptManagerAPI, path: Path) -> None:
+    """Record ``path`` as if its evidence were over the 8 MiB bound."""
+    from unittest.mock import patch
+
+    from utils import review_capture
+
+    real = review_capture.canonical_evidence
+
+    def capped(value):
+        if value.get("candidates"):
+            raise ValueError("Review evidence is larger than 8 MiB")
+        return real(value)
+
+    with patch.object(review_capture, "canonical_evidence", side_effect=capped):
+        _record(api, path, "limited")
+
+
 def _unavailable(api: PromptManagerAPI, root: Path, path: Path) -> None:
     from py.config import GalleryConfig
 
@@ -296,9 +312,8 @@ def seed_review(
             _png(path, (70, 40, 120))
             _unreadable(api, path)
         elif kind == "limited":
-            many = tuple(f"{POSITIVES[0]} {n}" for n in range(LIMITED_SAMPLERS))
-            _png(path, (90, 90, 90), graph=_graph(positives=many))
-            _record(api, path, "limited")
+            _png(path, (90, 90, 90))
+            _limited(api, path)
         else:
             _png(path, (20, 140, 90))
             _unavailable(api, root, path)

@@ -9,13 +9,22 @@ and leaves no wait behind.
 
 import os
 import unittest
+from unittest import mock
 
 from tests import saver_anchor_graphs as shapes
 from tests import test_run_attribution as attribution
 from tests import test_save_to_library as save_tests
+from tests import unknown_node_graphs as switch_graphs
+from tests.sweep_graphs import (
+    JOINED_TEXT,
+    joined_prompt_manager_graph,
+    prompt_manager_shared_prefix,
+    ambiguous_sweep_graph,
+)
 from tests.test_pair_scan import sampled_graph
 from utils.foreign_runs import ForeignRecheck
 from utils.hashing import generate_prompt_hash
+from utils.run_keys import prompt_node_key
 from py.config import GalleryConfig  # after tests: it stubs the host
 
 LOGGER = "prompt_manager.image_monitor"
@@ -213,7 +222,9 @@ class TestForeignPathKeepsSaveToLibrary(attribution.RecordedRuns, unittest.TestC
         file waits for a foreign re-check."""
         cases = (
             ("off", False, "opted_out", SKIPPED),
-            ("wired", ["52", 0], "unknown", "No certain prompt for"),
+            # A PromptManager run asks the ladder (#659), whose #90 step
+            # reads the wired switch: nothing is stored
+            ("wired", ["52", 0], "unknown", "Save to library is wired from a node"),
         )
         for name, save, state, line in cases:
             with self.subTest(name=name):
@@ -324,6 +335,263 @@ class TestForeignPathKeepsSaveToLibrary(attribution.RecordedRuns, unittest.TestC
         self.assertTrue(self.wait_for(lambda: self.linked_text(path)))
         self.assertTrue(self.settled())
         self.assertEqual(self.linked_text(path), shapes.BRANCH_TEXTS[0])
+
+
+class TestPromptManagerRunsAskTheLadder(attribution.RecordedRuns, unittest.TestCase):
+    """#659 Part 3: a PromptManager run the default profile and the tracked
+    run cannot link asks the ladder, as a foreign run does."""
+
+    close_databases = Fixture["close_databases"]
+    wait_for = Fixture["wait_for"]
+    image = Fixture["image"]
+    linked_text = Fixture["linked_text"]
+    key = Fixture["key"]
+    prompt_count = Fixture["prompt_count"]
+    settled = Fixture["settled"]
+    seal = TestForeignPathKeepsSaveToLibrary.seal
+
+    def setUp(self):
+        Fixture["setUp"](self)
+        enabled = GalleryConfig.MONITORING_ENABLED
+        self.addCleanup(setattr, GalleryConfig, "MONITORING_ENABLED", enabled)
+        GalleryConfig.MONITORING_ENABLED = True
+
+    def prompt(self, text):
+        return self.db.get_prompt_by_hash(generate_prompt_hash(text))
+
+    def test_an_output_the_inspector_resolves_links_at_settle(self):
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        state, _ = self.handler._find_prompt_from_metadata(self.metadata)
+        self.assertEqual(state, "unknown")  # a PromptManager run, not foreign
+        path = self.image("IMG_GEN_00001_.png")
+        with self.assertLogs(LOGGER, "INFO") as logs:
+            self.handler.process_new_image(path)
+        self.assertIn("(inspector)", "\n".join(logs.output))
+        self.assertEqual(self.linked_text(path), JOINED_TEXT)
+        prompt = self.prompt(JOINED_TEXT)
+        self.assertEqual(prompt["category"], "scanned")
+        self.assertIn("Auto-scanned from IMG_GEN_00001_.png", prompt["notes"])
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_an_output_only_history_decides_links_after_its_run_is_sealed(self):
+        self.metadata = {"prompt": prompt_manager_shared_prefix()}
+        path = self.image("IMG_GEN_00002_.png")
+        self.handler.process_new_image(path)
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.handler.awaiting_ladder(), [self.key(path)])
+        # Foreign entries only: the PromptManager entry is not foreign
+        self.assertEqual(self.handler.awaiting_foreign(), [])
+        self.seal(path, nodes=("13",))
+        self.assertTrue(self.wait_for(lambda: self.linked_text(path)))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.linked_text(path), shapes.BRANCH_TEXTS[0])
+        prompt = self.prompt(shapes.BRANCH_TEXTS[0])
+        self.assertIn("Auto-scanned from IMG_GEN_00002_.png", prompt["notes"])
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_the_rgthree_sweep_links_at_settle_from_the_inspector(self):
+        """#657: the real Any Switch outputs its first proven input, so the
+        maintainer's sweep links to the PromptManagerText text."""
+        self.metadata = {"prompt": switch_graphs.any_switch_sweep_graph()}
+        path = self.image("sweep_00009_.png")
+        with self.assertLogs(LOGGER, "INFO") as logs:
+            self.handler.process_new_image(path)
+        self.assertIn("(inspector)", "\n".join(logs.output))
+        self.assertEqual(self.linked_text(path), switch_graphs.POSITIVE)
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_an_output_the_inspector_calls_ambiguous_is_not_linked(self):
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
+        path = self.image("sweep_00001_.png")
+        self.handler.process_new_image(path)
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.handler.awaiting_ladder(), [self.key(path)])
+        self.seal(path, nodes=("28",))
+        self.assertTrue(self.wait_for(lambda: not self.handler.awaiting_ladder()))
+        self.assertTrue(self.settled())
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_save_to_library_off_stores_nothing(self):
+        wired = joined_prompt_manager_graph(save=["20", 0])
+        wired["20"] = {"class_type": "SomeBoolNode", "inputs": {}}
+        cases = (
+            ("off", joined_prompt_manager_graph(save=False), SKIPPED),
+            ("wired", wired, "Save to library is wired from a node"),
+        )
+        for name, graph, line in cases:
+            with self.subTest(name=name):
+                self.metadata = {"prompt": graph}
+                path = self.image(f"IMG_GEN_{name}_00001_.png")
+                with self.assertLogs(LOGGER, "INFO") as logs:
+                    self.handler.process_new_image(path)
+                self.assertIn(line, "\n".join(logs.output))
+                self.assertIsNone(self.linked_text(path))
+                self.assertEqual(self.prompt_count(), 0)
+                self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_the_foreign_setting_gates_foreign_entries_only(self):
+        GalleryConfig.SAVE_FOREIGN_RUNS = False
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        own = self.image("IMG_GEN_00003_.png")
+        self.handler.process_new_image(own)
+        self.assertEqual(self.linked_text(own), JOINED_TEXT)
+        self.metadata = {"prompt": sampled_graph("a red barn", "blurry")}
+        foreign = self.image("plain_00001_.png")
+        self.handler.process_new_image(foreign)
+        self.assertIsNone(self.linked_text(foreign))
+
+    def test_monitoring_off_stops_both_kinds(self):
+        GalleryConfig.MONITORING_ENABLED = False
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        own = self.image("IMG_GEN_00004_.png")
+        self.handler.process_new_image(own)
+        self.metadata = {"prompt": sampled_graph("a red barn", "blurry")}
+        foreign = self.image("plain_00002_.png")
+        self.handler.process_new_image(foreign)
+        self.assertEqual([self.linked_text(own), self.linked_text(foreign)], [None] * 2)
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_monitoring_off_after_the_settle_stores_nothing_at_the_recheck(self):
+        self.metadata = {"prompt": prompt_manager_shared_prefix()}
+        path = self.image("IMG_GEN_00005_.png")
+        self.handler.process_new_image(path)
+        GalleryConfig.MONITORING_ENABLED = False
+        self.seal(path, nodes=("13",))
+        self.assertTrue(self.wait_for(lambda: not self.handler.awaiting_ladder()))
+        self.assertTrue(self.settled())
+        self.assertIsNone(self.linked_text(path))
+        self.assertEqual(self.prompt_count(), 0)
+
+    def test_keyless_placeholder_and_unreadable_files_never_ask_the_ladder(self):
+        from utils import image_monitor
+
+        graph = joined_prompt_manager_graph()
+        self.tracker.mark_empty(prompt_node_key(graph, "1"), "run-1")
+        placeholder = self.image("IMG_GEN_00006_.png")
+        keyless = self.image("bare_00001_.png", subfolder="")
+        unreadable = self.image("bare_00002_.png", subfolder="")
+        with mock.patch.object(
+            image_monitor, "decide_foreign", wraps=image_monitor.decide_foreign
+        ) as ladder:
+            self.metadata = {"prompt": graph}
+            self.handler.process_new_image(placeholder)
+            self.metadata = None
+            self.handler.process_new_image(keyless)
+            with mock.patch.object(
+                self.handler.metadata_extractor,
+                "extract_metadata",
+                side_effect=OSError("truncated"),
+            ):
+                self.handler.process_new_image(unreadable)
+        ladder.assert_not_called()
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+        self.assertEqual(
+            sorted(self.handler.awaiting_history()),
+            sorted([self.key(keyless), self.key(unreadable)]),
+        )
+        self.assertIsNone(self.linked_text(placeholder))
+
+
+class TestFinalUnlinkedOutcomesQueueForReview(
+    attribution.RecordedRuns, unittest.TestCase
+):
+    """#659 Part 4: the monitor hands a file to Needs review only at its
+    final unlinked outcome, after run history had its say."""
+
+    close_databases = Fixture["close_databases"]
+    wait_for = Fixture["wait_for"]
+    image = Fixture["image"]
+    linked_text = Fixture["linked_text"]
+    key = Fixture["key"]
+    settled = Fixture["settled"]
+    seal = TestForeignPathKeepsSaveToLibrary.seal
+
+    def setUp(self):
+        Fixture["setUp"](self)
+        self.queued = []
+        self.handler.review_recorder = lambda path: self.queued.append(
+            os.path.basename(path)
+        )
+
+    def test_nothing_is_queued_before_the_run_is_sealed(self):
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
+        path = self.image("sweep_00001_.png")
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, [])
+        self.seal(path, nodes=("28",))
+        self.assertTrue(self.wait_for(lambda: self.queued))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, ["sweep_00001_.png"])
+
+    def test_a_foreign_file_unlinked_after_its_seal_is_queued(self):
+        self.metadata = {"prompt": shapes.shared_prefix()}
+        path = self.image("IMG_GEN_00001_.png")
+        reported = [("dataset", "IMG_GEN_00001_.png")] * 2
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, [])
+        # One run reported it from two savers: a record, but no saver
+        self.record_run(self.db, self.output, reported, [], nodes=["13", "23"])
+        self.assertTrue(self.wait_for(lambda: self.queued))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, ["IMG_GEN_00001_.png"])
+
+    def test_a_record_found_at_settle_without_a_prompt_queues_at_once(self):
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
+        path = self.image("sweep_00002_.png")
+        self.seal(path, nodes=("28",))
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, ["sweep_00002_.png"])
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_a_file_outside_the_output_folder_is_queued_at_once(self):
+        outside = self.image("sweep_00003_.png", subfolder="")
+        with mock.patch(
+            "utils.image_monitor.host_output_directory",
+            return_value=os.path.join(self.output, "dataset"),
+        ):
+            for graph in (ambiguous_sweep_graph(), shapes.shared_prefix()):
+                self.metadata = {"prompt": graph}
+                self.handler.process_new_image(outside)
+        self.assertEqual(self.queued, ["sweep_00003_.png"] * 2)
+        self.assertEqual(self.handler.awaiting_ladder(), [])
+
+    def test_a_linked_or_waiting_file_is_not_queued(self):
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        self.handler.process_new_image(self.image("IMG_GEN_00002_.png"))
+        self.metadata = {"prompt": prompt_manager_shared_prefix()}
+        waiting = self.image("IMG_GEN_00003_.png")
+        self.handler.process_new_image(waiting)
+        self.seal(waiting, nodes=("13",))
+        self.assertTrue(self.wait_for(lambda: self.linked_text(waiting)))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, [])
+
+    def test_the_keyless_recheck_queues_a_file_history_does_not_name(self):
+        path = self.image("bare_00001_.png", subfolder="")
+        self.metadata = None
+        self.handler.process_new_image(path)
+        self.assertEqual(self.queued, [])
+        self.record_run(self.db, self.output, [("", "bare_00001_.png")], [])
+        self.assertTrue(self.wait_for(lambda: self.queued))
+        self.assertTrue(self.settled())
+        self.assertEqual(self.queued, ["bare_00001_.png"])
+
+    def test_a_recorder_failure_keeps_the_monitor_running(self):
+        def broken(path):
+            raise RuntimeError("recorder broke")
+
+        self.handler.review_recorder = broken
+        self.metadata = {"prompt": ambiguous_sweep_graph()}
+        path = self.image("sweep_00004_.png")
+        self.seal(path, nodes=("28",))
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            self.handler.process_new_image(path)
+        self.assertIn("could not be added to Needs review", "\n".join(logs.output))
+        self.metadata = {"prompt": joined_prompt_manager_graph()}
+        linked = self.image("IMG_GEN_00004_.png")
+        self.handler.process_new_image(linked)
+        self.assertEqual(self.linked_text(linked), JOINED_TEXT)
 
 
 if __name__ == "__main__":

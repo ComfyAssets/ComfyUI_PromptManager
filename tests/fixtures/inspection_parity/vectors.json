@@ -935,7 +935,7 @@
       "reason_code": "multistage-differs",
       "selection": null,
       "positive": null,
-      "negative": null,
+      "negative": "blurry, lowres",
       "candidate_count": 0,
       "facts": {
         "seed": {

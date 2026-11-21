@@ -359,7 +359,7 @@ export function mountImages(main, api, parentScope, {embedded = false, fetchPage
         for (const video of details.querySelectorAll('video')) releaseVideo(video);
         // #498: a removed file's panel offers Return to library and nothing that writes (Collections…, Delete…, tag chips).
         const removedView = filters.removed;
-        detailInspector = mountFileInspector(details, {sender, parentScope:scope, variant:'panel',
+        detailInspector = mountFileInspector(details, {api, sender, parentScope:scope, variant:'panel', onReviewDecided:inspection.refresh,
             onTagFilter:embedded || removedView ? undefined : filterByTag, onRetry:() => inspection.retry(), onLoad:() => inspection.load(), onRefresh:refreshInspectionCollection,
             collections:removedView ? null : inspectorCollections, onCollectionsChanged:collectionsChangedBy,
             onDelete:embedded || removedView ? null : (target, button) => deleteOne(target, button),
