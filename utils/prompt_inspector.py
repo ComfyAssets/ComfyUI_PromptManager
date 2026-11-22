@@ -21,6 +21,7 @@ from typing import Any
 
 from PIL import Image
 
+from .exif_text import exif_text
 from .inspection_outcomes import UNREADABLE_METADATA_REASON, outcome_message
 from .pair_execution import EXECUTION_KEY
 from .prompt_pair_resolver import (
@@ -415,6 +416,17 @@ def read_inspection_file(path: Path) -> InspectionRead:
                     header = stream.read(MAX_HEADER_BYTES)
                     with Image.open(io.BytesIO(header)) as image:
                         metadata = dict(image.info)
+                        if image.format == "WEBP":
+                            # WebP carries ComfyUI's records as EXIF strings
+                            # (tag 0x0110 and below); image.info never holds
+                            # them, so read them from the EXIF block. The
+                            # per-key budgets below still apply. Note: the
+                            # EXIF chunk sits after the image data, so for
+                            # files larger than the header read it is not
+                            # in the buffer; large files are a follow-up
+                            # in #656.
+                            for key, value in exif_text(image).items():
+                                metadata.setdefault(key, value)
                         format_name, (width, height) = image.format, image.size
         result, role_size, limited = {}, 0, set(limited)
         for key in _METADATA_KEYS:
