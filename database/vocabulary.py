@@ -295,6 +295,38 @@ def _category_after(after: object) -> tuple[int, str] | None:
     return after[0], after[1]
 
 
+def bump_image_tag_bytes(conn: sqlite3.Connection, tag_id: int) -> int:
+    """Move the tag revision of every image set that carries *tag_id*.
+
+    Vocabulary rename, merge and delete change what an image's set reads as,
+    so a Tag dialog opened before the change must see ``tag-conflict`` on Save
+    instead of recreating the old name. Bumps the image index revision once
+    when any set was affected; returns that count.
+    """
+    cursor = conn.execute(
+        "UPDATE media_annotation_bytes SET tag_revision = tag_revision + 1 "
+        "WHERE id IN (SELECT byte_id FROM media_image_tags WHERE tag_id = ?)",
+        (tag_id,),
+    )
+    if cursor.rowcount > 0:
+        conn.execute(
+            "UPDATE media_annotation_metadata SET "
+            "image_index_revision = image_index_revision + 1 WHERE singleton_id = 1"
+        )
+    return cursor.rowcount
+
+
+def _delete_tag(conn: sqlite3.Connection, tag_id: int) -> None:
+    """Delete the registry row *tag_id* in the caller's transaction.
+
+    Image sets carrying it get a new tag revision first; its component, pair
+    and image links cascade. Shared by ``delete_vocabulary_tag`` and the tag
+    cleanup rules (#618, ``database/tag_cleanup.py``).
+    """
+    bump_image_tag_bytes(conn, tag_id)
+    conn.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+
+
 class VocabularyOperations:
     """Vocabulary reads and tag commands.
 
@@ -405,8 +437,7 @@ class VocabularyOperations:
             epoch = self._library_epoch(conn, expected_epoch)
             self._vocabulary_identity(conn, epoch, tag_id, name)
             counts = self._tag_owner_counts(conn, tag_id)
-            self._bump_image_tag_bytes(conn, tag_id)
-            conn.execute("DELETE FROM tags WHERE id=?", (tag_id,))
+            _delete_tag(conn, tag_id)
             return {"library_epoch": epoch, "deleted": True, **counts}
 
     def vocabulary_tag_impact(self, tag_id: int) -> dict | None:

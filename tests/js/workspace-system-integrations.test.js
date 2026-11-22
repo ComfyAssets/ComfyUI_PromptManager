@@ -137,6 +137,23 @@ test('the import review shows replacement, blocked items and network effects (D1
         ['Found', '1 metadata file · 1 LoRA · 0 with local images']);
 });
 
+test('the import review counts the trained words not made tags, after Found (#618)', async () => {
+    const { importGrid } = await integrations;
+    const rowAfterFound = plan => {
+        const rows = importGrid(plan);
+        const at = rows.findIndex(([term]) => term === 'Found');
+        return rows[at + 1];
+    };
+    assert.deepEqual(rowAfterFound({ trigger_tags: 1204, trigger_not_tags: 232 }),
+        ['Trigger words', '1,204 become tags · 232 not made tags (lists or sentences)']);
+    assert.deepEqual(rowAfterFound({ trigger_tags: 3, trigger_not_tags: 0 }), ['Trigger words', '3 become tags']);
+    assert.deepEqual(rowAfterFound({ trigger_tags: 0, trigger_not_tags: 1 }),
+        ['Trigger words', '0 become tags · 1 not made tags (lists or sentences)']);
+    // Neither number above 0 (or missing, as from an older server): no row.
+    assert.deepEqual(rowAfterFound({ trigger_tags: 0, trigger_not_tags: 0 })[0], 'Protected');
+    assert.deepEqual(rowAfterFound({ trigger_tags: '5', trigger_not_tags: -1 })[0], 'Protected');
+});
+
 test('the LoraManager row names what the import read, and an unusable layout closes the review (#355)', async () => {
     const { layoutText, closeNote, LAYOUT_UNUSABLE, BLOCKED_NOTE, NOTHING_TO_IMPORT } = await integrations;
     assert.equal(layoutText({ source: 'environment', mode: 'alongside', library: 'default', error: null }),

@@ -261,7 +261,8 @@ function measureReview() {
 
 /**
  * D107: the server's import plan in the concept's review: "Review LoRA import" with "LoRA reference data" as its `h3`,
- * the concept's four rows with the plan's values plus Found and Network, the LoRAs it found (`details`), the hold
+ * the concept's four rows with the plan's values plus Found, Trigger words (#618, D210) and Network, the LoRAs it
+ * found (`details`), the hold
  * line with the cache sentence in the concept's `p.small`, the D55 backup box, and Cancel / "Start import".
  */
 function mapImportConcept(reference, plan) {
@@ -273,6 +274,7 @@ function mapImportConcept(reference, plan) {
         heading: { ...reference.heading, text: 'LoRA reference data' },
         grid: { ...reference.grid, rows: [['LoraManager', 'environment settings · alongside storage · library default'],
             ['Scope', plan.scope.label], ['Found', '2 metadata files · 2 LoRAs · 0 with local images'],
+            ['Trigger words', '2 become tags'],
             ['Protected', 'Nothing is protected'], ['Network', 'Downloads up to 2 example images from CivitAI'],
             ['Backup', `Create and verify before changes (${plan.backup.destination_label})`],
             ['Media on disk', 'No files are removed; image links are replaced']] },
@@ -333,9 +335,10 @@ test('LoRA import review comparison detects mutations', async ({ page, request }
     const expected = mapImportConcept(concept, plan);
     const paths = async () => diffInventory(expected, await page.evaluate(measureReview)).map(item => item.path);
     expect(await paths()).toEqual([]);
-    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[4].textContent = 'Downloads'; });
-    expect(await paths()).toEqual(['grid.rows.4.0']);
-    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[4].textContent = 'Network'; });
+    // Network is the sixth row (after #618's Trigger words).
+    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[5].textContent = 'Downloads'; });
+    expect(await paths()).toEqual(['grid.rows.5.0']);
+    await page.evaluate(() => { document.querySelectorAll('dialog#modal[open] dl.meta-grid dt')[5].textContent = 'Network'; });
     const undoGrid = await mutate(page, { css: 'dialog#modal dl.meta-grid { column-gap: 3px; }' });
     expect(await paths()).toEqual(expect.arrayContaining(['grid.columnGap']));
     await undoGrid();

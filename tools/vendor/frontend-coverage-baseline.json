@@ -55,7 +55,7 @@
   },
   "prompt-bridge-adapter.js": {
     "lines": 98,
-    "branches": 93,
+    "branches": 94,
     "functions": 98,
     "statements": 98
   },
@@ -70,12 +70,6 @@
     "branches": 94,
     "functions": 98,
     "statements": 98
-  },
-  "workspace-entry.js": {
-    "lines": 80,
-    "branches": 80,
-    "functions": 80,
-    "statements": 80
   },
   "save-to-library.js": {
     "lines": 98,
@@ -107,9 +101,15 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace-entry.js": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/activity-job-view.mjs": {
     "lines": 97,
-    "branches": 87,
+    "branches": 88,
     "functions": 98,
     "statements": 97
   },
@@ -145,7 +145,7 @@
   },
   "workspace/file-inspector.mjs": {
     "lines": 97,
-    "branches": 93,
+    "branches": 94,
     "functions": 93,
     "statements": 97
   },
@@ -217,7 +217,7 @@
   },
   "workspace/images-delete.mjs": {
     "lines": 95,
-    "branches": 81,
+    "branches": 82,
     "functions": 92,
     "statements": 95
   },
@@ -293,6 +293,12 @@
     "functions": 98,
     "statements": 98
   },
+  "workspace/inspect-choice.mjs": {
+    "lines": 98,
+    "branches": 92,
+    "functions": 89,
+    "statements": 98
+  },
   "workspace/inspect.mjs": {
     "lines": 98,
     "branches": 92,
@@ -335,15 +341,9 @@
     "functions": 98,
     "statements": 98
   },
-  "workspace/older-images-notice.mjs": {
-    "lines": 80,
-    "branches": 70,
-    "functions": 80,
-    "statements": 80
-  },
   "workspace/library-location.mjs": {
     "lines": 94,
-    "branches": 91,
+    "branches": 92,
     "functions": 93,
     "statements": 94
   },
@@ -427,7 +427,7 @@
   },
   "workspace/media-viewer.mjs": {
     "lines": 98,
-    "branches": 93,
+    "branches": 95,
     "functions": 98,
     "statements": 98
   },
@@ -436,6 +436,12 @@
     "branches": 86,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/older-images-notice.mjs": {
+    "lines": 82,
+    "branches": 91,
+    "functions": 81,
+    "statements": 82
   },
   "workspace/plural.mjs": {
     "lines": 98,
@@ -480,21 +486,27 @@
     "statements": 95
   },
   "workspace/review-link.mjs": {
-    "lines": 95,
-    "branches": 70,
-    "functions": 91,
-    "statements": 95
+    "lines": 96,
+    "branches": 77,
+    "functions": 93,
+    "statements": 96
+  },
+  "workspace/review-options.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
   },
   "workspace/review-state.mjs": {
     "lines": 96,
-    "branches": 85,
+    "branches": 89,
     "functions": 98,
     "statements": 96
   },
   "workspace/review.mjs": {
     "lines": 98,
-    "branches": 89,
-    "functions": 93,
+    "branches": 92,
+    "functions": 94,
     "statements": 98
   },
   "workspace/saved-views.mjs": {
@@ -504,6 +516,12 @@
     "statements": 98
   },
   "workspace/state.mjs": {
+    "lines": 98,
+    "branches": 98,
+    "functions": 98,
+    "statements": 98
+  },
+  "workspace/sticky-chrome.mjs": {
     "lines": 98,
     "branches": 98,
     "functions": 98,
@@ -523,7 +541,7 @@
   },
   "workspace/system-controls.mjs": {
     "lines": 98,
-    "branches": 89,
+    "branches": 90,
     "functions": 89,
     "statements": 98
   },
@@ -533,6 +551,12 @@
     "functions": 94,
     "statements": 95
   },
+  "workspace/system-instructions.mjs": {
+    "lines": 97,
+    "branches": 88,
+    "functions": 98,
+    "statements": 97
+  },
   "workspace/system-integrations.mjs": {
     "lines": 97,
     "branches": 90,
@@ -540,10 +564,10 @@
     "statements": 97
   },
   "workspace/system-maintenance.mjs": {
-    "lines": 93,
-    "branches": 81,
+    "lines": 96,
+    "branches": 87,
     "functions": 92,
-    "statements": 93
+    "statements": 96
   },
   "workspace/system-overview.mjs": {
     "lines": 96,
@@ -551,27 +575,21 @@
     "functions": 98,
     "statements": 96
   },
+  "workspace/system-skipped-tags.mjs": {
+    "lines": 98,
+    "branches": 89,
+    "functions": 98,
+    "statements": 98
+  },
   "workspace/system-sources.mjs": {
     "lines": 98,
     "branches": 89,
     "functions": 95,
     "statements": 98
   },
-  "workspace/system-instructions.mjs": {
-    "lines": 80,
-    "branches": 80,
-    "functions": 80,
-    "statements": 80
-  },
-  "workspace/system-skipped-tags.mjs": {
-    "lines": 80,
-    "branches": 80,
-    "functions": 80,
-    "statements": 80
-  },
   "workspace/system-state.mjs": {
     "lines": 98,
-    "branches": 94,
+    "branches": 95,
     "functions": 98,
     "statements": 98
   },
@@ -582,10 +600,10 @@
     "statements": 98
   },
   "workspace/system-thumbnail-location.mjs": {
-    "lines": 80,
-    "branches": 65,
-    "functions": 75,
-    "statements": 80
+    "lines": 92,
+    "branches": 80,
+    "functions": 93,
+    "statements": 92
   },
   "workspace/system-thumbnails.mjs": {
     "lines": 98,
@@ -598,6 +616,12 @@
     "branches": 92,
     "functions": 98,
     "statements": 98
+  },
+  "workspace/tag-cleanup-review.mjs": {
+    "lines": 96,
+    "branches": 85,
+    "functions": 98,
+    "statements": 96
   },
   "workspace/theme.mjs": {
     "lines": 98,
@@ -664,23 +688,5 @@
     "branches": 95,
     "functions": 98,
     "statements": 97
-  },
-  "workspace/sticky-chrome.mjs": {
-    "lines": 80,
-    "branches": 60,
-    "functions": 80,
-    "statements": 80
-  },
-  "workspace/inspect-choice.mjs": {
-    "lines": 98,
-    "branches": 92,
-    "functions": 89,
-    "statements": 98
-  },
-  "workspace/review-options.mjs": {
-    "lines": 98,
-    "branches": 98,
-    "functions": 98,
-    "statements": 98
   }
 }

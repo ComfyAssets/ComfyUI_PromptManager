@@ -19,6 +19,10 @@ Pair prompts' empty category and tags, live in their own modules):
   It also forgets the removal marks (#480) that hide nothing any more: the
   file is gone or changed, under a readable source (#501, ``_stale_marks``).
 
+#618's ``tag_cleanup`` (``database/tag_cleanup.py``) is planned from a tag
+search's findings, never previewed here; its apply rechecks each target and
+keeps the ones that changed instead of refusing the whole plan.
+
 ``preview_maintenance`` reads one snapshot on its own ``mode=ro`` connection
 (``health.readonly_uri``) and closes it in ``finally``; files are looked at
 after the snapshot ended. It returns a ``MaintenanceDraft``: the public plan
@@ -64,6 +68,9 @@ MAINTENANCE_OPERATIONS = (
     # #550: fill old Pair prompts' empty category and tags
     # (database/pair_metadata_repair.py).
     "pair_metadata",
+    # #618: tags to clean up, found by a job and planned from its findings
+    # (database/tag_cleanup.py); never previewed without them.
+    "tag_cleanup",
 )
 MAX_DETAILS = 50  # detail rows a plan lists
 MAX_RESULT_ROWS = 200  # changed records an apply describes (the job lists 200)
@@ -574,6 +581,9 @@ class MaintenanceOperations:
         """
         if operation not in MAINTENANCE_OPERATIONS:
             raise ValueError(f"Unknown maintenance operation {operation!r}")
+        if operation == "tag_cleanup":
+            # Planned from a find's findings (tag_cleanup.plan_tag_cleanup).
+            raise ValueError("tag_cleanup is planned from a tag search")
         roots = [str(root) for root in roots]
         if operation == "optimize":
             return self._plan_optimize()
@@ -867,6 +877,8 @@ class MaintenanceOperations:
         prompt operations also return ``kept``: every prompt the plan keeps,
         ``{prompt_id, reasons}`` in the review's wording (#550, #586); the
         links a missing-links plan keeps are read by ``kept_links``.
+        ``tag_cleanup`` (#618) does not compare the fingerprint: it rechecks
+        each target and returns every deleted and kept tag, uncapped.
         """
         if operation not in MAINTENANCE_OPERATIONS or operation == "workflow_storage":
             raise ValueError(f"Unknown maintenance operation {operation!r}")
@@ -885,6 +897,11 @@ class MaintenanceOperations:
                 from .pair_metadata_repair import apply_pair_metadata
 
                 return apply_pair_metadata(conn, fingerprint, targets)
+            if operation == "tag_cleanup":
+                # #618: each target is rechecked; a changed one is kept.
+                from .tag_cleanup import apply_tag_cleanup
+
+                return apply_tag_cleanup(conn, targets)
             if operation == "missing_links":
                 return self._apply_missing_links(
                     conn, fingerprint, targets, roots, list(marks)

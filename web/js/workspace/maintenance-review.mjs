@@ -17,6 +17,8 @@
  *   kept unless another is chosen). Each choice names its copy by `{group_id, root_index, path}`, so equal paths in two
  *   sources are never confused. The `p.small` says what removing a copy does, History keeping the removed paths in its
  *   run records. "Review duplicate cleanup" reviews the groups shown so far as a `duplicate_files` plan.
+ * - D210 (#618): "Review tag cleanup" (tag-cleanup-review.mjs) reviews its ticked tags as a `tag_cleanup` plan in the
+ *   same D100 dialog; that plan's backup is always taken (`required`).
  *
  * Every request goes through the page's api client; every listener sits on the section's `scope`.
  */
@@ -51,6 +53,8 @@ export const OPERATION_TITLES = Object.freeze({
     unused_components: 'Unused prompt components',
     // D192 (#550): beyond the concept, System › Maintenance › Database.
     pair_metadata: 'Pair category and tags',
+    // D210 (#618): beyond the concept; planned from a tag search's ticked tags (tag-cleanup-review.mjs).
+    tag_cleanup: 'Tag cleanup',
     missing_links: 'Missing-file links',
     duplicate_files: 'Duplicate image files',
     // Reviewed and applied through the API and seen in Activity; Maintenance has no row for it (the concept has none).

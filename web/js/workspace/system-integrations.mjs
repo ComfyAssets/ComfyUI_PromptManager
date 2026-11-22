@@ -17,7 +17,9 @@
  *   reviews the import (`POST /lora/import/preview`, read-only) and the shared review dialog shows what it replaces,
  *   what saved pairs block, what it downloads and the backup box; Start runs the "LoRA reference import" Activity job.
  *   #355: its first row, "LoraManager", names the settings source, storage mode and library the server read (the
- *   settings file is the row's hover title); "Found" counts metadata files, LoRAs and LoRAs with local images. When
+ *   settings file is the row's hover title); "Found" counts metadata files, LoRAs and LoRAs with local images.
+ *   #618 (D210): "Trigger words", after Found and only when a count is above 0, says how many trained-words entries
+ *   become tags and how many are lists or sentences the import does not make tags. When
  *   LoraManager's settings cannot be used, the plan has no token and the review says why and offers only Close.
  */
 import { createButton } from '../shared/toolkit/core.js';
@@ -198,6 +200,19 @@ export function closeNote(plan) {
 }
 
 /** D107: the import review's rows from the server's plan. */
+/**
+ * The "Trigger words" row (#618): how many trained-words entries become tags and how many are lists or sentences the
+ * import does not make tags; null when neither is above 0.
+ */
+function triggerWordsText(plan) {
+    const positive = value => (Number.isSafeInteger(value) && value > 0 ? value : 0);
+    const tags = positive(plan.trigger_tags);
+    const notTags = positive(plan.trigger_not_tags);
+    if (!tags && !notTags) return null;
+    const made = `${number(tags)} become tags`;
+    return notTags ? `${made} · ${number(notTags)} not made tags (lists or sentences)` : made;
+}
+
 export function importGrid(plan) {
     const downloads = Number.isSafeInteger(plan.planned_downloads) ? plan.planned_downloads : 0;
     const network = downloads
@@ -208,11 +223,13 @@ export function importGrid(plan) {
     const readable = count(plan.with_metadata);
     const local = count(plan.with_local_media);
     const layout = layoutText(plan.layout);
+    const triggers = triggerWordsText(plan);
     return [
         ...(layout ? [[LAYOUT_TERM, layout]] : []),
         ['Scope', plan.scope?.label || `${number(readable)} ${noun(readable, 'LoRA')}`],
         ['Found', `${number(found)} metadata ${noun(found, 'file')} · ${number(readable)} ${noun(readable, 'LoRA')} · `
             + `${number(local)} with local images`],
+        ...(triggers ? [['Trigger words', triggers]] : []),
         ['Protected', protectedText(plan.protected)],
         ['Network', network],
         ['Backup', backupText(plan.backup)],

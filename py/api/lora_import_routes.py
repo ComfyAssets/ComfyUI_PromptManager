@@ -6,9 +6,12 @@ current imports, those a saved pair uses and the example images an import
 would download. It writes nothing and requests nothing. It answers a
 ``Plan`` (the maintenance plan's shape, ``py/api/maintenance.py``) plus
 ``{lora_files, with_metadata, skipped, with_local_media, current_imports,
-blocked_by_pairs, planned_downloads, network:{planned_downloads, api_key},
-layout}`` (#355: ``layout`` says which LoraManager settings file, storage mode
-and library the import read, and ``error`` when they cannot be used). A plan
+blocked_by_pairs, planned_downloads, trigger_tags, trigger_not_tags,
+network:{planned_downloads, api_key}, layout}`` (#355: ``layout`` says which
+LoraManager settings file, storage mode and library the import read, and
+``error`` when they cannot be used; #618: ``trigger_tags`` and
+``trigger_not_tags`` count the trained-words entries that become tags and
+those that are lists or sentences, which the job log repeats). A plan
 that saved pairs block, or whose layout is unusable, carries no token
 (nothing can be applied).
 
@@ -102,6 +105,13 @@ def _import_line(result, skipped):
     if skipped:
         parts.append(f"{skipped:,} skipped")
     return " · ".join(parts)
+
+
+def not_tags_line(count):
+    """The job log's count of trained-words entries not made tags (#618)."""
+    entries = _count(count, "trained-words entry", "trained-words entries")
+    verb = "was" if count == 1 else "were"
+    return f"{entries} {verb} not made tags (lists or sentences)"
 
 
 def _all_downloads_failed(errors):
@@ -315,6 +325,8 @@ class LoraImportRoutesMixin:
                 "current_imports": current,
                 "blocked_by_pairs": blocked,
                 "planned_downloads": downloads,
+                "trigger_tags": int(found.get("trigger_tags", 0)),
+                "trigger_not_tags": int(found.get("trigger_not_tags", 0)),
                 "scope": {
                     "count": found["with_metadata"],
                     "label": (
@@ -441,6 +453,9 @@ class LoraImportRoutesMixin:
             self.logger.exception("LoRA import staging failed")
             return _fail_job(job, "import-failed", f"{FAILED} {CACHE_NOTE}")
         self._count_downloads(job, staged)
+        not_tags = staged.stats.get("trigger_not_tags", 0)
+        if not_tags:
+            job.log_line(not_tags_line(not_tags))
         # M4: what staging skipped stays on the job whatever happens next.
         job.record_counted(
             "skipped",

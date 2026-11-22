@@ -52,6 +52,10 @@ read. These per-server hooks only change what a System test needs on top:
   ``{"groups": n}`` adds ``n`` more groups of two copies each, and
   ``{"trio": false}`` leaves the three ``same.png``/``copy.png`` copies out,
   and ``{"long": true}`` adds a group under long names with no spaces;
+- ``POST /__test__/system/tag-cleanup`` (#618) saves ``S618 owner`` tagged
+  ``s618 a, b`` (a comma list), ``s618-clean`` and ``lora:S618, v2`` (a LoRA's
+  identity tag, never a comma finding), and adds the unused tags
+  ``s618 x，y`` (a fullwidth comma), ``s618-ghost`` and ``s618-spirit``;
 - ``GET /__test__/system/digest`` (S7) answers the sha256 of the database's
   rows (a read-only dump) and of every media file under ``output`` and
   ``input`` (not the automatic previews in ``thumbnails``), so a test proves
@@ -347,6 +351,24 @@ def register_system_commands(app, routes, api, root: Path):
                 "INSERT INTO prompts(text, created_at) VALUES(?, ?)", texts
             )
             conn.commit()
+        return web.json_response({"success": True})
+
+    @routes.post("/__test__/system/tag-cleanup")
+    async def tag_cleanup(request):
+        def seed():
+            text = "S618 owner"
+            api.db.save_prompt(
+                text,
+                prompt_hash=hashlib.sha256(text.lower().encode()).hexdigest(),
+                tags=["s618 a, b", "s618-clean", "lora:S618, v2"],
+            )
+            with api.db.model.get_connection() as conn:
+                conn.executemany(
+                    "INSERT INTO tags(name) VALUES(?)",
+                    [("s618 x\uff0cy",), ("s618-ghost",), ("s618-spirit",)],
+                )
+
+        await api._run_in_executor(seed)
         return web.json_response({"success": True})
 
     @routes.post("/__test__/system/pair-metadata")

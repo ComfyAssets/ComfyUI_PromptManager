@@ -8,7 +8,7 @@ reaches a real LoraManager, ComfyUI install or the network:
   the image cache, forgets every LoRA import and injected failure, and opens
   the download gate;
 - ``POST /__test__/integrations/lora-manager``
-  ``{loras, civitai, preview, previous, settings}`` writes
+  ``{loras, civitai, preview, previous, settings, junk}`` writes
   ``custom_nodes/ComfyUI-Lora-Manager`` (detected through the
   ``folder_paths`` stub's base path) and ``loras`` LoRAs under
   ``models/loras``: each a ``<stem>.safetensors`` model beside its
@@ -18,7 +18,9 @@ reaches a real LoraManager, ComfyUI install or the network:
   downloads it only for a LoRA without a local preview); ``previous`` saves
   that many earlier ``lora-manager`` imports with tags and image links;
   ``settings: "invalid"`` makes LoraManager's settings file unreadable JSON
-  (the server's own isolated settings folder, ``LORA_MANAGER_SETTINGS_DIR``);
+  (the server's own isolated settings folder, ``LORA_MANAGER_SETTINGS_DIR``); ``junk``
+  adds a comma list and a ``<lora:…>`` call to each LoRA's trained words, which
+  the import does not make tags (#618);
 - ``POST /__test__/integrations/gate`` ``{hold}`` holds every CivitAI
   download until it is released (``{"hold": false}``), so a test sees the job
   while it downloads;
@@ -145,6 +147,9 @@ def register_integrations_commands(app, routes, api, root: Path):
         for number in range(count):
             stem = f"style_{number + 1:02}"
             civitai = {"trainedWords": [f"trigger{number + 1}"]}
+            if data.get("junk") is True:
+                # #618: a comma list and a model call, never made tags.
+                civitai["trainedWords"] += ["score_9, score_8_up,", "<lora:x:0.8>"]
             if data.get("civitai") is True:
                 civitai["images"] = [
                     {

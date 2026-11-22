@@ -24,8 +24,42 @@ test('the section lists the concept rows in its order, labels and danger marks',
     // D192 (#550, beyond the concept): "Pair category and tags" follows "Unused prompt components" in Database.
     const expected = concept.map(([title, ...rest]) => [title.replace('&amp;', '&'), ...rest]);
     expected.splice(expected.findIndex(([title]) => title === 'Unused prompt components') + 1, 0, PAIR_ROW);
+    // D210 (#618, beyond the concept): "Tag cleanup" follows "Pair category and tags".
+    expected.splice(expected.findIndex(([title]) => title === PAIR_ROW[0]) + 1, 0, TAG_ROW);
     assert.deepEqual(production, expected);
-    assert.equal(production.length, 9);
+    assert.equal(production.length, 10);
+});
+
+const TAG_ROW = Object.freeze(['Tag cleanup', 'Find tags that are whole comma lists or are used nowhere. Review them, then ' +
+    'remove only what you tick.', 'Find tags', true]);
+
+test('D210: the Tag cleanup row starts the tag search with a danger mark (#618)', async () => {
+    const { MAINTENANCE_SURFACES, TAG_CLEANUP_KIND } = await maintenance;
+    const { OPERATION_TITLES } = await review;
+    const [, database] = MAINTENANCE_SURFACES[0];
+    const row = database.find(([title]) => title === TAG_ROW[0]);
+    assert.deepEqual(row, [TAG_ROW[0], TAG_ROW[1], TAG_ROW[2], TAG_CLEANUP_KIND, true]);
+    assert.equal(TAG_CLEANUP_KIND, 'tag_cleanup');
+    assert.equal(OPERATION_TITLES.tag_cleanup, 'Tag cleanup');
+});
+
+test('startFind opens the started search, toasts a busy start and says when it could not start', async () => {
+    const { startFind, TAG_FIND_FAILED, FIND_FAILED } = await maintenance;
+    const scope = { signal: { aborted: false } };
+    const toasts = [];
+    const routes = [];
+    const run = (result, kind = 'tag_cleanup', failed = TAG_FIND_FAILED) => startFind({
+        store: { start: async started => { assert.equal(started, kind); if (result instanceof Error) throw result; return result; } },
+        scope, kind, failed, notify: text => toasts.push(text), navigate: route => routes.push(route) });
+    await run({ job: { id: 'a'.repeat(32) } });
+    assert.deepEqual(routes, [`#/activity/${'a'.repeat(32)}`]);
+    await run({ busy: { id: 'b', title: 'Restore database', kind: 'restore' } });
+    assert.equal(toasts.length, 1);
+    await run(new Error('offline'));
+    assert.equal(toasts[1], 'The tag search could not start. Try again.');
+    await run(new Error('offline'), 'duplicates', FIND_FAILED);
+    assert.equal(toasts[2], 'The duplicate search could not start. Try again.');
+    assert.equal(routes.length, 1);
 });
 
 const PAIR_ROW = Object.freeze(['Pair category and tags', 'Fill an empty category or tags on prompts older Pair node runs ' +
@@ -173,6 +207,16 @@ test('a failed apply the library overtook offers Review again, back to its revie
     assert.equal(reviewAgainOf(failed('maintenance', 'plan-changed', 'not_an_operation')), null);
     assert.equal(reviewAgainOf({ ...failed('maintenance', 'plan-changed', 'optimize'), state: 'finished' }), null);
     assert.equal(reviewAgainOf(failed('scan', 'plan-changed', 'optimize')), null);
+    // #618: a Tag cleanup cannot be previewed without its options: search again in Maintenance.
+    assert.deepEqual(reviewAgainOf(failed('maintenance', 'backup-failed', 'tag_cleanup')), { section: '#/system/maintenance' });
+    assert.deepEqual(reviewAgainOf(failed('maintenance', undefined, 'tag_cleanup')), { section: '#/system/maintenance' });
+});
+
+test('#618: a tag search lists records, not files', async () => {
+    const { listsRecords } = await jobView;
+    assert.equal(listsRecords({ kind: 'tag_cleanup', scope: {} }), true);
+    assert.equal(listsRecords({ kind: 'maintenance', scope: { operation: 'tag_cleanup' } }), true);
+    assert.equal(listsRecords({ kind: 'duplicates', scope: {} }), false);
 });
 
 test('a plan with nothing to do offers no Apply (S7 live test)', async () => {

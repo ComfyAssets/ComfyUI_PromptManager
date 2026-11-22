@@ -99,6 +99,64 @@ class TestGetTriggerWords(unittest.TestCase):
         self.assertEqual(get_trigger_words_from_metadata(meta), ["valid", "also_valid"])
 
 
+class TestTriggerWordTags(unittest.TestCase):
+    """#618: a trained-words entry becomes a tag only when it is one short
+    clean phrase (Option A); the trigger-word lookup keeps every entry."""
+
+    KEPT = [
+        "neon glow",
+        "  ohwx woman  ",
+        "score_9",
+        "hatsune miku (vocaloid)",
+        "hatsune miku \\(vocaloid\\)",
+        "a" * 50,
+    ]
+    SKIPPED = [
+        "a" * 51,
+        "score_9, score_8_up, realistic,",
+        "realistic,",
+        "赛博朋克，霓虹",
+        "line one\nline two",
+        "tab\tword",
+        "<lora:neon:0.8>",
+        "(masterpiece:1.2)",
+        "a girl (smile:0.8) outdoors",
+        "ratio (16:9)",
+    ]
+
+    def test_short_clean_phrases_are_tags(self):
+        for entry in self.KEPT:
+            with self.subTest(entry=entry):
+                self.assertTrue(lora_utils.is_tag_phrase(entry))
+
+    def test_lists_sentences_and_prompt_syntax_are_not(self):
+        for entry in self.SKIPPED:
+            with self.subTest(entry=entry):
+                self.assertFalse(lora_utils.is_tag_phrase(entry))
+
+    def test_non_entries_are_not_phrases(self):
+        for entry in ("", "   ", None, 12):
+            with self.subTest(entry=entry):
+                self.assertFalse(lora_utils.is_tag_phrase(entry))
+
+    def test_trigger_word_tags_keeps_order_strips_and_counts(self):
+        meta = _make_metadata(
+            trained_words=[*self.KEPT, *self.SKIPPED, "", "   ", None, 12]
+        )
+        tags, not_tags = lora_utils.trigger_word_tags(meta)
+        self.assertEqual(tags, [entry.strip() for entry in self.KEPT])
+        self.assertEqual(not_tags, len(self.SKIPPED))
+
+    def test_trigger_word_tags_without_trained_words(self):
+        self.assertEqual(lora_utils.trigger_word_tags({}), ([], 0))
+
+    def test_trigger_words_still_hold_every_entry(self):
+        meta = _make_metadata(trained_words=["neon", "a, b, c", "<lora:x:1>"])
+        self.assertEqual(
+            get_trigger_words_from_metadata(meta), ["neon", "a, b, c", "<lora:x:1>"]
+        )
+
+
 class TestGetExamplePrompt(unittest.TestCase):
     """Test get_example_prompt_from_metadata — extracts first usable prompt."""
 
@@ -1295,6 +1353,20 @@ class TestTriggerWordCache(unittest.TestCase):
             self.assertEqual(
                 self.cache.get_trigger_words("my_lora"), ["trigger1", "trigger2"]
             )
+
+    def test_lists_and_sentences_stay_trigger_words(self):
+        """#618: the phrase rule only decides tags; the lookup keeps all."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            words = ["neon", "a, b, c", "<lora:x:1>"]
+            meta = {
+                "file_name": "lists.safetensors",
+                "civitai": {"trainedWords": words},
+            }
+            (Path(tmpdir) / "lists.metadata.json").write_text(json.dumps(meta))
+            (Path(tmpdir) / "lists.safetensors").write_bytes(b"m")
+            with patch("py.lora_utils.default_lora_roots", return_value=[tmpdir]):
+                self.cache.load(tmpdir)
+            self.assertEqual(self.cache.get_trigger_words("lists"), words)
 
     def test_case_insensitive_lookup(self):
         with tempfile.TemporaryDirectory() as tmpdir:

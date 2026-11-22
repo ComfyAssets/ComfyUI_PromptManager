@@ -248,3 +248,23 @@ test('autotag gets Tagged / Unchanged / Skipped / Errors and Cancel; its legacy 
     assert.deepEqual([legacy.tiles, legacy.outcomes, [...legacy.openable]], [[], [], []]);
     assert.equal(canCancel(held), false);
 });
+
+test('a tag search counts the tags found, opens no row and cannot be cancelled (#618)', async () => {
+    const { kindOf, viewOf, canCancel } = await source;
+    const { finishToast, startToast, pillParts, outcomeLine } = await store;
+    const find = job({ kind: 'tag_cleanup', title: 'Find tags to clean up', processed: 0, total: 0, progress: 0,
+        counters: { found: 0 }, cancellable: false });
+    const view = kindOf('tag_cleanup');
+    assert.equal(viewOf(find), view);
+    assert.deepEqual(view.tiles, [['found', 'Found', '']]);
+    assert.deepEqual(view.outcomes, [['found', 'Found']]);
+    assert.deepEqual([...view.openable], []);
+    assert.equal(view.log, 'Search log');
+    assert.equal(canCancel(find), false);
+    assert.equal(pillParts(find).text, 'Finding tags');
+    assert.equal(startToast(find), 'Tag search started.');
+    const found = { ...find, state: 'finished', counters: { found: 232 } };
+    assert.equal(outcomeLine(found), '232 tags found');
+    assert.equal(finishToast(found), 'Tag search finished · 232 tags found');
+    assert.equal(finishToast({ ...found, counters: { found: 1 } }), 'Tag search finished · 1 tag found');
+});

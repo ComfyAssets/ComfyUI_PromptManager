@@ -252,6 +252,13 @@ class TestPreviews(MaintenanceDatabaseCase):
         with self.assertRaises(ValueError):
             self.db.preview_maintenance("reboot", [])
 
+    def test_tag_cleanup_is_planned_from_a_find_not_previewed(self):
+        # #618: it needs a find's findings and a selection; without this
+        # refusal it would fall through to the unused-components plan.
+        self.assertIn("tag_cleanup", maintenance.MAINTENANCE_OPERATIONS)
+        with self.assertRaises(ValueError):
+            self.db.preview_maintenance("tag_cleanup", [])
+
     def test_same_library_gives_the_same_fingerprint(self):
         self.populate()
         for operation in OPERATIONS:
@@ -435,6 +442,27 @@ class TestApply(MaintenanceDatabaseCase):
         roots = [str(self.output)] if roots is None else roots
         return self.db.apply_maintenance(
             draft.operation, draft.fingerprint, draft.targets, roots
+        )
+
+    def test_tag_cleanup_apply_runs_the_per_target_rechecks(self):
+        from database import tag_cleanup
+
+        with self.db.model.get_connection() as conn:
+            conn.execute("INSERT INTO tags(name) VALUES('a, b'), ('ghost')")
+        found = tag_cleanup.find_tag_cleanup(self.db_path)
+        select = {
+            r: [f["tag_id"] for f in found["rules"][r]] for r in ("comma", "unused")
+        }
+        draft = tag_cleanup.plan_tag_cleanup(self.db_path, found, select)
+        with self.db.model.get_connection() as conn:
+            conn.execute("UPDATE tags SET name='Ghost' WHERE name='ghost'")
+        result = self.db.apply_maintenance(
+            "tag_cleanup", draft.fingerprint, draft.targets, []
+        )
+        self.assertEqual([r["name"] for r in result["rows"]], ["a, b"])
+        self.assertEqual(
+            [(k["name"], k["reason"]) for k in result["kept"]],
+            [("ghost", "renamed since the review")],
         )
 
     def test_unused_components_apply_removes_exactly_the_reviewed_prompts(self):

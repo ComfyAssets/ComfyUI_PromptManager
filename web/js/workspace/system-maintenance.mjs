@@ -3,14 +3,16 @@
  *
  * - The notice "Check first. Review changes. Then apply." with "Run health checks" (D123), then the surfaces
  *   "Database" and "Images & cache" with the concept's eight operations, in its order, labels and danger marks, plus
- *   D192 (#550, beyond the concept): "Pair category and tags" after "Unused prompt components".
+ *   D192 (#550, beyond the concept): "Pair category and tags" after "Unused prompt components", and D210 (#618, beyond
+ *   the concept): "Tag cleanup" after it.
  * - Integrity & relationship checks → Check runs the same read-only health check and opens the Health report (D95);
  *   its "Review missing links" reviews a fresh Missing-file links plan, never a cleanup.
  * - Duplicate prompt text, Optimize database, Unused prompt components, Pair category and tags (`pair_metadata`: fill
  *   old Pair prompts' empty category and tags from their saved pairs) and Missing-file links → Review plan open the
  *   D100 plan review (maintenance-review.mjs), which applies only what it showed, as an Activity job.
  * - Duplicate image files → Find duplicates starts the duplicate search as an Activity job and opens it; its view
- *   offers Review groups (D101) once it found some.
+ *   offers Review groups (D101) once it found some. Tag cleanup → Find tags (D210, danger: it ends in deleting tags)
+ *   starts the tag search the same way (`startFind`); its view offers Review tags once it found some.
  * - Thumbnail cache → Review options opens the S5 "Thumbnail maintenance" dialog (D99).
  * - D102 (Q5): Metadata cache clears only the browser entries Prompt Manager owns as a cache (cache-ownership.js,
  *   #222). The inventory has none, so the row says "Nothing is cached in this browser." and its Review plan is
@@ -29,6 +31,8 @@ import { noun } from './plural.mjs';
 
 export const DUPLICATES_KIND = 'duplicates';
 export const FIND_FAILED = 'The duplicate search could not start. Try again.';
+export const TAG_CLEANUP_KIND = 'tag_cleanup';
+export const TAG_FIND_FAILED = 'The tag search could not start. Try again.';
 export const NOTHING_CACHED_REASON = 'Nothing is cached in this browser.';
 export const STORAGE_UNCHECKED_REASON = 'This browser did not allow checking its storage.';
 export const METADATA_CACHE_DESCRIPTION = 'Clear only Prompt Manager metadata cached by this browser.';
@@ -44,6 +48,9 @@ export const MAINTENANCE_SURFACES = Object.freeze([
         // D192 (#550): beyond the concept. Fills only empty fields, deletes nothing (no danger mark).
         ['Pair category and tags', 'Fill an empty category or tags on prompts older Pair node runs saved, from their saved ' +
             'pairs. Only empty fields of never-edited prompts.', 'Review plan', 'pair_metadata'],
+        // D210 (#618): beyond the concept. Finds comma-list and unused tags; the review deletes only ticked ones (danger).
+        ['Tag cleanup', 'Find tags that are whole comma lists or are used nowhere. Review them, then remove only what you ' +
+            'tick.', 'Find tags', TAG_CLEANUP_KIND, true],
     ]],
     ['Images & cache', [
         ['Missing-file links', 'Remove stale database links only. Files on disk are never deleted by this operation.', 'Review plan',
@@ -66,10 +73,10 @@ const ownership = () => window.CacheOwnership;
 const browserStorage = () => window.localStorage;
 const cacheStorage = () => ('caches' in window ? window.caches : null);
 
-/** Start the duplicate search and open its job; a refused or failed start says why and stays. */
-export async function findDuplicates({ store, scope, notify = showWorkspaceToast, navigate = navigateTo }) {
+/** Start a search job of `kind` (duplicates, tag_cleanup) and open it; a refused start toasts busy, a failed one `failed`. */
+export async function startFind({ store, scope, kind, failed, notify = showWorkspaceToast, navigate = navigateTo }) {
     try {
-        const result = await store.start(DUPLICATES_KIND);
+        const result = await store.start(kind);
         if (scope.signal.aborted) return;
         if (result.busy !== undefined) {
             notify(busyToast(result.busy));
@@ -77,7 +84,7 @@ export async function findDuplicates({ store, scope, notify = showWorkspaceToast
         }
         navigate(`#/activity/${result.job.id}`);
     } catch {
-        if (!scope.signal.aborted) notify(FIND_FAILED);
+        if (!scope.signal.aborted) notify(failed);
     }
 }
 
@@ -157,7 +164,9 @@ export function mountMaintenance(container, { api, activity, scope, navigate = n
     const reviewMissing = reviewMissingLinks({ api, store: activity, scope, notify, navigate });
     const actions = {
         health: button => runHealthAction({ api, activity, scope, button, onReviewMissing: reviewMissing, notify }),
-        duplicates: () => findDuplicates({ store: activity, scope, notify, navigate }),
+        duplicates: () => startFind({ store: activity, scope, kind: DUPLICATES_KIND, failed: FIND_FAILED, notify, navigate }),
+        [TAG_CLEANUP_KIND]: () => startFind({ store: activity, scope, kind: TAG_CLEANUP_KIND, failed: TAG_FIND_FAILED, notify,
+            navigate }),
         thumbnails: button => openThumbnailReview({ api, store: activity, scope, trigger: button, navigate }),
     };
     const surfaces = MAINTENANCE_SURFACES.map(([heading, rows]) => {

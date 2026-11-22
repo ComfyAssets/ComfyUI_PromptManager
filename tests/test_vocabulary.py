@@ -871,6 +871,18 @@ class TestVocabularyTagCommands(unittest.TestCase):
                 ],
                 3,
             )
+        with self.db.model.get_connection() as conn:
+            # The sets that carried it moved revision (a Tag dialog opened
+            # before sees tag-conflict); so did the image index once.
+            self.assertEqual(
+                sorted(
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT tag_revision FROM media_annotation_bytes"
+                    )
+                ),
+                [2, 2, 2],
+            )
         renamed = self.command(
             "rename_vocabulary_tag",
             self.tag_id("keep"),
