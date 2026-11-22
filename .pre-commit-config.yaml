@@ -22,7 +22,8 @@ repos:
         types: [python]
         exclude: ^(tests/|reference/)
 
-      # Skipped when the pushed commits only change inert files (tools/ci/change_class.py, #639).
+      # Skipped for an inert push; a docs push runs only the two tests that read the docs
+      # (tools/ci/change_class.py, #639, #679).
       - id: tests
         name: tests
         entry: python tools/ci/change_class.py --unless-inert python -m tests.run_suite -q

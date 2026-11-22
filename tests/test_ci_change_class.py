@@ -288,14 +288,42 @@ class TestCommandLine(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(marker.exists())
         self.assertIn("inert", result.stdout)
-        # No range from pre-commit (a manual run) and a docs push both run it.
+        # No range from pre-commit (a manual run) and a code push both run it.
         self.assertEqual(self.run_script(*command).returncode, 0)
         self.assertTrue(marker.exists())
         marker.unlink()
-        self.commit({"README.md": "r3\n"})
+        self.commit({"py/x.py": "x = 1\n"})
         refs["PRE_COMMIT_TO_REF"] = self.head()
         self.assertEqual(self.run_script(*command, **refs).returncode, 0)
         self.assertTrue(marker.exists())
+
+    def test_a_docs_push_runs_only_the_tests_that_read_the_docs(self):
+        # #679: the full suite took minutes for a README edit.
+        ran = unittest.mock.Mock(return_value=unittest.mock.Mock(returncode=5))
+        with unittest.mock.patch.dict(os.environ, _isolated_environment(), clear=True):
+            with (
+                unittest.mock.patch.object(
+                    change_class, "class_of_range", return_value="docs"
+                ),
+                unittest.mock.patch.object(change_class.subprocess, "run", ran),
+            ):
+                code = change_class.main(["--unless-inert", "python", "-m", "full"])
+        ran.assert_called_once_with(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests.test_brand_assets",
+                "tests.test_package_contents",
+            ],
+            check=False,
+        )
+        self.assertEqual(code, 5)
+
+    def test_the_docs_tests_named_by_the_hook_exist(self):
+        for module in change_class.DOCS_TESTS:
+            path = ROOT / (module.replace(".", "/") + ".py")
+            self.assertTrue(path.is_file(), module)
 
     def test_the_pre_push_command_is_found_through_path(self):
         # On Windows a bare "npm" is npm.cmd: only a PATH lookup with PATHEXT finds it.

@@ -875,7 +875,8 @@ else by the next code change's gate. Run
 editing those files.
 
 The pre-push hook uses the same script: it skips the Python suite when the
-pushed commits are `inert` and runs it otherwise.
+pushed commits are `inert`, runs only those two test modules when they are
+`docs` (#679), and runs the whole suite otherwise.
 
 ## Required merge checks
 
