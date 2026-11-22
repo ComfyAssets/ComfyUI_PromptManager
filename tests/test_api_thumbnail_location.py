@@ -244,6 +244,45 @@ class TestMarker(unittest.TestCase):
         self.assertTrue(os.path.exists(lock))  # never taken from its holder
         self.assertEqual(pl.read_marker(self.folder)["keys"], {})
 
+    def _denying_open(self, refusals):
+        """``os.open`` that answers the lock's exclusive create with
+        PermissionError *refusals* times, as Windows does while the name is
+        delete-pending (#674); every other open is the real one."""
+        real_open, calls = os.open, []
+
+        def fake(path, flags, *args, **kwargs):
+            if str(path).endswith(pl.MARKER_LOCK_NAME) and flags & os.O_EXCL:
+                calls.append(path)
+                if len(calls) <= refusals:
+                    raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        return fake, calls
+
+    def test_a_lock_name_being_deleted_is_waited_out(self):
+        # #674: on Windows a lock another writer just unlinked can stay
+        # delete-pending for a moment; creating it then answers "access
+        # denied", not "exists". The writer waits and tries again.
+        pl.init_folder(self.folder)
+        fake, calls = self._denying_open(3)
+        with patch.object(pl.os, "open", fake):
+            pl.write_marker(self.folder, lambda m: m["keys"].update({"a-0123abcd": {}}))
+        self.assertEqual(len(calls), 4)
+        self.assertIn("a-0123abcd", pl.read_marker(self.folder)["keys"])
+        self.assertEqual(os.listdir(self.folder), [pl.MARKER_NAME])
+
+    def test_a_lock_that_stays_denied_reports_the_permission_error(self):
+        # A folder this install really cannot write keeps its own error
+        # (never a misleading "locked" timeout), and nothing is written.
+        pl.init_folder(self.folder)
+        fake, calls = self._denying_open(10**6)
+        with patch.object(pl.os, "open", fake):
+            with patch.object(pl, "MARKER_LOCK_TIMEOUT", 0.05):
+                with self.assertRaises(PermissionError):
+                    pl.write_marker(self.folder, lambda m: m["keys"].update({"x": {}}))
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(pl.read_marker(self.folder)["keys"], {})
+
     def test_a_folder_without_the_marker_is_missing(self):
         self.assertEqual(pl.folder_state(self.folder, "x")[:2], (False, "missing"))
         missing = os.path.join(self.folder, "gone")

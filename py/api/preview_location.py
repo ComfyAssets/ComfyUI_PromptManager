@@ -431,12 +431,22 @@ def _marker_lock(folder):
     (atomic on local disks and SMB/NFS shares, unlike ``flock``), so installs
     sharing the folder change the marker one at a time. A lock older than
     MARKER_LOCK_STALE was left by a writer that died and is taken over;
-    waiting longer than MARKER_LOCK_TIMEOUT raises TimeoutError."""
+    waiting longer than MARKER_LOCK_TIMEOUT raises TimeoutError.
+
+    On Windows a lock another writer just unlinked stays delete-pending while
+    any handle to it is open, and creating it then answers "access denied"
+    instead of "exists" (#674). That is waited out like a held lock; a folder
+    that stays denied until the timeout reports its PermissionError."""
     lock = os.path.join(folder, MARKER_LOCK_NAME)
     deadline = time.monotonic() + MARKER_LOCK_TIMEOUT
     while True:
         try:
             handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(MARKER_LOCK_POLL)
+            continue
         except FileExistsError:
             _break_stale_lock(lock)
             if time.monotonic() >= deadline:
