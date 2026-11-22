@@ -31,6 +31,7 @@ KEPT = (
     "LICENSE",
     "README.md",
     "README-legacy.md",
+    "CHANGELOG.md",
     "assets/readme/hero.webp",
 )
 

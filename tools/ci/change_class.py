@@ -6,7 +6,8 @@ Four classes. Two come from allowlists:
 - ``inert``: every file is one nothing reads at run or test time (the funding
   file, the security policy, the old README's screenshots, issue templates).
   No test job runs, and the pre-push hook skips the suite.
-- ``docs``: every file is inert or a document (the READMEs and their images).
+- ``docs``: every file is inert or a document (the READMEs, the changelog and
+  their images).
   No test job runs in CI (#666). Two Python tests read these files
   (``tests/test_brand_assets.py``, ``tests/test_package_contents.py``), so
   the pre-push hook still runs the suite for them.
@@ -45,7 +46,7 @@ from typing import Iterable, Optional
 
 INERT_FILES = frozenset({".github/FUNDING.yml", "SECURITY.md"})
 INERT_FOLDERS = ("images/", ".github/ISSUE_TEMPLATE/")
-DOCS_FILES = frozenset({"README.md", "README-legacy.md"})
+DOCS_FILES = frozenset({"README.md", "README-legacy.md", "CHANGELOG.md"})
 DOCS_FOLDERS = ("assets/readme/", "assets/brand/")
 
 VERSION_FILE = "pyproject.toml"
