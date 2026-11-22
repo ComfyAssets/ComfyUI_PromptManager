@@ -65,8 +65,8 @@ test('the section shows the concept rows; Metadata cache follows Q5 (D102)', asy
     ]))).toEqual([
         ['Database', [['Integrity & relationship checks', 'Check', ''], ['Duplicate prompt text', 'Review plan', ''],
             ['Optimize database', 'Review plan', ''], ['Unused prompt components', 'Review plan', 'danger'],
-            // D192 (#550): beyond the concept.
-            ['Pair category and tags', 'Review plan', '']]],
+            // D192 (#550) and D210 (#618): beyond the concept.
+            ['Pair category and tags', 'Review plan', ''], ['Tag cleanup', 'Find tags', 'danger']]],
         ['Images & cache', [['Missing-file links', 'Review plan', 'danger'], ['Duplicate image files', 'Find duplicates', ''],
             ['Thumbnail cache', 'Review options', ''], ['Metadata cache', 'Review plan', '']]],
     ]);
@@ -480,6 +480,104 @@ test('Find duplicates starts a job; its view links Review groups; Keep radios bu
         expect((await request.get('/prompt_manager/images/serve/s7-dupes/same.png?root=1')).status()).toBe(200);
         expect((await request.get('/prompt_manager/images/serve/s7-dupes/same.png?root=0')).status()).toBe(404);
         expect((await request.get('/prompt_manager/images/serve/s7-dupes/copy.png?root=0')).status()).toBe(404);
+    });
+
+test('D210: Tag cleanup finds comma and unused tags, reviews only the ticked rule and deletes only it (#618)',
+    async ({ page, request }) => {
+        await expect(await request.post('/__test__/system/tag-cleanup')).toBeOK();
+        const previews = [];
+        page.on('request', item => { if (item.url().endsWith(PREVIEW_URL)) previews.push(item.postDataJSON()); });
+        const before = (await serverJson(request, '/__test__/system/backups')).safety.length;
+        await openMaintenance(page);
+        const tagRow = row(page, 'Tag cleanup');
+        await expect(tagRow.locator('p')).toHaveText('Find tags that are whole comma lists or are used nowhere. Review them, '
+            + 'then remove only what you tick.');
+        await tagRow.getByRole('button', { name: 'Find tags', exact: true }).click();
+        await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+        const findId = page.url().split('/').pop();
+        const main = page.locator('#workspace-main');
+        await expect(main.locator('h1')).toHaveText('Find tags to clean up');
+        const reviewTags = main.getByRole('button', { name: 'Review tags', exact: true });
+        await expect(reviewTags).toBeVisible();
+        await expect(main.locator('.stat-row .stat dt')).toHaveText(['Found']);
+        await expect(main.locator('.stat-row .stat dd')).toHaveText(['4']);
+        // The found rows are tags (records): plain text, never an open action; no lora: tag is a comma finding.
+        const results = main.getByRole('region', { name: 'Results', exact: true });
+        await expect(results.locator('.outcome-files > .file-row')).toHaveText(['s618 a, b · Tags containing a comma',
+            's618 x，y · Tags containing a comma', 's618-ghost · Tags with no links', 's618-spirit · Tags with no links']);
+        await expect(results.locator('.outcome-files button')).toHaveCount(0);
+
+        await reviewTags.click();
+        const review = dialog(page);
+        await expect(review.locator('#modal-title')).toHaveText('Review tag cleanup');
+        const status = review.locator('#modal-body > p[role="status"]');
+        await expect(status).toHaveText('0 tags selected');
+        const start = review.getByRole('button', { name: 'Review cleanup', exact: true });
+        await expect(start).toBeDisabled();
+        const comma = review.locator('.tag-cleanup-rule[data-rule="comma"]');
+        const unused = review.locator('.tag-cleanup-rule[data-rule="unused"]');
+        await expect(comma.locator(':scope > label')).toHaveText('Tags containing a comma (2)');
+        await expect(unused.locator(':scope > label')).toHaveText('Tags with no links (2)');
+        await expect(comma.locator(':scope > p.small')).toHaveText('A whole list saved as one tag, usually from a LoRA\'s '
+            + 'trained words. Removes the tag from its prompts, pairs and images and deletes it.');
+        await expect(review.locator('#modal-body > p.small').last()).toHaveText(/^Nothing is deleted until you review and apply/);
+        // Nothing is ticked; the tag rows are built when Show tags first opens.
+        await expect(comma.locator('details input')).toHaveCount(0);
+        await comma.locator(':scope > label input').check();
+        await expect(status).toHaveText('2 tags selected');
+        await expect(start).toBeEnabled();
+        await comma.locator('details > summary').click();
+        const tags = comma.locator('details label');
+        await expect(tags).toHaveText(['s618 a, b · 1 prompt', 's618 x，y · no links']);
+        await expect(tags.locator('input')).toHaveCount(2);
+        for (const box of await tags.locator('input').all()) await expect(box).toBeChecked();
+        await tags.nth(1).locator('input').uncheck();
+        await expect(status).toHaveText('1 tag selected');
+        expect(await comma.locator(':scope > label input').evaluate(box => [box.checked, box.indeterminate])).toEqual([false, true]);
+        await tags.nth(1).locator('input').check();
+        await expect(status).toHaveText('2 tags selected');
+
+        await start.click();
+        await expect(dialog(page).locator('#modal-title')).toHaveText('Review maintenance plan');
+        await expect(dialog(page).locator('#modal-body > h3')).toHaveText('Tag cleanup');
+        expect(previews).toHaveLength(1);
+        expect(previews[0].operation).toBe('tag_cleanup');
+        expect(previews[0].options.job_id).toBe(findId);
+        expect(previews[0].options.select.map(entry => [entry.rule, entry.tag_ids.length])).toEqual([['comma', 2]]);
+        const grid = await gridOf(page);
+        expect(grid.slice(0, 2)).toEqual([['Scope', 'Delete 2 tags (removed from 1 prompt, 0 pairs and 0 images)'],
+            ['Protected', 'Nothing is protected']]);
+        expect(grid[2][1]).toMatch(/^Always created and verified first \(.+\.backup_<date and time>\)$/);
+        expect(grid[3]).toEqual(['Media on disk', 'No files are removed']);
+        await dialog(page).getByRole('button', { name: 'Apply reviewed operation', exact: true }).click();
+        await expect(page).not.toHaveURL(new RegExp(findId));
+        await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+        const job = await ended(request, page.url().split('/').pop());
+        expect([job.kind, job.title, job.state, job.counters.changed, job.counters.protected])
+            .toEqual(['maintenance', 'Tag cleanup', 'finished', 2, 0]);
+        await expect(main.locator('h1')).toHaveText('Tag cleanup');
+        await results.locator('.outcome-list > button').filter({ hasText: 'Changed' }).click();
+        await expect(results.locator('.outcome-files > .file-row')).toHaveText([
+            'Deleted tag “s618 a, b” (Tags containing a comma) · removed from 1 prompt',
+            'Deleted tag “s618 x，y” (Tags containing a comma)']);
+        // The safety backup is always taken.
+        expect((await serverJson(request, '/__test__/system/backups')).safety.length).toBe(before + 1);
+        // Tags & categories: the other rule's tags and the lora: tag are still there.
+        const names = (await serverJson(request, '/prompt_manager/vocabulary/tags?limit=200')).tags.map(tag => tag.name);
+        expect(names).toEqual(expect.arrayContaining(['s618-ghost', 's618-spirit', 's618-clean', 'lora:S618, v2']));
+        expect(names).not.toContain('s618 a, b');
+        expect(names).not.toContain('s618 x，y');
+
+        // A second search finds only the rest.
+        await openMaintenance(page);
+        await row(page, 'Tag cleanup').getByRole('button', { name: 'Find tags', exact: true }).click();
+        await expect(page).not.toHaveURL(new RegExp(job.id));
+        await expect(page).toHaveURL(/#\/activity\/[0-9a-f]{32}$/);
+        const again = await ended(request, page.url().split('/').pop());
+        expect(again.counters.found).toBe(2);
+        const body = await serverJson(request, `/prompt_manager/maintenance/tag_cleanup/${again.id}`);
+        expect(body.rules.map(rule => [rule.id, rule.findings.map(finding => finding.name)]))
+            .toEqual([['comma', []], ['unused', ['s618-ghost', 's618-spirit']]]);
     });
 
 test('the duplicates review pages ten groups at a time and keeps each choice (D101)', async ({ page, request }) => {

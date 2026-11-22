@@ -83,9 +83,29 @@ function mapPairRow(reference) {
     };
 }
 
+/**
+ * D210 (#618, beyond the concept): Database adds "Tag cleanup" after "Pair category and tags", shaped like the concept's
+ * danger row (Unused prompt components') with its own button label, "Find tags".
+ */
+function mapTagRow(reference) {
+    return {
+        ...reference,
+        surfaces: reference.surfaces.map(surface => {
+            const danger = surface.rows.find(row => row.title === 'Unused prompt components');
+            const at = surface.rows.findIndex(row => row.title === 'Pair category and tags');
+            if (!danger || at < 0) return surface;
+            return { ...surface, tree: [...surface.tree, 'div.operation'], rows: [...surface.rows.slice(0, at + 1),
+                { ...danger, title: 'Tag cleanup', description: 'Find tags that are whole comma lists or are used nowhere. ' +
+                    'Review them, then remove only what you tick.',
+                actions: danger.actions.map(action => ({ ...action, text: 'Find tags' })) },
+                ...surface.rows.slice(at + 1)] };
+        }),
+    };
+}
+
 /** D102: the Metadata cache row says why its review is unavailable and its button is aria-disabled (D93's dimmed style). */
 function mapMaintenanceConcept(reference) {
-    const mapped = mapPairRow(reference);
+    const mapped = mapTagRow(mapPairRow(reference));
     return {
         ...mapped,
         surfaces: mapped.surfaces.map(surface => ({ ...surface, rows: surface.rows.map(row => row.title !== 'Metadata cache' ? row : {
@@ -229,8 +249,8 @@ test('maintenance comparison detects mutations', async ({ page, request }) => {
     const expected = mapMaintenanceConcept(concept);
     const production = await productionMaintenance(page, 'dark');
     expect(diffInventory(expected, production)).toEqual([]);
-    // Mapped only for the D192 row, the section differs only on the D102 row.
-    expect(diffInventory(mapPairRow(concept), production).map(item => item.path).sort()).toEqual([
+    // Mapped only for the D192 and D210 rows, the section differs only on the D102 row.
+    expect(diffInventory(mapTagRow(mapPairRow(concept)), production).map(item => item.path).sort()).toEqual([
         'surfaces.1.rows.3.actions.0.cursor', 'surfaces.1.rows.3.actions.0.opacity', 'surfaces.1.rows.3.description']);
     const measure = () => page.evaluate(measureMaintenance, '#workspace-main');
     const paths = async () => diffInventory(expected, await measure()).map(item => item.path);

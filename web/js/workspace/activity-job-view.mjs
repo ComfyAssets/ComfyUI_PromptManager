@@ -19,7 +19,9 @@
  *   an image tagging job shows Tagged, Unchanged, Skipped and Errors, opens Tagged and Unchanged rows, and reads
  *   "Tagging log" and "Cancel tagging".
  * - D101 (System S7): a finished duplicate search that found groups adds **Review groups** after Download report; it
- *   opens "Review duplicate image files" for this search.
+ *   opens "Review duplicate image files" for this search. #618 (D210): a finished tag search that found tags adds
+ *   **Review tags** the same way; it opens "Review tag cleanup" (tag-cleanup-review.mjs). A failed Tag cleanup apply's
+ *   Review again goes to Maintenance (its plan needs a search's ticked tags).
  * - D111: the kind's descriptor (activity-kinds.mjs `viewOf`) decides them for every kind: a thumbnail job counts
  *   Generated, Skipped and Errors; a kind without groups (the health check, a held legacy-page operation) shows no
  *   tiles and no Results, never another kind's zeros. A job without a known total has an indeterminate `<progress>`;
@@ -41,6 +43,7 @@ import { createInspectionController } from './inspection-state.mjs';
 import { createPromptSender } from './prompt-sender.mjs';
 import { imageKey } from './images-state.mjs';
 import { OPERATION_TITLES, openDuplicatesReview, reviewPlan } from './maintenance-review.mjs';
+import { hasTagFindings, openTagCleanupReview } from './tag-cleanup-review.mjs';
 import { navigateTo } from './state.mjs';
 
 export const DETAIL_INTERVAL_MS = 1000;
@@ -96,6 +99,8 @@ const OVERTAKEN = new Set(['plan-changed', 'storage-changed', 'plan-expired']);
 export function reviewAgainOf(job) {
     if (job.state !== 'failed') return null;
     const failure = job.scope?.failure;
+    // #618: a Tag cleanup is planned from a search's ticked tags, never previewed alone: search again in Maintenance.
+    if (job.kind === 'maintenance' && job.scope?.operation === 'tag_cleanup') return { section: '#/system/maintenance' };
     if (job.kind === 'maintenance' && OVERTAKEN.has(failure) && Object.hasOwn(OPERATION_TITLES, job.scope?.operation)) {
         return { operation: job.scope.operation };
     }
@@ -146,6 +151,8 @@ export function filterRows(rows, filter) {
 
 /** #550: whether a job lists records (a maintenance plan of records), not files. */
 export function listsRecords(job) {
+    // #618: a tag search's rows are tags.
+    if (job?.kind === 'tag_cleanup') return true;
     return job?.kind === 'maintenance' && job.scope?.operation !== 'missing_links';
 }
 
@@ -180,6 +187,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
     const review = createReviewMetadataButton(scope); // D87
     // System S7 (D101): a finished duplicate search that found groups reviews them.
     const reviewGroups = createButton('Review groups', 'ca-primary');
+    // #618 (D210): a finished tag search that found tags reviews them.
+    const reviewTags = createButton('Review tags', 'ca-primary');
     // S7 review M2: a failed apply whose plan the library overtook goes back to its review.
     const reviewAgain = createButton('Review again', 'ca-primary');
 
@@ -361,6 +370,8 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         else review.remove();
         if (hasDuplicateGroups(job)) { if (!reviewGroups.isConnected) download.after(reviewGroups); } // D101
         else reviewGroups.remove();
+        if (hasTagFindings(job)) { if (!reviewTags.isConnected) download.after(reviewTags); } // D210
+        else reviewTags.remove();
         if (reviewAgainOf(job)) { if (!reviewAgain.isConnected) download.after(reviewAgain); }
         else reviewAgain.remove();
         // Truth rule: a job that cannot be cancelled (a held legacy-page job) shows no Cancel.
@@ -466,6 +477,7 @@ export function mountActivityJobView(main, { store, scope, api, jobId }) {
         }
     });
     scope.listen(reviewGroups, 'click', () => openDuplicatesReview({ api, store, scope, jobId, trigger: reviewGroups }));
+    scope.listen(reviewTags, 'click', () => openTagCleanupReview({ api, store, scope, jobId, trigger: reviewTags }));
     scope.listen(reviewAgain, 'click', () => {
         const job = current();
         const target = job ? reviewAgainOf(job) : null;

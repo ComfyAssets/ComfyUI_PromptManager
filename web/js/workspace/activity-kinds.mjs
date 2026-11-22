@@ -13,7 +13,8 @@
  * `scan` is exactly the D56 view and `image-tags` the D89 one. `thumbnails` counts Generated (green), Skipped and
  * Errors (red). System S7: `maintenance` (a reviewed plan's apply) counts Changed, Protected and Errors and, when it
  * failed, ends with the server's reason; `duplicates` (the search) counts Groups found; `duplicate_cleanup` counts
- * Removed, Kept and Errors; S10: `lora_import` counts Imported, Linked to existing, Skipped, Images downloaded, Download
+ * Removed, Kept and Errors; #618 (D210): `tag_cleanup` (the tag search) counts Found and cannot be cancelled; S10:
+ * `lora_import` counts Imported, Linked to existing, Skipped, Images downloaded, Download
  * errors and Errors and, when it failed, ends with the server's reason (the previous imports were kept); S9: `restore`
  * ends with the server's line (what was restored, or why nothing changed). Any other kind (the health check, a held legacy-page operation, a kind this page does not know) gets
  * the generic descriptor: title-based copy and no tiles or outcomes, so it never shows another kind's zeros (S1 review
@@ -45,6 +46,11 @@ export const changedOf = job => counted(job, 'changed', 'changed');
 export const groupsOf = job => {
     const groups = job.counters?.groups_found ?? 0;
     return `${number(groups)} ${noun(groups, 'group')} found`;
+};
+/** "232 tags found" (#618: a tag search). */
+export const tagsFoundOf = job => {
+    const found = job.counters?.found ?? 0;
+    return `${number(found)} ${noun(found, 'tag')} found`;
 };
 /** "3 removed" (System S7: a duplicate cleanup). */
 export const removedOf = job => counted(job, 'removed', 'removed');
@@ -229,6 +235,18 @@ export const KINDS = Object.freeze({
         log: 'Search log',
         cancelLabel: 'Cancel search',
         cancel: 'Cancel search',
+    }),
+    // #618 (D210): the tag search, one snapshot read the server cannot stop; its rows are tags (records), never opened.
+    tag_cleanup: Object.freeze({
+        ...GENERIC,
+        pillVerb: 'Finding tags',
+        startToast: () => 'Tag search started.',
+        finishToast: namedFinish(() => 'Tag search', tagsFoundOf, tagsFoundOf),
+        line: tagsFoundOf,
+        kept: tagsFoundOf,
+        tiles: tiles([['found', 'Found', '']]),
+        outcomes: tiles([['found', 'Found']]),
+        log: 'Search log',
     }),
     // System S7: the reviewed duplicate cleanup; the kept copies open the viewer, the removed ones are gone.
     duplicate_cleanup: Object.freeze({
