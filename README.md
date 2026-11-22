@@ -251,6 +251,10 @@ A tag bookmark opens the Prompt library with that filter, and the filter stays i
 
 Every pull request runs the Python suite, the frontend tests and the browser tests in Chromium, once. Firefox, WebKit, touch emulation, Python 3.13 and 3.14, Windows and the real ComfyUI run every night. macOS is not tested; it should work, but support is best-effort. To run the tests yourself, see [TESTING.md](TESTING.md).
 
+## Changelog
+
+What changed in each release, and the contributors whose pull requests are part of it: [CHANGELOG.md](CHANGELOG.md). Full notes are on the [releases page](https://github.com/ComfyAssets/ComfyUI_PromptManager/releases).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

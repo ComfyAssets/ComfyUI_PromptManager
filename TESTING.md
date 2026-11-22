@@ -855,7 +855,7 @@ and every other job runs for one class only:
 | Class | Files | What runs |
 | --- | --- | --- |
 | `inert` | Only `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and `gate`: green in seconds. |
-| `docs` | Only `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | `change class` and `gate`: green in seconds. |
+| `docs` | Only `README.md`, `README-legacy.md`, `CHANGELOG.md`, `assets/readme/`, `assets/brand/` (may include inert files) | `change class` and `gate`: green in seconds. |
 | `release` | `pyproject.toml` alone, and in it only the `version = "..."` line rewritten | The above and `package contents` (`tests/test_package_contents.py`). |
 | `code` | Anything else | The whole gate. |
 

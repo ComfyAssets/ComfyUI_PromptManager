@@ -48,6 +48,7 @@ class TestClassify(unittest.TestCase):
     def test_documents_a_test_reads_are_docs(self):
         for paths in (
             ["README.md"],
+            ["CHANGELOG.md"],
             ["README-legacy.md", "assets/readme/hero.webp"],
             ["assets/brand/banner.webp", ".github/FUNDING.yml"],
         ):
