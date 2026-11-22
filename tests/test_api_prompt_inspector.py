@@ -757,9 +757,7 @@ class TestPromptInspector(ImageAPITestCase):
         first = Image.new("RGB", (8, 8), "red")
         if animated:
             second = Image.new("RGB", (8, 8), "blue")
-            first.save(
-                path, "WEBP", exif=exif, save_all=True, append_images=[second]
-            )
+            first.save(path, "WEBP", exif=exif, save_all=True, append_images=[second])
         else:
             first.save(path, "WEBP", exif=exif)
         return path
@@ -767,9 +765,7 @@ class TestPromptInspector(ImageAPITestCase):
     async def test_webp_prompt_and_workflow_are_read_from_exif(self):
         from utils.prompt_inspector import read_inspection_file
 
-        path = self._comfyui_webp(
-            "a.webp", prompt=graph(), workflow={"nodes": []}
-        )
+        path = self._comfyui_webp("a.webp", prompt=graph(), workflow={"nodes": []})
         read = read_inspection_file(path)
         self.assertEqual(read.format, "WEBP")
         self.assertEqual(json.loads(read.metadata["prompt"]), graph())
@@ -796,9 +792,7 @@ class TestPromptInspector(ImageAPITestCase):
         )
 
         oversized = {"nodes": [], "pad": "x" * (WORKFLOW_METADATA_BYTES + 1)}
-        path = self._comfyui_webp(
-            "big.webp", prompt=graph(), workflow=oversized
-        )
+        path = self._comfyui_webp("big.webp", prompt=graph(), workflow=oversized)
         read = read_inspection_file(path)
         self.assertEqual(json.loads(read.metadata["prompt"]), graph())
         self.assertNotIn("workflow", read.metadata)
