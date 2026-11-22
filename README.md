@@ -10,22 +10,22 @@
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![Nightly tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/actions/workflows/nightly.yml/badge.svg)
 
-Prompt Manager saves your prompts as you generate, links each image back to the prompt that made it, and gives you one page to browse, tag, compare and reuse all of it. Your library is a local SQLite database on your own machine.
+Prompt Manager saves your prompts as you generate and links each image to the prompt that made it. One page, the workspace, lets you browse, tag, compare and reuse them. Your library is a local SQLite database on your own machine.
 
-## What's new: rebuilt from the ground up
+## What's new
 
-- **A new UI.** One app, the workspace, replaces the separate dashboard, gallery and metadata pages.
+- **A new UI.** The workspace replaces the separate dashboard, gallery and metadata pages.
 - **Classic and Nodes 2.0.** The nodes work in both ComfyUI renderers. CI starts a real ComfyUI and checks both.
-- **Tested end to end.** Unit tests, browser tests in Chromium, Firefox, WebKit and touch emulation, and tests against a real ComfyUI.
+- **Automated tests.** Unit tests, browser tests in Chromium, Firefox, WebKit and touch emulation, and tests against a real ComfyUI.
 - **Linux and Windows.** The Python suite runs on both, on Python 3.12, 3.13 and 3.14. macOS should work but is not tested.
 
 ## See it
 
 All images on this page were generated and recorded through Prompt Manager in a clean demo library.
 
-### Your whole output folder, finally browsable
+### Browse your whole output folder
 
-Masonry, grid or list, with search, categories, filters and saved views. Images and videos sit side by side, and selecting one shows its prompts and settings without leaving the page.
+The Images page shows your output as masonry, a grid or a list. Search, categories, filters and saved views narrow it. Images and videos appear together, and selecting one shows its prompts and settings on the same page.
 
 ![Images page in grid layout](assets/readme/images-grid.webp)
 
@@ -35,63 +35,63 @@ The viewer shows the positive and negative prompts, tags, seed, steps, CFG, samp
 
 ![The viewer with an image on the left and its prompts and generation settings on the right](assets/readme/viewer.webp)
 
-### Keep your hands on the keyboard
+### Keyboard shortcuts
 
 The viewer has shortcuts for moving between files, the slideshow, zoom, rotate, flip, full screen, details, download and delete. Press `?` to see them all.
 
 ![The viewer's keyboard shortcuts overlay](assets/readme/viewer-shortcuts.webp)
 
-### Long libraries stay easy to work in
+### Select and act while you scroll
 
-The selection bar stays pinned while you scroll, so you can keep picking images and act on them from anywhere. Back to top appears once you've scrolled down the page.
+The selection bar stays pinned while you scroll, so you can keep picking images and act on them from any position on the page. A Back to top button appears once you scroll down.
 
 ![Images page scrolled down, with the selection bar pinned at the top and a Back to top button](assets/readme/pinned-bar.webp)
 
 ### One positive prompt, many experiments
 
-The Prompt library groups everything by positive prompt, so repeat runs and negative variants stay together instead of filling your list with near-duplicates.
+The Prompt library groups everything by positive prompt. Repeat runs and negative variants stay with their positive prompt and don't add near-duplicate entries to your list.
 
 ![Prompt library cards showing each prompt's images, negative variants, runs and tags](assets/readme/library.webp)
 
-### Watch your negatives branch on a timeline
+### See negative variants on a timeline
 
-Each prompt has its own page with a timeline of its negative variants. Click a red dot and the gallery filters to the images that negative made. Small dots mark repeat runs.
+Each prompt has its own page with a timeline of its negative variants. Click a red dot and the gallery filters to the images that negative variant made. Small dots mark repeat runs.
 
 ![Clicking through negative variants on the timeline filters the gallery below](assets/readme/timeline.anim.webp)
 
 ### Compare negatives term by term
 
-Compare negatives shows two variants side by side and lists the terms one adds, so you can see what actually changed between runs.
+Compare negatives shows two negative variants side by side and lists the terms one adds, so you can see what changed between runs.
 
 ![Two negative prompts side by side with the added terms highlighted](assets/readme/compare-negatives.webp)
 
-### Auto-tag your images, and approve what sticks
+### Auto-tag your images and approve the suggestions
 
-Tag one image, a selection or your whole output with WD14 or JoyCaption. WD14 suggestions come with confidence scores, and you can review suggestions before anything is saved. Auto-tags belong to the image, so they never change your prompts.
+Tag one image, a selection or your whole output with WD14 or JoyCaption. WD14 suggestions come with confidence scores, and you can review suggestions before Prompt Manager saves anything. Auto-tags belong to the image, so they never change your prompts.
 
 ![Tag image dialog with WD14 suggestions and their confidence scores](assets/readme/autotag.webp)
 
-### Keep your vocabulary tidy
+### Manage tags and categories
 
-Tags & categories lists every tag and category with how often it's used. Rename, merge and delete tags, and preview a category change before you apply it.
+Tags & categories lists every tag and category with how often you use it. Rename, merge and delete tags, and preview a category change before you apply it.
 
 ![Tags and categories page](assets/readme/tags.webp)
 
 ### Group images your own way
 
-Collections are hand-picked sets of images, on top of favorites and saved views. Add from the selection bar and they appear in the sidebar.
+Collections are sets of images you pick by hand. They are separate from favorites and saved views. Add images from the selection bar and the collection appears in the sidebar.
 
 ![A collection called Book cover ideas open in the workspace](assets/readme/collections.webp)
 
 ### Nothing gets guessed
 
-When a file's metadata has more than one possible prompt, Prompt Manager doesn't pick for you. The file waits in Needs review, where you can choose the sampler path, link it to any prompt in your library, or leave it unresolved.
+When a file's metadata has more than one possible prompt, Prompt Manager doesn't pick for you. The file waits in Needs review, where you can choose the sampler path, link the file to any prompt in your library, or leave it unresolved.
 
 ![Link to a prompt dialog searching the library from Needs review](assets/readme/needs-review.webp)
 
-### Inspect any file, without importing it
+### Inspect any file without importing it
 
-Pick an image or video from your computer to read its prompts, settings and workflow. The file is read in your browser. It isn't uploaded or added to your library.
+Pick an image or video from your computer to read its prompts, settings and workflow. Your browser reads the file. Prompt Manager doesn't upload it or add it to your library.
 
 ![Inspecting a local file in the viewer](assets/readme/inspect.webp)
 
@@ -103,7 +103,13 @@ Pick an open ComfyUI window and a node, then review the exact before and after. 
 
 ### Deletes you can review
 
-Choose what happens to the files before anything is removed: remove the image from the library and leave the file on disk, or on Linux and macOS also move it to the system trash. On a Linux or BSD server you can also delete the files permanently, for headless servers where a trash only fills up the disk; those files can't be recovered. On Windows, images can only be removed from the library. A safety backup of the database is on by default, and removed images can be brought back.
+Before Prompt Manager removes anything, you choose what happens to the files:
+
+- **Remove from the library.** The file stays on disk. This is the only choice on Windows.
+- **Move to the system trash.** Linux and macOS only.
+- **Delete permanently.** Linux and BSD servers only. This is for headless servers, where a trash fills the disk. You can't recover these files.
+
+A safety backup of the database is on by default, and you can bring removed images back.
 
 ![Delete dialog offering to remove from the library only or move files to the trash](assets/readme/delete-review.webp)
 
@@ -117,17 +123,17 @@ System holds settings, image sources, auto-tag models, integrations, maintenance
 
 ### Works on your phone too
 
-The workspace adapts to narrow screens, and touch is part of the browser test suite.
+The workspace adapts to narrow screens, and the browser test suite includes touch.
 
 ![Images page and viewer at phone width](assets/readme/phone.webp)
 
 ## The nodes
 
-Six nodes, under **ComfyAssets > Prompts** in the Add Node menu. Pick the one that suits your workflow; they all share one library. Every screenshot below is a small real workflow that ran.
+The six nodes are under **ComfyAssets > Prompts** in the Add Node menu. They all share one library. Every screenshot below is a small real workflow that ran.
 
 ### Prompt Manager (Classic)
 
-The drop-in replacement for CLIP Text Encode: same CLIP input, same CONDITIONING output, with the prompt saved as it runs. It also outputs the text as a STRING.
+This node replaces CLIP Text Encode. It has the same CLIP input and the same CONDITIONING output, and it saves the prompt as it runs. It also outputs the text as a STRING.
 
 ![Prompt Manager Classic node in a workflow, Classic renderer](assets/readme/node-classic.webp)
 
@@ -137,19 +143,19 @@ The same workflow in Nodes 2.0:
 
 ### Prompt Manager (Focused)
 
-An editor-first layout. Composition and metadata fold away, and **Browse library** lets you search, preview and use a saved prompt right on the node.
+This node puts the editor first. Composition and metadata collapse, and **Browse library** lets you search, preview and use a saved prompt on the node.
 
 ![Prompt Manager Focused node in a workflow](assets/readme/node-focused.webp)
 
 ### Prompt Manager (Split)
 
-The same editor with the library always visible. Wide nodes put them side by side; narrow nodes stack them.
+This node has the same editor with the library always visible. A wide node shows them side by side. A narrow node stacks them.
 
 ![Prompt Manager Split node in a workflow](assets/readme/node-split.webp)
 
 ### Prompt Manager (+/-)
 
-Positive and negative in one node, saved as a pair. This is the node that feeds the negative-variant timeline. It outputs CONDITIONING and STRING for both sides.
+This node holds the positive and the negative prompt and saves them as a pair. The timeline's negative variants come from this node. It outputs CONDITIONING and STRING for both sides.
 
 ![Prompt Manager plus/minus node in a workflow](assets/readme/node-pair.webp)
 
@@ -159,23 +165,23 @@ The same workflow in Nodes 2.0:
 
 ### Prompt Manager Text
 
-Saves the prompt and outputs a STRING instead of CONDITIONING, for workflows that send text to another node. Prepend and append inputs let you build the final text.
+This node saves the prompt and outputs a STRING, not CONDITIONING. Use it in workflows that send text to another node. Prepend and append inputs let you build the final text.
 
 ![Prompt Manager Text node feeding a CLIP Text Encode node](assets/readme/node-text.webp)
 
 ### Prompt Search List
 
-Searches your library by text, category, tags and minimum rating, then outputs the matches as a list so ComfyUI runs each one. This workflow found three prompts tagged `mushroom` and made three images.
+This node searches your library by text, category, tags and minimum rating. It outputs the matches as a list, so ComfyUI runs each one. This workflow found three prompts tagged `mushroom` and made three images.
 
 ![Prompt Search List node producing three images](assets/readme/node-search.webp)
 
-To get the images of a Search List batch linked to their prompts, wire the Search List output into a Prompt Manager Text node, not straight into CLIP Text Encode. Wired straight in, the images stay unlinked: the search text is never saved as a prompt.
+To link the images of a Search List batch to their prompts, wire the Search List output into a Prompt Manager Text node, not straight into CLIP Text Encode. Wired straight in, the images stay unlinked, because nothing saves the search text as a prompt.
 
 ## Install
 
-**Requirements:** ComfyUI and Python 3.12 or newer. `watchdog` and `Pillow` are the only dependencies of their own; the rest comes with ComfyUI.
+Prompt Manager requires ComfyUI and Python 3.12 or newer. Its only dependencies of its own are `watchdog` and `Pillow`. The rest comes with ComfyUI.
 
-Install from the Comfy Registry or ComfyUI-Manager (search for Prompt Manager), or by hand:
+Install from the Comfy Registry or ComfyUI-Manager by searching for Prompt Manager, or install by hand:
 
 ```bash
 cd ComfyUI/custom_nodes/
@@ -185,7 +191,7 @@ pip install -r ComfyUI_PromptManager/requirements.txt
 
 Restart ComfyUI. Click **PM** in the top bar, or **Web UI** on a node, or open `http://localhost:8188/prompt_manager/workspace`.
 
-**Optional extras.** Nothing here is installed for you:
+**Optional extras.** Prompt Manager installs none of these for you:
 
 | To use | You need |
 | --- | --- |
@@ -193,7 +199,7 @@ Restart ComfyUI. Click **PM** in the top bar, or **Web UI** on a node, or open `
 | GGUF JoyCaption (about 4.5 GB) | `llama-cpp-python` |
 | HuggingFace JoyCaption (about 16 GB) | `transformers`, `accelerate`, `bitsandbytes` |
 | Prompts embedded in videos | `ffprobe` on PATH |
-| [LoRA Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) import | LoRA Manager installed; turn it on in System > Integrations |
+| [LoRA Manager](https://github.com/willmiao/ComfyUI-Lora-Manager) import | LoRA Manager installed. Turn the import on in System > Integrations. |
 
 Download or unload tagging models in System > Auto-tagging.
 
@@ -210,13 +216,13 @@ Set `PROMPT_MANAGER_DATA_DIR` to an absolute folder to keep the library somewher
 ## Upgrading from an earlier version
 
 - **Python 3.12 or newer is now required.**
-- **Your library stays where it is** until you choose. The workspace offers **Move library**, which makes a verified copy in `user/__promptmanager/` and renames the old files instead of deleting them, or **Keep it here**.
-- **Older images:** a one-time notice offers a metadata scan that links them to prompts and negatives. Scans don't count as new runs.
-- **Going back isn't supported.** Workflows are now stored once, and an older version shows new records without their workflow or prompt graph. Back up first in System > Backup & export. See [the old README's changelog](README-legacy.md#changelog) for the manual way back.
+- **Your library stays where it is until you choose.** The workspace offers two choices. **Move library** makes a verified copy in `user/__promptmanager/` and renames the old files without deleting them. **Keep it here** leaves the library in place.
+- **Older images.** A one-time notice offers a metadata scan that links them to prompts and negatives. Scans don't count as new runs.
+- **Going back isn't supported.** Prompt Manager now stores each workflow once, and an older version shows new records without their workflow or prompt graph. Back up first in System > Backup & export. See [the old README's changelog](README-legacy.md#changelog) for the manual way back.
 
 ## The old pages are gone
 
-The dashboard, tags page, gallery and metadata viewer have been removed. Everything they did is in the workspace, and their URLs and bookmarks still work: each one opens the matching workspace page.
+This version removes the dashboard, tags page, gallery and metadata viewer. The workspace does everything they did. Their URLs and bookmarks still work, and each one opens the matching workspace page.
 
 | Old URL | Opens |
 | --- | --- |
@@ -226,18 +232,24 @@ The dashboard, tags page, gallery and metadata viewer have been removed. Everyth
 | `/prompt_manager/gallery` | Images |
 | `/prompt_manager/gallery.html` | Inspect a file |
 
-A tag bookmark opens the Prompt library with that filter, and the filter stays in the address: `/prompt_manager/workspace#/library?tag=cats&tag=dogs&tag_mode=any`. Reload, Back and Forward keep it, the address follows the tags you set in **Filters**, and you can bookmark or write such a link yourself (leave out `tag_mode` to match all the tags; `tag_mode=untagged` lists prompts without a tag). The sidebar's Prompt library link always shows the whole library. Search, category and sort aren't part of the address; **Save view** keeps those.
+A tag bookmark opens the Prompt library with that filter, and the filter stays in the address: `/prompt_manager/workspace#/library?tag=cats&tag=dogs&tag_mode=any`.
+
+- Reload, Back and Forward keep the filter.
+- The address follows the tags you set in **Filters**.
+- You can bookmark such a link or write one yourself. Leave out `tag_mode` to match all the tags. `tag_mode=untagged` lists prompts without a tag.
+- The sidebar's Prompt library link always shows the whole library.
+- Search, category and sort aren't part of the address. **Save view** keeps those.
 
 [README-legacy.md](README-legacy.md) still describes the old pages, for reference.
 
 ## Known limits
 
-- **Trash is Linux and macOS only.** Windows has no Recycle Bin option, because the bin can delete large files permanently without warning. On Windows you can only remove an image from the library, and the file stays on disk. Where a move to the trash isn't possible on Linux or macOS, the dialog lists why for each file.
-- **Permanent delete is Linux and BSD only,** and can't be undone. The safety backup brings back the library records, not the files.
-- **Show in folder** opens the file manager on the machine running ComfyUI, not necessarily the one with your browser.
+- **Trash is Linux and macOS only.** Windows has no Recycle Bin option, because the bin can delete large files permanently without warning. On Windows you can only remove an image from the library, and the file stays on disk. Where a move to the trash isn't possible on Linux or macOS, the dialog lists the reason for each file.
+- **Permanent delete is Linux and BSD only.** You can't undo it. The safety backup brings back the library records, not the files.
+- **Show in folder** opens the file manager on the machine running ComfyUI, which may not be the machine with your browser.
 - **Returned images** get their prompt links back, but not their tags, categories, collections or favorites.
 - **Inspect a file** doesn't add the file to your library.
-- **Leave unresolved is permanent.** A file you leave unresolved in Needs review isn't offered again unless its bytes change.
+- **Leave unresolved is permanent.** Needs review doesn't offer the file again unless its bytes change.
 - **Pair prompts saved by earlier versions** stay Uncategorized. You can set the category with Edit metadata.
 
 ## How it's tested
@@ -249,12 +261,12 @@ A tag bookmark opens the Prompt library with that filter, and the filter stays i
 | Browser | Over 60 Playwright spec files in Chromium, Firefox, WebKit and touch emulation |
 | Real ComfyUI | A pinned CPU ComfyUI, started in Classic and Nodes 2.0, running real workflows |
 
-Every pull request runs the Python suite, the frontend tests and the browser tests in Chromium, once. Firefox, WebKit, touch emulation, Python 3.13 and 3.14, Windows and the real ComfyUI run every night. macOS is not tested; it should work, but support is best-effort. To run the tests yourself, see [TESTING.md](TESTING.md).
+Every pull request runs the Python suite, the frontend tests and the browser tests in Chromium, once. Firefox, WebKit, touch emulation, Python 3.13 and 3.14, Windows and the real ComfyUI run every night. Nothing tests macOS. It should work, but support is best-effort. To run the tests yourself, see [TESTING.md](TESTING.md).
 
 ## Changelog
 
-What changed in each release, and the contributors whose pull requests are part of it: [CHANGELOG.md](CHANGELOG.md). Full notes are on the [releases page](https://github.com/ComfyAssets/ComfyUI_PromptManager/releases).
+[CHANGELOG.md](CHANGELOG.md) lists what changed in each release and the contributors whose pull requests are part of it. Full notes are on the [releases page](https://github.com/ComfyAssets/ComfyUI_PromptManager/releases).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+The license is MIT. See [LICENSE](LICENSE).
