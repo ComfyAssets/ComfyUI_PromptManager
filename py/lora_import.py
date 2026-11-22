@@ -111,23 +111,29 @@ def preview(
     """The review's counts (blocking; reads only, requests nothing).
 
     ``{lora_files, with_metadata, skipped, with_local_media,
-    planned_downloads, fingerprint, names, layout}``: the metadata files
-    seen, the kept LoRAs whose sidecar parses, the rest, the LoRAs with a
-    local image, the CivitAI images an import would download for the LoRAs
-    without one (not yet in the cache), the first LoRA names and what the
-    layout says (``layout_summary``).
+    planned_downloads, trigger_tags, trigger_not_tags, fingerprint, names,
+    layout}``: the metadata files seen, the kept LoRAs whose sidecar parses,
+    the rest, the LoRAs with a local image, the CivitAI images an import would
+    download for the LoRAs without one (not yet in the cache), the trained-words
+    entries that become tags and those that do not (#618), the first LoRA
+    names and what the layout says (``layout_summary``).
     """
     discovery = discover(lora_manager_path)
     layout = discovery.layout
     with_metadata = 0
     with_local_media = 0
     planned = 0
+    trigger_tags = 0
+    trigger_not_tags = 0
     names = []
     for sidecar in discovery.sidecars:
         metadata = lora_utils.read_lora_metadata(sidecar.metadata_path)
         if not metadata:
             continue
         with_metadata += 1
+        words, not_tags = lora_utils.trigger_word_tags(metadata)
+        trigger_tags += len(words)
+        trigger_not_tags += not_tags
         if local_media(sidecar, metadata, layout, media_extensions):
             with_local_media += 1
         else:
@@ -142,6 +148,8 @@ def preview(
         "skipped": discovery.scanned - with_metadata,
         "with_local_media": with_local_media,
         "planned_downloads": planned,
+        "trigger_tags": trigger_tags,
+        "trigger_not_tags": trigger_not_tags,
         "fingerprint": fingerprint(discovery),
         "names": names,
         "layout": layout_summary(layout, Path.home()),
@@ -149,17 +157,22 @@ def preview(
 
 
 def build_record(metadata: Dict, path: Path, images: List[str]) -> Dict:
-    """The prompt a LoRA becomes: its example prompt (else its name), tags, images."""
+    """The prompt a LoRA becomes: its example prompt (else its name), tags, images.
+
+    Only the trained words that are one short clean phrase become tags
+    (#618, ``lora_utils.is_tag_phrase``); ``trigger_not_tags`` counts the rest.
+    """
     model_name = lora_utils.get_model_name_from_metadata(metadata)
     text = lora_utils.get_example_prompt_from_metadata(metadata) or model_name
-    tags = ["lora-manager", f"lora:{model_name}"]
-    tags.extend(lora_utils.get_trigger_words_from_metadata(metadata))
+    words, not_tags = lora_utils.trigger_word_tags(metadata)
+    tags = ["lora-manager", f"lora:{model_name}", *words]
     return {
         "name": model_name,
         "text": text,
         "hash": generate_prompt_hash(text),
         "tags": list(dict.fromkeys(tags)),
         "images": images,
+        "trigger_not_tags": not_tags,
     }
 
 
@@ -171,7 +184,11 @@ class StagedImport:
     records: List[Dict] = field(default_factory=list)
     skipped: List[str] = field(default_factory=list)
     stats: Dict[str, int] = field(
-        default_factory=lambda: {"downloaded": 0, "download_errors": 0}
+        default_factory=lambda: {
+            "downloaded": 0,
+            "download_errors": 0,
+            "trigger_not_tags": 0,
+        }
     )
 
 
@@ -219,6 +236,7 @@ def stage(
                 images = list(dict.fromkeys([*local, *remote]))
                 record = build_record(metadata, path, images)
                 staged.records.append(record)
+                staged.stats["trigger_not_tags"] += record["trigger_not_tags"]
             except Exception as error:  # one LoRA never stops the import
                 name = lora_utils.get_model_name_from_metadata(metadata)
                 if logger is not None:

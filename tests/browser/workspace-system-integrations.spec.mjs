@@ -343,6 +343,7 @@ test('Review import shows replacement, blocked items and network effects with th
             ['LoraManager', 'environment settings · alongside storage · library default'],
             ['Scope', 'Replace 2 imported prompts with 3 LoRAs'],
             ['Found', '3 metadata files · 3 LoRAs · 0 with local images'],
+            ['Trigger words', '3 become tags'],
             ['Protected', 'Nothing is protected'],
             ['Network', 'Downloads up to 3 example images from CivitAI'],
             ['Backup', 'Create and verify before changes (browser.db.backup_<date and time>)'],
@@ -387,13 +388,26 @@ test('saved pairs block the import: the review explains it and offers only Close
     await enable(page);
     await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
     // gridOf reads once; poll until the review has rendered its rows.
-    await expect.poll(async () => (await gridOf(page))[3]).toEqual(['Protected', '1 imported prompt used by saved pairs']);
+    await expect.poll(async () => (await gridOf(page)).find(([term]) => term === 'Protected'))
+        .toEqual(['Protected', '1 imported prompt used by saved pairs']);
     await expect(dialog(page).locator('p.small')).toHaveText(
         'Delete or change the saved pairs that use these prompts, then review the import again. Nothing was changed.');
     expect(await dialog(page).locator('.dialog-actions button').allTextContents()).toEqual(['Close']);
     await dialog(page).getByRole('button', { name: 'Close', exact: true }).click();
     await expect(dialog(page)).toHaveCount(0);
 });
+
+test('the import review counts the trained words that are lists or sentences and not made tags (#618)',
+    async ({ page, request }) => {
+        await lora(request, { loras: 2, junk: true });
+        await openIntegrations(page);
+        await enable(page);
+        await layoutOf(page).getByRole('button', { name: 'Review import', exact: true }).click();
+        await expect.poll(async () => (await gridOf(page)).find(([term]) => term === 'Trigger words'))
+            .toEqual(['Trigger words', '2 become tags · 4 not made tags (lists or sentences)']);
+        await dialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+        await expect(dialog(page)).toHaveCount(0);
+    });
 
 test('unusable LoraManager settings: the review says why and offers only Close (#355)', async ({ page, request }) => {
     await lora(request, { previous: 1, settings: 'invalid' });

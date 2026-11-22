@@ -22,11 +22,13 @@ from urllib.parse import urljoin, urlsplit
 
 try:
     from ..utils.logging_config import get_logger
+    from ..utils.validators import validate_tags
 except ImportError:
     import sys
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from utils.logging_config import get_logger
+    from utils.validators import validate_tags
 
 from dataclasses import replace
 
@@ -385,6 +387,44 @@ def get_trigger_words_from_metadata(metadata: Dict) -> List[str]:
     if isinstance(words, list):
         return [w.strip() for w in words if isinstance(w, str) and w.strip()]
     return []
+
+
+# #618: what a prompt weight looks like, ``(masterpiece:1.2)``: an instruction
+# to the sampler, never a label.
+_PROMPT_WEIGHT = re.compile(r"\([^()]*:\s*-?\d*\.?\d+\s*\)")
+# The ASCII and the fullwidth comma: an entry holding either is a list.
+_COMMAS = (",", "，")
+
+
+def is_tag_phrase(entry: object) -> bool:
+    """Whether a trained-words entry is one short clean phrase (#618, Option A).
+
+    The existing tag rule (``validate_tags``: not empty, at most 50
+    characters, no control character), and no comma (ASCII or fullwidth), no
+    ``<``/``>`` (``<lora:name:0.8>`` loads a model) and no prompt weight.
+    Plain parentheses stay allowed (``hatsune miku (vocaloid)``).
+    """
+    if not isinstance(entry, str):
+        return False
+    phrase = entry.strip()
+    try:
+        validate_tags([phrase])
+    except ValueError:
+        return False
+    if any(comma in phrase for comma in _COMMAS):
+        return False
+    if "<" in phrase or ">" in phrase:
+        return False
+    return _PROMPT_WEIGHT.search(phrase) is None
+
+
+def trigger_word_tags(metadata: Dict) -> Tuple[List[str], int]:
+    """``(tags, not_tags)``: the trigger words that are tag phrases, stripped
+    and in order, and how many were not (#618). The trigger-word lookup
+    (``get_trigger_words_from_metadata``) still sees every entry."""
+    words = get_trigger_words_from_metadata(metadata)
+    tags = [word for word in words if is_tag_phrase(word)]
+    return tags, len(words) - len(tags)
 
 
 def get_example_prompt_from_metadata(metadata: Dict) -> Optional[str]:
