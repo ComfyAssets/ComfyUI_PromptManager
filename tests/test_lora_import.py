@@ -46,6 +46,7 @@ from py import lora_import, lora_utils
 from py.api.jobs import RESTORE_JOB_KIND
 from py.api.lora_import_routes import LORA_PREVIEW_LEASE
 from py.config import IntegrationConfig, PromptManagerConfig
+from utils import exit_signal
 from utils.hashing import generate_prompt_hash
 
 CATEGORY = "lora-manager"
@@ -1137,6 +1138,34 @@ class LoraImportRefusalTests(LoraImportAPITestCase):
                 release.set()
             await job.task
         self.assertFalse(body["cancellation_requested"])
+        self.assertEqual(job.state, "finished", job.log)
+        self.assertNotEqual(_snapshot(self.api.db), before)
+
+    async def test_an_exit_after_the_commit_point_still_finishes(self):
+        # #619: ComfyUI exits while the replace runs; the replace is one
+        # transaction and still commits, so the job truthfully ends
+        # "finished" with the import written, not "cancelled".
+        self._two_loras()
+        before = _snapshot(self.api.db)
+        replacing, release = threading.Event(), threading.Event()
+        real_replace = self.api.db.replace_category_prompts
+
+        def held_replace(*args, **kwargs):
+            replacing.set()
+            release.wait(10)
+            return real_replace(*args, **kwargs)
+
+        loop = asyncio.get_running_loop()
+        with patch.object(self.api.db, "replace_category_prompts", held_replace):
+            _plan, job = await self._apply_reviewed()
+            try:
+                self.assertTrue(await loop.run_in_executor(None, replacing.wait, 10))
+                self.assertFalse(job.summary()["cancellable"])
+                self.addCleanup(exit_signal.reset)
+                exit_signal.request()
+            finally:
+                release.set()
+            await job.task
         self.assertEqual(job.state, "finished", job.log)
         self.assertNotEqual(_snapshot(self.api.db), before)
 
