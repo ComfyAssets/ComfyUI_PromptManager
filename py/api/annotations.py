@@ -91,6 +91,7 @@ _PREVIEW_TYPES = {
     ".bmp": "image/bmp",
     ".tiff": "image/tiff",
     ".tif": "image/tiff",
+    ".avif": "image/avif",  # #652
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
     ".webm": "video/webm",

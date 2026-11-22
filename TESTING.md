@@ -514,9 +514,24 @@ file has no text chunks. Only a value shaped like a record counts (a key, a
 colon, then a JSON object, array or string), so camera EXIF stays out.
 `tests/test_exif_text.py` writes real still and animated WebP files, AVIF (where
 Pillow has it) and JPEG in that layout; `tests/test_metadata_extraction.py` and
-`tests/test_api_core.py` hold the two readers to it. No scan, monitor or
-gallery list collects `.avif` yet, so AVIF files are read correctly but never
-reach the readers; #652 tracks AVIF as a media type.
+`tests/test_api_core.py` hold the two readers to it.
+
+AVIF is a collected media type since #652. Every file-type list names `.avif`
+(scan and deletion, the monitor's default, the gallery and thumbnail walks,
+serving and Inspect, auto-tagging's listing, the capture store, the preview
+source order), but Pillow's floor here is >= 10.1.0 (ComfyUI's) and Pillow
+opens AVIF only from 11.0, and only when built with an AVIF decoder. So the
+collection points ask `utils.media_formats.collectable` and skip an AVIF file
+quietly when `PIL.features.check("avif")` is false, which leaves a Pillow
+without AVIF behaving exactly as it did before. A saved
+`gallery.monitoring.extensions` list that predates #652 gains `.avif` last on
+load, keeping every entry the install chose. `tests/fixtures/media/comfyui_avif.avif`
+is a 1 KB still written by ComfyUI's own `_save_avif` (see
+`tools/make_avif_fixture.py` and `tests/fixtures/README.md`);
+`tests/test_avif_media_type.py` covers both Pillow answers on the gallery
+walk, the monitor, auto-tagging and the capture store, and
+`tests/test_api_admin.py` holds the scan to the same fixture, prompt link
+included.
 
 Image work runs on PromptManager's own threads (#523). glibc keeps each thread's
 malloc arena at its high-water mark, so image buffers spread over the default

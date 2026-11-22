@@ -42,6 +42,8 @@ IMAGE_EXTENSIONS = frozenset(
         ".bmp",
         ".tiff",
         ".tif",
+        # #652: served and inspected; the scan collects it where Pillow reads it
+        ".avif",
         ".mp4",
         ".webm",
         ".mov",

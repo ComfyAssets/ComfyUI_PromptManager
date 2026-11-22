@@ -51,6 +51,7 @@ from .foreign_runs import (
 )
 from .hashing import generate_prompt_hash
 from .media_folders import in_skipped_folder, split_relative
+from .media_formats import collectable
 from .metadata_extractor import ComfyUIMetadataExtractor
 from .parallel import note_refusal, refused_at_shutdown
 from .logging_config import get_logger
@@ -233,7 +234,14 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.supported_extensions = tuple(GalleryConfig.SUPPORTED_EXTENSIONS)
         except Exception:
             self.processing_delay = 2.0
-            self.supported_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+            self.supported_extensions = (
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".webp",
+                ".gif",
+                ".avif",  # #652: skipped in is_image_file when Pillow cannot read it
+            )
 
         # Settle check: the file size must be unchanged across two reads
         self.settle_interval = SETTLE_INTERVAL_SECONDS
@@ -532,7 +540,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # folder holds thrown-away files (#501): neither is a new output.
         if in_skipped_folder(self._folders_below_root(filepath)):
             return False
-        return filepath.lower().endswith(self.supported_extensions)
+        if not filepath.lower().endswith(self.supported_extensions):
+            return False
+        # #652: an AVIF output is watched only where Pillow can read it.
+        return collectable(os.path.splitext(filepath)[1])
 
     def _folders_below_root(self, filepath: str) -> list:
         """The folder names of *filepath* below the longest watched root.

@@ -25,8 +25,10 @@ from .. import model_gate
 
 try:
     from ...utils.media_folders import in_trash_below_roots, is_skipped_folder
+    from ...utils.media_formats import collectable
 except ImportError:
     from utils.media_folders import in_trash_below_roots, is_skipped_folder
+    from utils.media_formats import collectable
 
 from aiohttp import web
 
@@ -156,8 +158,9 @@ def public_models(status: dict, loaded_type: Optional[str]) -> dict:
 
 
 # Only these may be handed to the tagging engine or listed by the scanner.
+# #652: AVIF is listed and skipped where Pillow cannot read it (collectable).
 _MEDIA_EXTENSIONS = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".avif"}
 )
 # Bounds for scan_output_dir: a runaway output tree must not pin the server.
 _SCAN_MAX_FILES = 50_000
@@ -945,7 +948,8 @@ class AutotagRoutesMixin:
 
     def _resolve_allowed_image_path(self, raw_path: str) -> Optional[str]:
         """Return the real path when it is a media file inside an output directory."""
-        if Path(str(raw_path)).suffix.lower() not in _MEDIA_EXTENSIONS:
+        suffix = Path(str(raw_path)).suffix.lower()
+        if suffix not in _MEDIA_EXTENSIONS or not collectable(suffix):
             return None
         roots = list(self._get_all_output_dirs())
         for output_dir in roots:
@@ -1449,7 +1453,8 @@ class AutotagRoutesMixin:
                 if not is_skipped_folder(name) and depth + 1 <= _SCAN_MAX_DEPTH
             )
             for name in sorted(filenames):
-                if Path(name).suffix.lower() not in _MEDIA_EXTENSIONS:
+                suffix = Path(name).suffix.lower()
+                if suffix not in _MEDIA_EXTENSIONS or not collectable(suffix):
                     continue
                 candidate = Path(dirpath) / name
                 if candidate.is_symlink():

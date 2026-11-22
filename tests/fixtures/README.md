@@ -13,6 +13,22 @@ ffmpeg -f lavfi -i testsrc=size=32x32:rate=4:duration=1 \
 
 Browser tests use the committed file; FFmpeg is not required to run them.
 
+# AVIF metadata fixture
+
+`media/comfyui_avif.avif` (96x96, about 1 KB) is an original synthetic gradient
+written by ComfyUI's own AVIF writer, `SaveImageAdvanced` (PyAV with SVT-AV1,
+then `inject_avif_metadata`), so it carries the EXIF item ComfyUI writes:
+`prompt:{json}` at tag 0x0110 and `workflow:{json}` at 0x010F. It is dedicated
+to the public domain under CC0-1.0. `utils/exif_text`, the scan and the monitor
+read it; `tests/test_avif_media_type.py` and `tests/test_api_admin.py` cover it.
+
+Reproduce from a ComfyUI checkout with ComfyUI's Python (torch and PyAV with
+SVT-AV1), where `comfy_extras` imports:
+
+```sh
+python custom_nodes/ComfyUI-PromptManager/tools/make_avif_fixture.py
+```
+
 # Local Inspect header fixtures
 
 `local-inspect/tiny.jpg` (48x32) and `local-inspect/tiny.webp` (40x24) are original

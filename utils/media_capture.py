@@ -33,8 +33,10 @@ from typing import Callable
 from PIL import Image
 
 try:
+    from .media_formats import collectable
     from .video_metadata import VIDEO_EXTENSIONS, is_video_path
 except ImportError:  # imported with the repo root on sys.path
+    from utils.media_formats import collectable
     from utils.video_metadata import VIDEO_EXTENSIONS, is_video_path
 
 logger = logging.getLogger(__name__)
@@ -64,7 +66,7 @@ DIMENSION_REASON = (
 # restated here so utilities never import the aiohttp API package; a test pins
 # the two sets equal.
 _STILL_EXTENSIONS = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".avif"}
 )
 CAPTURE_EXTENSIONS = _STILL_EXTENSIONS | frozenset(VIDEO_EXTENSIONS)
 
@@ -675,7 +677,8 @@ def _relative_parts(relative) -> tuple[list[str], str]:
         if part in ("", ".", "..") or ":" in part:
             raise CaptureDenied("Invalid file path")
     extension = os.path.splitext(parts[-1])[1].lower()
-    if extension not in CAPTURE_EXTENSIONS:
+    # #652: an AVIF the listing would not collect is not capturable either.
+    if extension not in CAPTURE_EXTENSIONS or not collectable(extension):
         raise CaptureDenied("Unsupported media type")
     return parts, extension
 

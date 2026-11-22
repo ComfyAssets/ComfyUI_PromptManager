@@ -91,8 +91,8 @@ class ComfyUIMetadataExtractor:
                 metadata["file_info"] = self.get_file_info(image_path, image)
 
                 # ComfyUI writes PNG text chunks, read without decoding the
-                # pixels (#523). WebP (and AVIF, once collected: #652) carry
-                # the same records as EXIF text, so those images link too.
+                # pixels (#523). WebP and AVIF (#652) carry the same records
+                # as EXIF text, so those images link too.
                 text = png_text(image) or exif_text(image)
                 if text:
                     # Look for ComfyUI workflow data

@@ -43,6 +43,7 @@ CONTENT_TYPES = {
     ".jpeg": "image/jpeg",
     ".png": "image/png",
     ".gif": "image/gif",
+    ".avif": "image/avif",  # #652: served as itself, never a preview
 }
 THUMB_SUFFIX = "_thumb"
 
@@ -133,7 +134,9 @@ def thumbnail_rel(rel_path, extension=None):
 
 # Ruling R2: files sharing a stem share one preview, made from the first
 # source in this order: these images, then videos (by extension name).
-IMAGE_SOURCE_ORDER = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+# #652: AVIF comes last among the stills, so an existing stack keeps the
+# source its preview was made from.
+IMAGE_SOURCE_ORDER = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif")
 
 
 def source_rank(source_extension):

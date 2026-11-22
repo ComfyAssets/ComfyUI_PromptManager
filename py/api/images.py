@@ -76,6 +76,7 @@ try:
         split_relative,
     )
     from ...utils.parallel import map_parallel
+    from ...utils.media_formats import collectable
     from ...utils.json_strict import dumps_strict
     from ...utils.inspection_response import (
         OWN_CATEGORY_UNREAD,
@@ -109,6 +110,7 @@ except ImportError:
         split_relative,
     )
     from utils.parallel import map_parallel
+    from utils.media_formats import collectable
     from utils.json_strict import dumps_strict
     from utils.inspection_response import (
         OWN_CATEGORY_UNREAD,
@@ -324,7 +326,10 @@ def _media_access_error(path, allowed_dirs):
 
 
 # Media types the gallery scans and thumbnails (a superset is never served).
-GALLERY_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+# #652: AVIF is named here and skipped by the walks when Pillow cannot read it.
+GALLERY_IMAGE_EXTENSIONS = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
+)
 MEDIA_EXTENSIONS = GALLERY_IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 # Caps on request-triggered filesystem work.
@@ -951,7 +956,9 @@ def _walk_media(output_path, max_files):
         except OSError:
             continue  # as os.walk: an unreadable folder is skipped
         for entry in sorted(files, key=lambda item: item.name):
-            if _name_suffix(entry.name).lower() not in MEDIA_EXTENSIONS:
+            suffix = _name_suffix(entry.name).lower()
+            # #652: AVIF is listed but only collected where Pillow reads it.
+            if suffix not in MEDIA_EXTENSIONS or not collectable(suffix):
                 continue
             if entry.is_symlink():
                 continue  # never read through a link out of the output tree
@@ -984,7 +991,8 @@ def _settled_entry(root, relative):
     if on_disk is not None and not on_disk.endswith(os.sep + relative):
         raise OSError(f"{relative} is spelled differently on disk")
     *folders, name = relative.split(os.sep)
-    if _name_suffix(name).lower() not in MEDIA_EXTENSIONS:
+    suffix = _name_suffix(name).lower()
+    if suffix not in MEDIA_EXTENSIONS or not collectable(suffix):
         return None
     if in_skipped_folder(folders) or len(folders) > MAX_SCAN_DEPTH:
         return None
