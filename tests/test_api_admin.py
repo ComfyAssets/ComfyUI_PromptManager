@@ -34,9 +34,12 @@ from aiohttp.test_utils import AioHTTPTestCase  # noqa: E402
 from database.operations import PromptDatabase  # noqa: E402
 from py.api import PromptManagerAPI  # noqa: E402
 from py.config import GalleryConfig, PromptManagerConfig  # noqa: E402
+from utils import media_formats  # noqa: E402
 
 CONFIG_PATH_ENV = "PROMPT_MANAGER_CONFIG_PATH"
 EXTRA_ROOTS_ENV = "PROMPT_MANAGER_EXTRA_GALLERY_ROOTS"
+AVIF_FIXTURE = Path(__file__).parent / "fixtures" / "media" / "comfyui_avif.avif"
+AVIF_READABLE = media_formats.avif_supported()
 
 
 class AdminAPITestCase(AioHTTPTestCase):
@@ -516,6 +519,37 @@ class TestScansRunOffTheEventLoop(AdminAPITestCase):
         pairs = self.api.db.list_prompt_pairs()["pairs"]
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]["negative_text"], "bad")
+
+    @unittest.skipUnless(AVIF_READABLE, "Pillow here cannot decode AVIF")
+    async def test_output_scan_collects_and_links_an_avif(self):
+        """#652: SaveImageAdvanced's AVIF links to its prompt like a PNG."""
+        shutil.copyfile(AVIF_FIXTURE, self.output_dir / "gen.avif")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+
+        resp = await self.client.request("POST", "/prompt_manager/scan")
+        body = await resp.text()
+
+        self.assertEqual(resp.status, 200)
+        self.assertIn('"added": 1', body)
+        prompts = self.api.db.get_recent_prompts(limit=10)["prompts"]
+        self.assertEqual({p["text"] for p in prompts}, {"a small avif fixture", "bad"})
+        pairs = self.api.db.list_prompt_pairs()["pairs"]
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["negative_text"], "bad")
+
+    async def test_output_scan_skips_an_avif_pillow_cannot_read(self):
+        """#652: a Pillow without AVIF leaves the file alone, quietly."""
+        shutil.copyfile(AVIF_FIXTURE, self.output_dir / "gen.avif")
+        GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.output_dir)]
+
+        with patch.object(media_formats, "avif_supported", return_value=False):
+            resp = await self.client.request("POST", "/prompt_manager/scan")
+            body = await resp.text()
+
+        self.assertEqual(resp.status, 200)
+        self.assertIn('"added": 0', body)
+        self.assertIn('"found": 0', body)
+        self.assertEqual(self.api.db.get_recent_prompts(limit=10)["prompts"], [])
 
     async def test_output_scan_without_directories_reports_error(self):
         GalleryConfig.MONITORING_DIRECTORIES = [self._root(self.outside_dir)]

@@ -298,7 +298,7 @@ class GalleryDiagnostics:
                 self.logger.info(f"   [DIR] {source}: {abs_path}")
                 try:
                     image_files = []
-                    for ext in [".png", ".jpg", ".jpeg", ".webp"]:
+                    for ext in [".png", ".jpg", ".jpeg", ".webp", ".avif"]:
                         image_files.extend(
                             found
                             for found in Path(abs_path).rglob(f"*{ext}")

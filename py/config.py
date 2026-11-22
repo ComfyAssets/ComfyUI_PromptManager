@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 try:
     from ..utils.logging_config import get_logger
     from ..utils import library_location
+    from ..utils.media_formats import AVIF_EXTENSION
 except ImportError:
     import sys
 
@@ -45,6 +46,7 @@ except ImportError:
     sys.path.insert(0, current_dir)
     from utils.logging_config import get_logger
     from utils import library_location
+    from utils.media_formats import AVIF_EXTENSION
 
 # Initialize logger for config operations
 config_logger = get_logger("prompt_manager.config")
@@ -195,7 +197,9 @@ class GalleryConfig:
     # Read by the monitor for every file, so a save applies without a restart
     SAVE_FOREIGN_RUNS = True
     MONITORING_DIRECTORIES = []  # Auto-detect if empty
-    SUPPORTED_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+    # #652: AVIF is named here and skipped at collection when Pillow cannot
+    # read it (utils.media_formats.collectable).
+    SUPPORTED_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", AVIF_EXTENSION]
     PROCESSING_DELAY = 2.0  # Seconds to wait before processing new files
 
     # Prompt tracking settings
@@ -301,7 +305,9 @@ class GalleryConfig:
             if directories is not None:
                 cls.MONITORING_DIRECTORIES = directories
         if "extensions" in monitoring:
-            cls.SUPPORTED_EXTENSIONS = monitoring["extensions"]
+            extensions = cls._validated_extensions(monitoring["extensions"])
+            if extensions is not None:
+                cls.SUPPORTED_EXTENSIONS = extensions
         if "processing_delay" in monitoring:
             cls.PROCESSING_DELAY = monitoring["processing_delay"]
 
@@ -353,6 +359,45 @@ class GalleryConfig:
                 continue
             label = os.path.basename(entry) if isinstance(entry, str) else entry
             config_logger.warning(f"Ignoring gallery root {label!r}: {reason}")
+        return kept
+
+    @classmethod
+    def _validated_extensions(cls, extensions: Any) -> Optional[List[str]]:
+        """Monitor extensions from a saved config, with AVIF added back (#652).
+
+        ``gallery.monitoring.extensions`` is saved in each user's config.json
+        and overrides the default, so an install that saved its settings
+        before #652 names no ``.avif`` and keeps not collecting AVIF files.
+        It is appended here, after the user's own entries, so an existing
+        install gains the new type without losing anything it chose.
+
+        A hand-edited config.json is as untrusted as a settings request: a
+        value that is not a list is ignored entirely (``None`` keeps the
+        current list), a non-string entry is dropped with a warning, and the
+        rest is normalised to lowercase dot-extensions.
+        """
+        if not isinstance(extensions, list):
+            config_logger.warning(
+                "Ignoring gallery monitoring extensions: expected a list"
+            )
+            return None
+        kept = []
+        for entry in extensions:
+            if not isinstance(entry, str):
+                config_logger.warning(
+                    "Ignoring gallery monitoring extension: expected a string"
+                )
+                continue
+            normalized = entry.strip().lower()
+            if not normalized:
+                continue
+            if not normalized.startswith("."):
+                normalized = "." + normalized
+            if normalized not in kept:
+                kept.append(normalized)
+        # An empty list is a deliberate "collect nothing", so it stays empty.
+        if kept and AVIF_EXTENSION not in kept:
+            kept.append(AVIF_EXTENSION)
         return kept
 
     @classmethod

@@ -47,7 +47,7 @@ class TestGalleryConfig(unittest.TestCase):
         self.assertTrue(config["monitoring"]["enabled"])
         self.assertEqual(
             config["monitoring"]["extensions"],
-            [".png", ".jpg", ".jpeg", ".webp", ".gif"],
+            [".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"],
         )
         self.assertEqual(config["tracking"]["prompt_timeout"], 600)
         self.assertEqual(config["web_interface"]["images_per_page"], 20)
@@ -114,6 +114,51 @@ class TestGalleryConfig(unittest.TestCase):
         GalleryConfig.update_config({})
         after = GalleryConfig.get_config()
         self.assertEqual(before, after)
+
+
+class TestMonitorExtensionMigration(unittest.TestCase):
+    """#652: a saved extension list gains .avif and keeps its own entries."""
+
+    def setUp(self):
+        self._orig = list(GalleryConfig.SUPPORTED_EXTENSIONS)
+
+    def tearDown(self):
+        GalleryConfig.SUPPORTED_EXTENSIONS = self._orig
+
+    def test_a_list_saved_before_avif_gains_it_last(self):
+        GalleryConfig.update_config({"monitoring": {"extensions": [".png", ".webp"]}})
+        self.assertEqual(GalleryConfig.SUPPORTED_EXTENSIONS, [".png", ".webp", ".avif"])
+
+    def test_a_list_that_already_names_avif_is_left_alone(self):
+        GalleryConfig.update_config(
+            {"monitoring": {"extensions": [".png", ".avif", ".webp"]}}
+        )
+        self.assertEqual(GalleryConfig.SUPPORTED_EXTENSIONS, [".png", ".avif", ".webp"])
+
+    def test_an_empty_list_keeps_collecting_nothing(self):
+        GalleryConfig.update_config({"monitoring": {"extensions": []}})
+        self.assertEqual(GalleryConfig.SUPPORTED_EXTENSIONS, [])
+
+    def test_a_value_that_is_not_a_list_keeps_the_current_list(self):
+        GalleryConfig.SUPPORTED_EXTENSIONS = [".png"]
+        with self.assertLogs("prompt_manager.config", "WARNING") as logs:
+            GalleryConfig.update_config({"monitoring": {"extensions": ".png"}})
+        self.assertEqual(GalleryConfig.SUPPORTED_EXTENSIONS, [".png"])
+        self.assertIn(
+            "Ignoring gallery monitoring extensions: expected a list",
+            "\n".join(logs.output),
+        )
+
+    def test_entries_are_normalised_and_non_strings_dropped(self):
+        with self.assertLogs("prompt_manager.config", "WARNING") as logs:
+            GalleryConfig.update_config(
+                {"monitoring": {"extensions": [".PNG", 3, " .webp "]}}
+            )
+        self.assertEqual(GalleryConfig.SUPPORTED_EXTENSIONS, [".png", ".webp", ".avif"])
+        self.assertIn(
+            "Ignoring gallery monitoring extension: expected a string",
+            "\n".join(logs.output),
+        )
 
 
 class TestPromptManagerConfig(unittest.TestCase):

@@ -43,6 +43,7 @@ try:
         in_trash_folder,
         is_skipped_folder,
     )
+    from ...utils.media_formats import collectable
 except ImportError:
     from utils import exit_signal
     from utils.media_folders import (
@@ -50,6 +51,7 @@ except ImportError:
         in_trash_folder,
         is_skipped_folder,
     )
+    from utils.media_formats import collectable
 
 try:
     from ...database.image_removal import mark_hides
@@ -100,7 +102,7 @@ try:
 except ImportError:
     from database.library import display_title
 
-IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".avif")
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv")
 SCAN_BATCH_SIZE = 50  # Files per executor call during the output scan
 # '<db>.backup_*' files kept next to the live database: one pool for the
@@ -156,7 +158,9 @@ def _collect_media_files(output_dirs, extensions):
                 and not os.path.islink(os.path.join(current, d))
             )
             for name in sorted(filenames):
-                if os.path.splitext(name)[1].lower() not in wanted:
+                suffix = os.path.splitext(name)[1].lower()
+                # #652: AVIF is listed but only collected where Pillow reads it.
+                if suffix not in wanted or not collectable(suffix):
                     continue
                 full = os.path.join(current, name)
                 if os.path.islink(full) or not os.path.isfile(full):
