@@ -420,8 +420,11 @@ def read_inspection_file(path: Path) -> InspectionRead:
                             # WebP carries ComfyUI's records as EXIF strings
                             # (tag 0x0110 and below); image.info never holds
                             # them, so read them from the EXIF block. The
-                            # per-key budgets below still apply, and the
-                            # EXIF block itself is inside the header read.
+                            # per-key budgets below still apply. Note: the
+                            # EXIF chunk sits after the image data, so for
+                            # files larger than the header read it is not
+                            # in the buffer; large files are a follow-up
+                            # in #656.
                             for key, value in exif_text(image).items():
                                 metadata.setdefault(key, value)
                         format_name, (width, height) = image.format, image.size
