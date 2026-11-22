@@ -20,8 +20,6 @@ prompts.db
 prompts.db-shm
 prompts.db-wal
 prompts.db-journal
-prompts.db.prebackfill.bak
-.tracking
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
