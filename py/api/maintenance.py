@@ -5,7 +5,9 @@ one operation (``duplicate_prompts``, ``optimize``, ``unused_components``,
 ``missing_links`` or ``pair_metadata``, #550; ``database/maintenance.py``;
 ``duplicate_files``,
 ``py/api/duplicate_files.py``; ``rotated_logs``, the rotated log copies,
-``py/api/log_cleanup.py``, which has its own apply job) off the event loop and
+``py/api/log_cleanup.py``, which has its own apply job; ``tag_cleanup``,
+#618, the ticked findings of a tag search, ``py/api/tag_cleanup.py``) off the
+event loop and
 answers a ``Plan``: ``{success, token, operation, expires_at, scope:{count,
 label}, protected:{count, reasons}, backup:{policy, destination_label},
 media:{deletes_files, label}, details:[≤50 {label, detail}]}``. The preview
@@ -29,13 +31,17 @@ The token is consumed when the job starts (on the same loop turn, before its
 runner runs); a refused start keeps it. The runner:
 
 1. takes a safety backup when the plan was reviewed with the policy on or the
-   policy (``maintenance.safety_backup``, default on) is on now: SQLite's
+   policy (``maintenance.safety_backup``, default on) is on now, and always
+   for ``workflow_storage`` and ``tag_cleanup`` (``ALWAYS_BACKED_UP``, policy
+   ``required``): SQLite's
    backup API into a temp file beside the database, ``verify_database_file``,
    fsync, ``0o600`` on POSIX, then ``os.replace`` onto a unique
    ``<db>.backup_<YYYYmmdd_HHMMSS_ffffff>[_n]`` name. Any failure removes
    what it wrote and ends the job ``backup-failed`` with nothing changed;
 2. applies the plan, which first rechecks the reviewed fingerprint inside
-   ``BEGIN IMMEDIATE`` (``plan-changed`` writes nothing);
+   ``BEGIN IMMEDIATE`` (``plan-changed`` writes nothing); ``tag_cleanup``
+   rechecks each tag instead and keeps, with its reason, each one that
+   changed, while the rest still apply;
 3. counts the changed and protected records, and prunes old safety backups.
 
 The job log names the backup by its file name only, and the job says "No
@@ -87,6 +93,13 @@ MAINTENANCE_PREVIEW_LEASE = "Maintenance preview"
 DUPLICATE_PREVIEW_BODY_MAX = 1024 * 1024
 DUPLICATE_FILES = "duplicate_files"
 WORKFLOW_STORAGE = "workflow_storage"  # applied by py/api/workflow_storage.py
+# #618: planned from a tag search's findings (py/api/tag_cleanup.py).
+TAG_CLEANUP = "tag_cleanup"
+# Previews whose options list many ids, read up to the large body cap.
+LARGE_PREVIEWS = frozenset({DUPLICATE_FILES, TAG_CLEANUP})
+# Always backed up first, whatever the safety-backup setting: Store each
+# workflow once (the way back) and Tag cleanup (maintainer ruling, #618).
+ALWAYS_BACKED_UP = frozenset({WORKFLOW_STORAGE, TAG_CLEANUP})
 # rotated_logs (#329, py/api/log_cleanup.py) reviews log files, not records.
 PREVIEW_OPERATIONS = MAINTENANCE_OPERATIONS + (DUPLICATE_FILES, ROTATED_LOGS)
 # Room left over beyond what a step writes, so a disk is never filled to 0.
@@ -100,9 +113,12 @@ MAINTENANCE_TITLES = {
     "workflow_storage": "Store each workflow once",
     # #550, beyond the concept: fills old Pair prompts' empty category and tags.
     "pair_metadata": "Pair category and tags",
+    # #618 (D210), beyond the concept: deletes comma-list and unused tags.
+    TAG_CLEANUP: "Tag cleanup",
 }
-# Operations whose job keeps every changed row for its report (#550).
-COMPLETE_RECORD = frozenset({"pair_metadata"})
+# Operations whose job keeps every changed row for its report (#550; #618:
+# the report and the backup are the only record of the deleted tag names).
+COMPLETE_RECORD = frozenset({"pair_metadata", TAG_CLEANUP})
 _OPERATION_ERROR = "operation must be one of: " + ", ".join(PREVIEW_OPERATIONS)
 MAINTENANCE_GROUPS = ("changed", "protected", "errors")
 MAX_TOKEN_LENGTH = 128
@@ -307,6 +323,8 @@ def _changed_line(operation, count, marks=0, result=None):
         return "Optimized the database"
     if operation == "pair_metadata":
         return _pair_metadata_line(result or {"changed": count})
+    if operation == TAG_CLEANUP:
+        return f"Deleted {count:,} {'tag' if count == 1 else 'tags'}"
     if operation == "duplicate_prompts":
         noun = "duplicate prompt" if count == 1 else "duplicate prompts"
         return f"Merged {count:,} {noun}"
@@ -408,7 +426,7 @@ class MaintenanceRoutesMixin:
             ("operation", "options"),
             cap=lambda body: (
                 DUPLICATE_PREVIEW_BODY_MAX
-                if body.get("operation") == DUPLICATE_FILES
+                if body.get("operation") in LARGE_PREVIEWS
                 else PREVIEW_BODY_MAX
             ),
         )
@@ -420,6 +438,8 @@ class MaintenanceRoutesMixin:
             return _invalid(_OPERATION_ERROR)
         if operation == DUPLICATE_FILES:
             return await self.preview_duplicate_files(options)
+        if operation == TAG_CLEANUP:
+            return await self.preview_tag_cleanup(options)
         if not isinstance(options, dict) or options:
             return _invalid(f"{operation} takes no options")
         if operation == ROTATED_LOGS:
@@ -470,10 +490,12 @@ class MaintenanceRoutesMixin:
             )
         policy = self._safety_backup_policy()
         destination = "backup"
-        if operation == WORKFLOW_STORAGE:
-            # Always backed up first, whatever the policy (the way back);
-            # one kept pre-migration backup ever, pooled ones after it.
+        if operation in ALWAYS_BACKED_UP:
+            # Always backed up first, whatever the policy.
             policy = "required"
+        if operation == WORKFLOW_STORAGE:
+            # The way back: one kept pre-migration backup ever, pooled ones
+            # after it.
             kept = await self._run_in_executor(pre_migration_backups, db.model.db_path)
             destination = "backup" if kept else PRE_MIGRATION_LABEL
         try:
@@ -635,8 +657,8 @@ class MaintenanceRoutesMixin:
         Decided once, when the apply starts (the disk check measured it), and
         handed to the job.
         """
-        if plan.operation == WORKFLOW_STORAGE:
-            return True  # never without its pre-migration backup
+        if plan.operation in ALWAYS_BACKED_UP:
+            return True  # never without its backup (pre-migration, or #618's)
         return plan.payload["backup"] == "on" or self._safety_backup_policy() == "on"
 
     async def _safety_backup_step(self, job, db, backup_on):
@@ -746,6 +768,13 @@ class MaintenanceRoutesMixin:
                     }
                 )
             return rows
+        if plan.operation == TAG_CLEANUP:
+            # The findings the review protected, then each target the apply
+            # kept, every one with its reason (#618).
+            return [
+                {"path": "", "detail": f"Kept tag “{item['name']}”: {item['reason']}"}
+                for item in [*plan.payload.get("held", ()), *result["kept"]]
+            ]
         if "kept" not in result:
             return None
         return [
@@ -775,6 +804,8 @@ class MaintenanceRoutesMixin:
             return rows
         if operation == "pair_metadata":
             return [{"path": "", "detail": _filled_detail(item)} for item in described]
+        if operation == TAG_CLEANUP:
+            return [{"path": "", "detail": _deleted_tag_detail(i)} for i in described]
         if operation == "duplicate_prompts":
             return [
                 {
@@ -790,6 +821,26 @@ class MaintenanceRoutesMixin:
             {"path": "", "detail": f"Removed: {item.get('text') or item['prompt_id']}"}
             for item in described
         ]
+
+
+def _deleted_tag_detail(item):
+    """``Deleted tag “a, b” (Tags containing a comma) · removed from 3 prompts``."""
+    from .tag_cleanup import rules
+
+    line = f"Deleted tag “{item['name']}” ({rules.rule(item['rule']).title})"
+    owners = [
+        f"{item[key]:,} {noun if item[key] == 1 else noun + 's'}"
+        for key, noun in (("prompts", "prompt"), ("pairs", "pair"), ("images", "image"))
+        if item.get(key)
+    ]
+    if not owners:
+        return line
+    joined = (
+        owners[0]
+        if len(owners) == 1
+        else (", ".join(owners[:-1]) + " and " + owners[-1])
+    )
+    return f"{line} · removed from {joined}"
 
 
 def _filled_detail(item):

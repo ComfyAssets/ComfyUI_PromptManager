@@ -26,7 +26,7 @@ from .review_decisions import ReviewDecisionOperations
 from .saved_views import SavedViewOperations
 from .library_commands import LibraryCommandOperations
 from .library_archive import LibraryArchiveOperations, delete_prompt_rows
-from .vocabulary import VocabularyOperations
+from .vocabulary import VocabularyOperations, bump_image_tag_bytes
 from .execution_history import ExecutionHistoryOperations
 from .execution_contexts import ExecutionContextOperations
 from .execution_outputs import ExecutionOutputOperations
@@ -1262,26 +1262,10 @@ class PromptDatabase(
                 "has_more": (offset + limit) < total,
             }
 
-    @staticmethod
-    def _bump_image_tag_bytes(conn: sqlite3.Connection, tag_id: int) -> int:
-        """Move the tag revision of every image set that carries *tag_id*.
-
-        Vocabulary rename, merge and delete change what an image's set reads
-        as, so a Tag dialog opened before the change must see ``tag-conflict``
-        on Save instead of recreating the old name. Bumps the image index
-        revision once when any set was affected; returns that count.
-        """
-        cursor = conn.execute(
-            "UPDATE media_annotation_bytes SET tag_revision = tag_revision + 1 "
-            "WHERE id IN (SELECT byte_id FROM media_image_tags WHERE tag_id = ?)",
-            (tag_id,),
-        )
-        if cursor.rowcount > 0:
-            conn.execute(
-                "UPDATE media_annotation_metadata SET "
-                "image_index_revision = image_index_revision + 1 WHERE singleton_id = 1"
-            )
-        return cursor.rowcount
+    # Vocabulary rename, merge and delete bump image tag revisions through
+    # the connection-level helper (database/vocabulary.py, shared with #618's
+    # tag cleanup).
+    _bump_image_tag_bytes = staticmethod(bump_image_tag_bytes)
 
     @classmethod
     def _move_tag_links(

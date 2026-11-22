@@ -124,6 +124,10 @@ MODEL_DOWNLOAD_JOB_KIND = "model_download"
 DUPLICATES_JOB_KIND = "duplicates"
 DUPLICATE_GROUP_NAMES = ("groups_found",)
 DUPLICATE_CLEANUP_GROUP_NAMES = ("removed", "kept", "errors")
+# Tag cleanup (#618, py/api/tag_cleanup.py): the find is a ``read`` job that
+# holds its findings; the reviewed apply is a ``maintenance`` job.
+TAG_CLEANUP_JOB_KIND = "tag_cleanup"
+TAG_CLEANUP_GROUP_NAMES = ("found",)
 # The workspace Library's Delete… (#443, py/api/library_delete.py): a
 # ``records`` hold around its safety backup and write.
 PROMPT_DELETE_JOB_KIND = "prompt_delete"

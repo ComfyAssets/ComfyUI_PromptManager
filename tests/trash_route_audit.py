@@ -103,6 +103,9 @@ ROUTE_AUDIT = {
         "POST /prompt_manager/maintenance/apply",
     ),
     "no media file": (
+        # #618: tag cleanup reads and deletes tag rows only.
+        "POST /prompt_manager/jobs/tag_cleanup",
+        "GET /prompt_manager/maintenance/tag_cleanup/{job_id}",
         "DELETE /prompt_manager/collections/{collection_id}",
         "DELETE /prompt_manager/delete/{prompt_id}",
         "DELETE /prompt_manager/pairs/{pair_id}",

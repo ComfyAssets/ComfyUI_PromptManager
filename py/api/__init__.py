@@ -23,6 +23,7 @@ Split into domain-specific mixins for maintainability:
 - LibraryDeleteRoutesMixin: the Library's Delete… (archive paired) and Restore
 - WorkflowStorageRoutesMixin: store each workflow once, then Reclaim space
 - DuplicateFilesMixin: duplicate image files as find and removal jobs
+- TagCleanupMixin: tag cleanup (#618) as a find job, its findings and a plan
 - LoraImportRoutesMixin: the reviewed, staged LoRA reference import job
 """
 
@@ -74,6 +75,7 @@ from .maintenance import MaintenanceRoutesMixin
 from .backup_restore import BackupRestoreRoutesMixin
 from .workflow_storage import WorkflowStorageRoutesMixin
 from .duplicate_files import DuplicateFilesMixin
+from .tag_cleanup import TagCleanupMixin
 from .maintenance_plans import PlanStore
 from .jobs import JobRegistry
 from .logging_routes import LoggingRoutesMixin
@@ -317,6 +319,7 @@ class PromptManagerAPI(
     BackupRestoreRoutesMixin,
     WorkflowStorageRoutesMixin,
     DuplicateFilesMixin,
+    TagCleanupMixin,
     LoggingRoutesMixin,
     LogCleanupMixin,
     DiagnosticsReportMixin,
@@ -394,6 +397,9 @@ class PromptManagerAPI(
         # Duplicate-file finds by job id, with the groups each one holds for
         # review (py/api/duplicate_files.py); the last few only.
         self._duplicate_finds = {}
+        # Tag cleanup finds by job id with the findings each holds (#618,
+        # py/api/tag_cleanup.py); None while a find runs or after it failed.
+        self._tag_cleanup_finds = {}
         # The last System health report this session and the database
         # generation it describes, bumped when a restore replaces self.db
         # (py/api/system.py).
@@ -691,6 +697,7 @@ class PromptManagerAPI(
         self._register_maintenance_routes(routes)
         self._register_backup_restore_routes(routes)
         self._register_duplicate_routes(routes)
+        self._register_tag_cleanup_routes(routes)
         self._register_logging_routes(routes)
         self._register_autotag_routes(routes)
         self._register_lora_routes(routes)
