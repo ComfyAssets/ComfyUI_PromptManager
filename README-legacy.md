@@ -1,12 +1,11 @@
-> **This is the old README.** It describes Prompt Manager before the workspace rewrite and is kept for reference, including the full changelog up to v3.3.1 and the legacy pages. Some details here are out of date. For the current version, see the [README](README.md).
+> **This is the old README.** It describes Prompt Manager before the workspace rewrite and is kept for reference, including the full changelog up to v3.3.1. The dashboard, tags page, gallery and metadata viewer it describes have been removed; their URLs now open the matching workspace page. For the current version, see the [README](README.md).
 
 # ComfyUI Prompt Manager
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-compatible-green.svg)
-![Tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Tests/badge.svg)
-![Code Quality](https://github.com/ComfyAssets/ComfyUI_PromptManager/workflows/Code%20Quality/badge.svg)
+![Nightly tests](https://github.com/ComfyAssets/ComfyUI_PromptManager/actions/workflows/nightly.yml/badge.svg)
 
 A comprehensive ComfyUI custom node that extends the standard text encoder with persistent prompt storage, advanced search capabilities, automatic image gallery system, folder-based organization, LoRA Manager integration, and powerful ComfyUI workflow metadata analysis using SQLite.
 
@@ -254,8 +253,8 @@ match Classic and Focused.
 
 5. **Access the web interface**:
    - **Workspace**: click **PM** in ComfyUI's top bar or **Web UI** on a node, or open `http://localhost:8188/prompt_manager/workspace`
-   - **Legacy pages** still work at their URLs, and System's Overview section links to them:
-     `/prompt_manager/admin` (dashboard), `/prompt_manager/admin#/tags` (tags), `/prompt_manager/gallery` (gallery), `/prompt_manager/gallery.html` (metadata viewer)
+   - **The old pages have been removed.** Their URLs open the matching workspace page:
+     `/prompt_manager/admin` (Prompt library), `/prompt_manager/admin#/tags` (Tags & categories), `/prompt_manager/gallery` (Images), `/prompt_manager/gallery.html` (Inspect a file)
 
 ### Prerequisites
 
@@ -329,7 +328,7 @@ The comprehensive gallery system provides complete access to all your ComfyUI ou
 1. **Open the workspace's Images page** at `http://localhost:8188/prompt_manager/workspace#/images`
 2. **Browse all content** from your ComfyUI output directory
 
-The legacy gallery stays at `http://localhost:8188/prompt_manager/gallery`.
+The old gallery URL, `http://localhost:8188/prompt_manager/gallery`, now opens the workspace's Images page.
 
 #### **🎬 Video & Image Support**
 

@@ -118,9 +118,9 @@ test('all shell destinations deep-link, reload and expose working existing appli
     await expect(page.locator('#workspace-main').getByRole('link', { name: 'Open Images', exact: true })).toBeVisible();
     await expect(page.locator('a[href*="/prompt_manager/admin"], a[href*="/prompt_manager/gallery"]')).toHaveCount(0);
     await expect(page.locator('#workspace-main').getByText('Your existing tools remain available')).toHaveCount(0);
-    // The legacy pages themselves stay at their URLs.
-    for (const legacy of ['/prompt_manager/admin', '/prompt_manager/gallery', '/prompt_manager/gallery.html']) {
-        await expect(await request.get(legacy)).toBeOK();
+    // The old pages' URLs stay and lead into the workspace (#668; old-urls.spec.mjs follows each one).
+    for (const old of ['/prompt_manager/admin', '/prompt_manager/gallery', '/prompt_manager/gallery.html']) {
+        await expect(await request.get(old)).toBeOK();
     }
 });
 

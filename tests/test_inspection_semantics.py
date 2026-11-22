@@ -594,7 +594,7 @@ class ValidationTest(_TableCase):
                 ),
                 "guiders": frozenset({"cfg", "basic"}),
                 "conditioning": frozenset({"passthrough", "zeroed"}),
-                "selectors": frozenset({"boolean-select"}),
+                "selectors": frozenset({"boolean-select", "first-present"}),
                 "composites": frozenset({"combine"}),
                 "encoders": frozenset(
                     {"single", "parts-equal", "pm-compose", "flag-parts"}
@@ -608,6 +608,58 @@ class ValidationTest(_TableCase):
         )
         with self.assertRaises(TypeError):
             semantics.STRATEGIES["samplers"] = frozenset()
+
+    def test_proven_value_categories_are_the_text_returning_ones(self):
+        # #657: a path through only these (plus code-traced classes) proves
+        # that a switch input held a value. Selectors, runtime, facts and
+        # lineage classes may return None or are not text, so never prove one.
+        self.assertEqual(
+            semantics.PROVEN_VALUE_CATEGORIES,
+            frozenset({"encoders", "strings", "conditioning", "composites"}),
+        )
+
+    def test_proves_value_reads_each_proven_category(self):
+        # #662 (N1): one entry of each table; only the proven categories prove,
+        # class-keyed ones by class, slot-keyed ones by (class, slot).
+        table = semantics.get_semantics()
+        outputs = {
+            "composites": (next(iter(table.composites)), 0),
+            "conditioning": next(iter(table.conditioning)),
+            "encoders": next(iter(table.encoders)),
+            "strings": next(iter(table.strings)),
+            "selectors": (next(iter(table.selectors)), 0),
+        }
+        for category, (name, slot) in outputs.items():
+            with self.subTest(category):
+                proven = category in semantics.PROVEN_VALUE_CATEGORIES
+                self.assertEqual(table.proves_value(name, slot), proven)
+                with unittest.mock.patch.object(
+                    semantics, "PROVEN_VALUE_CATEGORIES", frozenset({category})
+                ):
+                    self.assertTrue(table.proves_value(name, slot))
+                with unittest.mock.patch.object(
+                    semantics, "PROVEN_VALUE_CATEGORIES", frozenset()
+                ):
+                    self.assertFalse(table.proves_value(name, slot))
+        name, slot = outputs["encoders"]
+        self.assertFalse(table.proves_value(name, slot + 99))
+
+    def test_first_present_entry_shape_is_strict(self):
+        valid = {"strategy": "first-present", "input_prefix": "any_"}
+        doc = _minimal()
+        doc["selectors"]["Any Switch (rgthree)"] = dict(valid)
+        self.assertEqual(self.load_doc(doc).selectors["Any Switch (rgthree)"], valid)
+        for label, entry, fragment in (
+            ("extra key", {**valid, "condition": "boolean"}, "unknown field"),
+            ("missing prefix", {"strategy": "first-present"}, "missing input"),
+            ("empty prefix", {**valid, "input_prefix": ""}, "input prefix"),
+            ("long prefix", {**valid, "input_prefix": "a" * 129}, "input prefix"),
+            ("prefix not text", {**valid, "input_prefix": 1}, "input prefix"),
+        ):
+            with self.subTest(label):
+                doc = _minimal()
+                doc["selectors"]["Any Switch (rgthree)"] = entry
+                self.assertRejected(doc, fragment)
 
     def test_duplicate_output_key_rejected(self):
         doc = _minimal()
@@ -873,6 +925,11 @@ class SamplerOptionsTest(_TableCase):
         self.assertEqual(
             table.selectors["Switch conditioning [Crystools]"],
             table.selectors["easy ifElse"],
+        )
+        # rgthree any_switch.py: the first ``any_*`` input that is not None.
+        self.assertEqual(
+            table.selectors["Any Switch (rgthree)"],
+            {"strategy": "first-present", "input_prefix": "any_"},
         )
         self.assertEqual(
             table.encoders[("smZ CLIPTextEncode", 0)],

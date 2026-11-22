@@ -10,7 +10,6 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,6 +41,31 @@ def _create_png(text_chunks=None, size=(64, 64)):
     return tmp.name
 
 
+def _create_webp(workflow=None, prompt=None, size=(64, 64)):
+    """Create a minimal WebP with the EXIF records ComfyUI writes.
+
+    SaveAnimatedWEBP puts ``prompt:{json}`` at EXIF tag 0x0110 and
+    ``workflow:{json}`` at 0x010F; the file has no text chunks at all.
+
+    Args:
+        workflow: Workflow dict to embed as the workflow record.
+        prompt: Prompt dict to embed as the prompt record.
+        size: tuple (width, height).
+
+    Returns:
+        Path to the temporary WebP file.
+    """
+    exif = Image.Exif()
+    if prompt is not None:
+        exif[0x0110] = f"prompt:{json.dumps(prompt)}"
+    if workflow is not None:
+        exif[0x010F] = f"workflow:{json.dumps(workflow)}"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".webp")
+    tmp.close()
+    Image.new("RGB", size, color=(128, 128, 128)).save(tmp.name, "WEBP", exif=exif)
+    return tmp.name
+
+
 class MetadataTestCase(unittest.TestCase):
     """Base class that cleans up temp files."""
 
@@ -56,6 +80,11 @@ class MetadataTestCase(unittest.TestCase):
 
     def _png(self, text_chunks=None, size=(64, 64)):
         path = _create_png(text_chunks, size)
+        self.temp_files.append(path)
+        return path
+
+    def _webp(self, workflow=None, prompt=None, size=(64, 64)):
+        path = _create_webp(workflow, prompt, size)
         self.temp_files.append(path)
         return path
 
@@ -82,6 +111,17 @@ class TestExtractMetadata(MetadataTestCase):
         result = self.extractor.extract_metadata(path)
         self.assertIsNotNone(result)
         self.assertIn("prompt", result)
+
+    def test_extracts_metadata_from_webp_exif(self):
+        """A WebP carries the records as EXIF, not as text chunks."""
+        workflow = {"nodes": [{"type": "CLIPTextEncode", "inputs": {"text": "hi"}}]}
+        prompt = {"1": {"class_type": "KSampler", "inputs": {}}}
+        path = self._webp(workflow=workflow, prompt=prompt)
+        result = self.extractor.extract_metadata(path)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["workflow"]["nodes"][0]["type"], "CLIPTextEncode")
+        self.assertIn("prompt", result)
+        self.assertEqual(result["file_info"]["format"], "WEBP")
 
     def test_extracts_text_encoder_nodes(self):
         workflow = {
@@ -143,27 +183,6 @@ class TestExtractMetadata(MetadataTestCase):
     def test_nonexistent_file_returns_none(self):
         result = self.extractor.extract_metadata("/nonexistent/path/image.png")
         self.assertIsNone(result)
-
-    def test_extracts_metadata_from_image_info(self):
-        workflow = {"nodes": [{"type": "CLIPTextEncode", "inputs": {"text": "hi"}}]}
-        prompt = {"1": {"class_type": "KSampler", "inputs": {}}}
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".webp")
-        tmp.close()
-        self.temp_files.append(tmp.name)
-        image = MagicMock()
-        image.text = {}
-        image.info = {
-            "workflow": json.dumps(workflow).encode("utf-8"),
-            "prompt": json.dumps(prompt),
-        }
-        image.size = (64, 64)
-        image.format = "WEBP"
-        image.mode = "RGB"
-        with patch("utils.metadata_extractor.Image.open") as open_image:
-            open_image.return_value.__enter__.return_value = image
-            result = self.extractor.extract_metadata(tmp.name)
-        self.assertEqual(result["workflow"]["nodes"][0]["type"], "CLIPTextEncode")
-        self.assertIn("prompt", result)
 
 
 class TestGetFileInfo(MetadataTestCase):

@@ -30,7 +30,6 @@ import asyncio
 import datetime
 import functools
 import gzip as gzip_module
-import json
 import math
 import ntpath
 import os
@@ -41,6 +40,7 @@ from pathlib import Path
 from aiohttp import web
 from PIL import Image
 
+from . import json_body as _json_body
 from .prompts import PromptRoutesMixin
 from .revalidation import revalidated_response
 from .pairs import PairRoutesMixin
@@ -89,6 +89,7 @@ from .source_rescope import SourceRescopeMixin
 
 try:
     from ...database.operations import PromptDatabase
+    from ...utils.exif_text import exif_text
     from ...utils.logging_config import get_logger
     from ...utils.native_memory import release_free_memory
     from ...utils.png_text import png_text
@@ -100,6 +101,7 @@ except ImportError:
         0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     from database.operations import PromptDatabase
+    from utils.exif_text import exif_text
     from utils.logging_config import get_logger
     from utils.native_memory import release_free_memory
     from utils.png_text import png_text
@@ -212,44 +214,10 @@ def _resolve_static_file(root, filepath, allowed=STATIC_MIME_TYPES):
 
 
 # ── JSON request bodies ────────────────────────────────────────────────
-JSON_BODY_MAX_BYTES = 1_000_000
-_JSON_READ_CHUNK = 64 * 1024
-
-
-def _json_error(message, status):
-    return web.json_response({"success": False, "error": message}, status=status)
-
-
-async def _read_json_body(request, max_bytes=JSON_BODY_MAX_BYTES):
-    """Read and parse a JSON object body of at most ``max_bytes``.
-
-    The body is read in chunks so an oversized or chunked upload is refused
-    as soon as it crosses the cap rather than buffered whole.
-
-    Returns:
-        (data, None) on success, or (None, response) where ``response`` is a
-        413 (body too large) or 400 (invalid JSON, or not a JSON object).
-    """
-    too_large = _json_error(f"Request body too large (max {max_bytes} bytes)", 413)
-    declared = request.content_length
-    if declared is not None and declared > max_bytes:
-        return None, too_large
-
-    chunks = []
-    size = 0
-    async for chunk in request.content.iter_chunked(_JSON_READ_CHUNK):
-        size += len(chunk)
-        if size > max_bytes:
-            return None, too_large
-        chunks.append(chunk)
-
-    try:
-        data = json.loads(b"".join(chunks).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None, _json_error("Request body must be valid JSON", 400)
-    if not isinstance(data, dict):
-        return None, _json_error("Request body must be a JSON object", 400)
-    return data, None
+# One bounded reader (json_body.py); these names stay for the mixins and tests.
+JSON_BODY_MAX_BYTES = _json_body.JSON_BODY_MAX_BYTES
+_json_error = _json_body.json_error
+_read_json_body = _json_body.read_json_body
 
 
 # ── Gzip compression middleware ────────────────────────────────────────
@@ -304,6 +272,17 @@ async def _gzip_middleware(request, handler):
     response.headers["Content-Encoding"] = "gzip"
     response.headers["Vary"] = "Accept-Encoding"
     return response
+
+
+def _workspace_redirect(route: str) -> web.Response:
+    """Send the browser of a retired page's URL to a workspace route (#668).
+
+    The Location is relative to the old URL, so a reverse-proxy mount prefix
+    in front of ``/prompt_manager/`` is kept, and 302 is not stored for good.
+    A plain response, not a raised ``HTTPFound``, so the host's middlewares
+    see it like any other.
+    """
+    return web.Response(status=302, headers={"Location": f"workspace{route}"})
 
 
 class PromptManagerAPI(
@@ -653,17 +632,24 @@ class PromptManagerAPI(
         async def serve_web_ui(request):
             return self._serve_html_page(request, "index.html", "Web UI", cache=False)
 
-        @routes.get("/prompt_manager/gallery.html")
-        async def serve_gallery_ui(request):
-            return self._serve_html_page(request, "metadata.html", "Gallery")
+        # The old admin, gallery and metadata pages are gone (#668, D207); their
+        # URLs stay and lead into the workspace.
 
-        @routes.get("/prompt_manager/admin")
-        async def serve_admin_ui(request):
-            return self._serve_html_page(request, "admin.html", "Admin UI")
+        @routes.get("/prompt_manager/gallery.html")
+        async def redirect_old_metadata_page(request):
+            return _workspace_redirect("#/inspect")
 
         @routes.get("/prompt_manager/gallery")
-        async def serve_gallery_admin_ui(request):
-            return self._serve_html_page(request, "gallery.html", "Gallery")
+        async def redirect_old_gallery_page(request):
+            return _workspace_redirect("#/images")
+
+        # The dashboard's tag bookmarks (admin#/tags/a,b?mode=or) live in the
+        # hash, which only the browser sees: this page maps it and moves on.
+        @routes.get("/prompt_manager/admin")
+        async def serve_old_admin_redirect(request):
+            return self._serve_html_page(
+                request, "admin-redirect.html", "Workspace redirect"
+            )
 
         # ── Static file serving ───────────────────────────────────────
 
@@ -1018,9 +1004,11 @@ class PromptManagerAPI(
         return []
 
     def _extract_comfyui_metadata(self, image_path):
-        """Embedded ComfyUI metadata of an image (PNG text chunks) or a video.
+        """Embedded ComfyUI metadata of an image (PNG text, EXIF) or a video.
 
-        PNG text is read without decoding the pixels (``utils.png_text``, #523).
+        PNG text is read without decoding the pixels (``utils.png_text``, #523);
+        WebP, AVIF and JPEG keep the same records as EXIF strings, read through
+        ``utils.exif_text``.
 
         Videos go through ffprobe (see utils/video_metadata). Unreadable files
         are a warning, not an error: a scan over a large output tree meets
@@ -1030,7 +1018,7 @@ class PromptManagerAPI(
             return read_video_metadata(image_path)
         try:
             with Image.open(image_path) as img:
-                return png_text(img)
+                return png_text(img) or exif_text(img)
         except Exception as e:
             self.logger.warning(
                 f"Unreadable image {os.path.basename(str(image_path))}: {e}"

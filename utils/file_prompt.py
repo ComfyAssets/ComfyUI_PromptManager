@@ -72,10 +72,13 @@ class Decision:
     the resolution that decided a ``pair``, else the default profile's
     result. ``source``: which step named the text (log lines and the scan's
     outcome detail). ``review``: ``ambiguous`` or ``untraced`` when the
-    default profile was ambiguous (the scan's Needs review lists).
+    default profile was ambiguous (Needs review, ``review_dispatch``).
     ``try_recorded_run``: the scan tries the recorded run's stored prompt
     when nothing else links. ``unlinked_status``: the scan status when
-    nothing links (None: no prompt metadata).
+    nothing links (None: no prompt metadata). ``default_unresolved``: the
+    default profile itself called the file ``unresolved`` (a blank positive,
+    rewritten to unresolved, does not count); Needs review may then offer
+    the inspection profile's choices (#659 C2).
     """
 
     kind: str
@@ -86,6 +89,7 @@ class Decision:
     review: Optional[str] = None
     try_recorded_run: bool = False
     unlinked_status: Optional[str] = None
+    default_unresolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ class _File:
     in_output: bool
     lookup: Optional[Callable[[], Any]]
     policy: Policy
+    default_unresolved: bool = False
 
 
 def decide_file_prompt(
@@ -165,6 +170,7 @@ def decide_file_prompt(
             ),
             None,
         )
+    default_unresolved = resolution["state"] == "unresolved"
     if blank_positive(resolution):
         # Only prepend/append text: no stored prompt can own it (#342)
         resolution = {**resolution, "state": "unresolved"}
@@ -177,6 +183,7 @@ def decide_file_prompt(
         in_output,
         lookup,
         policy,
+        default_unresolved,
     )
     return _gated(_decide(found), found)
 
@@ -471,6 +478,7 @@ def _gated(decision: Decision, found: Optional[_File]) -> Decision:
         source=f"junk:{junk}",
         review=decision.review,
         try_recorded_run=True,
+        default_unresolved=decision.default_unresolved,
         unlinked_status=(
             _unlinked(found)
             if found is not None and decision.source in _UNDECIDED_SOURCES
@@ -487,6 +495,7 @@ def _decision(found: _File, kind: str, text: Optional[str], source: str) -> Deci
         resolution=found.resolution,
         source=source,
         review=found.review,
+        default_unresolved=found.default_unresolved,
     )
 
 
@@ -498,6 +507,7 @@ def _never(found: _File, status: str, *, try_recorded_run: bool = False) -> Deci
         review=found.review,
         try_recorded_run=try_recorded_run,
         unlinked_status=status,
+        default_unresolved=found.default_unresolved,
     )
 
 

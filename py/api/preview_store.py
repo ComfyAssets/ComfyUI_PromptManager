@@ -3,7 +3,7 @@
 Every mapping between an image source (a "root"), one of its media files and
 that file's preview on disk goes through this module. URL text stays in
 ``thumbnail_settings`` (``thumbnail_rel``: ``thumbnails/<rel>_thumb<ext>``,
-the shape the serve route, ``inspection-state.mjs`` and ``admin.js`` share);
+the shape the serve route and ``inspection-state.mjs`` share);
 this module answers where such a preview is on disk.
 
 The store of a source is where its previews live. With the default location

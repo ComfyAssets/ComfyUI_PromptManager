@@ -26,6 +26,19 @@ export const outcomeKey = item => JSON.stringify(outcomeParts(item));
 /** `_recipe_key`: the outcome plus each side's stored recipe. */
 const recipeKey = item => JSON.stringify([...outcomeParts(item), storageText(item.positive), storageText(item.negative)]);
 
+/**
+ * `_shared_side` (utils/prompt_inspector.py, #658): the side every candidate of an ambiguous result has alike (all
+ * resolved, with one text, recipe and left-out parts for `role`), else null; the first candidate's side.
+ */
+export function sharedSide(resolved, role) {
+    const candidates = Array.isArray(resolved.candidates) ? resolved.candidates : [];
+    const sides = candidates.filter(item => item !== null && typeof item === 'object' && item.state === 'resolved').map(item => item[role]);
+    if (!candidates.length || sides.length !== candidates.length) return null;
+    if (!sides.every(side => side !== null && typeof side === 'object')) return null;
+    const keys = sides.map(side => JSON.stringify([roleText(side), side.storage_text ?? null, leftOut(side)]));
+    return keys.every(key => key === keys[0]) ? sides[0] : null;
+}
+
 /** `_shared_pair`: the one pair every sampler branch resolved to, or null (#270). */
 export function sharedPair(candidates) {
     const first = candidates[0];

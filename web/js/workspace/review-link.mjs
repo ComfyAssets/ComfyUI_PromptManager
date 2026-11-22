@@ -2,9 +2,15 @@
  * Link to a prompt (#536, D181; the concept has no picker): search the Library, choose the prompt that made this image
  * and, when the prompt has recipes, its negative. The server's refusals stay in the dialog. No negative is taken from
  * the file: one recipe is preselected and visible, several must be chosen between, none means no negative.
+ *
+ * #657 D4: with an empty search box the dialog first lists the item's own choosable candidates "From this image"
+ * (`imageChoices`), then the Library's newest prompts under "Library". Choosing one of the image's prompts links it as
+ * Apply association does (`controller.applyCandidate`, by its hash), with the negative it carries. Typing searches the
+ * Library only. An item with no choosable candidate shows the dialog as before, without the two headings.
  */
 import { createButton } from '../shared/toolkit/core.js';
 import { closeWorkspaceDialog, field, openContentDialog } from './workspace-dialogs.mjs';
+import { COPY, imageChoices } from './review-state.mjs';
 
 export const SEARCH_DELAY_MS = 250;
 export const RESULT_LIMIT = 20;
@@ -17,6 +23,8 @@ export const LINK_COPY = Object.freeze({
     title: 'Link to a prompt',
     sentence: name => `Choose the prompt that made ${name}. This records your choice; the file's metadata does not confirm it.`,
     search: 'Search the Library',
+    own: 'From this image',
+    library: 'Library',
     searching: 'Searching…',
     empty: 'No prompt in the Library matches.',
     failed: 'The Library could not be searched. Try again.',
@@ -47,6 +55,9 @@ export function negativeOptions(variants) {
     return [...recipes, none];
 }
 
+/** A "From this image" entry's text: the positive, and the negative when there is one. */
+export const choiceLabel = choice => (choice.negative.trim() ? `${choice.positive} / ${choice.negative}` : choice.positive);
+
 /** The body fields of the chosen Negative value. */
 export const pairIdOf = value => (value === NO_NEGATIVE ? null : Number(value));
 
@@ -54,8 +65,15 @@ export const pairIdOf = value => (value === NO_NEGATIVE ? null : Number(value));
 export function openPromptLink({ api, scope, controller, filename, trigger }) {
     // A re-read may open another item meanwhile (decided elsewhere): the dialog names this one, so it closes.
     const itemId = controller.state.selectedId;
-    const stopWatching = controller.subscribe(state => { if (state.selectedId !== itemId && !closed) closeWorkspaceDialog(); });
     let timer = null, search = null, variantsRead = null, chosen = null, closed = false;
+    // #657 D4: the image's own prompts (from the options shown last), and the one chosen among them (`chosen` is then null).
+    let shownOptions = controller.state.options, choices = imageChoices(shownOptions), chosenOwn = null;
+    const stopWatching = controller.subscribe(state => {
+        if (closed) return;
+        if (state.selectedId !== itemId) closeWorkspaceDialog();
+        // The item's detail was read again: list what it offers now.
+        else if (state.detailStatus === 'ready' && state.options !== shownOptions) refreshOwn(state.options);
+    });
 
     const sentence = el('p', LINK_COPY.sentence(filename), 'small');
     const input = el('input');
@@ -63,6 +81,12 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
     const results = el('div', undefined, 'review-link-results');
     results.setAttribute('role', 'group');
     results.setAttribute('aria-label', 'Matching prompts');
+    const ownHeading = el('p', LINK_COPY.own, 'small review-link-heading');
+    const own = el('div', undefined, 'review-link-results review-link-own');
+    own.setAttribute('role', 'group');
+    own.setAttribute('aria-label', LINK_COPY.own);
+    const libraryHeading = el('p', LINK_COPY.library, 'small review-link-heading');
+    const ownNodes = choices.length ? [ownHeading, own, libraryHeading] : [];
     const status = el('p', '', 'small');
     status.setAttribute('role', 'status');
     const select = el('select');
@@ -77,7 +101,7 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
     actions.append(cancel, submit);
 
     const busy = () => controller.state.phase !== 'idle';
-    const ready = () => chosen !== null && !negative.hidden && select.value !== CHOOSE;
+    const ready = () => chosenOwn !== null || (chosen !== null && !negative.hidden && select.value !== CHOOSE);
     function syncSubmit() {
         if (ready() && !busy()) submit.removeAttribute('aria-disabled');
         else submit.setAttribute('aria-disabled', 'true');
@@ -101,11 +125,49 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
         return variants;
     }
 
+    /** Mark `button` as the chosen entry, in both lists. */
+    function press(button) {
+        for (const node of [...own.children, ...results.children]) node.setAttribute('aria-pressed', String(node === button));
+    }
+
+    function chooseOwn(choice, button) {
+        variantsRead?.abort();
+        chosen = null;
+        chosenOwn = choice;
+        press(button);
+        negative.hidden = true;
+        warn('');
+        syncSubmit();
+    }
+
+    function showOwn() {
+        own.replaceChildren(...choices.map(choice => {
+            const button = createButton(choiceLabel(choice));
+            button.title = choiceLabel(choice);
+            button.setAttribute('aria-pressed', String(choice.value === chosenOwn?.value));
+            button.addEventListener('click', () => chooseOwn(choice, button));
+            return button;
+        }));
+    }
+
+    /** The item's candidates changed: list them again; a chosen one no longer offered is unchosen. */
+    function refreshOwn(options) {
+        shownOptions = options;
+        choices = imageChoices(options);
+        if (chosenOwn && !choices.some(choice => choice.value === chosenOwn.value)) {
+            chosenOwn = null;
+            warn(COPY.notOffered);
+        }
+        showOwn();
+        syncSubmit();
+    }
+
     async function choose(prompt, button) {
         variantsRead?.abort();
         const read = variantsRead = new AbortController();
         chosen = prompt;
-        for (const node of results.children) node.setAttribute('aria-pressed', String(node === button));
+        chosenOwn = null;
+        press(button);
         negative.hidden = true;
         warn('');
         syncSubmit();
@@ -152,6 +214,14 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
     }
 
     input.addEventListener('input', () => {
+        // Typing searches the Library only, so a choice from the image is dropped; an empty box lists them again.
+        const typed = Boolean(input.value.trim());
+        ownHeading.hidden = own.hidden = typed;
+        if (typed && chosenOwn) {
+            chosenOwn = null;
+            press(null);
+            syncSubmit();
+        }
         clearTimeout(timer);
         timer = setTimeout(find, SEARCH_DELAY_MS);
     });
@@ -161,15 +231,19 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
         if (submit.getAttribute('aria-disabled') === 'true') return;
         warn('');
         submit.setAttribute('aria-disabled', 'true');
-        const done = await controller.link({ itemId, positiveId: chosen.id, pairId: pairIdOf(select.value), title: titleOf(chosen) });
+        const done = chosenOwn
+            ? await controller.applyCandidate({ itemId, hash: chosenOwn.value })
+            : await controller.link({ itemId, positiveId: chosen.id, pairId: pairIdOf(select.value), title: titleOf(chosen) });
         if (closed) return;
         if (done) { closeWorkspaceDialog(); return; }
         warn(controller.state.warning);
+        refreshOwn(controller.state.options);
         syncSubmit();
     });
 
     openContentDialog({ scope, title: LINK_COPY.title, trigger, focusTarget: input,
-        nodes: [sentence, field(LINK_COPY.search, input, 'review-link-search'), status, results, negative, warning, actions],
+        nodes: [sentence, field(LINK_COPY.search, input, 'review-link-search'), ...ownNodes, status, results, negative, warning,
+            actions],
         canClose: () => !busy(),
         onClose: () => {
             closed = true;
@@ -178,6 +252,7 @@ export function openPromptLink({ api, scope, controller, filename, trigger }) {
             search?.abort();
             variantsRead?.abort();
         } });
+    showOwn();
     syncSubmit();
     find();
 }

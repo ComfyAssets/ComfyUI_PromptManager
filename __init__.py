@@ -156,12 +156,13 @@ try:
     _global_prompt_tracker = get_prompt_tracker(_global_db)
     _global_image_monitor = get_image_monitor(_global_db, _global_prompt_tracker)
 
-    # The Needs review pass for ambiguous new outputs runs through the API's
-    # capture store (the one the scan and the Tag dialog use): a linked output
-    # is never queued and its pending items leave the queue. The package
-    # teardown detaches it before that store is closed at shutdown.
+    # The Needs review pass runs on the API's review worker (#659), through
+    # the capture store the scan and the Tag dialog use: an output the
+    # monitor leaves unlinked at its final outcome is queued as a scan would
+    # queue it, and a linked one's pending items leave the queue. The package
+    # teardown detaches it and stops the worker before that store is closed.
     if api is not None:
-        _global_image_monitor.set_review_recorder(api.record_review_file)
+        _global_image_monitor.set_review_recorder(api.queue_review_file)
         # Every settled output's preview is queued for the API's background
         # worker (#249): the workspace never asks to generate thumbnails.
         _global_image_monitor.set_thumbnail_queue(api.queue_capture_thumbnail)
@@ -292,15 +293,26 @@ def _teardown_logger():
         return logging.getLogger("prompt_manager.init")
 
 
-def _stop_background_work():
-    """Stop the image monitor, the preview worker, the job worker threads
-    and the prompt cleanup thread against one TEARDOWN_SECONDS deadline, once.
+def _review_worker_started(api_object):
+    """Whether the API's Needs review worker ever started (False without
+    one, or when the check fails)."""
+    try:
+        return bool(api_object is not None and api_object.review_worker_started())
+    except Exception:
+        return False
 
-    Returns ``{"monitor", "thumbnails", "workers", "tracker"}`` booleans
-    (True: it stopped), leaving out parts that never started. Later calls return a
-    copy of the first result. A Ctrl+C inside a step is logged and the
-    step is False; one between steps is re-raised after the result (parts
-    not reached are False) is stored and the ``atexit`` entry removed.
+
+def _stop_background_work():
+    """Stop the image monitor, the Needs review worker, the preview worker,
+    the job worker threads and the prompt cleanup thread against one
+    TEARDOWN_SECONDS deadline, once.
+
+    Returns ``{"monitor", "review", "thumbnails", "workers", "tracker"}``
+    booleans (True: it stopped), leaving out parts that never started.
+    Later calls return a copy of the first result. A Ctrl+C inside a step is
+    logged and the step is False; one between steps is re-raised after the
+    result (parts not reached are False) is stored and the ``atexit`` entry
+    removed.
     """
     global _background_work_result
     with _background_work_lock:
@@ -315,8 +327,10 @@ def _stop_background_work():
 
         # A part whose global is set has started; False until its step says
         # otherwise, so an interrupt between steps leaves an honest result.
+        reviews = thumbnails  # the API also owns the review worker (#659)
         started = (
             ("monitor", monitor),
+            ("review", _review_worker_started(reviews) or None),
             ("thumbnails", thumbnails),
             ("workers", parallel.job_pool_started() or None),
             ("tracker", tracker),
@@ -349,6 +363,18 @@ def _stop_background_work():
                 result["monitor"] = _teardown_step(
                     "the image monitor", stop_monitor, logger
                 )
+            if reviews is not None:
+
+                def stop_reviews():
+                    from .py.api.review_recording import REVIEW_STOP_SECONDS
+
+                    return reviews.stop_review_worker(left(REVIEW_STOP_SECONDS))
+
+                # Always stopped, so no later output starts it; reported
+                # only when it ran (an image in hand may have started it).
+                stopped = _teardown_step("the review worker", stop_reviews, logger)
+                if "review" in result or _review_worker_started(reviews):
+                    result["review"] = stopped
             if thumbnails is not None:
 
                 def close_previews():

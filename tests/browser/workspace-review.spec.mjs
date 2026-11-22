@@ -269,15 +269,77 @@ test('an empty queue shows the empty notice only', async ({ page, request }) => 
     await expect(reviewRow(page)).toHaveText('Needs review0');
 });
 
-test('load more appends the next page', async ({ page, request }) => {
+const continuation = page => main(page).locator('.infinite-continuation');
+const scrollToContinuation = page => continuation(page).evaluate(node => node.scrollIntoView({ block: 'end' }));
+
+test('#657 D5: scrolling to the end of the queue loads the next page', async ({ page, request }) => {
+    await seed(request, 45);
+    const reads = reviewReads(page);
+    await open(page);
+    await expect(cards(page)).toHaveCount(40);
+    await expect(continuation(page).locator('p')).toHaveText('40 of 45 images · more load as you scroll');
+    // Scrolling does the work, so there is no button.
+    await expect(continuation(page).getByRole('button')).toHaveCount(0);
+    await scrollToContinuation(page);
+    await expect(cards(page)).toHaveCount(45);
+    await expect(continuation(page)).toHaveCount(0);
+    expect(reads.filter(read => read === 'more')).toHaveLength(1);
+});
+
+test('#657 D5: a page that could not be read says so, and Retry reads it', async ({ page, request }) => {
+    await seed(request, 45);
+    await open(page);
+    let failing = true;
+    await page.route(url => url.pathname === '/prompt_manager/review/items' && url.searchParams.has('cursor'),
+        route => (failing ? route.fulfill({ status: 500, contentType: 'application/json',
+            body: JSON.stringify({ success: false, error: 'Internal error' }) }) : route.continue()));
+    const failed = page.waitForResponse(item => item.url().includes('cursor=') && item.status() === 500);
+    await scrollToContinuation(page);
+    await failed;
+    await expect(continuation(page).locator('p')).toHaveText('More items could not be loaded. Try again.');
+    const retry = continuation(page).getByRole('button', { name: 'Retry', exact: true });
+    await expect(retry).toBeVisible();
+    await expect(cards(page)).toHaveCount(40);
+    failing = false;
+    await retry.click();
+    await expect(cards(page)).toHaveCount(45);
+    await expect(continuation(page)).toHaveCount(0);
+});
+
+const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+test('#657 D5: nothing loads behind an open dialog; closing it loads the page in view', async ({ page, request }) => {
+    // Two columns, so Link to a prompt… sits in the sticky panel beside the queue. At one column (touch) the panel
+    // follows the queue just above the continuation: bringing Link into view there loads the next page by itself.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await seed(request, 45);
+    const reads = reviewReads(page);
+    await open(page);
+    await linkButton(page).scrollIntoViewIfNeeded();
+    await frames(page);
+    expect(await continuation(page).evaluate(node => node.getBoundingClientRect().top > window.innerHeight + 250)).toBe(true);
+    await linkButton(page).click();
+    await expect(linkDialog(page)).toBeVisible();
+    await scrollToContinuation(page);
+    // Two frames: the observer's callback and the load it would schedule.
+    await frames(page);
+    await expect(cards(page)).toHaveCount(40);
+    expect(reads).not.toContain('more');
+    await linkDialog(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(linkDialog(page)).toHaveCount(0);
+    // The continuation is still in view, where the observer stays silent: closing the dialog loads the page.
+    await expect(cards(page)).toHaveCount(45);
+});
+
+test('#657 D5: without IntersectionObserver, Load more pages the queue', async ({ page, request }) => {
+    await page.addInitScript(() => { delete window.IntersectionObserver; });
     await seed(request, 45);
     await open(page);
     await expect(cards(page)).toHaveCount(40);
-    const continuation = main(page).locator('.infinite-continuation');
-    await expect(continuation.locator('p')).toHaveText('40 of 45 images');
-    await continuation.getByRole('button', { name: 'Load more images', exact: true }).click();
+    await expect(continuation(page).locator('p')).toHaveText('40 of 45 images');
+    await continuation(page).getByRole('button', { name: 'Load more images', exact: true }).click();
     await expect(cards(page)).toHaveCount(45);
-    await expect(continuation).toHaveCount(0);
+    await expect(continuation(page)).toHaveCount(0);
 });
 
 test('a scan job with review items offers Review metadata in Activity', async ({ page, request }) => {
@@ -581,7 +643,7 @@ test('a live re-read keeps the loaded depth and the scroll position', async ({ p
     await seed(request, 45);
     await open(page);
     await expect.poll(async () => (await streams(request)).streams).toBe(1);
-    await main(page).getByRole('button', { name: 'Load more images', exact: true }).click();
+    await scrollToContinuation(page);
     await expect(cards(page)).toHaveCount(45);
     await cards(page).last().scrollIntoViewIfNeeded();
     const scrollTop = () => cards(page).first().evaluate(node => {
@@ -682,4 +744,152 @@ test('#536: a refused link stays in the dialog with the server\'s sentence', asy
     await expect(dialog).toHaveCount(0);
     expect(await pending(request)).toBe(1);
     expect(await links(request)).toEqual([]);
+});
+
+test('#657 D4: Link to a prompt first lists the image\'s own prompts, and choosing one applies it', async ({ page, request }) => {
+    await seed(request, 2);
+    await open(page);
+    const harborHash = await context(page).locator('option', { hasText: 'Harbor lights at night' }).getAttribute('value');
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    const own = dialog.getByRole('group', { name: 'From this image', exact: true });
+    await expect(dialog.locator('.review-link-heading')).toHaveText(['From this image', 'Library']);
+    await expect(own.getByRole('button')).toHaveText(['Golden dunes at dusk / Soft negative, blur',
+        'Harbor lights at night / Soft negative, blur']);
+    // Typing searches the Library only; an empty box lists the image's prompts again.
+    const search = dialog.getByRole('searchbox');
+    await search.fill('zzz');
+    await expect(own).toBeHidden();
+    await expect(dialog.getByRole('status').first()).toHaveText('No prompt in the Library matches.');
+    await search.fill('');
+    await expect(own).toBeVisible();
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    const harbor = own.getByRole('button', { name: 'Harbor lights at night / Soft negative, blur', exact: true });
+    await harbor.click();
+    await expect(harbor).toHaveAttribute('aria-pressed', 'true');
+    // The candidate carries its own negative.
+    await expect(dialog.getByRole('combobox', { name: 'Negative prompt', exact: true })).toBeHidden();
+    await expect(submit).not.toHaveAttribute('aria-disabled', 'true');
+    const decided = page.waitForResponse(item => /\/review\/items\/[^/]+\/decision$/.test(item.url()));
+    await submit.click();
+    const response = await decided;
+    expect(response.status()).toBe(200);
+    expect(response.request().postDataJSON().choice).toBe(harborHash);
+    await expect(dialog).toHaveCount(0);
+    await expect(toast(page)).toHaveText('Association accepted.');
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
+    expect(await links(request)).toEqual([{ filename: 'review_0000.png', prompt: 'Harbor lights at night',
+        pair_id: expect.any(Number), positive: 'Harbor lights at night', negative: 'Soft negative, blur' }]);
+});
+
+test('#657 D4: a refused candidate stays in the dialog with the server\'s sentence', async ({ page, request }) => {
+    await seed(request, 1);
+    await open(page);
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    await dialog.getByRole('group', { name: 'From this image', exact: true }).getByRole('button').first().click();
+    await page.route(/\/decision$/, route => route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ success: false, code: 'association-conflict', error: 'This image is already linked.' }) }));
+    await dialog.getByRole('button', { name: 'Link image', exact: true }).click();
+    await expect(dialog.locator('.warning-note')).toHaveText('This image is already linked.');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await pending(request)).toBe(1);
+});
+
+test('#657 D3: a file whose prompts were shortened to the most used says so', async ({ page, request }) => {
+    await seed(request, 2);
+    await page.route(url => /\/prompt_manager\/review\/items\/[0-9a-f-]{36}$/.test(url.pathname), async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        const collapsed = body.filename === 'review_0000.png' ? { shown: 2, total: 81, paths: 165 } : null;
+        await route.fulfill({ response, json: { ...body, collapsed } });
+    });
+    await open(page);
+    const line = panel(page).locator('.review-collapsed');
+    await expect(line).toHaveText('Showing the 2 most used of 81 prompts in this file.');
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect review_0001.png', exact: true }).click();
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
+    await expect(line).toBeHidden();
+});
+
+test('#657 D4: typing drops a choice from the image; Link waits for a Library prompt and links it', async ({ page, request }) => {
+    await seed(request, 1, { unreadable: true });
+    await open(page);
+    await expect(panel(page).locator('p.small')).toHaveText('review_0000.png');
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    const own = dialog.getByRole('group', { name: 'From this image', exact: true });
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await own.getByRole('button', { name: 'Harbor lights at night / Soft negative, blur', exact: true }).click();
+    await expect(submit).not.toHaveAttribute('aria-disabled', 'true');
+    const search = dialog.getByRole('searchbox');
+    await search.fill('harbor');
+    await expect(own).toBeHidden();
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    // An empty box lists the image's prompts again, none chosen.
+    await search.fill('');
+    await expect(own).toBeVisible();
+    await expect(own.locator('button[aria-pressed="true"]')).toHaveCount(0);
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await search.fill('harbor');
+    await dialog.getByRole('button', { name: 'Quiet harbor', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Negative prompt', exact: true }).selectOption({ label: 'grainy' });
+    await expect(submit).not.toHaveAttribute('aria-disabled', 'true');
+    const sent = page.waitForRequest(item => /\/review\/items\/[^/]+\/(link|decision)$/.test(item.url()));
+    await submit.click();
+    const sentRequest = await sent;
+    expect(sentRequest.url()).toMatch(/\/link$/);
+    expect(sentRequest.postDataJSON()).toEqual(expect.objectContaining({ positive_id: expect.any(Number), pair_id: expect.any(Number) }));
+    await expect(toast(page)).toHaveText('Linked to Quiet harbor.');
+    const link = (await links(request)).find(row => row.filename === 'review_0000.png');
+    expect([link.positive, link.negative]).toEqual(['Quiet harbor', 'grainy']);
+});
+
+test('#657 D5: at one column, Info brings the panel into view without loading more until the reader moves', async ({ page, request }) => {
+    await page.setViewportSize({ width: 420, height: 900 });
+    await seed(request, 45);
+    const reads = reviewReads(page);
+    await open(page);
+    await expect(cards(page)).toHaveCount(40);
+    // The first cards are in view and the continuation, past the queue and the panel, is far away.
+    expect(await continuation(page).evaluate(node => node.getBoundingClientRect().top > window.innerHeight + 250)).toBe(true);
+    await cards(page).nth(1).getByRole('button', { name: 'Inspect review_0001.png', exact: true }).click();
+    await expect(panel(page).locator('p.small')).toHaveText('review_0001.png');
+    await expect(panel(page)).toBeInViewport();
+    // The continuation is near, but the panel stays put: two frames for the observer and the load it would schedule.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await continuation(page).evaluate(node => node.getBoundingClientRect().top <= window.innerHeight + 250)).toBe(true);
+    expect(reads).not.toContain('more');
+    await expect(cards(page)).toHaveCount(40);
+    // The reader's next move releases it.
+    await page.mouse.wheel(0, 200);
+    await expect(cards(page)).toHaveCount(45);
+});
+
+test('#657 D4: a re-read that no longer offers the chosen image prompt drops it from the dialog', async ({ page, request }) => {
+    await seed(request, 1);
+    await open(page);
+    await linkButton(page).click();
+    const dialog = linkDialog(page);
+    const own = dialog.getByRole('group', { name: 'From this image', exact: true });
+    await own.getByRole('button', { name: 'Harbor lights at night / Soft negative, blur', exact: true }).click();
+    // The decision is refused as stale, so the item is read again, and this time its Harbor path cannot be applied.
+    await page.route(/\/decision$/, route => route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ success: false, code: 'review-conflict', error: 'This item changed. Choose again.' }) }));
+    await page.route(url => /\/prompt_manager\/review\/items\/[0-9a-f-]{36}$/.test(url.pathname), async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        const candidates = body.candidates.map(candidate => (candidate.positive?.text === 'Harbor lights at night'
+            ? { ...candidate, state: 'unresolved', reason: 'Text is decided at run time' } : candidate));
+        await route.fulfill({ response, json: { ...body, candidates } });
+    });
+    const submit = dialog.getByRole('button', { name: 'Link image', exact: true });
+    await submit.click();
+    await expect(own.getByRole('button')).toHaveText(['Golden dunes at dusk / Soft negative, blur']);
+    await expect(own.locator('button[aria-pressed="true"]')).toHaveCount(0);
+    await expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await expect(dialog.locator('.warning-note')).toHaveText('This item changed. Choose again.');
+    expect(await pending(request)).toBe(1);
 });

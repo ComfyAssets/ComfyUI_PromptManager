@@ -23,7 +23,7 @@ except ImportError:  # discovered with ``-s tests``
     import unknown_node_graphs as graphs
 
 POSITIVE, OTHER, NEGATIVE = graphs.POSITIVE, graphs.OTHER, graphs.NEGATIVE
-any_switch_graph = graphs.any_switch_graph
+unknown_multi_graph = graphs.unknown_multi_graph
 _encode, _pair, _with = graphs.encode, graphs.pair, graphs.with_nodes
 
 
@@ -41,8 +41,8 @@ def _texts(result):
 
 
 class TestTheReportedGraph(unittest.TestCase):
-    def test_prompt_manager_pair_through_any_switch_resolves(self):
-        result = _inspect(any_switch_graph())
+    def test_prompt_manager_pair_through_an_unknown_node_resolves(self):
+        result = _inspect(unknown_multi_graph())
         self.assertEqual(result["state"], "resolved", result["reason"])
         self.assertEqual(_texts(result), (POSITIVE, ""))
         self.assertEqual(result["sampler_id"], "17")
@@ -51,13 +51,15 @@ class TestTheReportedGraph(unittest.TestCase):
         self.assertEqual(path, ["15", "10"])
 
     def test_the_inspector_shows_the_prompt(self):
-        evidence = inspect_prompt_evidence({"prompt": json.dumps(any_switch_graph())})
+        evidence = inspect_prompt_evidence(
+            {"prompt": json.dumps(unknown_multi_graph())}
+        )
         self.assertEqual(evidence["resolution"]["state"], "resolved")
         self.assertEqual(evidence["prompts"]["positive"]["status"], "resolved")
         self.assertEqual(evidence["prompts"]["positive"]["text"], POSITIVE)
 
     def test_ingestion_is_unchanged(self):
-        result = resolve_prompt_pair({"prompt": any_switch_graph()})
+        result = resolve_prompt_pair({"prompt": unknown_multi_graph()})
         self.assertEqual(result["state"], "unresolved")
         # Its first failure is the custom latent node, as before this change.
         self.assertEqual(result["reason"], "Unsupported latent ancestry")
@@ -69,12 +71,12 @@ class TestTheReportedGraph(unittest.TestCase):
 
 class TestSourcesThroughUnknownNodes(unittest.TestCase):
     def test_several_inputs_with_one_text_resolve(self):
-        graph = any_switch_graph(any_01=["10", 0], any_02=["10", 0])
+        graph = unknown_multi_graph(any_01=["10", 0], any_02=["10", 0])
         self.assertEqual(_texts(_inspect(graph)), (POSITIVE, ""))
 
     def test_equal_texts_from_different_nodes_resolve(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0], any_02=["21", 0]),
+            unknown_multi_graph(any_01=["20", 0], any_02=["21", 0]),
             **{"20": _encode(OTHER), "21": _encode(OTHER)},
         )
         result = _inspect(graph)
@@ -83,7 +85,7 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
 
     def test_different_texts_are_candidates_not_a_refusal(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0], any_02=["21", 0]),
+            unknown_multi_graph(any_01=["20", 0], any_02=["21", 0]),
             **{"20": _encode(POSITIVE), "21": _encode(OTHER)},
         )
         result = _inspect(graph)
@@ -99,7 +101,7 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
 
     def test_prompt_manager_is_authoritative(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0], any_02=["10", 0]),
+            unknown_multi_graph(any_01=["20", 0], any_02=["10", 0]),
             **{"20": _encode(OTHER)},
         )
         result = _inspect(graph)
@@ -108,7 +110,7 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
 
     def test_prompt_manager_wins_over_an_unreadable_branch(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0], any_02=["10", 0]),
+            unknown_multi_graph(any_01=["20", 0], any_02=["10", 0]),
             **{
                 "20": {
                     "class_type": "CLIPTextEncode",
@@ -121,7 +123,7 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
 
     def test_an_unreadable_branch_blocks_without_prompt_manager(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0], any_02=["22", 0]),
+            unknown_multi_graph(any_01=["20", 0], any_02=["22", 0]),
             **{
                 "20": {
                     "class_type": "CLIPTextEncode",
@@ -137,7 +139,7 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
 
     def test_chained_unknown_nodes(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "Router Node (vendor)",
@@ -148,16 +150,16 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
         self.assertEqual(_texts(_inspect(graph)), (POSITIVE, ""))
 
     def test_no_text_names_the_unknown_node(self):
-        graph = any_switch_graph(any_01=["7", 0])
+        graph = unknown_multi_graph(any_01=["7", 0])
         result = _inspect(graph)
         self.assertEqual(result["state"], "unresolved")
         self.assertEqual(result["reason_code"], "unsupported-node")
         self.assertEqual(
-            result["node"], {"id": "15", "class_type": "Any Switch (rgthree)"}
+            result["node"], {"id": "15", "class_type": "PMTest Unknown Multi"}
         )
 
     def test_another_sampler_is_never_entered(self):
-        graph = any_switch_graph(any_01=["17", 0], any_02=["10", 0])
+        graph = unknown_multi_graph(any_01=["17", 0], any_02=["10", 0])
         graph["30"] = {
             "class_type": "KSampler",
             "inputs": {**graph["17"]["inputs"], "positive": ["31", 0]},
@@ -172,7 +174,7 @@ class TestSourcesThroughUnknownNodes(unittest.TestCase):
 class TestLegacyShapedRules(unittest.TestCase):
     def test_a_text_input_is_the_text(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "VendorTextEncode",
@@ -183,7 +185,7 @@ class TestLegacyShapedRules(unittest.TestCase):
         self.assertEqual(_texts(_inspect(graph))[0], OTHER)
 
     def test_role_inputs_route_by_output_slot(self):
-        graph = any_switch_graph()
+        graph = unknown_multi_graph()
         graph["20"] = {
             "class_type": "VendorControlApply",
             "inputs": {
@@ -201,7 +203,7 @@ class TestLegacyShapedRules(unittest.TestCase):
 
     def test_a_conditioning_input_is_followed_alone(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "VendorStyleApply",
@@ -216,7 +218,7 @@ class TestLegacyShapedRules(unittest.TestCase):
         # The vendor encoder's ``clip`` reaches a loader with its own ``text``:
         # that text is a lora tag, never the prompt.
         graph = _with(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "VendorPromptEncode",
@@ -236,7 +238,7 @@ class TestLegacyShapedRules(unittest.TestCase):
 
 class TestBounds(unittest.TestCase):
     def test_a_long_unknown_chain_reaches_the_depth_limit(self):
-        graph = any_switch_graph(any_01=["100", 0])
+        graph = unknown_multi_graph(any_01=["100", 0])
         for index in range(100, 100 + resolver.INSPECTION_PROFILE.max_depth + 2):
             graph[str(index)] = {
                 "class_type": "Router Node (vendor)",
@@ -249,7 +251,7 @@ class TestBounds(unittest.TestCase):
 
     def test_many_different_sources_hit_the_candidate_cap(self):
         inputs = {}
-        graph = any_switch_graph()
+        graph = unknown_multi_graph()
         for index in range(resolver._MAX_BRANCH_CANDIDATES + 1):
             graph[str(200 + index)] = _encode(f"{OTHER} {index}")
             inputs[f"any_{index:02}"] = [str(200 + index), 0]
@@ -292,7 +294,7 @@ class TestGeneratedAndTransformedText(unittest.TestCase):
 
     def test_a_seeded_conditioning_node_still_passes_through(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {
                     "class_type": "VendorConditioningNoise",
@@ -307,7 +309,7 @@ class TestReviewFindings(unittest.TestCase):
     """Shapes from the independent review of the first #381 commit."""
 
     def _recorded(self, text_source: dict) -> dict:
-        graph = any_switch_graph()
+        graph = unknown_multi_graph()
         graph["10"]["inputs"]["text"] = ["30", 0]
         graph.update(text_source)
         metadata = {
@@ -349,7 +351,7 @@ class TestReviewFindings(unittest.TestCase):
 
     def test_the_seed_rule_reads_only_string_outputs(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0]),
+            unknown_multi_graph(any_01=["20", 0]),
             **{
                 "20": {"class_type": "XNoise", "inputs": {"conditioning": ["21", 0]}},
                 "21": {
@@ -361,7 +363,7 @@ class TestReviewFindings(unittest.TestCase):
         self.assertEqual(_texts(_inspect(graph))[0], OTHER)
 
     def test_an_unlinked_role_input_adds_nothing(self):
-        graph = any_switch_graph()
+        graph = unknown_multi_graph()
         graph["20"] = {
             "class_type": "XApply",
             "inputs": {"positive": ["21", 0], "negative_opt": ""},
@@ -376,7 +378,7 @@ class TestReviewFindings(unittest.TestCase):
 
     def test_one_text_offered_twice_is_one_candidate(self):
         graph = _with(
-            any_switch_graph(any_01=["20", 0], any_02=["23", 0]),
+            unknown_multi_graph(any_01=["20", 0], any_02=["23", 0]),
             **{
                 "20": {"class_type": "XB", "inputs": {"p": ["21", 0], "q": ["22", 0]}},
                 "21": _encode(POSITIVE),

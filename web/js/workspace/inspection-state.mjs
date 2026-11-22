@@ -232,6 +232,18 @@ function imageTagsFor(value) {
     return { state: value.state, tags: [...value.tags] };
 }
 
+// #659: the file's Needs review item, when a role is ambiguous and nothing links the file. Anything but the two shapes
+// is no item: a choice is offered only for an item the server named.
+const REVIEW_ITEM_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+export function reviewFor(value) {
+    if (!object(value)) return null;
+    const keys = Object.keys(value).sort().join();
+    if (value.state === 'decided' && keys === 'state') return Object.freeze({ state: 'decided' });
+    if (value.state === 'pending' && keys === 'item_id,state' && typeof value.item_id === 'string' && REVIEW_ITEM_ID.test(value.item_id))
+        return Object.freeze({ state: 'pending', item_id: value.item_id });
+    return null;
+}
+
 // The legacy workflow parse (comfy-metadata.js, as of #170) also feeds the gallery and
 // admin pages; it fills any prompt or setting the server could not decide, so this page
 // never shows less than they do. A definite server answer is never replaced.
@@ -346,10 +358,11 @@ export function toInspectionRecord(result, image, extractFacts = globalThis.Comf
 export function projectInspectionPayload(result, identity, download, extractFacts = globalThis.ComfyMetadata?.extractGenerationFacts || globalThis.window?.ComfyMetadata?.extractGenerationFacts, legacy = false, parser = comfyMetadata()) {
     const record = {
         identity, file: null, prompts: promptsFor(result.prompts), library: null, metadata: null,
-        generation: unavailableFacts(), historyTarget: null, download, imageTags: null, preview: null,
+        generation: unavailableFacts(), historyTarget: null, download, imageTags: null, preview: null, review: null,
     };
     if (legacy) return record;
     record.imageTags = imageTagsFor(result.image_tags);
+    record.review = reviewFor(result.review);
     const resolution = resolutionFor(result.resolution);
     record.file = fileFor(result.file, identity);
     record.metadata = metadataFor(result.metadata);

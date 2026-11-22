@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import binascii
-from functools import wraps
+from functools import partial, wraps
 import json
 import os
 import re
@@ -31,7 +31,9 @@ from .inspection_service import (
     CurrentFileChanged,
     image_tags_reader,
     inspect_current_file,
+    review_reader,
 )
+from .admin import _scan_roots
 from .images import image_category_key
 
 try:
@@ -717,6 +719,37 @@ class HistoryRoutesMixin:
             )
             return OWN_CATEGORY_UNREAD
 
+    def _history_review(self, target) -> Callable:
+        """The ``review`` reader of a reported current file (#659, C4).
+
+        Located as the scan locates it (``_review_location`` over the scan
+        roots, resolved like the canonical target), only when the inspector
+        asks; a file under no scan root reads None. A file reached through a
+        linked subfolder is keyed by its resolved path here, so an item the
+        scan stored under the linked spelling is not found (None, no choice).
+        A file without an item is recorded first through the review worker's
+        path (#657 addendum D2). The read closes its connection, as this
+        route's other reads do.
+        """
+
+        def read(size: int, mtime_ns: int) -> dict | None:
+            roots = _scan_roots(
+                [os.path.realpath(root) for root in self._get_all_output_dirs()]
+            )
+            located = self._review_location(target, roots)
+            if located is None:
+                return None
+            locator = os.path.normcase(located[3])
+            return review_reader(
+                self.db,
+                locator,
+                self.logger,
+                close=True,
+                record=partial(self.inspect_review_file, str(target)),
+            )(size, mtime_ns)
+
+        return read
+
     async def _history_current(
         self, request: web.Request, kind: str
     ) -> web.StreamResponse:
@@ -793,6 +826,7 @@ class HistoryRoutesMixin:
                         recorded=recorded_output_lookup(
                             db, close=True, reference=receipt["reference"]
                         ),
+                        review=self._history_review(resolved.canonical_target),
                     )
                     _reauthorize_current_target(resolved, scope)
                     identity = {

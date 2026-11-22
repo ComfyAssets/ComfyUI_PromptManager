@@ -1,3 +1,5 @@
+import { LIBRARY_TAG_MODES } from './library-state.mjs';
+
 export const routes = [
     // `href` and `action` are Overview's card (#525): every card opens its native page, never a legacy one.
     { id: 'images', label: 'Images', href: '#/images',
@@ -63,6 +65,33 @@ export function isHandoff(route) {
     return !NATIVE_ROUTES.has(route.id);
 }
 
+/**
+ * The filter of a Library link `#/library?tag=<name>&tag=<name>&tag_mode=all|any|untagged` (#668 D207, the form old
+ * tag bookmarks are sent to): one tag per `tag`, trimmed, without empties or repeats; the first `tag_mode` counts and
+ * other keys are ignored. Returns `{tags, tagMode}`, `null` when there is nothing to filter, or `false` for a link that
+ * cannot be read (an unknown match, or Untagged together with a tag, which the server refuses).
+ */
+export function libraryLinkFilters(query) {
+    const params = new URLSearchParams(query);
+    const tags = [...new Set(params.getAll('tag').map(tag => tag.trim()).filter(Boolean))];
+    const tagMode = params.get('tag_mode') ?? 'all';
+    if (!LIBRARY_TAG_MODES.includes(tagMode) || (tagMode === 'untagged' && tags.length)) return false;
+    return tags.length || tagMode === 'untagged' ? { tags, tagMode } : null;
+}
+
+/**
+ * The Library shelf's address for a filter (#668 D207): `#/library?tag=…&tag=…&tag_mode=any|untagged`, tags in the
+ * shelf's order and `tag_mode` left out for All; `#/library` when no tag filter remains. Only Tags and Tag match are in
+ * the address: search, category, folder, sort and the archived shelf stay in memory. `libraryLinkFilters` reads it back.
+ */
+export function libraryLinkHash({ tags = [], tagMode = 'all' } = {}) {
+    const query = new URLSearchParams();
+    if (tagMode !== 'untagged') for (const tag of tags) query.append('tag', tag);
+    if (tagMode === 'untagged' || (tagMode !== 'all' && tags.length)) query.set('tag_mode', tagMode);
+    const text = query.toString();
+    return text ? `#/library?${text}` : '#/library';
+}
+
 export function resolveRoute(hash) {
     const saved = /^#\/saved\/([1-9]\d*)$/.exec(hash);
     if (saved && Number.isSafeInteger(Number(saved[1]))) return {...SAVED_ROUTE, savedId:Number(saved[1]), hash};
@@ -83,6 +112,15 @@ export function resolveRoute(hash) {
     const match = /^#\/library\/([1-9]\d*)$/.exec(hash);
     if (match && Number.isSafeInteger(Number(match[1]))) {
         return {...routes.find(route => route.id === 'library'), positiveId:Number(match[1]), hash};
+    }
+    // A Library link is the shelf's address while the filter lasts, in its canonical spelling, so Reload, Back and
+    // Forward find the filter. An unreadable link is the plain shelf, and the shell says so.
+    const link = /^#\/library\?([^]*)$/.exec(hash);
+    if (link) {
+        const library = routes.find(route => route.id === 'library');
+        const browse = libraryLinkFilters(link[1]);
+        if (browse === false) return {...library, browseInvalid:true};
+        return browse ? {...library, browse, hash:libraryLinkHash(browse)} : library;
     }
     return routes.find(route => hash === `#/${route.id}`) || routes[0];
 }
@@ -162,8 +200,24 @@ export function navigateTo(hash, win = window) {
     else win.location.hash = hash;
 }
 
+/** Fired on the window after a page replaced its own address: the router takes it as the route already shown. */
+const ROUTE_REPLACED_EVENT = 'prompt-manager:route-replaced';
+
+/**
+ * Replace the address without a history entry or a render (the Library shelf after its tag filter changed, #668): the
+ * router then knows the address shown, so the next different one, the plain Library included, is rendered.
+ */
+export function replaceRouteHash(hash, win = window) {
+    if (win.location.hash === hash) return;
+    win.history.replaceState(win.history.state, '', hash);
+    win.dispatchEvent(new Event(ROUTE_REPLACED_EVENT));
+}
+
+const browseKey = route => route?.browse ? route.hash : undefined;
+
 export function mountRouter(win, onRoute) {
     let current;
+    const replaced = () => { current = resolveRoute(win.location.hash); };
     const refresh = () => {
         current = undefined;
         update();
@@ -172,16 +226,20 @@ export function mountRouter(win, onRoute) {
         const route = resolveRoute(win.location.hash);
         const hash = route.hash || `#/${route.id}`;
         if (win.location.hash !== hash) win.history.replaceState(win.history.state, '', hash);
-        if (current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
+        // The shelf's address filter is part of the route; an unreadable link is always rendered (it says so).
+        if (!route.browseInvalid && browseKey(current) === browseKey(route) &&
+            current?.id === route.id && current?.positiveId === route.positiveId && current?.savedId === route.savedId &&
             current?.collectionId === route.collectionId && current?.jobId === route.jobId && current?.section === route.section) return;
         current = route;
         onRoute(route);
     };
     win.addEventListener('hashchange', update);
     win.addEventListener(ROUTE_REFRESH_EVENT, refresh);
+    win.addEventListener(ROUTE_REPLACED_EVENT, replaced);
     update();
     return () => {
         win.removeEventListener('hashchange', update);
         win.removeEventListener(ROUTE_REFRESH_EVENT, refresh);
+        win.removeEventListener(ROUTE_REPLACED_EVENT, replaced);
     };
 }

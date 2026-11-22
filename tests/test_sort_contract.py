@@ -1,4 +1,4 @@
-"""The UI's sort options must match the server's whitelist exactly."""
+"""The node's Recent request must name a sort the server whitelists."""
 
 import os
 import re
@@ -10,19 +10,10 @@ sys.path.insert(0, ROOT)
 
 from database.operations import SORT_ORDERS
 
-SORT_MODULE = os.path.join(ROOT, "web", "js", "prompt-list-sort.js")
 NODE_EXTENSION = os.path.join(ROOT, "web", "comfy", "prompt_manager.js")
 
 
 class TestSortContract(unittest.TestCase):
-    def test_ui_sort_options_match_server_whitelist(self):
-        with open(SORT_MODULE, encoding="utf-8") as fh:
-            source = fh.read()
-        ui_values = set(re.findall(r'value:\s*"([a-z_]+)"', source))
-
-        self.assertTrue(ui_values, "no sort options found in prompt-list-sort.js")
-        self.assertEqual(ui_values, set(SORT_ORDERS))
-
     def test_node_recent_button_requests_recently_used(self):
         # The node extension can't import the shared module (ComfyUI load order is
         # not guaranteed), so it sends the key directly; it must be a server key.

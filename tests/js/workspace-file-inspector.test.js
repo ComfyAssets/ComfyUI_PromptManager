@@ -293,13 +293,18 @@ test('an empty tag source draws no section', async () => {
     try { assert.equal(tagSections(view.f).length, 0); } finally { view.done(); }
 });
 
-// LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the legacy metadata
-// page's COPY ALL (web/metadata.html copyAllData). The legacy template is read from that page itself and run on the
-// legacy parse, so the summary's text is the legacy page's, line for line, wherever the two agree on the values.
-const METADATA_PAGE = fs.readFileSync(new URL('../../web/metadata.html', import.meta.url), 'utf8');
-function legacyCopyAll(params) {
-    const template = METADATA_PAGE.match(/const allData = `([\s\S]*?)`;/)[1];
-    return new Function('currentWorkflowData', `return \`${template}\`;`)(params);
+// LI-4 (D117): "Copy settings summary" after the six facts of the full inspector consolidates the old metadata page's
+// COPY ALL. That page is gone (#668); this is its template, copied unchanged from `copyAllData` in web/metadata.html
+// as of 3.7.2, and run on the legacy parse, so the summary's text stays the old page's, line for line, wherever the
+// two agree on the values.
+function legacyCopyAll(currentWorkflowData) {
+    return `Checkpoint: ${currentWorkflowData.checkpoint || 'Unknown'}
+Positive Prompt: ${currentWorkflowData.positivePrompt}
+Negative Prompt: ${currentWorkflowData.negativePrompt}
+Steps: ${currentWorkflowData.steps || 'Unknown'}
+CFG Scale: ${currentWorkflowData.cfgScale || 'Unknown'}
+Sampler: ${currentWorkflowData.sampler || 'Unknown'}
+Seed: ${currentWorkflowData.seed || 'Unknown'}`;
 }
 const legacyParams = record => ComfyMetadata.extractGenerationParams({prompt:record.metadata.prompt_graph.status === 'parsed' ? record.metadata.prompt_graph.value : null,
     workflow:record.metadata.workflow_graph.status === 'parsed' ? record.metadata.workflow_graph.value : null});
@@ -746,5 +751,26 @@ test('category chip names its origin visibly and shows an own category for any l
     ]) {
         const chips = chipTexts({...base, library:{...base.library, tags:[], tags_scope:null, ...library}});
         assert.equal(chips.some(chip => /category: /.test(chip)), false, JSON.stringify(library));
+    }
+});
+
+// #658: an ambiguous file whose candidates share one role. The shared role has Copy and Send; the footer
+// "Send to ComfyUI" sends a pair, so it needs both roles resolved and is absent here, in both variants.
+test('one resolved and one ambiguous role: no footer Send to ComfyUI, the resolved role keeps its actions', async () => {
+    const base = await localRecord(localPng('Shared Negative.png'));
+    const record = {...base, prompts:{positive:{status:'ambiguous', text:null, source:null}, negative:{status:'resolved', text:'blurry, lowres', source:'graph-inferred'}}};
+    for (const variant of ['panel', 'full']) {
+        const f = mountedDom(), scope = createScope();
+        const forbidden = new Proxy({}, {get(_, key) {assert.fail(`api.${String(key)} touched by a local record`);}});
+        const view = mountFileInspector(f.container, {api:forbidden, sender:{open() {}}, parentScope:scope, variant});
+        try {
+            view.setState({loading:false, error:false, record});
+            const buttons = f.walk(f.container, n => n.tagName === 'button');
+            assert.equal(buttons.filter(n => n.dataset.sendRole === 'pair').length, 0, variant);
+            assert.equal(f.walk(f.container, n => n.textContent?.includes?.('Send to ComfyUI') && n.tagName === 'button').length, 0, variant);
+            assert.equal(buttons.filter(n => n.dataset.sendRole === 'negative').length, 1, variant);
+            assert.equal(buttons.filter(n => n.dataset.copyRole === 'negative').length, 1, variant);
+            assert.equal(buttons.filter(n => n.dataset.sendRole === 'positive' || n.dataset.copyRole === 'positive').length, 0, variant);
+        } finally { view.dispose(); scope.dispose(); f.restore(); }
     }
 });

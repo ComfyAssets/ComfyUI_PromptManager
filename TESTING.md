@@ -35,8 +35,8 @@ python -m tests.run_suite -q        # what CI runs; see "Time limits and hangs"
 npm ci --prefix tools/vendor --ignore-scripts
 npx --prefix tools/vendor playwright install --with-deps chromium firefox webkit
 npm run --prefix tools/vendor test
-npm run --prefix tools/vendor test:coverage
-npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit
+npm run --prefix tools/vendor test:coverage                                          # desktop Chromium: what the gate runs
+npm run --prefix tools/vendor test:workflows -- --project firefox --project webkit --project touch   # what nightly runs
 ```
 
 `python -m unittest discover -s tests` still works and finds the same tests;
@@ -191,23 +191,26 @@ exists. It uses the gate's own `discoverSources`, and `npm test` runs the same
 check, so run it before pushing a new or deleted frontend file instead of
 waiting for the `frontend coverage` jobs.
 
-The `viewerjs` check runs on every PR, including backend-only changes. It is an
-aggregate job. It requires the four `frontend coverage (shard N/4)` jobs and
-`frontend coverage (merge)` to succeed on every event. The six
-`page workflows (firefox|webkit, shard N/3)` jobs run only in the merge queue,
-on `main` and on `workflow_dispatch` (see "Pull requests and the merge queue").
-`viewerjs` requires them to be skipped on a pull request and to succeed
-everywhere else. Any other failed, cancelled or skipped job fails it. Every browser job runs with `PM_TEST_WORKERS: 3` (the public
+Frontend coverage is measured with desktop Chromium alone (#666): the gate's
+four `frontend coverage (shard N/4)` jobs and `frontend coverage (merge)` run on
+every pull request with a code change, including backend-only ones (see "The
+gate and the nightly run"). The phone-size `touch` project, Firefox and WebKit
+run nightly and add no coverage. Measured on main a1f74470 in the pinned image
+(2026-11-21): with the node units and Chromium alone, without touch, all 126
+files met their floors; the closest were `workspace/images-state.mjs` branches
+(98.05 against 98) and `workspace/viewer-state.mjs` branches (95.06 against 95).
+Every browser job runs with `PM_TEST_WORKERS: 3` (the public
 runners have 4 vCPUs). Each coverage shard runs `test:coverage:shard -- N/4`
-(shard 1 also runs the node units and the viewer suite, shard 4 the vendor pins
-and tooling tests) and uploads its raw V8 files as `coverage-raw-N` (kept 3
-days). The merge job downloads them, fails unless all three arrived with raw
+(shard 1 also runs the node units and the viewer suite) and uploads its raw V8
+files as `coverage-raw-N` (kept 3 days). The merge job downloads them, fails
+unless all four arrived with raw
 files and without clashing names, then runs `coverage:merge` (report plus
-baseline check). `tests/vendor/ci-workflow.test.mjs` checks this shape. GitHub
+baseline check). The vendor pins and the tooling tests run in their own job,
+`tooling tests and pins`. `tests/vendor/ci-workflow.test.mjs` checks this shape. GitHub
 artifacts named `frontend-test-reports` contain the merged HTML coverage and
-JSON summary; `frontend-traces-shard-N` hold the Chromium/touch failure
-screenshots/traces and `browser-traces-<browser>-shard-N` the other browsers'
-traces. Open traces with Playwright's `show-trace` tool.
+JSON summary; `frontend-traces-shard-N` hold the Chromium failure
+screenshots/traces and, from the nightly run, `browser-traces-<browser>-shard-N`
+the other projects' traces. Open traces with Playwright's `show-trace` tool.
 
 Every `npm ci` first restores npm's download cache (`~/.npm`), keyed on the vendor
 lockfile and the job's pinned image tag (`tests/vendor/ci-workflow.test.mjs` checks
@@ -235,8 +238,8 @@ need targeted validation.
 ## Time limits and hangs
 
 CI and the pre-push hook run the Python suite as `python -m tests.run_suite`
-(`-v`, `-q`, `-s START` and `-p PATTERN` as in `unittest discover`), and the
-coverage job as `python -m coverage run -m tests.run_suite`. The runner
+(`-v`, `-q`, `-s START` and `-p PATTERN` as in `unittest discover`); the gate
+runs it once, under coverage, as `python -m coverage run -m tests.run_suite -v`. The runner
 (`tests/run_suite.py`) discovers the same tests with the same `sys.path` and
 warning filters as `python -m unittest discover -s tests`, exits 0, 1, or 5 when
 no tests ran (Python 3.12+ behaviour, on every version), and adds a watchdog: it writes `start: <test id>` to stderr before every test, at every
@@ -264,13 +267,13 @@ the process exits non-zero.
   job fails anyway and the dump is what matters.
 - `PM_TEST_SLOWEST=N` (off by default) lists the N slowest tests after the
   summary, each timed from its `start:` line to the next one like the hang
-  limit. The Windows jobs (`portability.yml`) set it to 40, so every
+  limit. The Windows jobs (`nightly.yml`) set it to 40, so every
   run shows where its time went (#487). The list prints only when the run
   ends: a job GitHub cancels or a watchdog exit prints none, so read the
   timestamps between `start:` lines instead.
 - On the Windows runners `TEMP` sits on the OS disk C:, where a flush took about
   6 ms and a test database's create-to-delete about 111 ms (D: 0.5 ms and 23 ms,
-  macOS 19 ms). `portability.yml` points `TEMP`/`TMP` at a folder under
+  macOS 19 ms). `nightly.yml` points `TEMP`/`TMP` at a folder under
   `RUNNER_TEMP` on D: before the suite. It switches 8.3 short names on for D:
   and spells the folder by its short name, as the runner's own TEMP was
   (`C:\Users\RUNNER~1\...`), logs it, and warns when there is none.
@@ -294,21 +297,26 @@ the process exits non-zero.
   expects no ComfyUI nearby works two folders inside its temp folder, because
   the output-folder fallback looks two levels up.
 
-Every job in `test.yml`, `code-quality.yml`, `viewerjs-check.yml` and
-`portability.yml` has `timeout-minutes` (`tests/vendor/ci-workflow.test.mjs`
-checks it). The rule is ceil(1.5 x the slowest of three recent green runs on
-`main`) + 3 minutes, never under 5, timed as whole-job wall time; the three run
-ids, their times and the resulting limits are written in a comment above
-`jobs:`. For `portability.yml` the tooling test recomputes the limit from that
-comment (#493); its one matrix job takes the slowest Windows or macOS leg. The 3 minutes leave room for one watchdog firing, so
-the dump prints before GitHub cancels the job. A job that hits its limit, or a
-watchdog dump, is a failure like any other: read the dump, find the blocking
-call, fix it. Never raise a limit or rerun to get green; a limit changes only
-with new measurements written next to it.
+Every job in `ci.yml`, `nightly.yml`, `publish.yml` and `viewerjs-update.yml`
+(#662) has `timeout-minutes`.
+The rule is ceil(1.5 x the slowest of three recent green runs) + 3 minutes,
+never under 5, timed as whole-job wall time; a matrix job takes its slowest
+leg. The three run ids, their times and the resulting limit are written in a
+comment above `jobs:`, one line per job id
+(`python: 7m20s / 7m36s / 7m58s -> 15 min`). A job that has no three green runs
+yet has an `estimate <job id>: <why> -> N min` line instead; replace it with
+the measurement once three green runs exist. `tests/vendor/ci-workflow.test.mjs`
+recomputes every measured limit from its line and checks that each job has
+exactly one line and uses its limit (#493). The 3 minutes leave room for one
+watchdog firing, so the dump prints before GitHub cancels the job. A job that
+hits its limit, or a watchdog dump, is a failure like any other: read the dump,
+find the blocking call, fix it. Never raise a limit or rerun to get green; a
+limit changes only with new measurements written next to it.
 
 Browser jobs (#425): GitHub keeps no log of a job killed at its limit and skips
-its upload steps, so the test step in each browser job in `viewerjs-check.yml`
-has its own `timeout-minutes` (18, below the job's 20). At the step limit
+its upload steps, so the page test step in each browser job (`frontend coverage`
+in `ci.yml`, `page workflows` in `nightly.yml`) has its own `timeout-minutes`,
+2 below the job's. At the step limit
 GitHub sends SIGTERM, which would end Playwright without any report; under `CI`
 `tools/vendor/running-tests-reporter.mjs` catches the first one, prints
 `Still running when the run ended (SIGTERM): N` and one line per unfinished
@@ -324,10 +332,9 @@ runs the script, and that shell exits without passing it on. Delivery in CI,
 where the step runs through `docker exec`, is not yet observed; the next real
 step timeout will show it. That directory and the traces
 upload with `if: always()`; `npx playwright merge-reports` opens the blob.
-Each test keeps the 30 s default and there is no `globalTimeout`. Two limits
+Each test keeps the 30 s default and there is no `globalTimeout`. One limit
 of this: it assumes the npm cache hits (a cold cache adds up to 5 minutes to
-`npm ci`, and the job limit can then still win), and coverage shard 1 (12m53s
-measured) is the tight one in its 18-minute step. Local runs keep the `list`
+`npm ci`, and the job limit can then still win). Local runs keep the `list`
 reporter only; reproduce with `CI=1 timeout -s TERM 40 npm run --prefix
 tools/vendor test:workflows -- --project=firefox`.
 
@@ -336,18 +343,17 @@ tools/vendor test:workflows -- --project=firefox`.
 Follow the run for the commit you pushed, never an older one:
 
 ```sh
-gh run list --commit <pushed sha> --workflow test.yml     # the run id for that commit
+gh run list --commit <pushed sha> --workflow ci.yml       # the run id for that commit
 gh run watch <run id> --exit-status                       # returns when the run ends
 gh run view <run id> --json jobs                          # shows a job that already failed
 gh run view --job <job id> --log-failed                   # that job's failed log, at once
 ```
 
-Python 3.13/3.14, real ComfyUI and Firefox/WebKit failures first show up in the
-merge queue, on the merge-group commit rather than the
-pushed one. Find that run with `gh run list --event merge_group --workflow test.yml`
-(or `viewerjs-check.yml`) and match its head branch
-(`gh-readonly-queue/main/pr-<N>-...`). Windows failures show up only
-after the merge, in `gh run list --workflow portability.yml`.
+Everything that can block the merge is in that one run (#666). Firefox, WebKit,
+touch, Python 3.13/3.14, Windows and real ComfyUI failures show up the next
+morning, as an open `nightly: <job> failing` issue and in
+`gh run list --workflow nightly.yml`; to see them before merging, run
+`gh workflow run nightly.yml --ref <branch>`.
 
 Start fixing as soon as a failed log shows the cause, but push the fix only after
 the run for that commit has finished: pull-request runs use `cancel-in-progress`,
@@ -368,12 +374,18 @@ and the time left. The steps, in order:
    observer join get what is left, which can be 0 s. `stop()` joins watchdog's
    emitters without a limit, so it runs on a daemon thread and is waited for
    only until the deadline; a later stop waits for that same call (#561).
-3. `close_auto_thumbnails(final=True)` stops the preview worker (30 s),
+3. `stop_review_worker` stops the Needs review worker (`pm-review-recorder`,
+   5 s, #659): it drops the queued and deferred paths (their count is logged;
+   the next scan covers them), refuses every later `queue_review_file` and
+   joins the thread, which finishes at most the file in hand. It always runs,
+   so an image in hand cannot start the worker afterwards; it is reported as
+   part `review` only when the worker started.
+4. `close_auto_thumbnails(final=True)` stops the preview worker (30 s),
    kills ffmpeg and shuts the interactive image pool down.
-4. `shutdown_job_pool` (`utils/parallel.py`) cancels the long-lived job pool's
+5. `shutdown_job_pool` (`utils/parallel.py`) cancels the long-lived job pool's
    queued items and joins its threads (5 s; part `workers`, only when a job
    used the pool, #523).
-5. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
+6. `PromptTracker.shutdown` stops the prompt cleanup thread (2 s).
 
 A failing step, or a second Ctrl+C, is logged with its traceback and does not
 skip the later steps. A clean run logs one INFO line to PromptManager's log:
@@ -426,6 +438,7 @@ exit waits for the call in flight, as before. `tests/test_exit_cancel.py` runs a
 child process with three such calls running and requires its exit within 15 s.
 
 Stop contract: `PromptTracker.shutdown(timeout)`,
+`ReviewRecordingMixin.stop_review_worker(timeout)` (final),
 `ImageGenerationHandler.shutdown(timeout)` (restartable),
 `ImageGenerationHandler.close(timeout)` (final: `schedule()` refuses and a
 sealed run's re-check is dropped) and `ImageMonitor.stop_monitoring(timeout)`
@@ -438,7 +451,8 @@ Test rules:
 - Every test that constructs a real `PromptTracker`, `ImageGenerationHandler`
   or `ImageMonitor` ends with its final stop and an assertion
   (`tests/background_stops.py`: `close_handler`, `stop_monitor`,
-  `stop_tracker`). The stop comes before the folder and databases are removed.
+  `stop_tracker`). `ReviewTestCase.tearDownAsync` asserts
+  `stop_review_worker` before its capture store and folder go. The stop comes before the folder and databases are removed.
   `tearDown` runs before `addCleanup` callbacks, so a class whose `tearDown`
   removes files stops the thread there.
 - A test waits for a state through an `Event` set by the code under test, or
@@ -491,6 +505,19 @@ differ are files whose pixel data is undecodable or cut short: legacy found
 nothing, the walk keeps the text before the pixels. Animated PNGs still use
 `.text`.
 
+WebP, AVIF and JPEG keep the same records in EXIF, not in text chunks.
+ComfyUI's `SaveAnimatedWEBP` writes `prompt:{json}` to EXIF tag 0x0110, then
+`workflow:{json}` and every other `extra_pnginfo` key to 0x010F and down; the
+AVIF writer uses that layout. `utils/exif_text.py` answers the `png_text` shape
+through Pillow's `getexif()`, and both metadata readers fall back to it when a
+file has no text chunks. Only a value shaped like a record counts (a key, a
+colon, then a JSON object, array or string), so camera EXIF stays out.
+`tests/test_exif_text.py` writes real still and animated WebP files, AVIF (where
+Pillow has it) and JPEG in that layout; `tests/test_metadata_extraction.py` and
+`tests/test_api_core.py` hold the two readers to it. No scan, monitor or
+gallery list collects `.avif` yet, so AVIF files are read correctly but never
+reach the readers; #652 tracks AVIF as a media type.
+
 Image work runs on PromptManager's own threads (#523). glibc keeps each thread's
 malloc arena at its high-water mark, so image buffers spread over the default
 executor's threads stay resident. Interactive image work (view previews behind their
@@ -510,20 +537,20 @@ trim; `tests/test_utils_parallel.py` the pool's reuse, resize, nesting and shutd
 `tools/perf/memory_drive.py` (manual, Linux, never in CI) measures RSS, heap, threads
 and arenas under the #523 load against the disposable browser test server.
 
-The `perf budget` job in `.github/workflows/test.yml` is the reference
+The `perf budget` job in `.github/workflows/nightly.yml` is the reference
 measurement: `ubuntu-latest`, one Python, no coverage, only the wall-clock tests.
-It runs on every push to `main` and on `workflow_dispatch`, never on pull
-requests, because shared-runner timing must not block a merge. Dispatch it on a
-branch to measure before merging.
+It runs nightly and on `workflow_dispatch`, never on pull
+requests, because shared-runner timing must not block a merge. Dispatch
+`nightly.yml` on a branch to measure before merging.
 Shared Windows runners do not run them; the structural tests cover
 portability. Run it locally with
 `PROMPTMANAGER_PERF_BUDGET=1 python -m unittest tests.test_api_workspace_images.TestWorkspaceImages.test_filter_budget`
 and quote the printed p95 in the PR body.
 
-A red `perf budget` run on `main` means the code got slower: fix the code (or
+A red `perf budget` run means the code got slower: fix the code (or
 change the budget in the spec with a reason) in a follow-up PR. Never rerun it to
-green. It is not a required check, and it cannot be one while it skips pull
-requests (`.github/branch-protection.json`).
+green. It is not a required check: only `gate` is
+(`.github/branch-protection.json`).
 
 ## Images listing cache (#348)
 
@@ -714,114 +741,163 @@ Before changing paths, SQLite, streams, restore or cleanup:
   open with `FirstWriterHold`) and give peers that must all succeed the
   ordinary busy timeout; cross-thread handoffs wait on events with generous
   ceilings, never a short wall clock (#242).
-- Run native Windows CI early for these changes. Pull requests and the merge
-  queue run only Linux, so start Windows on the branch with
-  `gh workflow run portability.yml --ref <branch>`.
+- Run native Windows CI early for these changes. Pull requests run only Linux,
+  so start Windows on the branch with
+  `gh workflow run nightly.yml --ref <branch>` (a branch run files no issues).
   Include a Windows impact and evidence note in the PR. All three Windows
   legs in that run, every Linux leg and every applicable
   exact-head check must pass before merge. Portable `ntpath`/`PureWindowsPath`
   controls do not establish native filesystem, locking or cleanup success.
 
-## Pull requests and the merge queue
+## The gate and the nightly run
 
-Each PR runs the full matrix once, in the merge queue (#420). The event decides
-what runs:
+A change is tested once, on its pull request (#666). There is no merge queue
+and a push to `main` runs no test. Three workflows:
 
-| Job | `pull_request` | `merge_group`, push to `main`, `workflow_dispatch` |
+| Workflow | Runs on | Jobs |
 | --- | --- | --- |
-| `py3.12 on ubuntu-latest` | runs | runs |
-| `py3.13 on ubuntu-latest`, `py3.14 on ubuntu-latest` | not created | run |
-| `real ComfyUI compatibility` | skipped | runs |
-| `coverage gate (85%)`, `black and flake8`, `frontend modules`, `bandit (high severity)` | run | run |
-| `frontend coverage (shard N/4)`, `frontend coverage (merge)` (vendor pins and tooling tests on shard 4) | run | run |
-| `page workflows (firefox\|webkit, shard N/2)` | skipped | run |
-| `all tests`, `viewerjs` (gates) | run | run |
-| `perf budget` | skipped | push and dispatch only (not in the queue) |
-| `py3.12-3.14 on windows-latest` (`portability.yml`) | not run | push to `main`, nightly, `workflow_dispatch` only; never required |
+| `ci.yml` (the gate) | `pull_request`, `workflow_dispatch` | `change class`; `python 3.12 with coverage (85%)` (the suite, once, under coverage); `black and flake8`; `bandit (high severity)`; `frontend modules` (`tests/js`); `tooling tests and pins` (`tests/vendor`, vendor pins); `frontend coverage (shard N/4)` and `frontend coverage (merge)` (desktop Chromium page workflows with the per-file floors); `package contents` (a release only); `gate` |
+| `nightly.yml` | 03:17 UTC, `workflow_dispatch` | `page workflows (firefox\|webkit\|touch, shard N/3)`; `py3.13`/`py3.14 on ubuntu-latest`; `py3.12`-`3.14 on windows-latest`; `native trash on a real mount`; `real ComfyUI compatibility`; `perf budget`; `report by issue` |
+| `publish.yml` | push to `main` that changes `pyproject.toml`, `workflow_dispatch` | publishes to the Registry when the version is new |
 
-GitHub has one required set for pull requests and the queue. A job skipped by
-its `if:` reports Success. A dropped matrix leg never reports, so it would stay
-pending. That is why `all tests` (in `test.yml`) and `viewerjs` carry the
-guarantee:
-- On a pull request they require the subset to succeed and the queue-only jobs
-  to be skipped.
-- On every other event they require every job to succeed.
+`gate` is the only required check. It needs every other job of `ci.yml` and
+passes only when the classifier succeeded and each job did what the change
+class asks (below): the class's jobs succeeded and every other job was
+skipped. A failed, cancelled or wrongly skipped job fails it, and so does a
+class the classifier does not print. Because branch protection names only
+`gate`, adding or renaming a job never strands a pull request. Protection is
+strict: the branch must be up to date with `main`, so the commit the gate
+tested is the commit that merges. When `main` moved, press "Update branch" and
+the gate runs once more.
 
-So a merge group cannot turn green unless all three Linux Python legs, real
-ComfyUI and the four browser shards passed.
+Only desktop Chromium blocks a merge (maintainer, 2026-11-21). Firefox, WebKit
+and the phone-size `touch` project are not first-class; with Python 3.13/3.14,
+Windows, the real mount, real ComfyUI and the wall-clock budget they run
+nightly on `main`. macOS is not tested in CI (maintainer, 2026-10-31, #571);
+its code stays and support is best-effort. The cost: a break only those can
+see is found the next morning, not before the merge. To see it before merging
+a risky change, run `gh workflow run nightly.yml --ref <branch>`.
 
-Windows (Python 3.12-3.14) is out of the blocking path for now
-(maintainer, 2026-10-28). macOS is not tested in CI (maintainer, 2026-10-31, #571);
-its code stays and support is best-effort. They run in `portability.yml` on every push to `main`,
-nightly and on demand, and no context there is required. A red portability run
-is still a failure: fix it at its cause, not by rerunning, and have every one
-green before the workspace cutover (#334). `tests/vendor/ci-workflow.test.mjs` pins the
-event split and runs both gate scripts for each event.
+### Nightly reports by issue
+
+Nothing waits for the nightly run, so it reports by issue
+(`tools/ci/nightly_report.py`, the `report by issue` job, the only job in CI
+with a write permission: `issues: write`). For each job of the run:
+
+- a failed or timed-out leg opens `nightly: <job> failing`, or comments on the
+  open issue with that exact title, naming the run, the commit and the failed
+  legs;
+- every leg green closes that issue with a comment naming the run;
+- a cancelled or skipped job changes nothing.
+
+Shards of one browser are one job (`nightly: page workflows (webkit) failing`).
+Only a run of `main` reports; a manual run of a branch files nothing. A red
+nightly job is a failure like any other: read the log, fix the cause. It blocks
+no merge, and it is never rerun to green.
+
+### Flaky tests and quarantine
+
+- **No retries in the gate.** A retry hides a race. A gate test passes or fails
+  on its one attempt (`retries: 0` in both Playwright configs).
+- **No rerun-to-green.** A red job is read and fixed at its cause. The one
+  exception is unchanged: a pure timeout with every test passing may be rerun.
+- **A gate test that fails without a code cause is fixed or quarantined the
+  same day.** Open an issue, then tag the test with that issue, in exactly this
+  spelling (`tests/vendor/flake-policy.test.mjs` checks it):
+
+  ```js
+  test('closing the viewer never blocks the page', { tag: '@quarantine', annotation: { type: 'issue', description: '#613' } }, async ({ page }) => {
+  ```
+
+  The gate's page run passes `--grep-invert @quarantine`
+  (`tools/vendor/frontend-coverage.mjs`), so the test no longer blocks a merge;
+  the nightly run still runs it in Firefox, WebKit and touch. To run it in
+  Chromium while fixing it: `npm run --prefix tools/vendor test:workflows --
+  --project chromium --grep @quarantine`. Remove the tag in the PR that fixes
+  the test and closes the issue. A quarantined test adds no coverage, so a
+  floor that depended on it fails the merge job: that is the signal to fix
+  the test rather than leave it.
+- **Nightly retries once** (`--retries 1`). A test that fails and then passes
+  does not turn its job red; `tools/vendor/flaky-tests-reporter.mjs` lists it
+  in the job summary under "Flaky tests". Treat a test listed there twice as a
+  bug to fix.
+
+Nothing is quarantined today. Measured at the switch (the last 100
+pull-request runs of the frontend workflow, 2026-10-31 to 2026-11-21): 9
+failed. Six were caused by the pull request's own change (three coverage
+floors, a tooling test, a new test that failed in touch, a Playwright bump),
+one by a re-pushed image tag (fixed by the digest pin, #609), and two by
+Chromium tests that failed without a cause in the pull request; both were
+fixed at their cause (a production race, #611, and a spec that read a status
+before its save answered, #631).
 
 ### Only changes that can affect code are tested (#639)
 
-The table above is for a code change. Each of the three workflows starts with a
-`change class` job that runs `tools/ci/change_class.py` over the files the pull
-request, merge group or push touches, and the other jobs follow its answer:
+The table above is for a code change. `ci.yml` starts with a `change class` job
+that runs `tools/ci/change_class.py` over the files the pull request touches,
+and every other job runs for one class only:
 
-| Class | Files (allowlists in the script) | What runs |
+| Class | Files | What runs |
 | --- | --- | --- |
-| `inert` | `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and the two gates. `py3.12 on ubuntu-latest` starts and skips its steps, because a skipped matrix job would never report that required context. |
-| `docs` | `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | The above plus the real `py3.12 on ubuntu-latest` suite, which holds the tests that read them (`tests/test_brand_assets.py`, `tests/test_package_contents.py`). |
-| `code` | Anything else | Everything in the table above. |
+| `inert` | Only `.github/FUNDING.yml`, `SECURITY.md`, `images/`, `.github/ISSUE_TEMPLATE/` | `change class` and `gate`: green in seconds. |
+| `docs` | Only `README.md`, `README-legacy.md`, `assets/readme/`, `assets/brand/` (may include inert files) | `change class` and `gate`: green in seconds. |
+| `release` | `pyproject.toml` alone, and in it only the `version = "..."` line rewritten | The above and `package contents` (`tests/test_package_contents.py`). |
+| `code` | Anything else | The whole gate. |
 
 A file on no list is code, and so is every case of doubt: no changed files, a
-manual run, a range git cannot read. `docs/` is code, because the browser suite
-compares production against `docs/concepts/workspace/`; `TESTING.md` is code,
-because the tooling tests read its tables. Before adding a file to a list,
-check that no test and no shipped code opens it.
+manual run, a range git cannot read, a `pyproject.toml` change that is more
+than the version line. `docs/` is code, because the browser suite compares
+production against `docs/concepts/workspace/`; `TESTING.md` is code, because
+the tooling tests read its tables; a test-only change is code. Before adding a
+file to a list, check that no shipped code opens it.
 
-The gates enforce the class: for `docs` and `inert` they require the classifier
-to have succeeded, the Python matrix to have succeeded and every other job to
-have been skipped; a class the script does not print fails them. `bandit` has no
-gate, so it runs unless the class is `docs` or `inert`, which means a failed
-classifier gets a full scan. The required contexts do not change.
+Two Python tests read the `docs` files (`tests/test_brand_assets.py`,
+`tests/test_package_contents.py`). CI no longer runs them for a `docs` change
+(maintainer, 2026-11-21: documentation and image changes run no tests), so a
+README or brand-asset edit that breaks one is caught by the pre-push hook, or
+else by the next code change's gate. Run
+`python -m unittest tests.test_brand_assets tests.test_package_contents` after
+editing those files.
 
 The pre-push hook uses the same script: it skips the Python suite when the
 pushed commits are `inert` and runs it otherwise.
 
 ## Required merge checks
 
-`.github/branch-protection.json` records the required checks:
-`py3.12 on ubuntu-latest`, `coverage gate (85%)`, `black and flake8`,
-`frontend modules`, `all tests`, `viewerjs`, `real ComfyUI compatibility` and
-`bandit (high severity)`. Each one reports on a pull request.
+`.github/branch-protection.json` records the required checks: the one context
+`gate`, with `strict` (the branch must be up to date with `main`). It reports
+on every pull request, whatever the change class.
 The same set lives in two places, and both must change together: the `main`
-ruleset (25960526, which also holds the merge queue) and the classic branch
-protection on `main`, which the manifest mirrors. GitHub requires the union of
-the two, so a context left in either one blocks every PR that does not report it.
-It does not require an additional human approval.
+ruleset (25960526) and the classic branch protection on `main`, which the
+manifest mirrors. GitHub requires the union of the two, so a context left in
+either one blocks every PR that does not report it. The ruleset has no
+`merge_queue` rule (#666). Merging is the squash button. It does not require an
+additional human approval.
 
-A repository administrator applies the configuration after the new workflow is
-passing, then verifies it:
+A repository administrator applies the configuration, then verifies it:
 
 ```sh
 gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 \
-  | jq '.rules[] | select(.type == "required_status_checks") | [.parameters.required_status_checks[].context]'
+  | jq '.rules[] | select(.type == "required_status_checks") | .parameters'
 ```
 
 A PUT replaces the whole `rules` array, so edit the current ruleset in place.
-Keep the `deletion`, `non_fast_forward` and `merge_queue` rules, and give every
-context `integration_id` 15368 (GitHub Actions), so no other integration can
-post a required check. Save the current ruleset first; it is the rollback:
+Keep the `deletion` and `non_fast_forward` rules, and give the context
+`integration_id` 15368 (GitHub Actions), so no other integration can
+post the required check. Save the current ruleset first; it is the rollback:
 
 ```sh
 gh api repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 > ruleset-before.json
 jq '{name, target, enforcement, conditions, bypass_actors, rules: [.rules[]
+     | select(.type != "merge_queue")
      | if .type == "required_status_checks"
-       then .parameters.required_status_checks = [$ARGS.positional[] | {context: ., integration_id: 15368}]
-       else . end]}' ruleset-before.json --args "py3.12 on ubuntu-latest" "..." > ruleset-new.json
+       then .parameters.required_status_checks = [{context: "gate", integration_id: 15368}]
+          | .parameters.strict_required_status_checks_policy = true
+       else . end]}' ruleset-before.json > ruleset-new.json
 gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/rulesets/25960526 --input ruleset-new.json
 ```
 
-Afterwards, read it back. Check that the `merge_queue` rule is still there and
-that every context keeps its `integration_id`. Then apply the manifest to the
-classic protection and read both back:
+Then apply the manifest to the classic protection and read both back:
 
 ```sh
 gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection \
@@ -829,9 +905,9 @@ gh api --method PUT repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protec
 gh api repos/ComfyAssets/ComfyUI_PromptManager/branches/main/protection/required_status_checks
 gh api repos/ComfyAssets/ComfyUI_PromptManager/rules/branches/main
 ```
- Update the manifest whenever
-required job names change. Keep the frontend check
-free of path filters so a required check is never silently skipped.
+
+Update the manifest whenever the required context changes. Keep `ci.yml`
+free of path filters so the required check is never silently skipped.
 
 ## Unified workspace
 
@@ -939,7 +1015,15 @@ WanImageToVideo by output slot). `ConditioningZeroOut` is an explicit empty text
 with source `zeroed-conditioning`. `easy ifElse` with a literal boolean follows that
 branch only; with a linked boolean both branches are traced, equal texts resolve and
 different texts make the sampler `ambiguous` with one candidate per choice (at most
-32, else `work-limit`). ConditioningCombine/Concat/Average resolve only when every
+32, else `work-limit`). A value is *proven* (#657, rgthree's `Any Switch (rgthree)`,
+strategy `first-present`, which outputs its first input that is not `None`) only by
+a literal or a traced path whose every node is a PromptManager node, a class the
+resolver handles in code (`Reroute`, `StringConcatenate`, `Text Concatenate`, the
+default string adapters) or an entry of the table's `encoders`, `strings`,
+`conditioning` or `composites` (`PROVEN_VALUE_CATEGORIES`). That allowlist is a rule
+for every future table entry: a class that can return `None` (a selector, an
+unknown node, a `runtime`, `facts` or `lineage` class) never goes into those four
+categories, and a test pins them. Both resolvers read the constant (`Semantics.proves_value`; the browser's copy in `local-resolver-support.mjs`), and `tests/test_proven_value_parity.py` fails when the browser copy drifts from it (#662). Otherwise the switch offers one candidate per distinct outcome of its inputs, and no PromptManager path is preferred. When a sampler is `ambiguous`, Inspect still shows a role every candidate resolves alike (same text, recipe and left-out parts) as resolved (#658); `resolution.state` stays `ambiguous`, so pair actions and ingestion are unchanged. ConditioningCombine/Concat/Average resolve only when every
 part has the same text, otherwise `unresolved` with `composite` naming the node
 (but see the added-conditioning floor below for a later stage).
 Results that depend on a forced choice are never memoized. A `FaceDetailer`
@@ -1535,8 +1619,7 @@ The Images page renders the concept's DOM with real data. Its controls, top to b
   (a "Media controls" group), the shared file inspector beside the stage, and Escape
   returns focus to the opening image.
 
-How the earlier workspace Images filters moved (old → new). The legacy `/gallery`,
-`/admin` and `/metadata` pages are unchanged.
+How the earlier workspace Images filters moved (old → new).
 
 | Before PR C | Now |
 | --- | --- |
@@ -2624,7 +2707,7 @@ job after `file_check` confirms containment and non-symlink, and the review step
   checks intact. A root above the mount, a mount nested under the root, a source that is or
   sits in the trash folder, and a link in place of the trash folder stay refused. Tests:
   `tests/test_trash_mount_root.py`, on a fake mount table in the suite and, with
-  `PM_TRASH_MOUNT=<real mount>`, in portability.yml's `native-trash-linux` job (loop-mounted
+  `PM_TRASH_MOUNT=<real mount>`, in nightly.yml's `native-trash-linux` job (loop-mounted
   ext4). Locally, without root: `unshare -Urm` over a tmpfs.
 - **D190** (#543, beyond the concept): a trash review where nothing can move shows a primary
   that clearly cannot act: `aria-disabled`, no danger colors (also on hover), and a press does
@@ -2761,7 +2844,7 @@ Recorded deviations on this page:
   drive, UNC, non-ASCII, symlinked root, the any-tag union), `test_api_library.py`,
   `test_saved_views.py`, the library-state and saved-views JS units, and
   `tests/browser/workspace-library-filters.spec.mjs` (behavior, the Refine dialog against
-  the concept Filters dialog, artifact captures). Windows: run `portability.yml` on the PR.
+  the concept Filters dialog, artifact captures). Windows: run `nightly.yml` on the PR's branch.
 
 `tests/browser/library-concept.spec.mjs` compares the shelf (#249 E3) on the
 concept-shaped fixture, which creates the concept's prompts last to first so Recently
@@ -2780,8 +2863,8 @@ applied), D35 (singular captions), D36 (sorted categories), D40 (the continuatio
 the grid) and D43 (sorted chips, checked against the concept with its chips sorted).
 D44 needs no mapping: the comparison runs with no Refine filter active, so the button
 reads "Filters" as the concept's does. Nothing else follows the grid: the legacy
-"Current prompt library" link is removed from the shelf; the legacy Library stays at
-`/prompt_manager/admin` by direct URL (#525, #620)
+"Current prompt library" link is removed from the shelf, and `/prompt_manager/admin` now
+leads to this page (#668, D207)
 (`tests/browser/workspace.spec.mjs`). `library comparison detects
 mutations` injects `.card-footer { padding: 2px }` and removes `.card-meta .chip.red`.
 
@@ -3164,8 +3247,8 @@ appears in four places, and production draws none of them:
 
 Data and API are unchanged: the `rating` column (`CHECK` 1–5), `PUT
 /prompt_manager/prompts/{id}/rating`, `rating` in Library, Images and statistics
-answers, and the server's `rating` sorts. The legacy pages keep their ratings until the
-cutover (#334). Favorites (the image star) are unchanged.
+answers, and the server's `rating` sorts. The old pages, which showed ratings, are gone (#668); the stored
+ratings and the routes stay. Favorites (the image star) are unchanged.
 
 Tests: units `tests/js/workspace-library-editor-state.test.js` (a prompt rated 4 edited
 and saved keeps 4, no `rating` in any body, no rating field),
@@ -3288,8 +3371,8 @@ npm run --prefix tools/vendor test:workflows -- history-concept.spec.mjs \
 ### Inspect a file page and recorded deviations (#249 local Inspect, PR L2)
 
 `#/inspect` ("Inspect a file") is a native workspace route; it no longer hands off to
-the legacy metadata page, which stays at its URL
-(`/prompt_manager/gallery.html`) at its URL only (#525, #620). The page is the concept's `#metadata`
+the legacy metadata page, whose URL (`/prompt_manager/gallery.html`) now leads here (#668,
+D207). The page is the concept's `#metadata`
 (app.js `renderMetadata` a740–748, selection a1715–1729; style.css 709–722, 1180–1194,
 1543–1545, 1559–1564) in the concept's own classes (`.surface`, `.file-drop`,
 `.spaced-20`, `.local-file-preview`, all from the synced `concept.css`), with no
@@ -3492,8 +3575,8 @@ mapped differences"):
   differ: numbers keep the server's spelling ("8.0" where the legacy page wrote 8); a fact
   the legacy parse could not read can be known; and a negative the #249 ZeroOut guard
   zeroed reads "No negative prompt found" where the legacy parse read the positive's text
-  through the zero-out. `workspace-file-inspector.test.js` runs the template taken from
-  `web/metadata.html` itself on the legacy parse of every parity PNG: 22 of 25 are
+  through the zero-out. `workspace-file-inspector.test.js` runs that template (a frozen copy of
+  `web/metadata.html`'s, taken at 3.7.2 before the page was removed in #668) on the legacy parse of every parity PNG: 22 of 25 are
   byte-equal, f01b and f23 differ by the ZeroOut guard and f17 by facts the legacy parse
   missed. Copying works as the concept's prompt copy: the toast "Settings summary
   copied.", or, without a clipboard or when it is refused, the select-to-copy dialog
@@ -3764,13 +3847,10 @@ production hub `#/overview` is unchanged (D28); its System card opens
 the pressed section button and disposes the previous section's scope, so its reads,
 listeners and dialogs never outlive it.
 
-System is the home for settings and maintenance (#330 System S13). The legacy pages keep
-their prompt list, tags, Scan Images, auto-tag batch and review and gallery browsing; their
-Settings, Diagnostics, View Logs, Maintenance, Backup DB, Restore DB, the gallery's
-thumbnail, cache, rescan and duplicate tools and the auto-tag model downloads open the
-System section that owns them in a new tab (`legacy-system-links.spec.mjs`). Each page
-keeps only its own settings in Page options. What left the legacy pages is listed in
-"Legacy System UI removed by S13".
+System is the home for settings and maintenance (#330 System S13). The old admin and
+gallery pages, which first handed these jobs to System through links, are gone (#668,
+D207); "Legacy System capability coverage" names the System control or the ruling for
+each capability they had.
 
 Drafts (`system-state.mjs`) live for the page session (Q10). Save writes the dirty
 browser fields, then the host fields (`POST /prompt_manager/settings` with
@@ -3791,8 +3871,7 @@ Optimized→`medium`, Original→`high`, Fast→`low`; the thumbnail dialog's pr
 once S5 lands), the three video rows (`videoAutoplay`, `videoMute`, `videoLoop`) and Show
 file paths (`showFilePaths`). A write re-reads the stored object and writes back only the
 changed keys, every other key (legacy paging, thumbnail state, unknown keys) as stored;
-the legacy gallery's Save also keeps the keys it does not edit, so the two pages stay in
-sync. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
+so a key the old gallery page stored (removed in #668, D209) is never lost. The workspace never reads the legacy paging keys (`defaultLimit`, `gridColumns`,
 `infiniteScroll`; README continuous-browsing ruling). A browser that refuses storage
 (denied, or a full quota that leaves the stored bytes as they were) keeps the change for
 this tab only and the status says "Saved for this tab only; browser storage is
@@ -3919,7 +3998,7 @@ batch and all 9 previews are written, where a stream that stops on disconnect le
 The gallery's Cancel (its settings panel and the startup dialog) cancels by that id,
 and only a job its own stream started: a Cancel before the `job` frame keeps the stream
 open until it arrives, a double Cancel posts once, and a job another tab or System
-started keeps running while the gallery stops following it (`tests/js/gallery-thumbnails.test.js`).
+started keeps running while the gallery stops following it. The gallery page that used this stream is gone (#668); the route stays.
 A job cancelled from Activity ends the stream with the error frame "Thumbnail
 generation was cancelled". The blocking
 `POST /images/generate-thumbnails` and the clear stay legacy holds.
@@ -4711,7 +4790,7 @@ the per-section hand-off panel, was retired by S12 (#329): every section is nati
   concept row's), `skipped tags add, preview, remove, save and reload (D202)`, `skipped
   tags preview checks library tags only …` (workspace-system-tagging.spec) and
   `suggestions omit skipped tags and say how many were hidden` (workspace-tagging.spec).
-- **D205** (Prompt library, #620, beyond the concept): the sort menu appends Recently used, Most used and Name Z–A
+- **D206** (Prompt library, #620, beyond the concept; numbered D205 until #662 found the id taken by #431): the sort menu appends Recently used, Most used and Name Z–A
   after Oldest first. These are the old Dashboard's sorts, kept before its removal because the community asked for
   them. A prompt never run sorts last in both use orders.
 - **D203** (Auto-tagging, #431, beyond the concept): "Saved instructions" replaces the
@@ -5531,8 +5610,9 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   is pinned by `tests/test_autotag_schema.py` (forward-only: one empty `WITHOUT ROWID`
   table, optional in old backups, refused without the annotation group).
 
-- **The legacy pages (#379, PR 2)** write image tags, never prompt tags.
-  `POST /autotag/start` (the admin and gallery batch) reads `model_type`, `prompt`,
+- **The old pages' auto-tag routes (#379, PR 2)** write image tags, never prompt tags.
+  The pages that called them are gone (#668); the routes stay until each is reviewed.
+  `POST /autotag/start` (the old admin and gallery batch) reads `model_type`, `prompt`,
   `skip_tagged` (Skip or Merge), `keep_in_memory` and the thresholds (else the saved
   ones), checks them with `validate_options` (WD14: both thresholds; GGUF/HF:
   `instructions` = the non-blank `prompt`, else the saved template; the saved
@@ -5540,8 +5620,7 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   page)" (gate owner `legacy-batch`) through the native start, so the safety backup and
   the disk check apply. A second legacy batch answers JSON 409 `{success: false, error:
   "Auto-tagging is already running"}` (also when another legacy start wins the race past
-  that check); `SseStream` hands a non-2xx JSON `error` to `onerror` as `serverMessage`,
-  which both pages show instead of "Connection lost during auto tagging". Any other refusal (a job in the way: "<title>
+  that check). Any other refusal (a job in the way: "<title>
   already running", `model-unavailable`, `insufficient-space`, `model-busy`, a bad
   option) is one `{type: "error", status: "error", message}` frame. The stream relays
   the job: the phases as `{type: "progress", progress: 0 | 5 | 8, status: "Taking a
@@ -5566,15 +5645,7 @@ images", "Tag output images (legacy page)", "Tagging one image (legacy page)",
   added_tags, total_tags}`; an empty list only marks the image. A body with `prompt_id`
   is `400` "This page is out of date. Reload it."; a changed file `409 file-changed`
   ("The image changed since its tags were generated."); a full set `409 tag-limit`; a
-  restore `409 storage-changed`. The admin review asks each image with Skip first: an
-  auto-tagged one shows "Image Already Auto-tagged" / "A tagging model already tagged
-  this image. Generate new tags?" with its image tags (Skip, Skip All Tagged, Re-tag asks
-  again with Merge); the gallery review always merges. Apply & Next sends the image and
-  its `sha256` (linked or not). The batch copy: "Skip images already auto-tagged",
-  "Auto tagging complete! Tagged N images." ("1 image"), and under both progress bars
-  "Closing this window stops tagging. Tags already added are kept. Prompt Manager's
-  Activity page shows the time left.". Pinned by `tests/test_autotag_legacy.py`,
-  `tests/js/image-helpers.test.js` and `legacy-autotag.spec`.
+  restore `409 storage-changed`. Pinned by `tests/test_autotag_legacy.py`.
 - **Tag image dialog marks (DEC4).** A save after Generate suggestions ran on that
   capture marks the image auto-tagged (also a replayed save, and a saved retry after
   `tag-conflict`); a save without Generate does not. The API keeps the suggested capture
@@ -5674,9 +5745,10 @@ line read `database_info.size_bytes`, a key the report does not have, so it alwa
 
 ### Legacy System capability coverage
 
-Every System capability of the legacy admin and gallery pages has an owner (#249 System
-S12, #329). Status is `covered` (a native control replaces it), `kept in legacy` (it stays
-on the legacy page, which keeps working) or `approved removal` (a ruling retired it). Native
+Every System capability the old admin and gallery pages had has an owner (#249 System
+S12, #329). Status is `covered` (a native control replaces it) or `approved removal` (a
+ruling retired it). The old pages are gone (#668, D207), so nothing is "kept in legacy" any
+more: D209 records where its four rows went. Native
 control is `` `<section>` · <role> · "<accessible name>" ``, `<section>` a System hash id
 and `<role>` one of button, combobox, switch, slider, spinbutton, textbox, group, status or
 term, followed by ` · in "<row title>"` when several rows of the section share the name.
@@ -5684,13 +5756,10 @@ Every `covered` row names one, except the rows in `CONTROL_EXEMPTIONS`
 (`tools/vendor/legacy-coverage.mjs`), each with its reason: today only "Gallery per-image
 auto-tag / review", which the Images selection bar owns, not a System section. A row that
 is not `covered` names none (`—`). Test is the exact title of a test that runs, then its
-file. Anchors are line numbers on `main` at this PR.
-
-S13 (#330) removed the legacy copy of the `covered` rows the legacy pages linked to System;
-"Legacy System UI removed by S13" below lists every removed element against its row.
+file. Legacy anchor is history: the lines are those of the deleted files in 3.7.2.
 
 `tests/vendor/legacy-coverage.test.mjs` fails on a row with any of these problems:
-- no owner, or a status outside the three;
+- no owner, or a status outside the two;
 - a malformed Native control cell;
 - a covered row without a control (unless exempt), or a control on a row that is not
   covered;
@@ -5712,7 +5781,7 @@ list stay unscoped: any row's control proves them.
 | Monitoring enabled | `py/config.py:212,248` | S4 Sources | covered | `sources` · switch · "Watch for new outputs" | Watch for new outputs saves monitoring_enabled; a restart applies it (workspace-system-sources.spec.mjs) |
 | Search results auto-hide `result_timeout` | `admin.html:407–412` | S3 Appearance | covered | `appearance` · spinbutton · "Node search auto-hide (seconds)" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
 | Web UI display mode | `admin.html:414–422` | S3 Appearance | covered | `appearance` · combobox · "Open from ComfyUI" | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Legacy prompt list (README continuous browsing); read-only in the report | kept in legacy | — | shouldLoadMore asks for the next page only near the bottom with pages left (list-state.test.js) |
+| Infinite scrolling default | `admin.html:424–430`; `admin.js:689–727` | Retired with the old prompt list (D209): the Library always continues; `web_ui.infinite_scroll` stays read-only in the report | approved removal | — | library infinite loading keeps unique parents and keyboard-accessible history controls (workspace-library.spec.mjs) |
 | Worker threads | `admin.html:437–445` | S4 Sources | covered | `sources` · slider · "Worker threads" | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
 | LoraManager badge, enable, path, trigger words, CivitAI key, clear key | `admin.html:448–490`; `admin.js:1052–1156` | S10 Integrations | covered | `integrations` · switch · "LoraManager integration" | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
 | LoRA data import with progress | `admin.html:492–498,517–541`; `admin.js:1157` | S10 Integrations | covered | `integrations` · button · "Review import" | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
@@ -5755,68 +5824,12 @@ list stay unscoped: any row's control proves them.
 | Video autoplay, mute, loop | `gallery-settings.js:40–42` | S3 Appearance | covered | `appearance` · switch · "Autoplay videos" | video defaults reach the viewer (workspace-system.spec.mjs) |
 | Image info on cards; sidebar collapsed | `gallery-settings.js:30,34` | S3 Appearance | covered | `appearance` · switch · "Show image details on cards" | added rows reach their consumers (workspace-system.spec.mjs) |
 | Reset gallery settings | `gallery.js:1813` | S3 Appearance | covered | `appearance` · button · "Reset" | reset restores defaults without touching other keys (workspace-system.spec.mjs) |
-| Lazy loading | `gallery-settings.js:25` | Legacy gallery (native always lazy) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
+| Lazy loading | `gallery-settings.js:25` | Retired with the old gallery (D209): Images always loads lazily; the stored key is kept | approved removal | — | stored values override defaults and unknown keys are kept (gallery-settings.test.js) |
 | Results per page / grid columns / paged mode | `gallery-settings.js:28–29,35` | README continuous browsing | approved removal | — | numeric strings from <select> values are accepted and columns are clamped (gallery-settings.test.js) |
 | Startup thumbnail prompt | `gallery-settings.js:38–39`; `gallery.js:2578` | README; Overview thumbnail row | approved removal | — | thumbnail row reflects the status endpoint (workspace-system.spec.mjs) |
-| Client debug output `debugMode` | `gallery-settings.js:36` | Legacy gallery (S12-10) | kept in legacy | — | a legacy gallery Save keeps the workspace keys and every other stored key (gallery-settings.test.js) |
-| API timeout `apiTimeout` | `gallery-settings.js:37` | Legacy gallery (S12-10; read by no request) | kept in legacy | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
+| Client debug output `debugMode` | `gallery-settings.js:36` | Retired with the old gallery (D209, S12-10): Diagnostics & logs is the workspace's tool; the stored key is kept | approved removal | — | stored values override defaults and unknown keys are kept (gallery-settings.test.js) |
+| API timeout `apiTimeout` | `gallery-settings.js:37` | Retired with the old gallery (D209, S12-10): no request ever read it; the stored key is kept | approved removal | — | defaults are a complete, sane settings object (gallery-settings.test.js) |
 | config.json-only keys | `py/config.py:212–234,722–739`; `py/api/diagnostics_report.py:185` | S12 report (read-only) | covered | `diagnostics` · button · "Download diagnostic report" | test_report_lists_config_only_keys (test_api_diagnostics_report.py) |
-
-### Legacy System UI removed by S13
-
-System S13 (#330) points the legacy pages' System buttons at native System (a link that
-opens `workspace#/system/<id>` in a new tab) and removes the legacy copy of a capability
-only when its row above is `covered`. One row per removed capability: Capability is the
-exact Capability cell of its coverage row, Page is `admin` or `gallery`, Removed ids and
-Removed methods list what went (`—` for none), and Native test copies that row's Test
-cell. An id that stays on a System link is not listed, only its handler. The gallery's
-Default View Mode left Page options too: System › Appearance's Default layout is the one
-default-layout control. Nothing writes the legacy `defaultViewMode` any more; a stored
-value still picks the view the legacy gallery opens in (grid otherwise), and Page options
-Save and Reset keep it.
-
-`tests/vendor/legacy-coverage.test.mjs` fails when a row cites a capability that is not
-`covered` or copies another test, when an id or method is listed twice for one page, or
-when a listed id is still on its page (`id="…"` in the markup or the script, a
-`getElementById`/`querySelector('#…')` lookup, an entry of a modal-id list) or a listed
-method is still defined or called (`.name(`). A deletion listed nowhere is caught by the
-kept-flow tests (`kept admin flows still work` in `legacy-system-links.spec.mjs` and the
-legacy page workflows), not by this check.
-
-| Capability | Page | Removed ids | Removed methods | Native test |
-| --- | --- | --- | --- | --- |
-| Diagnostics run | admin | `#diagnosticsModal`, `#runDiagnosticsBtn`, `#diagnosticsContent` | `showDiagnosticsModal()`, `closeDiagnostics()`, `runDiagnostics()`, `renderDiagnostics()` | Run checks opens the shared Health report (workspace-system-diagnostics.spec.mjs) |
-| Synthetic image-link test | admin | `#testImageLinkBtn` | `testImageLink()` | Create test link confirms first and names the prompt (workspace-system-diagnostics.spec.mjs) |
-| View logs with level and limit | admin | `#logsModal`, `#logLevel`, `#logLimit`, `#refreshLogsBtn`, `#logsContainer` | `showLogsModal()`, `closeLogs()`, `refreshLogs()`, `displayLogs()` | level filter is minimum-level over all six choices (workspace-system-diagnostics.spec.mjs) |
-| Log statistics | admin | `#logStatsTotal`, `#logStatsErrors`, `#logStatsWarnings`, `#logStatsLevel`, `#logStatsSize` | `loadLogStats()`, `formatBytes()` | log statistics show entries, errors, warnings, files and size (workspace-system-diagnostics.spec.mjs) |
-| Log files list and download | admin | `#downloadLogsBtn`, `#logFilesList` | `loadLogFiles()`, `downloadLogs()`, `downloadLogFile()` | each listed file downloads by its returned name and a link has no Download (workspace-system-diagnostics.spec.mjs) |
-| Clear/truncate logs | admin | `#clearLogsBtn` | `clearLogs()` | Clear all logs states both counts, confirms first and reads everything again (workspace-system-diagnostics.spec.mjs) |
-| Set log level (incl. CRITICAL), console logging | admin | `#updateLogConfigBtn`, `#setLogLevel`, `#consoleLogging` | `loadLogConfig()`, `updateLogConfig()` | runtime level (including CRITICAL) and console logging save and say they apply until the server restarts (workspace-system-diagnostics.spec.mjs) |
-| Image scan directories add/remove | admin | `#scanPathsList`, `#addScanPathBtn` | `renderScanPaths()`, `addScanPath()`, `removeScanPath()`, `_collectScanPaths()` | Add source validates on the server, then marks the host draft dirty; Save persists (workspace-system-sources.spec.mjs) |
-| Currently monitoring list + Refresh | admin | `#refreshMonitoringStatus`, `#monitoringStatus` | `updateMonitoringStatus()` | watching only with a live observer; restart pending otherwise (workspace-system-sources.spec.mjs) |
-| Search results auto-hide `result_timeout` | admin | `#resultTimeout` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Web UI display mode | admin | `#webuiDisplayMode` | — | host fields round-trip through /settings with revision (workspace-system.spec.mjs) |
-| Worker threads | admin | `#workerThreads`, `#workerThreadsValue` | `renderWorkerThreads()` | worker range max is cpu_count (workspace-system-sources.spec.mjs) |
-| LoraManager badge, enable, path, trigger words, CivitAI key, clear key | admin | `#loraDetectionBadge`, `#loraEnabled`, `#loraSettings`, `#loraManagerPath`, `#loraTriggerWords`, `#civitaiApiKey`, `#clearCivitaiKey` | `detectLoraManager()`, `_bindLoraEvents()`, `saveLoraSettings()` | LoRA rows show detected / enabled / cache-loaded separately (workspace-system-integrations.spec.mjs) |
-| LoRA data import with progress | admin | `#loraImportModal`, `#loraImportBtn`, `#loraImportStatus`, `#loraImportPercent`, `#loraImportBar`, `#loraImportProcessed`, `#loraImportImported` | `runLoraImport()` | Review import shows replacement, blocked items and network effects with the backup box; Start opens the job (D107) (workspace-system-integrations.spec.mjs) |
-| Maintenance cleanup_duplicates, vacuum, cleanup_orphaned_images, prune_orphaned_prompts | admin | `#maintenanceModal`, `#cleanup_duplicates`, `#vacuum`, `#cleanup_orphaned_images`, `#prune_orphaned_prompts`, `#runMaintenanceBtn`, `#maintenanceResults` | `showMaintenanceModal()`, `closeMaintenance()`, `runMaintenance()`, `renderMaintenanceResults()` | Apply reviewed operation closes, toasts, opens the job in Activity (workspace-system-maintenance.spec.mjs) |
-| Maintenance check_hash_duplicates, check_consistency | admin | `#check_hash_duplicates`, `#check_consistency` | — | Run health checks opens Health report and updates metric 4 (workspace-system.spec.mjs) |
-| Maintenance statistics (database info) | admin | `#statistics` | — | meta-grid shows real database and source status, the pinned Viewer.js version and the host renderers (workspace-system-diagnostics.spec.mjs) |
-| Maintenance select all / clear all / run | admin | `#selectAllMaintenanceBtn`, `#clearAllMaintenanceBtn` | `selectAllMaintenance()`, `clearAllMaintenance()` | plan dialog shows the server's scope, protected, backup policy and media lines with the backup box (D100); Cancel writes nothing (workspace-system-maintenance.spec.mjs) |
-| Database backup | admin | — | `backupDatabase()` | Back up downloads through the api client and revokes the object URL (D103) (workspace-system-backups.spec.mjs) |
-| Restore from file | admin | `#restoreModal`, `#restoreFileInput`, `#confirmRestore`, `#cancelRestore` | `showRestoreModal()`, `confirmRestore()` | Review restore stages the chosen file and shows the real summary with the backup box (D105) (workspace-system-backups.spec.mjs) |
-| Gallery thumbnail generation | gallery | `#generateThumbnailsBtn`, `#thumbnailStatus`, `#thumbnailProgress`, `#progressText`, `#progressPercent`, `#cancelThumbnailsBtn`, `#progressBar`, `#progressDetails`, `#progressETA` | `generateThumbnails()`, `generateThumbnailsWithProgress()` | Start closes the dialog, toasts, and opens the job in Activity (workspace-system-sources.spec.mjs) |
-| Default view mode, image quality | gallery | `#defaultViewModeSelect`, `#imageQualitySelect` | — | defaults apply to a new visit but not to the current view or a saved view (workspace-system.spec.mjs) |
-| Image info on cards; sidebar collapsed | gallery | `#showImageInfoToggle`, `#sidebarCollapsedByDefaultToggle` | — | added rows reach their consumers (workspace-system.spec.mjs) |
-| Video autoplay, mute, loop | gallery | `#videoAutoplayToggle`, `#videoMuteToggle`, `#videoLoopToggle` | — | video defaults reach the viewer (workspace-system.spec.mjs) |
-| Auto-load metadata, cache metadata, show file paths | gallery | `#autoLoadMetadataToggle`, `#cacheMetadataToggle`, `#showFilePathsToggle` | — | metadata off shows an explicit load and loads once on request (workspace-system.spec.mjs) |
-| Browser cache clear | gallery | `#clearCacheBtn` | `clearCache()` | Metadata cache reviews and clears only owned browser entries when there are some (D102) (workspace-system-maintenance.spec.mjs) |
-| Clear server thumbnails | gallery | — | — | Thumbnail cache opens the S5 dialog (workspace-system-maintenance.spec.mjs) |
-| Refresh file listing | gallery | `#rescanFolderBtn` | `rescanFolder()` | Refresh files calls /gallery/rescan and toasts its counts (workspace-system-sources.spec.mjs) |
-| Duplicate image scan, review, delete | gallery | `#scanDuplicatesBtn`, `#dupScanPill`, `#dupScanPillText`, `#duplicatesModal`, `#closeDuplicatesBtn`, `#duplicatesScanStatus`, `#dupProgressText`, `#dupProgressBar`, `#duplicatesContent`, `#duplicatesList`, `#duplicatesFooter`, `#duplicatesCount`, `#selectAllBtn`, `#removeDuplicatesBtn` | `scanDuplicates()`, `attachDuplicateStream()`, `resumeDuplicateScan()`, `applyDuplicateEvent()`, `renderDuplicateProgress()`, `setDuplicateButton()`, `showDuplicatePill()`, `hideDuplicatePill()`, `openDuplicatesModal()`, `showDuplicatesModal()`, `hideDuplicatesModal()`, `displayDuplicates()`, `selectAllDuplicates()`, `removeDuplicates()` | Find duplicates starts a job; its view links Review groups; Keep radios build a duplicate_files plan (D101) (workspace-system-maintenance.spec.mjs) |
-| Auto-tag model download | admin | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
-| Auto-tag model download | gallery | `#autoTagDownloadModal`, `#downloadModelName`, `#downloadStatus`, `#downloadProgressPercent`, `#downloadProgressBar`, `#cancelDownloadBtn` | `downloadModel()`, `cancelDownload()` | Download starts the job and Activity shows it without Cancel (workspace-system-tagging.spec.mjs) |
-| Unload model | gallery | — | `unloadModel()` | Unload is enabled only while a model is loaded, and a held gate's refusal names the operation (workspace-system-tagging.spec.mjs) |
 
 ### Browser cache ownership (#222)
 
@@ -5837,8 +5850,8 @@ storage` pins those patterns. It skips `web/lib` (third-party builds) and the pi
 Toolkit build (`web/js/shared/toolkit`, never hand-edited, verified by `npm run check`;
 its storage belongs to the Toolkit repository and a new pin is reviewed on its own). Since
 System S13 (#330) the legacy gallery no longer offers Clear cache: System › Maintenance's
-Metadata cache and Thumbnail cache reviews own both parts (removal table above), and
-`cache-ownership.js` serves the native review.
+Metadata cache and Thumbnail cache reviews own both parts, and
+`cache-ownership.js` serves the native review. The old gallery itself is gone (#668).
 
 The duplicates dialog's View Full named its source (`?root=<index>`, with the path
 URL-encoded) when the gallery's output folder is a listed source
@@ -5994,8 +6007,7 @@ anywhere else. The setting is `thumbnails.location` in config.json, and only the
 - **Remove thumbnails of removed sources** (`scope.mode` `prune`). It is offered in Thumbnail maintenance only in
   folder mode, and it touches only this install's keys.
 - **Page tests.** `tests/browser/workspace-thumbnail-location.spec.mjs` covers the row, both moves, the in-place
-  refusal, the confirmation, the notice with Recreate and with Use this folder. The legacy gallery runs once in
-  folder mode (`workflows.spec.mjs`). The hooks are `tests/browser/thumbnail_location_fixture.py`.
+  refusal, the confirmation, the notice with Recreate and with Use this folder. The hooks are `tests/browser/thumbnail_location_fixture.py`.
 
 Beyond the concept, against the approved static mock `docs/egm/post-3.4.1/320-mock`:
 
@@ -6431,39 +6443,59 @@ never the metadata row.
 
 Needs review items (#249, `utils/review_capture.py`, `database/review.py`,
 `tests/test_review.py`, `tests/test_review_outcome.py`,
-`tests/test_review_choosable.py`): a file is queued only when its final outcome
-is ambiguous and unlinked and there is something to choose. Only scans produce
-items; the monitor links new outputs and clears pending items it resolves
-(maintainer rulings, 2026-10-23). The output scan (Activity's
+`tests/test_review_choosable.py`, `tests/test_review_collapsed.py`): a file is queued only when its final outcome
+is ambiguous and unlinked and there is something to choose. The scan and the
+live monitor queue the same files (maintainer decision 2026-11-19, #659; it
+replaces the 2026-10-23 ruling that only scans add items, made when the
+monitor's pass queued files the scan's fallback went on to link): one per-file
+decision, `review_dispatch` (`py/api/review_recording.py`), serves both. The
+output scan (Activity's
 Scan for metadata and the legacy `/scan`) hands `record_ambiguous_file` a file
 the ingestion resolver finds `ambiguous` only when the browser-parser fallback
 then links nothing (status `ambiguous`) and no saved row links the file
 already; an ambiguous file a saved row links is reported `unchanged` ("Already
 linked to its prompt"), not Needs review. A file the fallback links, an exact
 pair the ingester stores, and `conflict` and `unresolved` files are not
-queued. Neither is an ambiguous file with nothing to choose: fewer than two of
-its candidates are `resolved` with non-blank positive text (`reviewable`). With
-none the file could not be traced; with exactly one, the untraced branches may
-still have made the file, so that text is not certain either. Both report
-`unresolved` ("could not be traced"), are never linked, and their pending,
-undecided items whose own evidence offers no choice (a limited item counts as
-a choice when it holds at least two candidates) leave the queue on the next
-scan (`settle_untraced_review_items`). The maintainer's
-second live check found 39 items whose 11 candidates were all "unresolved".
+queued. Neither is an ambiguous file with nothing to choose: none of its
+candidates is `resolved` with non-blank positive text (`reviewable`,
+`MIN_CHOOSABLE` = 1). Such a file could not be traced: it reports `unresolved`
+("could not be traced"), is never linked, and its pending, undecided items
+whose own evidence offers no choice (a limited item counts as a choice when it
+holds at least one candidate) leave the queue on the next scan
+(`settle_untraced_review_items`). The maintainer's second live check found 39
+items whose 11 candidates were all "unresolved". One readable candidate is
+enough (#657 addendum D1, maintainer 2026-11-20: "fine that we cannot tell,
+not fine to show nothing"): the untraced branches may still have made the
+file, so it is never linked from that text, but it is queued with the other
+branches listed (disabled, e.g. "Text is decided at run time") and the user
+may confirm it or leave it unresolved. The live case is the sweep with an LLM
+enhancer on rgthree Any Switch `any_01` (`tests/sweep_graphs.py`
+`enhanced_sweep_graph`, `TestOneReadableChoiceIsQueued`, scan and monitor).
+A default choice that is partial (a branch beside it has no prompt to choose,
+or it offers fewer than two: `partial_choice`) still asks the inspection
+profile, and the item is recorded from that profile when it offers more
+choosable candidates (`offers_more`; #657 review, `mixed_edit_graph`:
+a Qwen image-edit sampler only the inspection profile reads beside a
+CLIPTextEncode one, `TestPartialDefaultAsksInspection`, scan, monitor and a
+rescan that keeps the item an inspection item).
 Inspection-profile choices (`tests/test_review_inspection.py`, ruling a): when
-the default profile is ambiguous without a choice and nothing links the file,
-the scan (never the monitor) resolves it again with `INSPECTION_PROFILE`, which
+the default profile is ambiguous without a choice, or calls a file with a prompt
+graph `unresolved` (#659 C1/C2: `Decision.default_unresolved`, set before the
+blank-positive rewrite, so a blank positive does not count; "Unsupported latent
+ancestry" on the maintainer's model-compare sweep is the example), and nothing
+links the file, the scan and the monitor's review worker resolve it again with
+`INSPECTION_PROFILE`, which
 knows `TextEncodeQwenImageEdit`, `StringConstantMultiline`, `JoinStringMulti`
-and the rest of `web/js/inspection-semantics.json`. With at least two choosable
-candidates there, the file is `ambiguous` and is queued from that profile's
+and the rest of `web/js/inspection-semantics.json`. With a choosable
+candidate there, the file is `ambiguous` and is queued from that profile's
 evidence, which adds `profile: "inspection"` and `semantics`: the SHA-256 of
 `class_projection`, the table restricted to the graph's node classes plus its
 class-independent `schema` and `stage_inputs` (the resolver looks the table up
 only by a graph node's class). The item's `resolver_version` is
 `inspection_review_version(metadata)`, 2^40 plus 40 bits of SHA-256 over the
 profile with its budgets, `RESOLVER_VERSION`, `INSPECTION_RESOLVER_VERSION`
-(bump it when the inspection profile would resolve the same metadata otherwise)
-and that fingerprint. A table edit about the
+(bump it when the inspection profile would resolve the same metadata otherwise),
+`REVIEW_RULE_VERSION`, `REVIEW_EVIDENCE_VERSION` and that fingerprint. A table edit about the
 graph's classes behaves like a resolver change (I2); an edit about other
 classes changes nothing. One file never holds two pending items for the same
 bytes: a new version's item supersedes the byte record's other items when all
@@ -6472,7 +6504,9 @@ delete); beside a decided or advanced item nothing new is stored, and the
 rescan's stat shortcut then skips those bytes under any version. A pending item
 stays applicable while the bytes still offer its chosen candidate.
 Apply re-resolves the capture with the profile the item recorded and re-checks
-the chosen hash; the link goes through the same compatible-only ingestion. The
+the chosen hash against every projected, de-duplicated candidate hash of the
+bytes (`candidate_hashes`, before any bound or collapse, so a reorder that
+changes the collapsed representatives still applies); the link goes through the same compatible-only ingestion. The
 inspection profile never links on its own, and ingestion keeps the default
 profile (D1). The heavier profile runs only for files already ambiguous without
 a choice, and once per file state: the capture reuses the scan's result when
@@ -6499,19 +6533,59 @@ item versions, so older inspection items are recorded again once. Apply accepts
 the anchored pair and refuses a choice the anchor contradicts. Measured on the
 maintainer's 40,890 outputs: the queue is unchanged (249 files); the 242
 `gpu_unlock_bench` files the inspector resolves are linked by the parser
-floor. The 16-candidate limited
-rule and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
+floor. The 16-candidate collapse and the 8 MiB bound apply unchanged. The queue heals itself: after each batch, the scan removes the pending
 items of every listed file (read or skipped as known) that a saved row now
 links, and the monitor does the same for each ambiguous output it links
 (`settle_linked_review_items`; the review index revision moves). Only an
 undecided item goes (`pending`, revision 0, no decision row): a decision is
-never deleted or changed, so no schema state was added. The monitor never
-records an item (only scans add items, maintainer ruling 2026-10-23): an
-unlinked file passed to `record_review_file` is `skipped` with no capture,
-and only a linked one's pending items are settled
-(`test_monitor_never_records_an_unlinked_ambiguous_output`). The
+never deleted or changed, so no schema state was added. The monitor queues a
+file only at its final unlinked outcome, after run history had its say
+(`tests/test_foreign_save_to_library.py` `TestFinalUnlinkedOutcomesQueueForReview`):
+the ladder wait's sealed re-check left it unlinked, the settle lookup found the
+run's record and no certain prompt, the file is outside ComfyUI's output folder
+(it is never sealed) at the PromptManager or foreign exit, or the keyless
+history re-check found no prompt. A wait that expires or an entry dropped at the
+wait's cap is only logged and left to the next scan. At that point the handler's
+recorder, `queue_review_file`, puts the path on the review worker's queue and
+returns at once; linked ambiguous outputs go the same way, so their pending items
+leave the queue. The worker (thread `pm-review-recorder`, a daemon, started on the
+first queued path) runs `record_review_file`: the job blocker, root and linked
+checks, then the scan's own per-file steps for that one file, read only: the
+scan's metadata read, the ladder under `Policy.SCAN` with the file's recorded
+history (`_BatchHistory`) and the recorded-run check. A file any step would link,
+or whose prompt does not save, is `skipped` (the next scan links it; the worker
+links nothing); otherwise the answer is `review_dispatch`'s record outcome
+(`recorded`, `duplicate`, `decided`, `untraced`, `limited`), so the next scan
+finds the item a `duplicate` (`test_monitor_pass_queues_and_the_next_scan_reports_a_duplicate`).
+An untraced file also loses its pending items without a choice, as in the scan.
+A file without a prompt graph is never captured. Inspect records too (#657
+addendum D2, `tests/test_inspection_review.py`): its `review` field (`{"state":
+"pending", "item_id"}`, `{"state": "decided"}` or null, asked only for an
+ambiguous role of an unlinked file under an output root) runs
+`record_review_file`, the worker's own path, in the executor when no item
+exists at the inspected stat, then reads the item again; Images and History's
+current-file inspection share the reader (`review_reader(..., record=)`). A
+file the scan would link, an untraced one or a deferred pass records nothing;
+a failure is logged and the field stays null, never failing the response.
+Inspect calls `inspect_review_file` (`py/api/review_recording.py`): a pending
+item of a current item version needs nothing; one of an older version (e.g. a
+choiceless limited item from before D3) is recorded again, so the new item
+supersedes it. A busy capture store (`CaptureCapacity`, the worker copying a
+fresh output) is expected and logged at debug level, and the item is read
+once more after any failed recording. A state Inspect found unrecordable
+(`skipped`, `untraced`) is remembered per process by a 16-byte digest of its
+locator, size, `mtime_ns`, default item version and semantics table version
+(at most `MAX_INSPECT_MEMORY` = 4,096, oldest forgotten first), so a repeated
+Inspect does not copy it again.
+The queue coalesces by path (a
+path queued while it runs runs once more afterwards; one thread, so two
+recordings of one path never overlap) and holds at most `REVIEW_QUEUE_LIMIT` =
+4,096 paths, dropping the oldest with a log line, so the image worker never
+waits for it. A recorder failure is logged by the worker and undoes no link.
+`tests/test_review.py` `TestReviewWorker` covers the queue. The
 maintainer's live check of #284/#288 found the queue at 10,232 against a review
-group of 4,677: every fallback-linked ambiguous file had been queued. It captures
+group of 4,677: every fallback-linked ambiguous file had been queued; the
+worker's ladder pass is what keeps those files out now. It captures
 the file (scope `needs-review`), reads its metadata again from the capture,
 resolves it with the default profile and stores only an ambiguous result,
 bound to the capture's byte record (created or refreshed like an observe) and
@@ -6519,8 +6593,26 @@ fenced by the capture's storage epoch. Evidence is the resolver reason plus one
 `{sampler_id, state, reason, positive, negative, hash}` per selectable
 candidate (nested ambiguous stages flattened, duplicates dropped; each side
 `{text, storage_text, provenance}`; `hash` = SHA-256 of the canonical candidate
-without it). More than 16 candidates, or evidence over 8 MiB, is a `limited`
-item without candidates. Recording is idempotent per `(byte_id,
+without it). More than 16 candidates are collapsed, not dropped (#657 addendum
+D3, the maintainer's ConsistentFace batch: 83 samplers, 81 prompts): the
+choosable ones are grouped by their (positive, negative) texts. With at most
+16 texts the item stays ordinary: one candidate per text, its first
+occurrence, and the branches without a prompt fill the remaining places in
+their order (20 samplers sharing three texts keep their run-time branches).
+With more than 16 texts the groups are ordered by size, largest first, then
+by first appearance, and the first 16 are kept, each by its first occurrence (its real sampler and hash, so Apply finds
+it again). The evidence is ordinary (not limited) and adds `collapsed:
+{shown, total, paths}` (groups shown, distinct choosable texts, candidates in
+all); the item detail returns it as `collapsed` (null otherwise) and the page
+reads "Showing the n most used of total prompts in this file". Evidence that
+cannot be projected, or is over 8 MiB, is a `limited` item without candidates.
+`REVIEW_EVIDENCE_VERSION` (`utils/review_capture.py`) names this shape and is
+folded into every item version: a default-profile item carries
+`default_item_version()` = `RESOLVER_VERSION` + `REVIEW_EVIDENCE_VERSION` (2
+now; items before it carry 1), an inspection item folds it into its seed. The
+next scan therefore records such a file again and the new item supersedes the
+pending, undecided limited one; a decided item is kept and no item is added
+beside it (`tests/test_review_collapsed.py`). Recording is idempotent per `(byte_id,
 resolver_version, evidence_hash)` and never touches an existing item or its
 decisions; changed bytes add a new pending item and keep the old one. The
 capture is released before the write; no model is loaded and no pixel is
@@ -6538,14 +6630,21 @@ capture capacity), each only when N > 0. Recording captures in the background: i
 last worker or capture slot, which stay free for an interactive Tag dialog or
 Apply, and waits up to 2 s for room before counting the file as not added
 (`test_background_recording_leaves_a_worker_for_the_tag_dialog`). The monitor's
-pass runs after its own link, best effort: a failure is logged and the link
-stays. Recording follows the registry's `records`
+pass is best effort: a failure is logged and any link stays. Recording follows the registry's `records`
 admission (#289): the scan's recording runs under its own `records` job, and
 the monitor's pass (one file, not a job, which only settles) is refused
 while a `records` or `guarded` job or hold runs, except thumbnail work, which
-writes no records (S5 M7). It then writes nothing, logs that the file waits
-for the next scan, and answers `deferred`; the next "new" scan reads the ambiguous file
-again (`test_monitor_recording_is_refused_beside_record_changing_jobs`). A new item moves `review_index_revision`. A
+writes no records (S5 M7). It then writes nothing, logs it, and answers
+`deferred`. The worker keeps a deferred path in its own insertion-ordered set
+(`REVIEW_DEFERRED_LIMIT` = 1,000, oldest dropped first with a log line), waits on
+its queue with a `REVIEW_RETRY_SECONDS` = 5 s timeout while that set is not empty,
+and on each wake asks the registry's `blocker()` (a snapshot, safe from any
+thread); once none remains it replays the set through its queue, so the file is
+queued after the job ends with no other output, exactly once
+(`test_monitor_recording_is_refused_beside_record_changing_jobs`). A replay
+re-reads and re-decides: a file already queued is a `duplicate`, one the job
+linked is `linked`. The set lives in memory; a restart drops it and the next scan
+is the backstop. A new item moves `review_index_revision`. A
 rescan does not copy or hash an ambiguous file whose current size and
 `mtime_ns` equal the verified fingerprint of bytes an item already cites (a
 stat compare); the file still stays in the default "new" scope, because it is
@@ -6590,9 +6689,10 @@ whose bytes are the item's, re-hashes the current file (`file-changed`
 otherwise, also for a fresh capture of new bytes), re-reads the capture and
 requires that its bytes are still ambiguous and still offer the chosen
 candidate (`review-conflict` otherwise; a resolver change that rewords the
-reason or reorders candidates leaves the item applicable, and
-`RESOLVER_VERSION` in `utils/prompt_pair_resolver.py` is the one version
-ingestion provenance and review share), then in one `_pair_transaction`
+reason or reorders candidates leaves the item applicable;
+`RESOLVER_VERSION` in `utils/prompt_pair_resolver.py` is ingestion's
+provenance version, and a review item's version folds it with
+`REVIEW_EVIDENCE_VERSION`, see above), then in one `_pair_transaction`
 checks the epoch, the item revision and state (`review-conflict` with the
 current item for a repeat), the re-hashed digest, the dependency fingerprint
 and the public ingester's compatible-only rules through
@@ -6928,8 +7028,28 @@ handler's `_ingest_foreign`, `_recheck_foreign`, `_store_foreign`):
   file linked to another prompt is `conflict` and keeps its link. Logged at info
   "Foreign run: <status> prompt <id> for <file> (<source>)"; a failure is logged and
   the file stays unlinked.
-- **Never.** No tracker FIFO entry is read or consumed, nothing is counted (run count
-  stays 0, no `last_used_at`), and nothing is queued for Needs review.
+- **Never.** No tracker FIFO entry is read or consumed and nothing is counted (run
+  count stays 0, no `last_used_at`). At its final unlinked outcome the file is handed
+  to the Needs review worker (#659, see "Needs review items").
+- **PromptManager runs (#659 Part 3).** A PromptManager output its metadata and its
+  tracked run cannot link (`_find_prompt_from_run` returns `(prompt, cause)`; causes
+  `RUN_SEVERAL_KEYS`, `RUN_BATCH_LATEST`, `RUN_NO_ENTRY`) takes the same path with run
+  kind `promptmanager`; one outside ComfyUI's output folder (`RUN_OUTSIDE_OUTPUT`)
+  asks the ladder once with `in_output=False`. A keyless image keeps its own
+  history-only wait and a placeholder batch entry stays unlinked; neither, nor a file
+  whose metadata could not be read, asks the ladder. Wait entries are
+  `(path, deadline, kind)` and due re-checks `ForeignRecheck(reference, kind)`;
+  `awaiting_foreign()` lists foreign entries only, `awaiting_ladder()` all. The kind
+  is read in one place, `ladder_gate(kind)`: `foreign` gives
+  `(save_foreign_runs(), RUN_MARKS)`, `promptmanager` gives
+  `(MONITORING_ENABLED is not False, SCAN_MARKS)`, so `SAVE_FOREIGN_RUNS` off stops
+  only foreign entries and the node's own Save to library applies through the
+  ladder's #90 steps. Stored as "PromptManager run: <status> prompt <id> for <file>
+  (<source>)"; a file waiting for its run logs "No certain prompt for <file> yet;
+  left unlinked until its run ends". `Policy.MONITOR` stores no fallback guess, so
+  the only new links are inspector and recorded-run answers, which the next scan
+  would make too (`tests/test_foreign_save_to_library.py`
+  `TestPromptManagerRunsAskTheLadder`).
 - **The setting.** `GalleryConfig.SAVE_FOREIGN_RUNS` (`gallery.monitoring.
   save_foreign_runs`, default true, only a bool applies) is read for every file, at
   settle, at the re-check and again just before the store, together with
@@ -7540,13 +7660,13 @@ Deploying this backend needs a ComfyUI restart (Python and route changes).
 ## Native vocabulary UI (#236)
 
 `#/tags` ("Tags & categories", page title "Tags") is a native workspace route; it no
-longer hands off to the legacy tag manager. That page stays at
-`/prompt_manager/admin#/tags` at its URL only (#525, #620); tag search and sort, the untagged
+longer hands off to the legacy tag manager, whose URL `/prompt_manager/admin#/tags` now leads
+here and whose tag-filter bookmarks open the filtered Library (#668, D207); tag search and sort, the untagged
 entry (D149) and multi-tag OR (the Library's Tag match, D150) moved to the workspace
-(#444); bulk prompt delete stays on the legacy admin page (bulk tags: the Prompt
-library's selection bar, D151). A prompt's category is changed in the Prompt library
-editor, on many prompts at once with the Prompt library's selection bar (D148, #437), or
-with the legacy admin page's "Set Category" (both `POST /prompt_manager/bulk/category`);
+(#444); bulk prompt delete is the Prompt library's Delete… (#443, D152) and bulk tags its
+selection bar (D151). A prompt's category is changed in the Prompt library
+editor, or on many prompts at once with the Prompt library's selection bar (D148, #437;
+`POST /prompt_manager/bulk/category`);
 the Images selection bar's Set category sets images' own categories only (D140, #332),
 and Manage category renames a value on prompts, recipes and images together (D144). The screen consumes only the `/prompt_manager/vocabulary/*` routes
 above and adds no route, so PR B needed no ComfyUI restart; D149 (#444) adds read
@@ -7669,9 +7789,8 @@ floors in `frontend-coverage-baseline.json`.
 The top-bar PM button, both Web UI buttons and `/prompt_manager/web` open
 `/prompt_manager/workspace#/library` (`web/js/workspace-entry.js`; `web/index.html` keeps its
 own copy, pinned by `tests/js/workspace-entry.test.js`). Overview's cards open native hashes.
-The legacy pages (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.html`) stay at
-their URLs, and admin's Metadata and Gallery buttons still open their legacy pages (maintainer
-ruling; pinned by `legacy-system-links.spec.mjs`).
+The old pages' URLs (`/prompt_manager/admin`, `admin#/tags`, `gallery`, `gallery.html`) lead into
+the workspace since #668 ("Old pages retired" below).
 
 - **D165 retired** (#620): the old pages show their removal notice since 3.5.1, so System no longer links them and the load failure below offers a reload and ComfyUI. The original ruling:
   **D165** (beyond the concept, maintainer ruling 2026-10-30): System's Overview section ends
@@ -7679,8 +7798,101 @@ ruling; pinned by `legacy-system-links.spec.mjs`).
   (`.legacy-pages`, new tabs), outside `.settings-layout`. The concept has no such line;
   `mapOverviewConcept` adds it to the page tree.
 - **Load failure** (maintainer ruling 2026-10-30): `web/workspace.html` holds static
-  `#workspace-boot-failure` with the same four links, styled inline so it needs no stylesheet.
+  `#workspace-boot-failure` (since #620 a reload link and a link back to ComfyUI), styled inline so it needs no stylesheet.
   An inline guard shows it at `load` unless `index.mjs` set `data-workspace-booted`, so a failed
   fetch of any module and a throw while starting are both covered; `workspace.spec.mjs` tests
   both. Editing `workspace.html` needs a ComfyUI restart, because the server caches it. The PM button has no
 page-fixture test; it is proven on the managed host (`tests/comfyui/prompt-manager.spec.mjs`).
+
+## Old pages retired (#668)
+
+The old admin, gallery and metadata pages, their controllers (`admin.js`, `gallery.js`,
+`tags-page.js`), the ten helper modules only they loaded and the vendored Tailwind build are
+deleted. The removal notice shipped in 3.5.1. Backend routes only those pages called are
+unchanged; each is reviewed on its own later, and
+`tests/test_legacy_contract_snapshot.py` still pins the whole route table and the settings
+keys. Older sections of this file still say "legacy route" or "legacy page" where they
+describe those routes' contracts.
+
+- **D207** (maintainer ruling 2026-11-02; bookmark form ruled 2026-11-21): every old URL leads
+  into the workspace.
+
+  | Old URL | Lands on |
+  | --- | --- |
+  | `/prompt_manager/gallery` | `workspace#/images` (HTTP 302) |
+  | `/prompt_manager/gallery.html` | `workspace#/inspect` (HTTP 302) |
+  | `/prompt_manager/admin`, or with a hash that is not a tags route | `workspace#/library` |
+  | `/prompt_manager/admin#/tags`, or `#/tags/` with an empty list | `workspace#/tags` |
+  | `/prompt_manager/admin#/tags/a,b` | `workspace#/library?tag=a&tag=b` |
+  | `/prompt_manager/admin#/tags/a,b?mode=or` | `workspace#/library?tag=a&tag=b&tag_mode=any` |
+  | `/prompt_manager/admin#/tags/__untagged__` (alone or among tags) | `workspace#/library?tag_mode=untagged` |
+
+  The two 302 answers carry a relative `Location`, so a reverse-proxy prefix is kept, and
+  are never stored for good (`test_old_gallery_urls_redirect_into_the_workspace`). The
+  server never sees a hash, so `/prompt_manager/admin` serves `web/admin-redirect.html`,
+  which maps `location.hash` with `web/js/legacy-links.js` and replaces the address (Back
+  does not bounce through it). Its link to the Library is always visible, and a failed
+  script still leaves for the Library. The mapping follows the old page's own parsing
+  (`tests/js/legacy-links.test.js`): tags before the first `?`, split on commas, each
+  decoded; any `mode` but `or` matches all. It differs on purpose in three places: a tag
+  is trimmed after decoding too; a segment that cannot be decoded is used as written (the
+  old page failed on it); and `tag_mode=any` is written only for two or more tags.
+
+  The workspace form `#/library?tag=<name>&tag=<name>&tag_mode=all|any|untagged` is the
+  Prompt library with those Tags and that Tag match, as Refine and Browse set them (`tag`
+  repeats, one name each, trimmed, without empties or repeats; no comma splitting; the
+  first `tag_mode` counts; other keys are ignored). No tag with `all` or `any` is the
+  plain Library. An unknown `tag_mode`, or `untagged` with a tag, opens the whole Library
+  at `#/library` with the toast "This link's tag filter couldn't be read. Showing the
+  whole prompt library." Count and length limits are the server's (30 tags, 200
+  characters), shown by the shelf's own error.
+
+  The tag filter stays in the address (maintainer ruling 2026-11-21, after the live test:
+  with the first version, which replaced the hash with `#/library`, Reload and
+  Back then Forward showed the whole Library):
+  - The address is canonical: tags in the shelf's order, `tag_mode` left out for All
+    (`libraryLinkHash`, read back by `libraryLinkFilters`; the router replaces another
+    spelling). Reload, Back and Forward restore exactly that filter.
+  - The address is the truth for Tags and Tag match. `#/library` (the sidebar link, the
+    old dashboard URL) is the Library without a tag filter, whatever the last visit had.
+    Only those two are in the address: search, category, folder, sort and the archived
+    shelf stay in memory and return with the last visit as before. The loaded cards and
+    the scroll place return only when the last visit's tag filter is the address's (Back
+    from a prompt).
+  - When Tags or Tag match change in Refine (Clear filters included), the shelf replaces
+    the address (`replaceRouteHash`: `history.replaceState`, no history entry, no
+    render; the router learns the new address, so the plain Library link is a new route
+    afterwards). With no tag filter left it is `#/library`.
+  - Ways back to the shelf from inside the Library ("← Prompt library" on a prompt's
+    page, after a delete there) go to the address of the remembered visit, and Browse on
+    Tags & categories goes to the filtered address too.
+  - A saved view keeps its own address (`#/saved/<id>`): its tag filter comes from the
+    view, filter changes inside it never rewrite the address, and the Library link after
+    it is the whole Library.
+
+  Pinned by `tests/js/workspace-state.test.js`, `workspace-library-links.spec.mjs` and
+  `old-urls.spec.mjs`.
+- **D208** (maintainer ruling 2026-11-02, audit item B2): a record used only as the
+  negative of saved pairs gets no editing surface of its own. The workspace groups by
+  positive prompt and offers no edit of such a record's own category, tags, notes or
+  text; the old admin page, which listed it as a prompt, is gone. Its data stays, and it
+  is still in every export ("Export all prompts JSON", "Export saved pairs JSON") and
+  backup. No new screen.
+- **D209** (#668): the four System rows that were "kept in legacy" are approved removals,
+  retired with their pages. No native setting replaces them, and every stored key stays
+  readable (`gallery-settings.js` is unchanged; `web_ui.infinite_scroll` stays in
+  `config.json`, `/settings` and the diagnostic report).
+
+  | Row | What it was | Now |
+  | --- | --- | --- |
+  | Infinite scrolling default | The old prompt list scrolled on or paged | The Library always continues (it loads the next page near the end, with "Load more prompts") |
+  | Lazy loading | A gallery page option | Images always loads lazily |
+  | Client debug output `debugMode` | Console output of the gallery page | System › Diagnostics & logs |
+  | API timeout `apiTimeout` | A gallery page option no request read | Nothing: it never had an effect |
+
+**Tests that went with the pages:** the four browser specs that drove them
+(`workflows`, `legacy-autotag`, `legacy-removal-notice`, `legacy-system-links`), the unit
+tests of the deleted modules, and the Viewer.js fixture suite's controller tests. The
+fixture suite (`npm run --prefix tools/vendor test:browser`) is now a smoke of the vendored
+Viewer.js build alone; the workspace viewer is proven by `workspace-viewer-keys.spec.mjs`,
+`workspace-viewer-mode.spec.mjs` and the Images and history specs.

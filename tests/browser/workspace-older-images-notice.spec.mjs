@@ -1,15 +1,13 @@
-// The one-time older-images notice in the workspace shell (#527, D166). Its dismissal is the legacy admin page's key,
-// so dismissing it in any place dismisses it everywhere.
+// The one-time older-images notice in the workspace shell (#527, D166). Its dismissal is the key the old admin page
+// used (`pm_update_notice_dismissed`), so a browser that dismissed it there before #668 stays dismissed.
 import { test, expect } from './fixtures.mjs';
 
 const WORKSPACE = '/prompt_manager/workspace';
-const ADMIN = '/prompt_manager/admin';
 const NOTICE_KEY = 'pm_update_notice_dismissed';
 
 const shellNotice = page => page.locator('#older-images-notice > .notice');
 const sourcesNotice = page => page.locator('#workspace-main .settings-layout > .notice');
 const dialog = page => page.locator('dialog#modal[open]');
-const adminModal = page => page.locator('#updateNoticeModal');
 const stored = page => page.evaluate(key => localStorage.getItem(key), NOTICE_KEY);
 
 async function openRoute(page, route) {
@@ -105,49 +103,11 @@ test.describe('with the notice not dismissed', () => {
         await expect(shellNotice(page)).toHaveCount(0);
         await other.close();
     });
-
-    test('the admin modal still works: Later without the checkbox keeps the notice everywhere', async ({ page }) => {
-        await page.goto(ADMIN);
-        await expect(adminModal(page)).toBeVisible();
-        await page.locator('#updateNoticeDismiss').click();
-        await expect(adminModal(page)).toBeHidden();
-        expect(await stored(page)).toBeNull();
-        await openRoute(page, 'library');
-        await expect(shellNotice(page)).toHaveCount(1);
-    });
-
-    test('dismissing on the admin page dismisses it in the workspace', async ({ page }) => {
-        await page.goto(ADMIN);
-        await page.locator('#dismissUpdateNotice').check();
-        await page.locator('#updateNoticeDismiss').click();
-        await expect(adminModal(page)).toBeHidden();
-        await openRoute(page, 'library');
-        await expect(shellNotice(page)).toHaveCount(0);
-    });
-
-    test('dismissing in the workspace dismisses it on the admin page', async ({ page }) => {
-        await openRoute(page, 'library');
-        await shellNotice(page).getByRole('button', { name: 'Later', exact: true }).click();
-        await page.goto(ADMIN);
-        await page.waitForLoadState('load');
-        await expect(adminModal(page)).toBeHidden();
-    });
-
-    test('the admin Scan still dismisses it and opens the scan modal', async ({ page }) => {
-        await page.goto(ADMIN);
-        await page.locator('#updateNoticeScan').click();
-        await expect(adminModal(page)).toBeHidden();
-        expect(await stored(page)).toBe('3.2.0');
-    });
 });
 
-test('specs start with the notice dismissed, on every page', async ({ page, browser, baseURL }) => {
-    await openRoute(page, 'library');
-    await expect(shellNotice(page)).toHaveCount(0);
-    const context = await browser.newContext({ baseURL });
-    const other = await context.newPage();
-    await other.goto(ADMIN);
-    await other.waitForLoadState('load');
-    await expect(adminModal(other)).toBeHidden();
-    await context.close();
+test('specs start with the notice dismissed, on every page', async ({ page }) => {
+    for (const route of ['library', 'images', 'system/sources']) {
+        await openRoute(page, route);
+        await expect(shellNotice(page)).toHaveCount(0);
+    }
 });

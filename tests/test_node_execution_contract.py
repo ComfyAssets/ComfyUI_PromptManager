@@ -233,18 +233,6 @@ class TestBaseSaveAndSearch(NodeTestCase):
         self.assertIsNone(self.node._parse_tags(" , ,"))
         self.assertEqual(self.node._parse_tags(" a, b ,,c"), ["a", "b", "c"])
 
-    def test_search_prompts_and_api_wrappers(self):
-        self.node._save_prompt_to_database("a cat on a mat")
-        self.assertEqual(self.node._search_prompts(""), [])
-        self.assertEqual(self.node._search_prompts("   "), [])
-        self.assertEqual(len(self.node._search_prompts("cat")), 1)
-
-    def test_search_and_recent_errors_return_empty_lists(self):
-        self.node.db = mock.Mock()
-        self.node.db.search_prompts.side_effect = RuntimeError("locked")
-        with self.assertLogs("test.node", level="ERROR"):
-            self.assertEqual(self.node._search_prompts("cat"), [])
-
     def test_gallery_system_start_failure_is_logged(self):
         self.node.image_monitor.start_monitoring.side_effect = OSError("no inotify")
         with self.assertLogs("test.node", level="ERROR"):

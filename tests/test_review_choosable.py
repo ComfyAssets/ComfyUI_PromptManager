@@ -3,22 +3,25 @@
 The maintainer's live queue (#284 / #288) held 39 items whose 11 candidates
 all read "unresolved", "No positive / No negative": the ingestion resolver
 found several sampler branches but could trace no prompt on any of them.
-An ambiguous result is reviewable only when at least two candidates carry a
-resolved prompt text. With none, the file could not be traced; with exactly
-one, the other branches may still have made the file, so the one text is
-not certain either (the resolver never flattens unknown semantics). Both
-stay unresolved and are never queued, and a rescan removes the pending,
+An ambiguous result is reviewable when at least one candidate carries a
+resolved prompt text (#657 addendum D1, 2026-11-20: one readable choice is
+enough; the other branches stay listed, disabled, so the user sees them and
+can still Leave unresolved). With none, the file could not be traced: it
+stays unresolved and is never queued, and a rescan removes the pending,
 undecided items such files already have.
 """
 
+import json
 import os
 import unittest
 from unittest.mock import patch
 
 try:
+    from tests.sweep_graphs import ENHANCED_TEXT, enhanced_sweep_graph
     from tests.test_review import DELIMITERS, write_png
     from tests.test_review_outcome import OutcomeTestCase
 except ImportError:  # discovered with tests/ as the top-level directory
+    from sweep_graphs import ENHANCED_TEXT, enhanced_sweep_graph
     from test_review import DELIMITERS, write_png
     from test_review_outcome import OutcomeTestCase
 
@@ -67,6 +70,11 @@ class ChoosableTestCase(OutcomeTestCase):
         write_png(self.output_dir / name, prompt=graph)
         return self.output_dir / name
 
+    @staticmethod
+    def _evidence(item):
+        evidence = item["evidence"]
+        return json.loads(evidence) if isinstance(evidence, str) else evidence
+
 
 class TestChoosableCandidates(unittest.TestCase):
     def _resolution(self, *states):
@@ -78,18 +86,24 @@ class TestChoosableCandidates(unittest.TestCase):
             )
         return {"state": "ambiguous", "candidates": candidates}
 
-    def test_two_resolved_candidates_are_reviewable(self):
-        resolution = self._resolution("resolved", "resolved", "unresolved")
-        self.assertTrue(review_capture.reviewable(resolution))
+    def test_one_or_more_resolved_candidates_are_reviewable(self):
+        for states in (
+            ("resolved", "resolved", "unresolved"),
+            ("resolved", "unresolved"),
+            ("unresolved", "resolved"),
+        ):
+            with self.subTest(states=states):
+                resolution = self._resolution(*states)
+                self.assertTrue(review_capture.reviewable(resolution))
 
-    def test_none_or_one_resolved_candidate_is_not_reviewable(self):
-        for states in ((), ("unresolved",) * 11, ("resolved", "unresolved")):
+    def test_no_resolved_candidate_is_not_reviewable(self):
+        for states in ((), ("unresolved",) * 11):
             with self.subTest(states=states):
                 resolution = self._resolution(*states)
                 self.assertFalse(review_capture.reviewable(resolution))
 
     def test_blank_or_missing_text_does_not_count(self):
-        resolution = self._resolution("resolved", "resolved")
+        resolution = self._resolution("resolved", "unresolved")
         resolution["candidates"][0]["positive"] = {"text": "  "}
         self.assertFalse(review_capture.reviewable(resolution))
         resolution["candidates"][0]["positive"] = None
@@ -110,18 +124,21 @@ class TestChoosableCandidates(unittest.TestCase):
 
 
 class TestStoredEvidenceOffersChoice(unittest.TestCase):
-    def test_unlimited_evidence_needs_two_choosable_candidates(self):
+    def test_unlimited_evidence_needs_one_choosable_candidate(self):
         side = {"text": "cat"}
         two = [{"state": "resolved", "positive": side}] * 2
         self.assertTrue(evidence_offers_choice({"candidates": two}))
         one = two[:1] + [{"state": "unresolved", "positive": None}]
-        self.assertFalse(evidence_offers_choice({"candidates": one}))
+        self.assertTrue(evidence_offers_choice({"candidates": one}))
+        none = [{"state": "unresolved", "positive": None}] * 2
+        self.assertFalse(evidence_offers_choice({"candidates": none}))
 
-    def test_limited_evidence_offers_a_choice_only_with_two_candidates(self):
-        self.assertTrue(
-            evidence_offers_choice({"limited": True, "candidate_total": 18})
-        )
-        for total in (0, 1, None, "18", True):
+    def test_limited_evidence_offers_a_choice_with_one_candidate(self):
+        for total in (1, 18):
+            with self.subTest(total=total):
+                evidence = {"limited": True, "candidate_total": total}
+                self.assertTrue(evidence_offers_choice(evidence))
+        for total in (0, None, "18", True):
             with self.subTest(total=total):
                 evidence = {"limited": True, "candidate_total": total}
                 self.assertFalse(evidence_offers_choice(evidence))
@@ -148,16 +165,19 @@ class TestNothingToChooseIsNotQueued(ChoosableTestCase):
         self.assertEqual(job["counters"]["review"], 1, job["counters"])
         self.assertEqual(self._capture_files(), [])
 
-    async def test_exactly_one_candidate_with_text_stays_unresolved(self):
-        """One traced branch beside untraced ones is not certain: no link."""
+    async def test_exactly_one_candidate_with_text_is_queued_not_linked(self):
+        """One traced branch beside untraced ones is not certain: no link,
+        but it is a choice to confirm (D1), with the other branch listed."""
         self._roots()
         self._write("one.png", opaque_graph("cat", traced=("dog",)))
 
         job = await self._scan()
 
-        self.assertEqual(self._items(), [])
+        (item,) = self._items()
+        states = sorted(c["state"] for c in self._evidence(item)["candidates"])
+        self.assertEqual(states, ["resolved", "unresolved"])
         (row,) = job["outcomes"]["review"]
-        self.assertIn("could not be traced", row["detail"])
+        self.assertIn("more than one prompt could match", row["detail"])
         self.assertEqual(job["counters"].get("added", 0), 0, job["counters"])
         self.assertEqual(job["counters"].get("known", 0), 0, job["counters"])
 
@@ -188,8 +208,7 @@ class TestNothingToChooseIsNotQueued(ChoosableTestCase):
     def test_recorder_reports_untraced_and_stores_nothing(self):
         self._roots()
         self._write("none.png", opaque_graph("cat", "dog"))
-        self._write("one.png", opaque_graph("cat", traced=("dog",)))
-        for name in ("none.png", "one.png"):
+        for name in ("none.png",):
             with self.subTest(name=name):
                 outcome = review_capture.record_ambiguous_file(
                     self.api.db, self.api._captures, self.output_dir, 0, name
@@ -202,8 +221,48 @@ class TestNothingToChooseIsNotQueued(ChoosableTestCase):
         self._roots()
         path = self._write("none.png", opaque_graph("cat", "dog"))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
+        self.assertEqual(self.api.record_review_file(str(path)), "untraced")
         self.assertEqual(self._items(), [])
+
+
+class TestOneReadableChoiceIsQueued(ChoosableTestCase):
+    """#657 addendum D1: the sweep with an LLM enhancer on ``any_01``.
+
+    The inspection profile finds two candidates, one decided at run time
+    and one readable; the file is queued with both listed, by the scan and
+    by the monitor, and is never linked.
+    """
+
+    def _assert_one_choice(self, item):
+        evidence = self._evidence(item)
+        self.assertEqual(evidence["profile"], "inspection")
+        by_state = {}
+        for candidate in evidence["candidates"]:
+            by_state.setdefault(candidate["state"], []).append(candidate)
+        (readable,) = by_state["resolved"]
+        self.assertEqual(readable["positive"]["text"], ENHANCED_TEXT)
+        (runtime,) = by_state["unresolved"]
+        self.assertEqual(runtime["reason"], "Text is decided at run time")
+
+    async def test_the_scan_queues_it(self):
+        self._roots()
+        self._write("sweep.png", enhanced_sweep_graph())
+
+        job = await self._scan()
+
+        (item,) = self._items()
+        self._assert_one_choice(item)
+        self.assertEqual(job["scope"]["review_items"], 1)
+        self.assertFalse(self.api.db.review_file_linked((str(self.output_dir),)))
+
+    def test_the_monitor_queues_it(self):
+        self._roots()
+        path = self._write("sweep.png", enhanced_sweep_graph())
+
+        self.assertEqual(self.api.record_review_file(str(path)), "recorded")
+        (item,) = self._items()
+        self._assert_one_choice(item)
+        self.assertFalse(self.api.db.review_file_linked((str(path),)))
 
 
 class TestUntracedItemsLeaveTheQueue(ChoosableTestCase):
@@ -220,14 +279,14 @@ class TestUntracedItemsLeaveTheQueue(ChoosableTestCase):
 
         job = await self._scan("all")
 
-        (item,) = self._items()
-        self.assertEqual(os.path.basename(item["locator"]), "two.png")
-        self.assertEqual(self._pending(), 1)
+        names = sorted(os.path.basename(i["locator"]) for i in self._items())
+        self.assertEqual(names, ["one.png", "two.png"])
+        self.assertEqual(self._pending(), 2)
         self.assertGreater(self._review_revision(), revision)
-        self.assertEqual(job["scope"]["review_untraced"], 2)
-        self.assertEqual(job["scope"]["review_items"], 1)
+        self.assertEqual(job["scope"]["review_untraced"], 1)
+        self.assertEqual(job["scope"]["review_items"], 2)
         self.assertIn(
-            "= 2 images left Needs review · nothing to choose", "\n".join(job["log"])
+            "= 1 image left Needs review · nothing to choose", "\n".join(job["log"])
         )
 
     async def test_decided_items_of_untraced_files_are_never_touched(self):
@@ -320,19 +379,21 @@ class TestUntracedItemsLeaveTheQueue(ChoosableTestCase):
         await self._scan("all")
         self.assertEqual(self._pending(), 0)
 
-    async def test_the_scan_not_the_monitor_removes_an_untraced_outputs_item(self):
-        """The monitor only clears items of outputs it links; the next scan
-        removes the item of an output that offers nothing to choose."""
+    async def test_the_monitor_removes_an_untraced_outputs_item_as_the_scan(self):
+        """#659: the monitor's pass runs the scan's per-file steps, so it
+        removes the item of an output that offers nothing to choose, as the
+        next scan would."""
         self._roots()
         path = self._write("none.png", opaque_graph("cat", "dog"))
         self._record_pre_fix("none.png")
         # A pre-fix item of other bytes keeps the stat shortcut out of the way.
         self._write("none.png", opaque_graph("a cow", "dog"))
 
-        self.assertEqual(self.api.record_review_file(str(path)), "skipped")
-        self.assertEqual(len(self._items()), 1)
-        await self._scan("all")
+        self.assertEqual(self.api.record_review_file(str(path)), "untraced")
         self.assertEqual(self._items(), [])
+        job = await self._scan("all")
+        self.assertEqual(self._items(), [])
+        self.assertEqual(job["scope"]["review_untraced"], 0)
 
 
 if __name__ == "__main__":

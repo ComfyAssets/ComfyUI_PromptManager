@@ -221,6 +221,11 @@ _PASSED_UNVERIFIABLE = "Text passed through an unknown node is not verifiable"
 _CONDITIONING_INPUTS = ("conditioning", "positive", "negative")
 # The first item of a pass-through divergence's 3-tuple choice key.
 _PASS_THROUGH = "pass-through"
+# The divergence tag of a ``first-present`` switch (#657): its key is
+# ``(_FIRST_PRESENT, node ID, slot)``, apart from selector and pass-through keys.
+_FIRST_PRESENT = "first-present"
+_NO_SWITCH_INPUT = "Switch has no connected input"
+_SWITCH_UNVERIFIABLE = "Switch output is not verifiable"
 # Uncoded outcomes the inspector explains by their exact reason.
 EMPTY_POSITIVE_REASON = "Positive prompt is empty"
 # Several sampler branches, every one resolved to the same pair (#249).
@@ -273,7 +278,9 @@ class _Diverging(Exception):
     texts through (#381) has one choice per distinct text, ``0..n-1``.
     """
 
-    def __init__(self, key: tuple, choices: tuple, sources: bool = False) -> None:
+    def __init__(
+        self, key: tuple, choices: tuple, sources: bool = False, unique: bool = False
+    ) -> None:
         super().__init__(key)
         # A selector's condition output (node ID, slot): one runtime value, so
         # every selector it drives is forced together. A pass-through key is
@@ -282,6 +289,8 @@ class _Diverging(Exception):
         self.choices = choices
         # Raised by an unknown node passing several texts (the outcome's reason).
         self.sources = sources
+        # Choices may repeat an outcome (a switch's inputs, #657): list it once.
+        self.unique = sources or unique
 
 
 def _node_ref(node_id: str, class_type: Any) -> dict:
@@ -837,7 +846,10 @@ class _GraphResolver:
             self.inherit_source(node_id, slot, [traced[1]])
             return traced
         if name in semantics.selectors:
-            return self.select(node_id, semantics.selectors[name], inputs, kind, depth)
+            entry = semantics.selectors[name]
+            if entry["strategy"] == "first-present":
+                return self.first_present(node_id, entry, inputs, kind, depth)
+            return self.select(node_id, entry, inputs, kind, depth)
         parts = [
             self.text(inputs.get(input_name), kind, depth + 1)
             for input_name in semantics.composites[name]["inputs"]
@@ -880,6 +892,66 @@ class _GraphResolver:
         if parts[0][0] != parts[1][0]:
             raise _Diverging((str(condition[0]), condition[1]), (True, False))
         return self.merged(node_id, 0, parts)
+
+    def first_present(
+        self, node_id: str, entry: Mapping, inputs: dict, kind: str, depth: int
+    ) -> Tuple[str, list, str]:
+        """rgthree Any Switch: the first ``input_prefix`` input that is not None.
+
+        The inputs take part in the order of ``inputs`` (ComfyUI's call order);
+        a missing or null one is not passed on. A file exists, so one of them
+        held a value. The first is the output when it is a literal or its
+        traced path proves a value (``proves_value``). Otherwise every input
+        is a choice, unless all of them trace to one text. Limits and upstream
+        divergences propagate; a failed choice becomes an unresolved candidate.
+        Nothing prefers a PromptManager path: a run-time first input may be
+        what rgthree output.
+        """
+        prefix = entry["input_prefix"]
+        values = [
+            value
+            for name, value in inputs.items()
+            if name.startswith(prefix) and value is not None
+        ]
+        if not values:
+            raise _Unresolved(_NO_SWITCH_INPUT, "malformed")
+        key = (_FIRST_PRESENT, node_id, 0)
+        if len(values) == 1 or not _link(values[0]):
+            chosen = values[0]
+        elif key in self.choices:
+            self.tainted = True
+            chosen = values[self.choices[key]]
+        elif not self.verifying:
+            return self.first_of(node_id, key, values, kind, depth)
+        else:
+            # Checking a pair's execution record: a choice is not readable
+            # statically, as through an unknown node (``passed``).
+            try:
+                return self.first_of(node_id, key, values, kind, depth)
+            except _Diverging:
+                raise self.unsupported(_SWITCH_UNVERIFIABLE, node_id) from None
+        traced = self.text(chosen, kind, depth + 1)
+        self.inherit_source(node_id, 0, [traced[1]])
+        return traced
+
+    def first_of(
+        self, node_id: str, key: tuple, values: list, kind: str, depth: int
+    ) -> Tuple[str, list, str]:
+        """The first linked input when proven, one text, or one choice per input."""
+        found: list = []
+        for value in values:
+            try:
+                found.append(self.text(value, kind, depth + 1))
+            except _Unresolved as error:
+                if error.code in _LIMIT_CODES:
+                    raise
+                break
+            if len(found) == 1 and self.proves_value(found[0][1]):
+                self.inherit_source(node_id, 0, [found[0][1]])
+                return found[0]
+        if len(found) == len(values) and len({part[0] for part in found}) == 1:
+            return self.merged(node_id, 0, found)
+        raise _Diverging(key, tuple(range(len(values))), unique=True)
 
     def passed(
         self, node_id: str, slot: int, kind: str, inputs: dict, depth: int
@@ -986,6 +1058,23 @@ class _GraphResolver:
         """Whether a followed path passes through a node no rule describes."""
         self.scan(len(path))
         return any(self.node(step["node_id"])[0] not in self.described for step in path)
+
+    def proves_value(self, path: list) -> bool:
+        """Whether every node on a followed path always outputs a value (#657).
+
+        PromptManager and code-traced classes, the default adapters and the
+        table's ``PROVEN_VALUE_CATEGORIES`` (``Semantics.proves_value``).
+        """
+        self.scan(len(path))
+        for step in path:
+            name, slot = self.node(step["node_id"])[0], step["output_slot"]
+            if name in _OWN_CLASSES or name in _CODED_CLASSES:
+                continue
+            if (name, slot) in _DEFAULT_ADAPTERS:
+                continue
+            if not self.semantics.proves_value(name, slot):
+                return False
+        return True
 
     def owned(self, path: list) -> bool:
         """Whether a followed path passes through one of this repository's nodes."""
@@ -1879,7 +1968,7 @@ class _GraphResolver:
         """
         pending: list = [{}]
         results: list = []
-        several = False
+        several = unique = False
         try:
             while pending:
                 self.choices = pending.pop(0)
@@ -1890,6 +1979,7 @@ class _GraphResolver:
                     if len(results) + len(pending) + count > _MAX_BRANCH_CANDIDATES:
                         raise _Unresolved("Too many selector branches", "work-limit")
                     several = several or diverging.sources
+                    unique = unique or diverging.unique
                     pending.extend(
                         {**self.choices, diverging.key: choice}
                         for choice in diverging.choices
@@ -1906,8 +1996,9 @@ class _GraphResolver:
             self.choices = {}
         if all(item["state"] == "unresolved" for item in results):
             return results[0]
-        if several:
-            # Chained unknown nodes can offer one text twice: list it once.
+        if unique:
+            # Chained unknown nodes, or a switch's inputs, can offer one
+            # outcome twice: list it once.
             unique: dict = {}
             for item in results:
                 unique.setdefault(_outcome_key(item), item)

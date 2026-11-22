@@ -744,6 +744,102 @@ class TestSaveRoute(RouteCoverageCase):
         self.assertFalse(data["success"])
 
 
+# #662 (F04): every legacy prompt route that reads a JSON body refuses a body
+# that is not a JSON object, or a field of the wrong type, with a 400.
+NOT_AN_OBJECT = [b"{bad", b"\xff", b"[]", b'"text"', b"123", b"null"]
+MALFORMED_BODY_ROUTES = (
+    ("PUT", "/prompt_manager/prompts/{id}", [{"text": 123}, {"text": ["a"]}]),
+    ("PUT", "/prompt_manager/prompts/{id}/rating", [{"rating": [1]}]),
+    ("POST", "/prompt_manager/prompts/{id}/tags", [{"tag": 123}, {"tag": ["a"]}]),
+    (
+        "DELETE",
+        "/prompt_manager/prompts/{id}/tags",
+        [{"tag": 123}, {"tag": True}, {"tag": ["a"]}],
+    ),
+    (
+        "POST",
+        "/prompt_manager/prompts/tags",
+        [
+            {"prompt_id": [1], "tags": ["a"]},
+            {"prompt_id": True, "tags": ["a"]},
+            {"prompt_id": 1.5, "tags": ["a"]},
+        ],
+    ),
+    ("PUT", "/prompt_manager/tags/old", [{"new_name": 123}, {"new_name": ["x"]}]),
+    ("POST", "/prompt_manager/tags/merge", [{"source_tags": ["old"], "target_tag": 5}]),
+    (
+        "POST",
+        "/prompt_manager/bulk/delete",
+        [
+            {"prompt_ids": 123},
+            {"prompt_ids": "1"},
+            {"prompt_ids": [[1]]},
+            {"prompt_ids": [True]},
+            {"prompt_ids": [{"id": 1}]},
+        ],
+    ),
+    (
+        "POST",
+        "/prompt_manager/bulk/tags",
+        [{"prompt_ids": 1, "tags": ["a"]}, {"prompt_ids": [[1]], "tags": ["a"]}],
+    ),
+    ("POST", "/prompt_manager/bulk/category", []),
+)
+
+
+class TestLegacyRoutesRefuseMalformedBodies(RouteCoverageCase):
+
+    async def test_each_malformed_body_is_400_and_changes_nothing(self):
+        prompt_id = self._save_prompt("kept text", tags=["old"], rating=3)
+        before = self.api.db.get_prompt_by_id(prompt_id)
+        for method, template, wrong_types in MALFORMED_BODY_ROUTES:
+            path = template.format(id=prompt_id)
+            bodies = NOT_AN_OBJECT + [json.dumps(b).encode() for b in wrong_types]
+            for body in bodies:
+                with self.subTest(method=method, path=path, body=body):
+                    status, data = await self._json(
+                        method,
+                        path,
+                        data=body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertFalse(data["success"])
+                    self.assertIsInstance(data["error"], str)
+        self.assertEqual(self.api.db.get_prompt_by_id(prompt_id), before)
+
+    async def test_valid_bodies_still_succeed(self):
+        prompt_id = self._save_prompt("old text", tags=["old"])
+        for method, path, body in (
+            ("PUT", f"/prompt_manager/prompts/{prompt_id}", {"text": "new text"}),
+            ("PUT", f"/prompt_manager/prompts/{prompt_id}/rating", {"rating": 4}),
+            ("POST", f"/prompt_manager/prompts/{prompt_id}/tags", {"tag": "b"}),
+            ("DELETE", f"/prompt_manager/prompts/{prompt_id}/tags", {"tag": "b"}),
+            # The legacy page may send the id it read from the page as text.
+            (
+                "POST",
+                "/prompt_manager/prompts/tags",
+                {"prompt_id": str(prompt_id), "tags": ["c"]},
+            ),
+            (
+                "POST",
+                "/prompt_manager/bulk/tags",
+                {"prompt_ids": [prompt_id], "tags": ["d"]},
+            ),
+        ):
+            with self.subTest(method=method, path=path):
+                status, data = await self._json(method, path, json=body)
+                self.assertEqual(status, 200, data)
+        stored = self.api.db.get_prompt_by_id(prompt_id)
+        self.assertEqual(stored["text"], "new text")
+        self.assertEqual(stored["rating"], 4)
+        self.assertEqual(sorted(stored["tags"]), ["c", "d", "old"])
+        status, data = await self._json(
+            "POST", "/prompt_manager/bulk/delete", json={"prompt_ids": [prompt_id]}
+        )
+        self.assertEqual((status, data["deleted_count"]), (200, 1))
+
+
 class TestDeleteUpdateRatingRoutes(RouteCoverageCase):
 
     async def test_delete_invalid_id_and_db_failure(self):
@@ -1013,7 +1109,8 @@ class TestBulkRoutes(RouteCoverageCase):
         self.assertEqual(self.api.db.get_prompt_by_id(ids[0])["category"], "Sea")
 
     async def test_bulk_set_category_keeps_the_legacy_admin_request(self):
-        # web/js/admin.js posts parseInt ids and a trimmed, non-empty category.
+        # The old admin page (removed in #668) posted parseInt ids and a trimmed,
+        # non-empty category; the route still takes that request.
         ids = [self._save_prompt(f"bulk cat legacy {i}") for i in range(3)]
         status, data = await self._set_category(
             {"prompt_ids": ids, "category": "Portraits"}

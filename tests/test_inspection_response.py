@@ -918,6 +918,70 @@ class TestImageTagsFacet(unittest.TestCase):
         self.assertNotIn("image_tags", self.history_encoded(None))
 
 
+class TestReviewFacet(unittest.TestCase):
+    """#659 (C4): both envelopes carry ``review``: a pending item, decided, or null."""
+
+    ITEM = "0a1b2c3d-0000-4000-8000-00000000abcd"
+    SHAPES = (
+        {"state": "pending", "item_id": ITEM},
+        {"state": "decided"},
+    )
+    INVALID = (
+        "pending",
+        ["pending"],
+        {},
+        {"state": "pending"},
+        {"state": "pending", "item_id": 123},
+        {"state": "pending", "item_id": "not-an-id"},
+        {"state": "pending", "item_id": ITEM.upper()},
+        {"state": "pending", "item_id": ITEM, "locator": "/abs/a.png"},
+        {"state": "decided", "item_id": ITEM},
+        {"state": "unresolved"},
+    )
+
+    def _common(self, review):
+        return {
+            "file": {"observation": "current-file", "size": 100},
+            "prompts": PROMPTS,
+            "resolution": {"state": "resolved", "sampler_id": "3", "reason": ""},
+            "inspection": inspection({"prompt": graph_text()}),
+            "library": {"status": "none"},
+            **({} if review is ... else {"review": review}),
+        }
+
+    def encoded(self, review=...):
+        body = encode_inspection_response(
+            image=IMAGE, root_scope="a" * 64, **self._common(review)
+        )
+        return json.loads(body)
+
+    def history_encoded(self, review=...):
+        from utils.inspection_response import encode_history_inspection_response
+
+        body = encode_history_inspection_response(
+            current_output={"history_epoch": "epoch"}, **self._common(review)
+        )
+        return json.loads(body)
+
+    def test_both_shapes_pass_through_both_envelopes(self):
+        for review in self.SHAPES:
+            for encode_with in (self.encoded, self.history_encoded):
+                with self.subTest(review=review, envelope=encode_with.__name__):
+                    self.assertEqual(encode_with(review)["review"], review)
+
+    def test_null_is_the_default(self):
+        for encode_with in (self.encoded, self.history_encoded):
+            with self.subTest(envelope=encode_with.__name__):
+                self.assertIsNone(encode_with()["review"])
+                self.assertIsNone(encode_with(None)["review"])
+
+    def test_any_other_value_is_null(self):
+        for review in self.INVALID:
+            for encode_with in (self.encoded, self.history_encoded):
+                with self.subTest(review=review, envelope=encode_with.__name__):
+                    self.assertIsNone(encode_with(review)["review"])
+
+
 class TestVideoProbeBoundsMatchPngBudgets(unittest.TestCase):
     """ffprobe escapes tag text; the stdout bounds must never gate a record
     that the identical PNG reads within its decoded budget (I3)."""

@@ -328,10 +328,20 @@ class TestQueueReads(ReviewRoutesTestCase):
         self._require_routes()
         self._roots()
         limited = self.output_dir / "limited.png"
-        # More than 16 candidates with a prompt: limited, still a choice.
-        many = [f"prompt {n}" for n in range(17)]
-        write_png(limited, prompt=unlinkable_graph(*many))
-        self.assertEqual(self._record_raw(str(limited)), "limited")
+        # Evidence over the 8 MiB bound: limited, still a choice (more than
+        # 16 prompts are collapsed instead, #657 D3).
+        write_png(limited, prompt=unlinkable_graph("cat", "dog"))
+        real = review_capture_module.canonical_evidence
+
+        def capped(value):
+            if value.get("candidates"):
+                raise ValueError("evidence exceeds the bound")
+            return real(value)
+
+        with patch.object(
+            review_capture_module, "canonical_evidence", side_effect=capped
+        ):
+            self.assertEqual(self._record_raw(str(limited)), "limited")
         self._record(self._ambiguous("two.png"))
         items = (await self._list())["items"]
         self.assertEqual([i["limited"] for i in items], [True, False])
@@ -360,6 +370,48 @@ class TestQueueReads(ReviewRoutesTestCase):
             self.assertEqual(status, 404, data)
             self.assertFalse(data["success"])
         self._no_paths()
+
+    def _set_evidence(self, item_id, change):
+        conn = self.api.db.model.get_connection()
+        (text,) = conn.execute(
+            "SELECT evidence FROM media_review_items WHERE id=?", (item_id,)
+        ).fetchone()
+        evidence = json.loads(text)
+        change(evidence)
+        text = canonical_evidence(evidence)
+        with conn:
+            conn.execute(
+                "UPDATE media_review_items SET evidence=?, evidence_hash=? WHERE id=?",
+                (text, evidence_digest(text), item_id),
+            )
+
+    async def test_detail_passes_a_collapsed_candidate_list_through(self):
+        # #657 D3: a file with more distinct prompts than are kept says how many.
+        self._require_routes()
+        self._record(self._ambiguous("two.png"))
+        item = (await self._list())["items"][0]
+        self.assertIsNone((await self._detail(item["id"]))["collapsed"])
+        collapsed = {"shown": 16, "total": 81, "paths": 165}
+        self._set_evidence(
+            item["id"], lambda evidence: evidence.update(collapsed=collapsed)
+        )
+        detail = await self._detail(item["id"])
+        self.assertEqual(detail["collapsed"], collapsed)
+        self.assertEqual(len(detail["candidates"]), 2)
+        # Anything but three counts is not shown.
+        for wrong in ({"shown": "16", "total": 81, "paths": 165}, [16], None):
+            self._set_evidence(
+                item["id"],
+                lambda evidence, wrong=wrong: evidence.update(collapsed=wrong),
+            )
+            self.assertIsNone((await self._detail(item["id"]))["collapsed"])
+        # A detail capped for size lists nothing, so nothing is collapsed either.
+        self._set_evidence(
+            item["id"], lambda evidence: evidence.update(collapsed=collapsed)
+        )
+        with patch.object(review_api, "MAX_DETAIL_BYTES", 200):
+            capped = await self._detail(item["id"])
+        self.assertEqual((capped["limited"], capped["collapsed"]), (True, None))
 
     async def test_label_uses_library_title_of_a_saved_prompt(self):
         self._require_routes()
@@ -524,7 +576,9 @@ class TestDecisions(ReviewRoutesTestCase):
         self.assertEqual(provenance["kind"], "user-selection")
         self.assertEqual(provenance["candidate_hash"], cat["hash"])
         self.assertEqual(provenance["reviewed_digest"], digest(path))
-        self.assertEqual(provenance["resolver_version"], 1)
+        self.assertEqual(
+            provenance["resolver_version"], review_capture_module.default_item_version()
+        )
         self.assertEqual(provenance["positive"]["text"], "cat")
         (decision,) = self._decisions()
         self.assertEqual(provenance["decision_id"], decision["id"])

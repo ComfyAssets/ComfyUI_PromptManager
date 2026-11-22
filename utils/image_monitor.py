@@ -20,7 +20,10 @@ The system automatically:
 - Extracts ComfyUI workflow metadata from PNG chunks
 - Links images to tracked prompts only when the image's own graph proves the
   tracked entry belongs to its run (``utils.run_keys``)
-- Leaves an image unlinked when nothing certain identifies its prompt (#342)
+- Asks the scan's per-file ladder (``utils.file_prompt``, monitor policy) for
+  a foreign output (#247) or a PromptManager run nothing else links (#659)
+- Leaves an image unlinked when nothing certain identifies its prompt (#342),
+  and hands it to Needs review at its final unlinked outcome (#659)
 - Provides status information and monitoring control
 """
 
@@ -37,11 +40,13 @@ from .file_prompt import HISTORY, NOT_SAVED, NOT_SAVED_WIRED
 from .foreign_runs import (
     ANCHORED_SOURCES,
     CERTAIN,
+    FOREIGN,
     NOT_SAVED_KINDS,
+    PROMPTMANAGER,
     ForeignRecheck,
     decide_foreign,
     history_lookup,
-    save_foreign_runs,
+    ladder_gate,
     store_foreign,
 )
 from .hashing import generate_prompt_hash
@@ -94,6 +99,28 @@ HISTORY_ONLY = object()
 # at once, so a bound is reached only while one image is still being linked.
 WORKER_JOIN_SECONDS = 5.0
 OBSERVER_JOIN_SECONDS = 5.0
+
+# Why ``_find_prompt_from_run`` found no prompt, or that it found one (#659
+# C3). The ladder causes send a PromptManager run to the ladder wait; an
+# output outside ComfyUI's output folder asks the ladder once; a keyless
+# image keeps its own history-only wait; a placeholder entry is an empty batch
+# item, deliberately unlinked.
+RUN_MATCHED = "matched"
+RUN_OUTSIDE_OUTPUT = "outside-output"
+RUN_KEYLESS = "keyless"
+RUN_PLACEHOLDER = "placeholder"
+RUN_BATCH_LATEST = "batch-latest"
+RUN_SEVERAL_KEYS = "several-keys"
+RUN_NO_ENTRY = "no-entry"
+LADDER_CAUSES = (RUN_BATCH_LATEST, RUN_SEVERAL_KEYS, RUN_NO_ENTRY)
+# The log line's name for a stored ladder decision, per run kind
+_RUN_LABELS = {FOREIGN: "Foreign run", PROMPTMANAGER: "PromptManager run"}
+
+
+def _has_graph(metadata) -> bool:
+    """True when ``metadata`` holds a prompt graph (parsed or JSON text)."""
+    graph = metadata.get("prompt") if isinstance(metadata, dict) else None
+    return bool(graph) and isinstance(graph, (dict, str))
 
 
 def _start_daemon_observer(observer) -> None:
@@ -184,9 +211,10 @@ class ImageGenerationHandler(FileSystemEventHandler):
         self.prompt_tracker = prompt_tracker
         self.metadata_extractor = ComfyUIMetadataExtractor()
         self.logger = get_logger("prompt_manager.image_monitor")
-        # The Needs review pass for ambiguous outputs (the API's
-        # ``record_review_file``, wired at start-up): a linked output is
-        # never queued and its pending items leave the queue. None: no pass.
+        # The Needs review pass (the API's ``queue_review_file``, wired at
+        # start-up): called for an ambiguous output the monitor linked (its
+        # pending items leave the queue) and at every final unlinked outcome
+        # (#659: the review worker queues what a scan would). None: no pass.
         self.review_recorder: Optional[Callable[[str], str]] = None
         # Queues a settled output's preview (the API's
         # ``queue_capture_thumbnail``, wired at start-up; #249). It only
@@ -231,11 +259,14 @@ class ImageGenerationHandler(FileSystemEventHandler):
         # Sealed re-checks ``schedule`` refused (the path still pending, or the
         # pending set full): retried each time a pending image finishes.
         self._history_due: "OrderedDict[str, None]" = OrderedDict()
-        # The same two sets for foreign outputs (#247), apart so a large
-        # foreign run never evicts a waiting keyless file; the due set keeps
-        # each file's sealed output reference.
-        self._awaiting_foreign: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
-        self._foreign_due: "OrderedDict[str, dict]" = OrderedDict()
+        # The same two sets for the ladder wait (#247, #659), apart so a
+        # large foreign run never evicts a waiting keyless file: normalized
+        # path -> (path, deadline, run kind); the due set keeps each file's
+        # re-check (its sealed output reference and run kind).
+        self._awaiting_foreign: "OrderedDict[str, Tuple[str, float, str]]" = (
+            OrderedDict()
+        )
+        self._foreign_due: "OrderedDict[str, ForeignRecheck]" = OrderedDict()
         self._awaiting_lock = threading.Lock()
         self._sealed_subscribed = False
         # Set by ``close``: no new work, no new worker, ever (#302).
@@ -542,7 +573,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 self._recheck_history(image_path)
                 return
             if isinstance(prompt_snapshot, ForeignRecheck):
-                self._recheck_foreign(image_path, prompt_snapshot.reference)
+                self._recheck_foreign(
+                    image_path, prompt_snapshot.reference, prompt_snapshot.kind
+                )
                 return
             self.logger.info(f"Processing image: {image_path}")
 
@@ -570,21 +603,20 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 # of ours; its own graph may name its prompt (#247).
                 self._ingest_foreign(image_path, metadata)
                 return
+            cause = RUN_MATCHED
             if current_prompt:
                 self.logger.info(
                     f"Metadata match: prompt {current_prompt['id']} for "
                     f"{os.path.basename(image_path)}"
                 )
             else:
-                current_prompt = self._find_prompt_from_run(
+                current_prompt, cause = self._find_prompt_from_run(
                     image_path, metadata, prompt_snapshot
                 )
             if not current_prompt:
-                # Nothing certain: never guess from recency or a stale entry (#342)
-                self.logger.info(
-                    "No certain prompt for "
-                    f"{os.path.basename(image_path)}; left unlinked"
-                )
+                # Nothing certain: never guess from recency or a stale entry
+                # (#342); the ladder may still name it (#659)
+                self._unlinked_run(image_path, metadata, cause)
                 return
 
             # Extend timeout if we have an active execution
@@ -615,8 +647,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
     def _find_prompt_from_run(
         self, image_path: str, metadata, prompt_snapshot=None
-    ) -> Optional[Dict[str, Any]]:
-        """The prompt a tracked run proves for an image whose metadata can't say.
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        """``(prompt, cause)``: the prompt a tracked run proves for an image
+        whose metadata can't say, and why there is none (``RUN_*``).
 
         Only an entry registered under the run key of the image's own positive
         node counts (``utils.run_keys``): never the newest prompt in the
@@ -634,6 +667,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
            run again.
         3. Recorded execution history: the run that wrote this file names one
            stored prompt (``database.run_attribution``).
+
+        The cause is ``RUN_MATCHED`` with a prompt. Without one:
+        ``RUN_OUTSIDE_OUTPUT`` for a file outside ComfyUI's output folder
+        (history can never attribute it), ``RUN_KEYLESS`` (it waits for its
+        run's recorded outputs), ``RUN_PLACEHOLDER`` (an empty batch item),
+        else ``RUN_SEVERAL_KEYS``, ``RUN_BATCH_LATEST`` or ``RUN_NO_ENTRY``.
         """
         keys = image_run_keys(metadata)
         name = os.path.basename(image_path)
@@ -643,43 +682,68 @@ class ImageGenerationHandler(FileSystemEventHandler):
             # outside ComfyUI's output folder can never be attributed, so it
             # does not take a waiting slot.
             if not in_output_folder(image_path, host_output_directory()):
-                return None
+                return None, RUN_OUTSIDE_OUTPUT
             self._await_history(image_path)
             prompt_id = self._history_prompt(image_path)
             if prompt_id is None:
-                return None
+                return None, RUN_KEYLESS
             self._stop_awaiting(image_path)
             self.logger.info(f"History match: prompt {prompt_id} for {name}")
-            return {"id": prompt_id, "from_history": True}
+            return {"id": prompt_id, "from_history": True}, RUN_MATCHED
+        cause = RUN_SEVERAL_KEYS
         if len(keys) == 1:
             (key,) = keys.values()
             if prompt_snapshot is None:
                 prompt_snapshot = self._keyed_snapshot()
             # No entry of the key when the image appeared: no tracked run made it
             entry = (prompt_snapshot or {}).get(key)
+            cause = RUN_NO_ENTRY
             if entry is not None:
                 context, run_id, count = entry
                 queued = self.prompt_tracker.pop_for_key(key, run_id)
                 if queued is not None:
                     if queued.get("placeholder"):
                         self.logger.info(f"Queue entry for {name} has no prompt text")
-                        return None
+                        return None, RUN_PLACEHOLDER
                     self.logger.info(f"Queue match: prompt {queued['id']} for {name}")
-                    return queued
+                    return queued, RUN_MATCHED
                 if context.get("placeholder"):
                     # Same rule as a popped placeholder: that run had no prompt
                     self.logger.info(f"Latest run for {name} had no prompt text")
-                    return None
+                    return None, RUN_PLACEHOLDER
                 if run_id and count == 1:
                     self.logger.info(f"Run match: prompt {context['id']} for {name}")
-                    return context
+                    return context, RUN_MATCHED
+                if count > 1:
+                    cause = RUN_BATCH_LATEST
         else:
             self.logger.debug(f"{len(keys)} positive prompt nodes for {name}")
         prompt_id = self._history_prompt(image_path)
-        if prompt_id is None:
-            return None
-        self.logger.info(f"History match: prompt {prompt_id} for {name}")
-        return {"id": prompt_id, "from_history": True}
+        if prompt_id is not None:
+            self.logger.info(f"History match: prompt {prompt_id} for {name}")
+            return {"id": prompt_id, "from_history": True}, RUN_MATCHED
+        if not in_output_folder(image_path, host_output_directory()):
+            return None, RUN_OUTSIDE_OUTPUT
+        return None, cause
+
+    def _unlinked_run(self, image_path: str, metadata, cause: str) -> None:
+        """A PromptManager run no metadata or tracked run links (#659 Part 3).
+
+        A file with a prompt graph asks the ladder: through the ladder wait
+        for the ladder causes, once for a file outside ComfyUI's output
+        folder. A keyless image keeps its own history-only wait and a
+        placeholder entry stays unlinked. A file outside the output folder
+        that nothing links is at its final unlinked outcome (Needs review).
+        """
+        if _has_graph(metadata) and cause in LADDER_CAUSES + (RUN_OUTSIDE_OUTPUT,):
+            in_output = cause != RUN_OUTSIDE_OUTPUT
+            self._ingest_ladder(image_path, metadata, PROMPTMANAGER, in_output)
+            return
+        self.logger.info(
+            f"No certain prompt for {os.path.basename(image_path)}; left unlinked"
+        )
+        if cause == RUN_OUTSIDE_OUTPUT:
+            self._record_review(image_path)
 
     @staticmethod
     def _awaiting_key(image_path: str) -> str:
@@ -696,14 +760,18 @@ class ImageGenerationHandler(FileSystemEventHandler):
         as ``(path, evicted)`` for ``_log_dropped`` after the lock."""
         store = self._awaiting if store is None else store
         now = time.monotonic()
-        expired = [k for k, (_p, due) in store.items() if due <= now]
+        expired = [k for k, entry in store.items() if entry[1] <= now]
         dropped = [(store.pop(key)[0], False) for key in expired]
         while len(store) > MAX_AWAITING_HISTORY:
             dropped.append((store.popitem(last=False)[1][0], True))
         return dropped if store is self._awaiting_foreign else []
 
     def _log_dropped(self, dropped: List[Tuple[str, bool]]) -> None:
-        """Log foreign files that stopped waiting (outside ``_awaiting_lock``)."""
+        """Log ladder files that stopped waiting (outside ``_awaiting_lock``).
+
+        They are left to the next scan, never queued for Needs review here
+        (expiry is noticed lazily, so it is no deterministic point).
+        """
         for image_path, evicted in dropped:
             name = os.path.basename(image_path)
             if evicted:
@@ -713,11 +781,12 @@ class ImageGenerationHandler(FileSystemEventHandler):
             else:
                 self.logger.info(f"No recorded run for {name}; left unlinked")
 
-    def _await_history(self, image_path: str, store=None) -> None:
+    def _await_history(self, image_path: str, store=None, kind=FOREIGN) -> None:
         """Re-check ``image_path`` once, history only, when its run is sealed.
 
-        ``store`` is the waiting set (``_awaiting_foreign`` for a foreign
-        output). A closed handler re-checks nothing.
+        ``store`` is the waiting set (``_awaiting_foreign``, the ladder wait,
+        whose entries also carry the run ``kind``). A closed handler
+        re-checks nothing.
         """
         if self._closed:
             return
@@ -726,14 +795,18 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self._sealed_subscribed = True
         store = self._awaiting if store is None else store
         key = self._awaiting_key(image_path)
+        deadline = time.monotonic() + AWAIT_HISTORY_SECONDS
+        entry = (image_path, deadline)
+        if store is self._awaiting_foreign:
+            entry = (image_path, deadline, kind)
         with self._awaiting_lock:
             store.pop(key, None)
-            store[key] = (image_path, time.monotonic() + AWAIT_HISTORY_SECONDS)
+            store[key] = entry
             dropped = self._prune_awaiting(store)
         self._log_dropped(dropped)
 
-    def _await_foreign(self, image_path: str) -> None:
-        self._await_history(image_path, self._awaiting_foreign)
+    def _await_foreign(self, image_path: str, kind: str = FOREIGN) -> None:
+        self._await_history(image_path, self._awaiting_foreign, kind)
 
     def _stop_awaiting(self, image_path: str, store=None) -> None:
         store = self._awaiting if store is None else store
@@ -748,9 +821,20 @@ class ImageGenerationHandler(FileSystemEventHandler):
 
     def awaiting_foreign(self) -> List[str]:
         """Normalized paths of foreign outputs waiting for their run (#247)."""
+        return self._awaiting_ladder(FOREIGN)
+
+    def awaiting_ladder(self) -> List[str]:
+        """Normalized paths of every ladder wait entry, of either run kind."""
+        return self._awaiting_ladder(None)
+
+    def _awaiting_ladder(self, kind: Optional[str]) -> List[str]:
         with self._awaiting_lock:
             dropped = self._prune_awaiting(self._awaiting_foreign)
-            waiting = list(self._awaiting_foreign)
+            waiting = [
+                key
+                for key, entry in self._awaiting_foreign.items()
+                if kind is None or entry[2] == kind
+            ]
         self._log_dropped(dropped)
         return waiting
 
@@ -776,27 +860,35 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 )
                 waiting = self._awaiting.pop(key, None)
                 if waiting is not None:
-                    due.append((waiting[0], None))
+                    due.append((waiting[0], None, FOREIGN))
                 waiting = self._awaiting_foreign.pop(key, None)
                 if waiting is not None:
-                    due.append((waiting[0], dict(reference)))
+                    due.append((waiting[0], dict(reference), waiting[2]))
         self._log_dropped(dropped)
-        for image_path, reference in due:
-            self._schedule_recheck(image_path, reference)
+        for image_path, reference, kind in due:
+            self._schedule_recheck(image_path, reference, kind)
 
     @staticmethod
-    def _recheck_snapshot(reference):
-        return HISTORY_ONLY if reference is None else ForeignRecheck(reference)
+    def _recheck_snapshot(due):
+        """The ``schedule`` snapshot of a due re-check: None is a keyless
+        image's, a ``ForeignRecheck`` a ladder entry's (a bare reference is
+        a foreign one's)."""
+        if due is None:
+            return HISTORY_ONLY
+        return due if isinstance(due, ForeignRecheck) else ForeignRecheck(due)
 
-    def _schedule_recheck(self, image_path: str, reference=None) -> None:
+    def _schedule_recheck(
+        self, image_path: str, reference=None, kind: str = FOREIGN
+    ) -> None:
         """Schedule the history-only re-check (with the sealed ``reference``:
-        a foreign output's), or keep it due for later.
+        a ladder entry's, of run ``kind``), or keep it due for later.
 
         A closed handler drops it.
         """
         if self._closed:
             return
-        if self.schedule(image_path, self._recheck_snapshot(reference)):
+        recheck = None if reference is None else ForeignRecheck(reference, kind)
+        if self.schedule(image_path, self._recheck_snapshot(recheck)):
             return
         with self._awaiting_lock:
             # ``close`` sets the flag before ``shutdown`` clears this set, so
@@ -805,7 +897,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
                 return
             due = self._history_due if reference is None else self._foreign_due
             due.pop(image_path, None)
-            due[image_path] = reference
+            due[image_path] = recheck
             evicted = []
             while len(due) > MAX_AWAITING_HISTORY:
                 evicted.append(due.popitem(last=False)[0])
@@ -817,11 +909,11 @@ class ImageGenerationHandler(FileSystemEventHandler):
         with self._awaiting_lock:
             due = [(self._history_due, p, None) for p in self._history_due]
             due += [(self._foreign_due, *item) for item in self._foreign_due.items()]
-        for store, image_path, reference in due:
-            if self.schedule(image_path, self._recheck_snapshot(reference)):
+        for store, image_path, recheck in due:
+            if self.schedule(image_path, self._recheck_snapshot(recheck)):
                 with self._awaiting_lock:
                     # A newer seal may have replaced it meanwhile: keep that one
-                    if image_path in store and store[image_path] is reference:
+                    if image_path in store and store[image_path] is recheck:
                         del store[image_path]
 
     def _recheck_history(self, image_path: str) -> None:
@@ -834,6 +926,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self.logger.info(
                 f"No certain prompt for {name} after its run ended; left unlinked"
             )
+            self._record_review(image_path)  # its final unlinked outcome
             return
         self.logger.info(f"History match after its run ended: {prompt_id} for {name}")
         try:
@@ -847,30 +940,59 @@ class ImageGenerationHandler(FileSystemEventHandler):
         )
 
     def _ingest_foreign(self, image_path: str, metadata) -> None:
-        """A foreign output at settle: store its certain prompt, or wait for
-        its run's recorded outputs when only history can decide (#247)."""
+        """A foreign output at settle (#247): ``_ingest_ladder``."""
+        self._ingest_ladder(image_path, metadata, FOREIGN)
+
+    def _ingest_ladder(
+        self, image_path: str, metadata, kind: str, in_output: Optional[bool] = None
+    ) -> None:
+        """An output the ladder decides, at settle: store its certain prompt,
+        or wait for its run's recorded outputs when only history can decide
+        (#247; a PromptManager run since #659).
+
+        ``kind`` selects the settings gate and the marks (``ladder_gate``).
+        ``in_output`` (None: read now) tells whether the file is inside
+        ComfyUI's output folder. A file the ladder leaves unlinked after
+        history had its say (a record was found at settle), or that can never
+        be sealed (outside the output folder), is at its final unlinked
+        outcome and goes to Needs review.
+        """
         name = os.path.basename(image_path)
-        if not save_foreign_runs():
-            self.logger.info(
-                f"No PromptManager prompt in workflow, skipping image: {image_path}"
-            )
+        enabled, _marks = ladder_gate(kind)
+        if not enabled:
+            if kind == FOREIGN:
+                self.logger.info(
+                    f"No PromptManager prompt in workflow, skipping image: "
+                    f"{image_path}"
+                )
+            else:
+                self.logger.info(f"Image monitoring is off; {name} left unlinked")
             return
-        in_output = in_output_folder(image_path, host_output_directory())
+        if in_output is None:
+            in_output = in_output_folder(image_path, host_output_directory())
         decision = decide_foreign(
             image_path, metadata, in_output=in_output, lookup=None
         )
+        final = not in_output
         if decision.kind == HISTORY:
-            decision = self._settle_lookup(image_path, metadata)
+            decision = self._settle_lookup(image_path, metadata, kind)
             if decision is None:
-                self.logger.debug(f"{name} waits for its run to end")
+                # Unlinked for now: the re-check after the seal decides
+                self.logger.info(
+                    f"No certain prompt for {name} yet; left unlinked until "
+                    "its run ends"
+                )
                 return
             self._stop_awaiting(image_path, self._awaiting_foreign)
+            final = True
         if decision.kind in NOT_SAVED_KINDS:
             self._log_not_saved(image_path, decision.kind)
         elif decision.kind in CERTAIN:
-            self._store_foreign(image_path, decision)
+            self._store_foreign(image_path, decision, kind)
         else:
             self.logger.info(f"No certain prompt for {name}; left unlinked")
+            if final:
+                self._record_review(image_path)
 
     def _log_not_saved(self, image_path: str, kind: str = NOT_SAVED) -> None:
         """The log line of a file whose run's prompt does not save (#90)."""
@@ -883,7 +1005,7 @@ class ImageGenerationHandler(FileSystemEventHandler):
             f"{image_path}"
         )
 
-    def _settle_lookup(self, image_path: str, metadata):
+    def _settle_lookup(self, image_path: str, metadata, kind: str = FOREIGN):
         """The settle-time history lookup of a file only history can decide.
 
         Registered first, so a run sealed before this lookup is not missed.
@@ -893,8 +1015,9 @@ class ImageGenerationHandler(FileSystemEventHandler):
         ``not_saved`` here is the undecided step's (an early one never asks
         history, so it never reaches this lookup): a recorded saver may still
         resolve another branch, so without a record it waits too (#90).
+        ``kind`` is the run kind the wait entry carries.
         """
-        self._await_foreign(image_path)
+        self._await_foreign(image_path, kind)
         found = []
         lookup = history_lookup(self.db_manager, image_path)
 
@@ -909,13 +1032,14 @@ class ImageGenerationHandler(FileSystemEventHandler):
             return decision
         return None
 
-    def _recheck_foreign(self, image_path: str, reference) -> None:
-        """The one re-check of a foreign output after its run ended (#247)."""
+    def _recheck_foreign(self, image_path: str, reference, kind=FOREIGN) -> None:
+        """The one ladder re-check of an output after its run ended (#247,
+        #659). Unlinked after it, the file is at its final unlinked outcome
+        and goes to Needs review."""
         name = os.path.basename(image_path)
         if not os.path.exists(image_path):
             return
-        if not save_foreign_runs():
-            self.logger.info(f"Saving prompts from other workflows is off: {name}")
+        if not self._ladder_enabled(kind, name):
             return
         try:
             metadata = self.metadata_extractor.extract_metadata(image_path)
@@ -928,24 +1052,40 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self._log_not_saved(image_path, decision.kind)
             return
         if decision.kind in CERTAIN:
-            self._store_foreign(image_path, decision)
+            self._store_foreign(image_path, decision, kind)
             return
         self.logger.info(
             f"No certain prompt for {name} after its run ended; left unlinked"
         )
+        self._record_review(image_path)
 
-    def _store_foreign(self, image_path: str, decision) -> None:
-        name = os.path.basename(image_path)
-        if not save_foreign_runs():  # switched off while this file was decided
+    def _ladder_enabled(self, kind: str, name: str) -> bool:
+        """Whether a ladder entry of run ``kind`` may be stored now (logged
+        when not)."""
+        if ladder_gate(kind)[0]:
+            return True
+        if kind == FOREIGN:
             self.logger.info(f"Saving prompts from other workflows is off: {name}")
+        else:
+            self.logger.info(f"Image monitoring is off; {name} left unlinked")
+        return False
+
+    def _store_foreign(self, image_path: str, decision, kind=FOREIGN) -> None:
+        name = os.path.basename(image_path)
+        # Read again: switched off while this file was decided
+        if not self._ladder_enabled(kind, name):
             return
+        _enabled, marks = ladder_gate(kind)
         try:
-            status, prompt_id = store_foreign(self.db_manager, image_path, decision)
+            status, prompt_id = store_foreign(
+                self.db_manager, image_path, decision, marks
+            )
         except Exception as error:
             self.logger.error(f"Failed to store the prompt of {name}: {error}")
             return
         self.logger.info(
-            f"Foreign run: {status} prompt {prompt_id} for {name} ({decision.source})"
+            f"{_RUN_LABELS[kind]}: {status} prompt {prompt_id} for {name} "
+            f"({decision.source})"
         )
 
     def _history_prompt(self, image_path: str) -> Optional[int]:
@@ -1183,11 +1323,16 @@ class ImageGenerationHandler(FileSystemEventHandler):
             self._record_review(image_path)
 
     def _record_review(self, image_path: str) -> None:
-        """The Needs review pass for an ambiguous output, best effort.
+        """Hand an output to the Needs review pass, best effort (#659).
 
-        The output is linked by now, so it is never queued; a pending item
-        an earlier scan left for its path leaves the queue. The link above
-        stays whatever happens here: a failure is logged, never raised.
+        Called for an ambiguous output the monitor linked (its pending items
+        leave the queue) and at each final unlinked outcome, after run
+        history had its say: the ladder wait's sealed re-check, a settle
+        lookup that found the run's record, a file outside ComfyUI's output
+        folder and the keyless re-check. The recorder (the API's
+        ``queue_review_file``) only queues the path; its review worker runs
+        what the scan runs for the file and queues what the scan would. A
+        failure is logged, never raised, and undoes no link.
         """
         recorder = getattr(self, "review_recorder", None)
         if recorder is None:

@@ -64,6 +64,36 @@ def bad_request(message):
     return web.json_response({"success": False, "error": message}, status=400)
 
 
+def legacy_id_error(value, name):
+    """A 400 unless *value* is an id as the legacy pages send it (#662).
+
+    They send a number or the text they read from the page; SQLite matches
+    either against an INTEGER column. A boolean, float, list or object is no
+    id (``True`` would otherwise match prompt 1).
+    """
+    if type(value) is int or isinstance(value, str):
+        return None
+    return bad_request(f"{name} must be a prompt id")
+
+
+def legacy_ids_error(value):
+    """A 400 unless *value* is a list of ``legacy_id_error`` ids (#662)."""
+    if not isinstance(value, list):
+        return bad_request("prompt_ids must be a list")
+    for item in value:
+        error = legacy_id_error(item, "prompt_ids")
+        if error is not None:
+            return error
+    return None
+
+
+def text_field_error(data, name):
+    """A 400 when *name* is present in *data* but is not text (#662)."""
+    if data.get(name) is not None and not isinstance(data[name], str):
+        return bad_request(f"{name} must be text")
+    return None
+
+
 def tags_error(tags):
     """A 400 response when *tags* fail ``validate_tags``, else None."""
     try:
@@ -605,18 +635,15 @@ class PromptRoutesMixin:
                     {"success": False, "error": "Tag name required"}, status=400
                 )
 
-            try:
-                body = await request.json()
-            except Exception:
-                return web.json_response(
-                    {"success": False, "error": "Invalid JSON body"}, status=400
-                )
+            body, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             raw_name = body.get("new_name")
             if not raw_name:
                 return web.json_response(
                     {"success": False, "error": "New tag name required"}, status=400
                 )
-            error = tags_error([raw_name])
+            error = text_field_error(body, "new_name") or tags_error([raw_name])
             if error is not None:
                 return error
             new_name = raw_name.strip()
@@ -678,12 +705,9 @@ class PromptRoutesMixin:
     async def merge_tags_endpoint(self, request):
         """Merge source tags into a target tag."""
         try:
-            try:
-                body = await request.json()
-            except Exception:
-                return web.json_response(
-                    {"success": False, "error": "Invalid JSON body"}, status=400
-                )
+            body, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             source_tags = body.get("source_tags", [])
             raw_target = body.get("target_tag")
 
@@ -697,7 +721,9 @@ class PromptRoutesMixin:
                 )
             if not isinstance(source_tags, list):
                 return bad_request("Source tags must be a list")
-            error = tags_error([*source_tags, raw_target])
+            error = text_field_error(body, "target_tag") or tags_error(
+                [*source_tags, raw_target]
+            )
             if error is not None:
                 return error
             target_tag = raw_target.strip()
@@ -851,7 +877,11 @@ class PromptRoutesMixin:
         """Update prompt text."""
         try:
             prompt_id = int(request.match_info["prompt_id"])
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is None:
+                error = text_field_error(data, "text")
+            if error is not None:
+                return error
             new_text = (data.get("text") or "").strip()
 
             if not new_text:
@@ -905,7 +935,9 @@ class PromptRoutesMixin:
         """Update prompt rating."""
         try:
             prompt_id = int(request.match_info["prompt_id"])
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             rating = data.get("rating")
 
             try:
@@ -945,14 +977,16 @@ class PromptRoutesMixin:
         """Add tag to prompt."""
         try:
             prompt_id = int(request.match_info["prompt_id"])
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             raw_tag = data.get("tag")
 
             if not raw_tag:
                 return web.json_response(
                     {"success": False, "error": "Tag cannot be empty"}, status=400
                 )
-            error = tags_error([raw_tag])
+            error = text_field_error(data, "tag") or tags_error([raw_tag])
             if error is not None:
                 return error
             new_tag = raw_tag.strip()
@@ -994,7 +1028,9 @@ class PromptRoutesMixin:
     async def add_tags_to_prompt(self, request):
         """Add multiple tags to a single prompt."""
         try:
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             prompt_id = data.get("prompt_id")
             new_tags = data.get("tags", [])
 
@@ -1002,6 +1038,9 @@ class PromptRoutesMixin:
                 return web.json_response(
                     {"success": False, "error": "Prompt ID is required"}, status=400
                 )
+            error = legacy_id_error(prompt_id, "prompt_id")
+            if error is not None:
+                return error
 
             if not new_tags or not isinstance(new_tags, list):
                 return web.json_response(
@@ -1063,7 +1102,11 @@ class PromptRoutesMixin:
         """Remove tag from prompt."""
         try:
             prompt_id = int(request.match_info["prompt_id"])
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is None:
+                error = text_field_error(data, "tag")
+            if error is not None:
+                return error
             tag_to_remove = (data.get("tag") or "").strip()
 
             prompt = await self._run_in_executor(self.db.get_prompt_by_id, prompt_id)
@@ -1103,13 +1146,18 @@ class PromptRoutesMixin:
     async def bulk_delete_prompts(self, request):
         """Bulk delete prompts."""
         try:
-            data = await request.json()
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             prompt_ids = data.get("prompt_ids", [])
 
             if not prompt_ids:
                 return web.json_response(
                     {"success": False, "error": "No prompt IDs provided"}, status=400
                 )
+            error = legacy_ids_error(prompt_ids)
+            if error is not None:
+                return error
 
             deleted_count = await self._run_in_executor(
                 self.db.bulk_delete_prompts, prompt_ids
@@ -1138,12 +1186,9 @@ class PromptRoutesMixin:
     async def bulk_add_tags(self, request):
         """Bulk add tags to prompts."""
         try:
-            try:
-                data = await request.json()
-            except ValueError:
-                return bad_request("Invalid JSON body")
-            if not isinstance(data, dict):
-                return bad_request("Expected a JSON object")
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             if "expected_epoch" in data:
                 return await self._bulk_library_tags(data)
             prompt_ids = data.get("prompt_ids", [])
@@ -1156,7 +1201,7 @@ class PromptRoutesMixin:
                 )
             if not isinstance(new_tags, list):
                 return bad_request("Tags must be a list")
-            error = tags_error(new_tags)
+            error = legacy_ids_error(prompt_ids) or tags_error(new_tags)
             if error is not None:
                 return error
 
@@ -1185,16 +1230,9 @@ class PromptRoutesMixin:
     async def bulk_set_category(self, request):
         """Bulk set category for prompts."""
         try:
-            try:
-                data = await request.json()
-            except ValueError:
-                return web.json_response(
-                    {"success": False, "error": "Invalid JSON body"}, status=400
-                )
-            if not isinstance(data, dict):
-                return web.json_response(
-                    {"success": False, "error": "Expected a JSON object"}, status=400
-                )
+            data, error = await self._read_json_body(request)
+            if error is not None:
+                return error
             if "images_filter" in data:
                 return await self._bulk_category_by_filter(data)
             if "expected_epoch" in data:

@@ -99,7 +99,7 @@ test('a rename while searching re-reads the same search and sort',async({page})=
 test('Untagged prompts Browse opens the Library on exactly the prompts without tags',async({page})=>{
     await open(page);
     await untagged(page).getByRole('button',{name:'Browse',exact:true}).click();
-    await expect(page).toHaveURL(/#\/library$/);
+    await expect(page).toHaveURL(url=>url.hash==='#/library?tag_mode=untagged');
     await expect(main(page).getByRole('heading',{level:1})).toBeFocused();
     await expect(shelf(page)).toHaveCount(2);
     await expect(page.locator('#workspace-main .section-caption > span').first()).toHaveText(/^2 positive prompts · /);

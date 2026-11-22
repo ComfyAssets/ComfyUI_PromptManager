@@ -1,6 +1,3 @@
-# Tailwind standalone CLI (downloaded by `make css-setup`)
-tailwindcss
-
 # AI tooling / local config
 .claude/
 .playwright-mcp/

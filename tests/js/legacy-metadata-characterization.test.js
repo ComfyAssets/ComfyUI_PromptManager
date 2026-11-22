@@ -1,6 +1,6 @@
 // Run with: node --test tests/js/
 // Characterization, not a specification: pins what the legacy viewers
-// (web/metadata.html, web/js/gallery.js) show today on the synthetic inspection
+// (the old metadata and gallery pages, removed in #668) showed on the synthetic inspection
 // parity fixtures, so the #240 workspace work cannot change them by accident.
 // Some answers are known to be wrong (f01b shows the preview-only detailer text
 // as both roles; f16 shows the last of two conflicting prompt chunks; f19 shows the
@@ -18,8 +18,8 @@ const { extractGenerationParams } = require("../../web/js/comfy-metadata.js");
 const FIXTURES = path.join(__dirname, "..", "fixtures", "inspection_parity");
 const DETAILER = "Detailer pass: refine the face";
 
-// Copy of the legacy pages' inline glue (NaN cleanup and field order): web/metadata.html
-// extractComfyUIData (line 107) and web/js/gallery.js extractComfyUIData (line 1643).
+// Copy of the legacy pages' inline glue (NaN cleanup and field order): extractComfyUIData of
+// web/metadata.html (line 107) and web/js/gallery.js (line 1643), as of 3.7.2.
 // The spec only promises extractGenerationParams is unchanged, so the glue is copied here.
 function legacyComfyData(metadata) {
     const parse = text => JSON.parse(text.replace(/:\s*NaN\b/g, ": null").replace(/\bNaN\b/g, "null"));

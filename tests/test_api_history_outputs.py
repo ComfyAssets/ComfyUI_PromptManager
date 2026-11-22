@@ -1760,3 +1760,100 @@ class HistoryOutputAPITests(ImageAPITestCase):
             {"status": "resolved", "text": LLM_TEXT, "source": "execution"},
         )
         self.assertEqual(body["prompts"]["negative"]["text"], "")
+
+    def queue_review(self, path):
+        """One pending Needs review item for the bytes at ``path`` (#659)."""
+        import hashlib
+
+        facts = path.stat()
+        relative = path.relative_to(self.output_dir).parts
+        spelled = os.path.join(os.path.realpath(self.output_dir), *relative)
+        self.assertTrue(
+            self.api.db.record_review_item(
+                locator=os.path.normcase(spelled),
+                spelled_path=spelled,
+                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                size=facts.st_size,
+                mtime_ns=facts.st_mtime_ns,
+                epoch=self.api.db.get_execution_epoch(),
+                resolver_version=1,
+                evidence={"candidates": []},
+                candidate_count=0,
+                limited=True,
+            )
+        )
+        return self.api.db.review_items_for(os.path.normcase(spelled))[-1]["id"]
+
+    async def test_current_inspection_names_the_files_pending_review_item(self):
+        """#659 (C4): History's current-file read carries ``review`` as Images does."""
+        from tests.test_inspection_review import two_samplers
+
+        path = png(self.output_dir / "image.png", prompt=two_samplers())
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["prompts"]["positive"]["status"], "ambiguous")
+        self.assertIsNone(body["review"])
+        item_id = self.queue_review(path)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item_id})
+
+    async def test_current_inspection_finds_the_review_item_under_a_symlinked_output(
+        self,
+    ):
+        """The served file is canonical; the item is keyed under the real root."""
+        from tests.test_inspection_review import two_samplers
+
+        link = self.comfy_dir / "linked_output"
+        self._make_symlink(self.output_dir, link, target_is_directory=True)
+        self.api._get_all_output_dirs = lambda: [link]
+        self.host_output = str(link)
+        path = png(self.output_dir / "image.png", prompt=two_samplers())
+        item_id = self.queue_review(path)
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item_id})
+
+    async def test_current_inspection_records_an_unqueued_file(self):
+        """#657 addendum D2: History's current-file read records as Images."""
+        from tests.test_review import unlinkable_graph
+        from utils.media_capture import CaptureStore
+
+        self.api._captures = CaptureStore(temp_parent=self.comfy_dir / "captures")
+        self.addCleanup(self.api.close_annotation_captures)
+        path = png(self.output_dir / "image.png", prompt=unlinkable_graph("a", "b"))
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        response = await self.current(descriptor["inspection_url"])
+        body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        locator = os.path.normcase(os.path.realpath(path))
+        (item,) = self.api.db.review_items_for(locator)
+        self.assertEqual(body["review"], {"state": "pending", "item_id": item["id"]})
+
+    async def test_current_inspection_review_read_failure_is_null(self):
+        from tests.test_inspection_review import two_samplers
+
+        path = png(self.output_dir / "image.png", prompt=two_samplers())
+        self.queue_review(path)
+        start = self.capture([self.ref()])
+        descriptor = await self.media(start)
+        with (
+            self.assertLogs(self.api.logger, "WARNING"),
+            patch.object(
+                type(self.api.db),
+                "review_item_at",
+                side_effect=sqlite3.OperationalError("locked"),
+            ),
+        ):
+            response = await self.current(descriptor["inspection_url"])
+            body = await response.json()
+        self.assertEqual(response.status, 200, body)
+        self.assertIsNone(body["review"])

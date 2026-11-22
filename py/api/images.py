@@ -25,6 +25,7 @@ from aiohttp import web
 from PIL import Image, UnidentifiedImageError
 
 from .jobs import MAX_OUTCOME_ROWS, THUMBNAILS_JOB_KIND
+from .json_body import BodyTooLarge, json_error, read_json_object
 from . import gallery_listing
 from .gallery_listing import (
     DISCARDED,
@@ -56,6 +57,7 @@ from .inspection_service import (
     VIDEO_EXTENSIONS,
     image_tags_reader,
     inspect_current_file,
+    review_reader,
 )
 
 try:
@@ -548,7 +550,6 @@ def _thumbnail_is_fresh(src, dst):
 MAX_GALLERY_FILES = 50_000
 MAX_BULK_LIMIT = 5_000
 MAX_JSON_BODY_BYTES = 1024 * 1024
-_READ_CHUNK = 64 * 1024
 
 
 # Guards the first load of an API's workspace keys (#430, _workspace_keys).
@@ -717,36 +718,17 @@ def _workspace_cursor_key(token: str, scope: str, order: str, secret: bytes) -> 
         raise ValueError("Invalid gallery cursor; refresh the gallery") from None
 
 
-class _BodyTooLarge(Exception):
-    """Raised when a request body exceeds MAX_JSON_BODY_BYTES."""
-
-
-def _json_error(message, status):
-    return web.json_response({"success": False, "error": message}, status=status)
+# The shared bounded reader, at this module's own cap.
+_BodyTooLarge = BodyTooLarge
+_json_error = json_error
 
 
 async def _read_json_body(request):
-    """Read a JSON object body in bounded chunks.
+    """The JSON object body, or raise _BodyTooLarge past MAX_JSON_BODY_BYTES.
 
-    Raises _BodyTooLarge past MAX_JSON_BODY_BYTES (declared or streamed) and
-    ValueError when the body is not a JSON object.
+    Raises ValueError when the body is not a JSON object.
     """
-    limit = MAX_JSON_BODY_BYTES
-    if request.content_length is not None and request.content_length > limit:
-        raise _BodyTooLarge()
-    chunks, size = [], 0
-    while True:
-        chunk = await request.content.read(_READ_CHUNK)
-        if not chunk:
-            break
-        size += len(chunk)
-        if size > limit:
-            raise _BodyTooLarge()
-        chunks.append(chunk)
-    data = json.loads(b"".join(chunks).decode("utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError("JSON body must be an object")
-    return data
+    return await read_json_object(request, MAX_JSON_BODY_BYTES)
 
 
 async def _json_body_or_error(request):
@@ -4149,6 +4131,9 @@ class ImageRoutesMixin:
                             roots[index], Path(relative).parts
                         ),
                         recorded=recorded_output_lookup(self.db),
+                        review=self._inspection_review(
+                            index, outputs, roots[index], Path(relative).parts
+                        ),
                     )
                 except CurrentFileChanged:
                     return None
@@ -4192,6 +4177,27 @@ class ImageRoutesMixin:
         """The inspector's ``image_tags`` reader for one rooted file (S1)."""
         locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
         return image_tags_reader(self.db, locator, self.logger)
+
+    def _inspection_review(
+        self, index: int, outputs: list, root: Path, parts: tuple
+    ) -> Callable | None:
+        """The inspector's ``review`` reader for one rooted file (#659, C4).
+
+        Keyed as review items are (the normcased realpath of the root joined
+        with the relative path). Only an output root is a scan root; a root
+        past the output folders (a LoRA root) gives None. A file without an
+        item is recorded first through the review worker's path (#657 D2).
+        """
+        if index >= len(outputs):
+            return None
+        locator = os.path.normcase(os.path.join(os.path.realpath(root), *parts))
+        path = os.path.join(str(root), *parts)
+        return review_reader(
+            self.db,
+            locator,
+            self.logger,
+            record=functools.partial(self.inspect_review_file, path),
+        )
 
     def _read_own_category(self, sources, path):
         """One file's own category, None, or OWN_CATEGORY_UNREAD (blocking).

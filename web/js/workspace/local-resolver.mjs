@@ -16,6 +16,7 @@ import {
     Diverging,
     EMPTY_POSITIVE,
     EMPTY_POSITIVE_REASON,
+    FIRST_PRESENT,
     GUIDER_ABSENT_REASON,
     INCOMPATIBLE_SLOT,
     MALFORMED_EVIDENCE_REASON,
@@ -23,6 +24,7 @@ import {
     MAX_JOIN_INPUTS,
     MAX_SUBGRAPH_DEPTH,
     MAX_WORKFLOW_NODES,
+    NO_SWITCH_INPUT,
     CODED_CLASSES,
     NO_SAMPLER_NAMES,
     OWN_CLASSES,
@@ -30,9 +32,12 @@ import {
     PASS_THROUGH,
     SELECTOR_BRANCHES_REASON,
     SEVERAL_SOURCES_REASON,
+    SWITCH_UNVERIFIABLE,
     PASSED_UNVERIFIABLE,
     OVERWRITTEN_PROMPT_REASON,
     PROFILE,
+    PROVEN_BY_CLASS,
+    PROVEN_VALUE_CATEGORIES,
     ROLE_METADATA_KEYS,
     RUNTIME_REASON,
     SAMPLER_LIKE_INPUTS,
@@ -51,7 +56,7 @@ import {
     sideOf,
     slotKey,
 } from './local-resolver-support.mjs';
-import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, stage, stagesFrom } from './local-resolver-stages.mjs';
+import { finalStages, latentStages, outcomeKey, promptPart, sharedPair, sharedSide, stage, stagesFrom } from './local-resolver-stages.mjs';
 import { parameters } from './local-parameters.mjs';
 
 export { SemanticsError, compileSemantics, readPairExecution, outcomeMessage, isLink } from './local-resolver-support.mjs';
@@ -294,7 +299,11 @@ class GraphResolver {
             this.inheritSource(nodeId, slot, [traced[1]]);
             return traced;
         }
-        if (semantics.selectors.has(name)) return this.select(nodeId, semantics.selectors.get(name), inputs, kind, depth);
+        if (semantics.selectors.has(name)) {
+            const selector = semantics.selectors.get(name);
+            if (selector.strategy === 'first-present') return this.firstPresent(nodeId, selector, inputs, kind, depth);
+            return this.select(nodeId, selector, inputs, kind, depth);
+        }
         const parts = semantics.composites.get(name).inputs.map(inputName => this.text(pyGet(inputs, inputName), kind, depth + 1));
         if (new Set(parts.map(part => part[0])).size !== 1) throw this.named('Combined conditioning has different texts', 'composite', nodeId);
         return this.merged(nodeId, slot, parts);
@@ -317,6 +326,55 @@ class GraphResolver {
         const parts = ['true', 'false'].map(label => this.text(pyGet(inputs, branches[label]), kind, depth + 1));
         if (parts[0][0] !== parts[1][0]) throw new Diverging(slotKey(String(condition[0]), condition[1]), [true, false]);
         return this.merged(nodeId, 0, parts);
+    }
+
+    /**
+     * `first_present` (#657, rgthree Any Switch): the first `input_prefix` input that is not null. A literal first input,
+     * or the only one, is the output; a forced choice (re-resolve) takes its input; otherwise `firstOf` decides. While an
+     * execution record is checked, a choice is unverifiable (as `passed`).
+     */
+    firstPresent(nodeId, entry, inputs, kind, depth) {
+        const prefix = entry.input_prefix;
+        const values = [...inputs].filter(([name, value]) => name.startsWith(prefix) && value !== null).map(([, value]) => value);
+        if (!values.length) throw new Unresolved(NO_SWITCH_INPUT, 'malformed');
+        // JSON escapes U+0000, so this never equals a selector's raw `slotKey` (Python: a 3-tuple vs a 2-tuple).
+        const key = JSON.stringify([FIRST_PRESENT, nodeId, 0]);
+        let chosen;
+        if (values.length === 1 || !isLink(values[0])) chosen = values[0];
+        else if (this.choices.has(key)) {
+            this.tainted = true;
+            chosen = values[this.choices.get(key)];
+        } else if (!this.verifying) return this.firstOf(nodeId, key, values, kind, depth);
+        else {
+            try {
+                return this.firstOf(nodeId, key, values, kind, depth);
+            } catch (error) {
+                if (error instanceof Diverging) throw this.unsupported(SWITCH_UNVERIFIABLE, nodeId);
+                throw error;
+            }
+        }
+        const traced = this.text(chosen, kind, depth + 1);
+        this.inheritSource(nodeId, 0, [traced[1]]);
+        return traced;
+    }
+
+    /** `first_of`: the first linked input when its path proves a value, one shared text, or one choice per input. */
+    firstOf(nodeId, key, values, kind, depth) {
+        const found = [];
+        for (const value of values) {
+            try {
+                found.push(this.text(value, kind, depth + 1));
+            } catch (error) {
+                if (!(error instanceof Unresolved) || PASS_LIMIT_CODES.has(error.code)) throw error;
+                break;
+            }
+            if (found.length === 1 && this.provesValue(found[0][1])) {
+                this.inheritSource(nodeId, 0, [found[0][1]]);
+                return found[0];
+            }
+        }
+        if (found.length === values.length && new Set(found.map(part => part[0])).size === 1) return this.merged(nodeId, 0, found);
+        throw new Diverging(key, values.map((_, index) => index), false, true);
     }
 
     /** `passed`: `readThrough`, except that while an execution record is checked any outcome but `work-limit` is unverifiable. */
@@ -415,6 +473,20 @@ class GraphResolver {
     throughUnknown(path) {
         this.scan(path.length);
         return path.some(step => !this.described.has(this.node(step.node_id)[0]));
+    }
+
+    /**
+     * `proves_value` (#657): every node on the path always outputs a value: own, coded and adapter classes, and the
+     * table's `PROVEN_VALUE_CATEGORIES` (`Semantics.proves_value`: `PROVEN_BY_CLASS` by class, the rest by output slot).
+     */
+    provesValue(path) {
+        this.scan(path.length);
+        const semantics = this.semantics;
+        return path.every(step => {
+            const name = this.node(step.node_id)[0], key = slotKey(name, step.output_slot);
+            if (OWN_CLASSES.has(name) || CODED_CLASSES.includes(name) || ADAPTERS.has(key)) return true;
+            return PROVEN_VALUE_CATEGORIES.some(category => semantics[category].has(PROVEN_BY_CLASS.has(category) ? name : key));
+        });
     }
 
     /** `owned`: whether a followed path passes through one of this repository's nodes. */
@@ -614,7 +686,7 @@ class GraphResolver {
 
     branches(samplerId) {
         const pending = [new Map()];
-        let results = [], several = false;
+        let results = [], several = false, unique = false;
         try {
             while (pending.length) {
                 this.choices = pending.shift();
@@ -624,6 +696,7 @@ class GraphResolver {
                     if (!(error instanceof Diverging)) throw error;
                     if (results.length + pending.length + error.choices.length > MAX_BRANCH_CANDIDATES) throw new Unresolved('Too many selector branches', 'work-limit');
                     several = several || error.sources;
+                    unique = unique || error.unique;
                     for (const choice of error.choices) pending.push(new Map([...this.choices, [error.key, choice]]));
                 }
             }
@@ -634,8 +707,8 @@ class GraphResolver {
             this.choices = new Map();
         }
         if (results.every(item => item.state === 'unresolved')) return results[0];
-        if (several) {
-            // Chained unknown nodes can offer one text twice: list it once.
+        if (unique) {
+            // Chained unknown nodes, or a switch's inputs, can offer one outcome twice: list it once.
             const unique = new Map();
             for (const item of results) if (!unique.has(outcomeKey(item))) unique.set(outcomeKey(item), item);
             results = [...unique.values()];
@@ -905,9 +978,10 @@ export function resolveLocalEvidence(records, semantics, fileName = null) {
     const resolved = resolve(metadata, semantics, fileName);
     const state = resolved.state, prompts = {};
     for (const role of ['positive', 'negative']) {
-        const side = resolved[role];
+        // A role every candidate agrees on is certain (#658); the pair state stays ambiguous.
+        const side = state === 'ambiguous' ? sharedSide(resolved, role) : resolved[role];
         const present = side !== null && typeof side === 'object';
-        if (state !== 'ambiguous' && present && (role === 'negative' || pyStrip(side.text))) prompts[role] = sideOf('resolved', side.text, side.provenance.text_source);
+        if (present && (role === 'negative' || pyStrip(side.text))) prompts[role] = sideOf('resolved', side.text, side.provenance.text_source);
         else if (state === 'resolved' && present) prompts[role] = { ...sideOf('unresolved'), message: EMPTY_POSITIVE };
         else prompts[role] = sideOf(state !== 'resolved' ? state : 'unresolved');
     }

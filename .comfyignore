@@ -13,7 +13,6 @@
 
 # Development files
 /TESTING.md
-/Makefile
 /requirements-dev.txt
 /.coveragerc
 /.flake8

@@ -13,9 +13,11 @@ import random
 
 try:
     from tests import passthrough_graphs as shapes
+    from tests import unknown_node_graphs as switch_graphs
     from tests.local_resolver_cases import EXECUTION_KEY, SPACES, WORDS, _Builder
 except ImportError:  # pragma: no cover - discover -s tests puts tests/ first
     import passthrough_graphs as shapes
+    import unknown_node_graphs as switch_graphs
     from local_resolver_cases import EXECUTION_KEY, SPACES, WORDS, _Builder
 
 
@@ -642,10 +644,80 @@ def _passthrough_edges():
     return {f"edge-{name}": graph for name, graph in cases.items()}
 
 
+def _shared_roles():
+    """#658: a role every candidate resolves alike is shown on its own."""
+    same = _sampler(["6", 0], ["7", 0])
+    prompt_manager = {
+        "class_type": "PromptManager",
+        "inputs": {
+            "text": "fox",
+            "prepend_text": "a",
+            "append_text": "",
+            "clip": ["4", 1],
+        },
+    }
+    trigger = {"class_type": "TriggerWord Toggle (LoraManager)", "inputs": {"x": 1}}
+    left_out = {
+        "class_type": "PromptManager",
+        "inputs": {"text": "blurry", "append_text": ["13", 0], "clip": ["4", 1]},
+    }
+    selector = {
+        "class_type": "easy ifElse",
+        "inputs": {"boolean": ["4", 0], "on_true": ["7", 0], "on_false": ["8", 0]},
+    }
+    return {
+        "shared-negative": _base(**{"3": same, "9": _sampler(["8", 0], ["7", 0])}),
+        "shared-negative-unresolved-branch": _base(
+            **{"3": same, "9": _sampler(["missing", 0], ["7", 0])}
+        ),
+        "shared-negative-other-recipe": _base(
+            **{
+                "3": _sampler(["10", 0], ["7", 0]),
+                "9": _sampler(["11", 0], ["7", 0]),
+                "10": _encode("a fox"),
+                "11": prompt_manager,
+            }
+        ),
+        "shared-negative-left-out": _base(
+            **{
+                "3": same,
+                "9": _sampler(["8", 0], ["12", 0]),
+                "12": left_out,
+                "13": trigger,
+            }
+        ),
+        "shared-positive-selector": _base(
+            **{"3": _sampler(["6", 0], ["14", 0]), "14": selector}
+        ),
+    }
+
+
+def _first_present():
+    """rgthree Any Switch (#657) beside a second sampler and in a detailer."""
+    sweep = switch_graphs.any_switch_sweep_graph
+    second = _sampler(["15", 0], ["16", 0], latent=["10", 0])
+    unproven = switch_graphs.first_present_shapes()["through-unknown"]
+    return {
+        "first-present-two-samplers": {**sweep(), "36": second},
+        "first-present-two-samplers-unproven": {**unproven, "36": second},
+        "first-present-detailer": {
+            **sweep(),
+            "36": _detailer(["27", 0], ["15", 0], ["16", 0], wildcard=""),
+        },
+    }
+
+
 def selection_cases():
     """Named record sets for every Task 9 path, each a ``read_inspection_file`` dict."""
     cases = {}
-    for group in (_samplers(), _previews(), _detailers(), _passthrough()):
+    for group in (
+        _samplers(),
+        _previews(),
+        _detailers(),
+        _passthrough(),
+        _first_present(),
+        _shared_roles(),
+    ):
         for name, graph in group.items():
             cases[f"select-{name}"] = {"prompt": json.dumps(graph, ensure_ascii=False)}
     cases.update(_parameters())

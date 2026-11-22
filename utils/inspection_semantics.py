@@ -30,6 +30,14 @@ version alone. A class the table does not list at all passes text through
 (#381); that rule lives in code, so ``INSPECTION_RESOLVER_VERSION`` moves for it.
 ``pass_through.skip_inputs`` names the core type inputs (model, clip, image,
 ...) such a node's text is never read through.
+
+A ``first-present`` selector (rgthree Any Switch, #657) outputs the first of its
+``input_prefix`` inputs that holds a value. The resolver can only take that
+input when its traced path proves a value: every node on it is a PromptManager
+class, a class traced by code, or listed in one of ``PROVEN_VALUE_CATEGORIES``.
+That makes a rule for every entry added to those categories: its output is
+never None. Selectors (Any Switch returns None when every input is None),
+``runtime``, ``facts`` and ``lineage`` classes do not prove a value.
 """
 
 import hashlib
@@ -56,13 +64,18 @@ STRATEGIES: Mapping[str, FrozenSet[str]] = MappingProxyType(
         "samplers": frozenset({"ksampler", "custom-advanced", "detailer-stage"}),
         "guiders": frozenset({"cfg", "basic"}),
         "conditioning": frozenset({"passthrough", "zeroed"}),
-        "selectors": frozenset({"boolean-select"}),
+        "selectors": frozenset({"boolean-select", "first-present"}),
         "composites": frozenset({"combine"}),
         "encoders": frozenset({"single", "parts-equal", "pm-compose", "flag-parts"}),
         "strings": frozenset({"literal", "strip-newlines", "join-multi", "concat"}),
         "savers": frozenset({"comfy-counter", "vhs-counter"}),
         "lineage": frozenset({"continue"}),
     }
+)
+# Categories whose outputs are never None (#657): a path through only these,
+# PromptManager and code-traced classes proves that a switch input held a value.
+PROVEN_VALUE_CATEGORIES = frozenset(
+    {"encoders", "strings", "conditioning", "composites"}
 )
 # Shapes of the facts each sampler class provides (consumed by comfy-metadata.js).
 FACT_SHAPES = frozenset({"ksampler", "custom", "custom-advanced"})
@@ -142,6 +155,18 @@ class Semantics:
     version: str = ""
     # The canonical table JSON itself, for ``class_version``.
     source: str = ""
+
+    def proves_value(self, name: str, slot: int) -> bool:
+        """Whether a ``PROVEN_VALUE_CATEGORIES`` table lists this output (#657).
+
+        Class-keyed categories match by class, slot-keyed ones by
+        ``(class, slot)``.
+        """
+        return any(
+            (name if category in _CLASS_CATEGORIES else (name, slot))
+            in getattr(self, category)
+            for category in PROVEN_VALUE_CATEGORIES
+        )
 
 
 def _freeze(value: Any) -> Frozen:
@@ -244,6 +269,11 @@ def _check_guider(entry: dict, strategy: str, where: str) -> None:
 
 
 def _check_selector(entry: dict, strategy: str, where: str) -> None:
+    if strategy == "first-present":
+        # The inputs whose names start with ``input_prefix``, in input order.
+        _fields(entry, where, frozenset({"strategy", "input_prefix"}), frozenset())
+        _name(entry["input_prefix"], where, "input prefix")
+        return
     _fields(entry, where, frozenset({"strategy", "condition", "branches"}), frozenset())
     _name(entry["condition"], where)
     branches = entry["branches"]

@@ -6,12 +6,22 @@ final outcome is ambiguous and unlinked. The strict resolver must find it
 ``graph_prompt_text``) must not link it, and no saved row may link it
 already. A file the fallback links, an exact pair the ingester stored and an
 already linked file are never queued. Neither is an ambiguous file with
-nothing to choose: fewer than two of its candidates carry a prompt
+nothing to choose: none of its candidates carries a prompt
 (``utils.review_capture.reviewable``); the scan reports it unresolved ("could
-not be traced") unless the inspection profile finds a choice in it.
+not be traced") unless the inspection profile finds a choice in it. A file
+the default profile calls unresolved gets the same inspection-profile chance
+(#659 C1). ``review_dispatch`` is that one per-file decision.
 
-Only scans add items (maintainer ruling, 2026-10-23). The monitor's pass
-records nothing: it only removes the pending items of an output it linked.
+The monitor queues what the scan would (maintainer decision 2026-11-19,
+#659; it replaces the 2026-10-23 ruling that only scans add items). At a
+file's final unlinked outcome, after run history had its say, the monitor
+hands the path to ``queue_review_file``. One review worker thread runs
+``record_review_file`` for it: the scan's own per-file steps for that file
+(the ladder under the scan policy with the sealed history, the recorded-run
+check), read only, then ``review_dispatch``. It never links a file, and a
+file the scan would link is left to the next scan. The queue coalesces by
+path and is bounded; a file deferred by a job blocker is kept and replayed
+once no blocker remains.
 
 The queue heals itself: a pending item whose file is now linked (by the
 fallback, a later resolution or the monitor) is removed by the next scan
@@ -25,25 +35,38 @@ changed (``settle_linked_review_items``).
 The scan records through ``_record_scanned_review`` (best effort: a failure
 is logged and counted), which goes through
 ``utils.review_capture.record_ambiguous_file`` on the API's capture store;
-the monitor calls ``record_review_file`` from its worker thread after its
-own link. Nothing here links a file.
+the review worker calls ``record_review_file``, also for an output the
+monitor linked (its pending items leave the queue). Nothing here links a
+file.
 
 Recording changes records, so it follows the registry's ``records``
 admission (#289). The scan records under its own ``records`` job. The
 monitor's pass lasts one file and is not a job: it is refused while a
-``records`` or ``guarded`` job runs (``deferred``), and the next scan reads
-the file again. Thumbnail work (the job and the gallery's generate and clear
-holds, kind ``thumbnails``) is ``guarded`` but only writes and removes preview
-files under ``thumbnails/`` and never touches the database, so it does not
-defer the recording (#249 S5 M7): a long rebuild no longer holds Needs review
-back for its whole run.
+``records`` or ``guarded`` job runs (``deferred``); the review worker keeps
+the path (at most ``REVIEW_DEFERRED_LIMIT``, in memory) and replays it once
+the job registry reports no blocker. Thumbnail work (the job and the
+gallery's generate and clear holds, kind ``thumbnails``) is ``guarded`` but
+only writes and removes preview files under ``thumbnails/`` and never touches
+the database, so it does not defer the recording (#249 S5 M7): a long
+rebuild no longer holds Needs review back for its whole run.
 """
 
+import functools
 import hashlib
+import json
 import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
-from .admin import SCAN_LOG_PREFIXES, _plural, _scan_location, _scan_roots
+from .admin import (
+    SCAN_LOG_PREFIXES,
+    _BatchHistory,
+    _file_size,
+    _plural,
+    _scan_location,
+    _scan_roots,
+)
 from .jobs import THUMBNAILS_JOB_KIND
 
 # The kind the monitor's recording checks admission under (never registered).
@@ -56,10 +79,29 @@ NEW_OUTCOMES = ("recorded", "limited")
 
 try:
     from ...utils import review_capture
+    from ...utils.file_prompt import NEVER, Policy, decide_file_prompt
+    from ...utils.media_capture import CaptureCapacity
+    from ...utils.parallel import note_refusal, refused_at_shutdown
     from ...utils.review_capture import record_ambiguous_file
 except ImportError:
     from utils import review_capture
+    from utils.file_prompt import NEVER, Policy, decide_file_prompt
+    from utils.media_capture import CaptureCapacity
+    from utils.parallel import note_refusal, refused_at_shutdown
     from utils.review_capture import record_ambiguous_file
+
+# The review worker (#659 C5): its thread's name, the bound of paths waiting
+# for it (the oldest is dropped beyond it), the bound of paths a job blocker
+# deferred, how often it asks the job registry again while paths are
+# deferred, and how long the package teardown waits for it.
+REVIEW_WORKER_NAME = "pm-review-recorder"
+REVIEW_QUEUE_LIMIT = 4096
+REVIEW_DEFERRED_LIMIT = 1000
+REVIEW_RETRY_SECONDS = 5
+REVIEW_STOP_SECONDS = 5
+_REVIEW_WORKER_LOCK = threading.Lock()
+# Guards the untraced memory, which the scan and the review worker share.
+_UNTRACED_MEMORY_LOCK = threading.Lock()
 
 # Untraced files remembered per process so a rescan of an unchanged file does
 # not run the inspection profile again (oldest forgotten first). A plain dict
@@ -78,6 +120,15 @@ def _memory_key(locator: str) -> bytes:
     return _digest(locator)
 
 
+# Files Inspect found it cannot record (#657 review), per process: a 16-byte
+# digest of the locator, its stat and the review versions, oldest forgotten
+# first. Inspect then does not run the recording again for that state.
+MAX_INSPECT_MEMORY = 4096
+# record_review_file outcomes that record nothing for the file's current
+# state (an expected outcome, not an error): remembered by Inspect.
+UNRECORDABLE_OUTCOMES = ("skipped", "untraced")
+
+
 # The scan log's reason for items that leave the queue with nothing to choose.
 NOTHING_TO_CHOOSE = "nothing to choose"
 
@@ -90,6 +141,7 @@ class ReviewRecordingMixin:
 
         ``scanned`` is the scan's ``(metadata, inspection_resolution)``; the
         resolution is None when the scan did not run the inspection profile.
+        Returns the record outcome, None when recording failed.
         """
         try:
             outcome = self._record_review_sync(
@@ -102,13 +154,13 @@ class ReviewRecordingMixin:
             )
             if review is not None:
                 review["errors"] += 1
-            return
-        if review is None:
-            return
-        if outcome in NEW_OUTCOMES:
-            review["added"] += 1
-        if outcome in QUEUED_OUTCOMES:
-            review["queued"] += 1
+            return None
+        if review is not None:
+            if outcome in NEW_OUTCOMES:
+                review["added"] += 1
+            if outcome in QUEUED_OUTCOMES:
+                review["queued"] += 1
+        return outcome
 
     def _record_review_sync(
         self, media_file, roots, review=None, inspection=False, scanned=None
@@ -137,14 +189,55 @@ class ReviewRecordingMixin:
             self._settle_untraced_reviews([media_file], roots, review)
         return outcome
 
+    def review_dispatch(self, media_file, roots, decision, outcome, review=None):
+        """The one per-file Needs review decision (#659): ``(scan_status,
+        record_outcome)`` for a file the caller stored nothing for in this
+        pass.
+
+        ``decision`` is the scan-policy ladder's ``Decision`` (None: nothing
+        to decide) and ``outcome`` the file's scan status. An ambiguous file
+        with a choice is recorded unless a saved row links it
+        (``unchanged``). An untraced file, or one the default profile calls
+        unresolved that has a prompt graph, gets the inspection profile's
+        choice and the saver anchor (``_untraced_scan_outcome``). Any other
+        file keeps its status and records nothing (``record_outcome`` None).
+        The scan uses ``scan_status``, the review worker ``record_outcome``.
+        """
+        if decision is None:
+            return outcome, None
+        if decision.review == "ambiguous" and outcome == "ambiguous":
+            if self._review_file_linked(media_file, roots):
+                return "unchanged", None  # already linked: not a review case
+            # The records name the item versions that count; the saver
+            # anchor (#390) is checked on the captured bytes.
+            scanned = (decision.canonical, None)
+            recorded = self._record_scanned_review(
+                media_file, roots, review, scanned=scanned
+            )
+            return outcome, recorded
+        untraced = decision.review == "untraced"
+        unreadable = (
+            decision.review is None
+            and decision.default_unresolved
+            and bool(decision.canonical.get("prompt"))
+        )
+        if outcome == "unresolved" and (untraced or unreadable):
+            # The inspection profile may still offer a choice (queued for
+            # review, never linked).
+            return self._untraced_scan_outcome(
+                media_file, roots, decision.canonical, review
+            )
+        return outcome, None
+
     def _untraced_scan_outcome(self, media_file, roots, canonical, review=None):
-        """The scan status of an unlinked file the default profile left
-        ambiguous without a choice (blocking).
+        """``(scan_status, record_outcome)`` of an unlinked file the default
+        profile left ambiguous without a choice, or unresolved (blocking).
 
         ``ambiguous`` when the inspection profile offers a choice: the file is
         recorded for review from that profile (never linked), or ``unchanged``
-        when a saved row links it already. Otherwise ``unresolved``, and its
-        pending items without a choice leave the queue. The profile runs at
+        when a saved row links it already. Otherwise ``unresolved``
+        (``untraced``), and its pending items without a choice leave the
+        queue. The profile runs at
         most once per file state: not for bytes already queued (or decided)
         at the file's current size and ``mtime_ns`` under the version that
         its records depend on, and not again for a state it already found
@@ -160,15 +253,17 @@ class ReviewRecordingMixin:
             )
             if review is not None:
                 review["errors"] += 1
-            return "unresolved"
+            return "unresolved", None
         if choice is None:
             self._settle_untraced_reviews([media_file], roots, review)
             self._settle_stale_reviews(media_file, roots, canonical, review)
-            return "unresolved"
+            return "unresolved", "untraced"
         if self._review_file_linked(media_file, roots):
-            return "unchanged"
-        self._record_scanned_review(media_file, roots, review, scanned=choice)
-        return "ambiguous"
+            return "unchanged", None
+        recorded = self._record_scanned_review(
+            media_file, roots, review, scanned=choice
+        )
+        return "ambiguous", recorded
 
     def _inspection_choice(self, media_file, roots, canonical):
         """``(canonical, resolution_or_None)`` when the file offers a choice.
@@ -198,17 +293,21 @@ class ReviewRecordingMixin:
                 return canonical, None
         memory = self._untraced_memory()
         key = _memory_key(locator)
-        if state is not None and memory.get(key) == state:
-            return None
+        # The scan and the review worker (#659) share the memory: every
+        # read and change holds its lock (the resolve below does not).
+        with _UNTRACED_MEMORY_LOCK:
+            if state is not None and memory.get(key) == state:
+                return None
         resolution = review_capture.inspection_choice(canonical, media_file.name)
-        if resolution is not None:
-            memory.pop(key, None)
-            return canonical, resolution
-        if state is not None:
-            memory.pop(key, None)  # re-inserted last: the newest state
-            memory[key] = state
-            while len(memory) > MAX_UNTRACED_MEMORY:
-                del memory[next(iter(memory))]
+        with _UNTRACED_MEMORY_LOCK:
+            if resolution is not None:
+                memory.pop(key, None)
+                return canonical, resolution
+            if state is not None:
+                memory.pop(key, None)  # re-inserted last: the newest state
+                memory[key] = state
+                while len(memory) > MAX_UNTRACED_MEMORY:
+                    del memory[next(iter(memory))]
         return None
 
     def _settle_stale_reviews(self, media_file, roots, canonical, review=None):
@@ -248,10 +347,11 @@ class ReviewRecordingMixin:
         return removed
 
     def _untraced_memory(self):
-        memory = getattr(self, "_untraced_inspections", None)
-        if memory is None:
-            memory = self._untraced_inspections = {}
-        return memory
+        with _UNTRACED_MEMORY_LOCK:
+            memory = getattr(self, "_untraced_inspections", None)
+            if memory is None:
+                memory = self._untraced_inspections = {}
+            return memory
 
     @staticmethod
     def _review_location(media_file, roots, real_roots=None):
@@ -310,8 +410,8 @@ class ReviewRecordingMixin:
     def _settle_untraced_reviews(self, media_files, roots, review=None):
         """Remove the pending items without a choice of untraced ``media_files``.
 
-        ``media_files`` are files found ambiguous with fewer than two
-        candidates that carry a prompt. Blocking; best effort like the linked
+        ``media_files`` are files found ambiguous without a candidate that
+        carries a prompt. Blocking; best effort like the linked
         settle (a failure is logged and counted in ``review["errors"]``).
         Returns how many items left.
         """
@@ -335,18 +435,23 @@ class ReviewRecordingMixin:
         return removed
 
     def record_review_file(self, image_path):
-        """Apply the Needs review rule to one monitor output (its worker thread).
+        """Apply the Needs review rule to one monitor output (review worker).
 
-        Only scans add items (maintainer ruling, 2026-10-23): the monitor
-        only clears the items of outputs it links. Maps ``image_path`` to the
-        gallery root that lists it; a file under no current root is
-        ``skipped``. A linked file's pending items are removed and the answer
-        is ``linked``. Any other file is ``skipped``: nothing is captured or
-        recorded, and the next scan reads it. While a job runs that a
-        ``records`` job may not run beside, other than thumbnail work
-        (``PREVIEW_ONLY_KINDS``), nothing is written and the answer is
-        ``deferred``. Errors propagate: the monitor logs them and keeps its
-        link.
+        The monitor queues what the scan would (maintainer decision
+        2026-11-19, #659): it hands a file over at its final unlinked
+        outcome, after run history had its say, and after each ambiguous
+        output it links. Maps ``image_path`` to the gallery root that lists
+        it; a file under no current root is ``skipped``. A linked file's
+        pending items are removed and the answer is ``linked``. Any other
+        file runs the scan's own per-file steps, read only
+        (``_review_unlinked_file``): a file the scan would link, or that
+        does not save, is ``skipped`` (the next scan links it); otherwise
+        the answer is ``review_dispatch``'s record outcome (``recorded``,
+        ``duplicate``, ``decided``, ``untraced``, ``limited``) or ``skipped``.
+        While a job runs that a ``records`` job may not run beside, other
+        than thumbnail work (``PREVIEW_ONLY_KINDS``), nothing is written and
+        the answer is ``deferred`` (the worker replays it). Errors propagate:
+        the worker logs them and the monitor keeps its link.
         """
         busy = self._jobs.blocker(
             REVIEW_RECORDING_KIND, admission="records", compatible=PREVIEW_ONLY_KINDS
@@ -366,7 +471,166 @@ class ReviewRecordingMixin:
         if self._review_file_linked(located, roots):
             self._settle_scanned_reviews([located], roots)
             return "linked"
-        return "skipped"
+        return self._review_unlinked_file(located, roots)
+
+    def _review_unlinked_file(self, media_file, roots):
+        """The scan's per-file steps for one unlinked file, read only.
+
+        The metadata read the scan uses, the ladder under ``Policy.SCAN``
+        with the file's recorded history, then the recorded-run check; a
+        file any step would link (or whose prompt does not save) is
+        ``skipped``. Otherwise ``review_dispatch`` decides, and its record
+        outcome is the answer (``skipped`` when it records nothing).
+        """
+        path = str(media_file)
+        metadata = self._extract_comfyui_metadata(path)
+        history = _BatchHistory(self, [media_file])
+        decision = decide_file_prompt(
+            metadata,
+            file_name=media_file.name,
+            file_size=functools.partial(_file_size, media_file),
+            in_output=False,  # only the monitor policy reads it
+            lookup=functools.partial(history.recorded, path),
+            policy=Policy.SCAN,
+        )
+        if decision.kind != NEVER:
+            return "skipped"  # it saves nothing, or the next scan links it
+        if decision.try_recorded_run and history.get(path) is not None:
+            return "skipped"  # the scan's recorded-run step links it
+        _status, recorded = self.review_dispatch(
+            media_file, roots, decision, decision.unlinked_status
+        )
+        return recorded or "skipped"
+
+    def inspect_review_file(self, image_path, found=None):
+        """Inspect's recording of one file (#657 addendum D2, blocking).
+
+        ``found`` is the file's ``review`` facet at the inspected stat (None
+        or a pending item). A pending item of a current item version needs
+        nothing (``current``); one of an older version is recorded again, so
+        the new item supersedes it. Otherwise ``record_review_file`` runs,
+        unless Inspect already found this state unrecordable (``skipped`` or
+        ``untraced``, remembered in ``MAX_INSPECT_MEMORY`` digests:
+        ``remembered``). A busy capture store (the worker copying a fresh
+        output) is expected: logged at debug level, ``busy``.
+        """
+        if found is not None and self._review_item_current(
+            found["item_id"], image_path
+        ):
+            return "current"
+        key = self._inspect_memory_key(image_path)
+        memory = self._inspect_memory()
+        with _UNTRACED_MEMORY_LOCK:
+            if key is not None and key in memory:
+                return "remembered"
+        try:
+            outcome = self.record_review_file(image_path)
+        except CaptureCapacity:
+            self.logger.debug(
+                "Inspect left Needs review to the worker: captures are busy"
+            )
+            return "busy"
+        if key is not None and outcome in UNRECORDABLE_OUTCOMES:
+            with _UNTRACED_MEMORY_LOCK:
+                memory.pop(key, None)
+                memory[key] = True
+                while len(memory) > MAX_INSPECT_MEMORY:
+                    del memory[next(iter(memory))]
+        return outcome
+
+    def _inspected_metadata(self, image_path):
+        """The file's metadata with its prompt graph decoded (or None)."""
+        metadata = self._extract_comfyui_metadata(str(image_path)) or {}
+        prompt = metadata.get("prompt")
+        if isinstance(prompt, str):
+            try:
+                metadata = {**metadata, "prompt": json.loads(prompt)}
+            except (ValueError, TypeError, RecursionError):
+                return None
+        return metadata if isinstance(metadata.get("prompt"), dict) else None
+
+    def _review_item_current(self, item_id, image_path):
+        """True when the item's version is one the file is queued under now
+        (the file's metadata is read only for a non-default version)."""
+        item = self.db.review_item(item_id)
+        if item is None:
+            return False
+        version = item.get("resolver_version")
+        if version == review_capture.default_item_version():
+            return True
+        metadata = self._inspected_metadata(image_path)
+        return metadata is not None and version in review_capture.item_versions(
+            metadata
+        )
+
+    def _inspect_memory_key(self, image_path):
+        """The digest of the file's locator, stat and review versions."""
+        full = os.path.abspath(str(image_path))
+        located = os.path.join(
+            os.path.realpath(os.path.dirname(full)), os.path.basename(full)
+        )
+        try:
+            facts = os.lstat(located)
+        except OSError:
+            return None
+        return _digest(
+            f"{os.path.normcase(located)}:{facts.st_size}:{facts.st_mtime_ns}:"
+            f"{review_capture.default_item_version()}:"
+            f"{review_capture.semantics_version()}"
+        )
+
+    def _inspect_memory(self):
+        with _UNTRACED_MEMORY_LOCK:
+            memory = getattr(self, "_inspect_unrecordable", None)
+            if memory is None:
+                memory = self._inspect_unrecordable = {}
+            return memory
+
+    def _review_worker(self):
+        """The API's one review worker, made on first use (no thread yet)."""
+        worker = getattr(self, "_review_recorder_worker", None)
+        if worker is None:
+            with _REVIEW_WORKER_LOCK:
+                worker = getattr(self, "_review_recorder_worker", None)
+                if worker is None:
+                    worker = ReviewWorker(
+                        # Late-bound on purpose: a record_review_file
+                        # replaced after the worker exists still runs.
+                        lambda path: self.record_review_file(path),
+                        self._review_admitted,
+                        self.logger,
+                    )
+                    self._review_recorder_worker = worker
+        return worker
+
+    def _review_admitted(self):
+        """True while no job blocks Needs review writes (any thread)."""
+        busy = self._jobs.blocker(
+            REVIEW_RECORDING_KIND, admission="records", compatible=PREVIEW_ONLY_KINDS
+        )
+        return busy is None
+
+    def queue_review_file(self, image_path):
+        """Queue ``image_path`` for the review worker; never blocks.
+
+        The monitor's review recorder (#659). Returns ``queued``, or
+        ``stopped`` once the worker was stopped (the next scan reads it).
+        """
+        return self._review_worker().queue(str(image_path))
+
+    def review_worker_started(self):
+        """Whether the review worker's thread was ever started."""
+        worker = getattr(self, "_review_recorder_worker", None)
+        return worker is not None and worker.started
+
+    def stop_review_worker(self, timeout=REVIEW_STOP_SECONDS):
+        """Stop the review worker for good and join it within ``timeout``.
+
+        Queued and deferred paths are dropped (their count is logged; the
+        next scan covers them) and later ``queue_review_file`` calls are
+        refused. True when no worker thread is left running.
+        """
+        return self._review_worker().stop(timeout)
 
     @staticmethod
     def _log_review_items(job, review):
@@ -398,3 +662,215 @@ class ReviewRecordingMixin:
                 f"{_plural(review['errors'], 'image')} could not be added to "
                 "Needs review"
             )
+
+
+class ReviewWorker:
+    """One daemon thread that runs ``record(path)`` for queued paths (#659 C5).
+
+    The queue coalesces by path (a path queued again while it waits keeps
+    its place; one queued while it runs runs once more afterwards) and holds
+    at most ``REVIEW_QUEUE_LIMIT`` paths, dropping the oldest with a log
+    line, so ``queue`` never blocks the monitor's image worker. One thread
+    means two recordings of one path never run at once. A ``deferred``
+    answer keeps the path in a bounded, insertion-ordered set; the thread
+    waits on its queue with a ``REVIEW_RETRY_SECONDS`` timeout and, on each
+    wake, replays that set once ``admitted()`` (no job blocker) says so.
+    Everything lives in memory: a restart drops it and the next scan covers
+    the files. A failure of ``record`` is logged and the worker goes on.
+    """
+
+    def __init__(self, record, admitted, logger):
+        self._record = record
+        self._admitted = admitted
+        self._logger = logger
+        self._changed = threading.Condition()
+        self._pending = OrderedDict()  # key -> path
+        self._deferred = OrderedDict()  # key -> path
+        self._in_hand = None
+        self._thread = None
+        self._ever_started = False
+        self._stopped = False
+
+    @property
+    def started(self):
+        return self._ever_started
+
+    @staticmethod
+    def _key(path):
+        return os.path.normcase(os.path.abspath(path))
+
+    def queue(self, path):
+        """Queue ``path``: ``queued``, or ``stopped`` after ``stop``."""
+        key = self._key(path)
+        with self._changed:
+            if self._stopped:
+                return "stopped"
+            if key in self._pending:
+                return "queued"
+            self._pending[key] = path
+            evicted = None
+            if len(self._pending) > REVIEW_QUEUE_LIMIT:
+                evicted = self._pending.popitem(last=False)[1]
+            if self._thread is None and not self._start():
+                self._pending.pop(key, None)
+                return "stopped"
+            self._changed.notify_all()
+        if evicted is not None:
+            self._logger.info(
+                "Too many outputs wait for Needs review; "
+                f"{os.path.basename(evicted)} is left to the next scan"
+            )
+        return "queued"
+
+    def _start(self):
+        """Start the thread (``_changed`` held); False when refused at exit."""
+        thread = threading.Thread(
+            target=self._run, name=REVIEW_WORKER_NAME, daemon=True
+        )
+        try:
+            thread.start()
+        except RuntimeError as error:
+            if not refused_at_shutdown(error):
+                raise
+            note_refusal(self._logger, "The review worker")
+            self._stopped = True
+            return False
+        self._thread = thread
+        self._ever_started = True
+        return True
+
+    def pending_count(self):
+        with self._changed:
+            return len(self._pending)
+
+    def deferred_count(self):
+        with self._changed:
+            return len(self._deferred)
+
+    def deferred_paths(self):
+        with self._changed:
+            return list(self._deferred.values())
+
+    def wait_idle(self, timeout):
+        """True once no path waits or is in hand (deferred ones may stay)."""
+        with self._changed:
+            return self._changed.wait_for(
+                lambda: not self._pending and self._in_hand is None, timeout
+            )
+
+    def _run(self):
+        """The thread body: an unexpected error ends it with a log line and
+        clears the handle, so the next queued output starts a new thread
+        (the paths still waiting stay queued)."""
+        try:
+            self._loop()
+        except Exception:
+            self._logger.error(
+                "The review worker stopped on an unexpected error; "
+                "the next output starts it again",
+                exc_info=True,
+            )
+        finally:
+            with self._changed:
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                self._in_hand = None
+                self._changed.notify_all()
+
+    def _loop(self):
+        while True:
+            with self._changed:
+                path = self._next_locked()
+                if path is None:
+                    return
+                self._in_hand = path
+            outcome = None
+            try:
+                outcome = self._run_one(path)
+            finally:
+                with self._changed:
+                    self._in_hand = None
+                    if outcome == "deferred":
+                        dropped = self._defer_locked(path)
+                    else:
+                        dropped = None
+                    self._changed.notify_all()
+            if dropped is not None:
+                self._logger.info(
+                    "Too many outputs wait for a job to end before Needs review; "
+                    f"{os.path.basename(dropped)} is left to the next scan"
+                )
+
+    def _next_locked(self):
+        """The next path to record, waiting for one; None once stopped."""
+        while not self._stopped:
+            if self._deferred and self._replay_admitted():
+                for key, path in self._deferred.items():
+                    self._pending.setdefault(key, path)
+                self._deferred.clear()
+            if self._pending:
+                return self._pending.popitem(last=False)[1]
+            self._changed.notify_all()  # idle: ``wait_idle`` may return
+            # Deferred paths: ask the job registry again after a while
+            self._changed.wait(REVIEW_RETRY_SECONDS if self._deferred else None)
+        return None
+
+    def _replay_admitted(self):
+        try:
+            return bool(self._admitted())
+        except Exception:
+            self._logger.debug("Job registry check failed", exc_info=True)
+            return False
+
+    def _run_one(self, path):
+        try:
+            outcome = self._record(path)
+        except Exception:
+            self._logger.warning(
+                f"{os.path.basename(path)} could not be added to Needs review",
+                exc_info=True,
+            )
+            return None
+        self._logger.debug(f"Needs review {outcome}: {os.path.basename(path)}")
+        return outcome
+
+    def _defer_locked(self, path):
+        """Keep a deferred path; returns the path dropped at the cap."""
+        if self._stopped:
+            return None
+        key = self._key(path)
+        self._deferred.pop(key, None)
+        self._deferred[key] = path
+        if len(self._deferred) > REVIEW_DEFERRED_LIMIT:
+            return self._deferred.popitem(last=False)[1]
+        return None
+
+    def stop(self, timeout):
+        """Stop for good, drop waiting paths, join within ``timeout``.
+
+        True when no thread is left running. Called on the worker's own
+        thread, it only signals (False).
+        """
+        with self._changed:
+            self._stopped = True
+            dropped = len(self._pending) + len(self._deferred)
+            self._pending.clear()
+            self._deferred.clear()
+            thread = self._thread
+            self._changed.notify_all()
+        if dropped:
+            self._logger.info(
+                f"{_plural(dropped, 'output')} left for the next scan's Needs review"
+            )
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(max(0.0, timeout))
+        if thread.is_alive():
+            self._logger.warning(
+                f"review worker still running after {timeout} s; "
+                "it stops after the file in hand"
+            )
+            return False
+        return True

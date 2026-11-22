@@ -815,6 +815,53 @@ class TestPackageTeardown(PackageTeardownCase):
         self.assertFalse(parallel.job_pool_started())
         self.assertFalse(any(t.is_alive() for t in threads))
 
+    def test_teardown_stops_the_review_worker_after_the_monitor(self):
+        """#659 C5: a started review worker is the part ``review``, stopped
+        right after the monitor."""
+        package = self.load()
+        api, monitor = package.api, package._global_image_monitor
+        self.assertEqual(monitor.review_recorder, api.queue_review_file)
+        done = threading.Event()
+        real_record = api.record_review_file
+
+        def record(path):
+            try:
+                return real_record(path)
+            finally:
+                done.set()
+
+        order = []
+        real_stop_monitor = monitor.stop_monitoring
+        real_stop_review = api.stop_review_worker
+
+        def stop_monitor(timeout):
+            order.append("monitor")
+            return real_stop_monitor(timeout)
+
+        def stop_review(timeout):
+            order.append("review")
+            return real_stop_review(timeout)
+
+        with (
+            mock.patch.object(api, "record_review_file", record),
+            mock.patch.object(monitor, "stop_monitoring", stop_monitor),
+            mock.patch.object(api, "stop_review_worker", stop_review),
+        ):
+            self.assertEqual(
+                api.queue_review_file(os.path.join(self.tmp.name, "x.png")), "queued"
+            )
+            self.assertTrue(done.wait(WAIT_SECONDS))
+            thread = api._review_worker()._thread
+            result = package._stop_background_work()
+
+        self.assertEqual(order, ["monitor", "review"])
+        self.assertEqual(
+            list(result), ["monitor", "review", "thumbnails", "tracker"], result
+        )
+        self.assertTrue(all(result.values()), result)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(api.queue_review_file("late.png"), "stopped")
+
     def test_teardown_reports_a_job_thread_past_its_bound(self):
         package = self.load(require_stopped=False)
         parallel = sys.modules[package.__name__ + ".utils.parallel"]

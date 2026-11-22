@@ -2,11 +2,11 @@
 
 This module provides comprehensive metadata extraction capabilities for
 ComfyUI-generated images. It can extract workflow information, prompt data, and
-generation parameters from PNG images that contain embedded ComfyUI metadata in
-their text chunks.
+generation parameters from the text chunks of PNG images and the EXIF records
+ComfyUI writes for WebP, AVIF and JPEG images.
 
 The extractor supports:
-- Complete workflow data extraction from PNG text chunks
+- Complete workflow data extraction from PNG text chunks and EXIF records
 - Text encoder node identification and analysis
 - Generation parameter extraction (steps, cfg_scale, sampler, etc.)
 - Basic file information fallback when metadata is unavailable
@@ -36,6 +36,7 @@ import json
 from typing import Optional, Dict, Any
 from PIL import Image
 
+from .exif_text import exif_text
 from .logging_config import get_logger
 from .png_text import png_text
 
@@ -90,20 +91,9 @@ class ComfyUIMetadataExtractor:
                 metadata["file_info"] = self.get_file_info(image_path, image)
 
                 # ComfyUI writes PNG text chunks, read without decoding the
-                # pixels (#523). Other savers put the same keys in image.info
-                # (WebP, JPEG, GIF), so those images still link to their prompts.
-                text = png_text(image)
-                if not text and getattr(image, "info", None):
-                    text = {
-                        key: (
-                            value.decode("utf-8", errors="replace")
-                            if isinstance(value, bytes)
-                            else value
-                        )
-                        for key, value in image.info.items()
-                        if isinstance(value, (bytes, str))
-                    }
-
+                # pixels (#523). WebP (and AVIF, once collected: #652) carry
+                # the same records as EXIF text, so those images link too.
+                text = png_text(image) or exif_text(image)
                 if text:
                     # Look for ComfyUI workflow data
                     if "workflow" in text:

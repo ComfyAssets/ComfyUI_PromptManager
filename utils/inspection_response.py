@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -445,6 +446,30 @@ def project_image_tags(facet: object) -> dict:
     return {"state": state, "tags": list(tags)}
 
 
+_REVIEW_ITEM_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+
+
+def project_review(value: Any) -> Optional[dict]:
+    """The ``review`` facet as the client accepts it (#659), else None.
+
+    ``{"state": "pending", "item_id": <item id>}`` or ``{"state": "decided"}``;
+    any other value is null, so a malformed answer never offers a choice.
+    """
+    if not isinstance(value, dict):
+        return None
+    if value == {"state": "decided"}:
+        return {"state": "decided"}
+    item_id = value.get("item_id")
+    if (
+        set(value) == {"state", "item_id"}
+        and value["state"] == "pending"
+        and isinstance(item_id, str)
+        and _REVIEW_ITEM_ID.fullmatch(item_id)
+    ):
+        return {"state": "pending", "item_id": item_id}
+    return None
+
+
 def _bounded_message(value: Any) -> Optional[str]:
     """A role line as the client accepts it: 1 to 512 UTF-16 code units."""
     if not isinstance(value, str) or not value:
@@ -477,6 +502,7 @@ def _encode_inspection(
     inspection: "InspectionRead | None",
     library: dict,
     image_tags: dict | None = None,
+    review: dict | None = None,
 ) -> bytes:
     """Serialize exactly once per budget step, preserving identity and roles."""
     metadata = _metadata(inspection)
@@ -489,6 +515,7 @@ def _encode_inspection(
         "resolution": project_resolution(resolution),
         "metadata": metadata,
         "library": _library_projection(library),
+        "review": project_review(review),
     }
     if image_tags is not None:
         response["image_tags"] = project_image_tags(image_tags)
@@ -524,10 +551,12 @@ def encode_inspection_response(
     inspection: "InspectionRead | None",
     library: dict,
     image_tags: dict | None = None,
+    review: dict | None = None,
 ) -> bytes:
     """Preserve the existing rooted wire and its bounded metadata projection.
 
     *image_tags*, when given, adds the validated ``image_tags`` facet (B3).
+    *review* is the file's Needs review facet (#659); null when not given.
     """
     return _encode_inspection(
         identity={"root_scope": root_scope, "image": image},
@@ -537,6 +566,7 @@ def encode_inspection_response(
         inspection=inspection,
         library=library,
         image_tags=image_tags,
+        review=review,
     )
 
 
@@ -549,10 +579,12 @@ def encode_history_inspection_response(
     inspection: "InspectionRead | None",
     library: dict,
     image_tags: dict | None = None,
+    review: dict | None = None,
 ) -> bytes:
     """Use occurrence identity with the same current-file evidence projection.
 
     *image_tags*, when given, adds the validated ``image_tags`` facet (#457).
+    *review* is the file's Needs review facet (#659); null when not given.
     """
     return _encode_inspection(
         identity={
@@ -566,4 +598,5 @@ def encode_history_inspection_response(
         inspection=inspection,
         library=library,
         image_tags=image_tags,
+        review=review,
     )

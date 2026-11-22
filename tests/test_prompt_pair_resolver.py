@@ -17,8 +17,10 @@ from utils.prompt_pair_resolver import OutputAdapter, resolve_prompt_pair
 
 try:
     from tests import inspection_parity as parity
+    from tests import unknown_node_graphs as switch_graphs
 except ImportError:  # discovered with ``-s tests``
     import inspection_parity as parity
+    import unknown_node_graphs as switch_graphs
 
 
 def graph(positive: str = "portrait", negative: str = "blurry") -> dict:
@@ -1671,6 +1673,201 @@ class TestConditioningSemantics(unittest.TestCase):
                 self.assertIsNone(result["reason_code"])
 
 
+class TestFirstPresentSelector(unittest.TestCase):
+    """rgthree Any Switch: the first input proven to hold a value wins (#657).
+
+    Graphs are the sweep shape (``unknown_node_graphs.any_switch_sweep_graph``)
+    with neutral texts: PromptManagerText 12, StringConcatenate 13 (a stacker's
+    trigger text, then 12), Any Switch 14, encoder 15, KSampler 26.
+    """
+
+    SHAPES = switch_graphs.first_present_shapes()
+    JOINED = f"{switch_graphs.SWEEP_PREFIX}, {switch_graphs.POSITIVE}"
+
+    def shape(self, name, **options):
+        return _inspect(self.SHAPES[name], **options)
+
+    def candidates(self, result):
+        return [
+            (item["state"], _role_text_of(item, "positive"))
+            for item in result["candidates"]
+        ]
+
+    def assertResolved(self, result, positive):
+        self.assertEqual(result["state"], "resolved", result["reason"])
+        self.assertEqual(_sides(result), (positive, switch_graphs.NEGATIVE))
+
+    def test_the_sweep_graph_resolves_to_the_prompt_manager_text(self):
+        result = self.shape("sweep")
+        self.assertResolved(result, switch_graphs.POSITIVE)
+        self.assertEqual(result["sampler_id"], "26")
+        path = [step["node_id"] for step in result["positive"]["provenance"]["path"]]
+        self.assertEqual(path, ["15", "14", "12"])
+
+    def test_the_sweep_graph_was_ambiguous_without_the_table_entry(self):
+        table = inspection_semantics.get_semantics()
+        selectors = {
+            name: entry
+            for name, entry in table.selectors.items()
+            if name != "Any Switch (rgthree)"
+        }
+        without = replace(
+            table,
+            selectors=selectors,
+            all_classes=table.all_classes - {"Any Switch (rgthree)"},
+        )
+        with mock.patch.object(resolver, "_inspection_semantics", return_value=without):
+            result = self.shape("sweep")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["reason"], resolver.SEVERAL_SOURCES_REASON)
+
+    def test_ingestion_still_cannot_read_the_switch(self):
+        result = resolve_prompt_pair({"prompt": self.SHAPES["sweep"]})
+        self.assertEqual(result["state"], "unresolved")
+
+    def test_a_proven_first_input_resolves_to_that_input(self):
+        for name, positive in (
+            ("through-reroute", switch_graphs.POSITIVE),
+            ("through-primitive", switch_graphs.OTHER),
+            ("through-encoder-chain", switch_graphs.OTHER),
+            ("literal-text", "literal words"),
+        ):
+            with self.subTest(name):
+                self.assertResolved(self.shape(name), positive)
+
+    def test_the_proven_tables_are_the_semantics_constant(self):
+        # #662 (N1): proves_value follows PROVEN_VALUE_CATEGORIES, so a table
+        # left out of it no longer proves that a switch input held a value.
+        self.assertEqual(self.shape("through-encoder-chain")["state"], "resolved")
+        with mock.patch.object(
+            inspection_semantics, "PROVEN_VALUE_CATEGORIES", frozenset()
+        ):
+            result = self.shape("through-encoder-chain")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["reason"], resolver.SELECTOR_BRANCHES_REASON)
+
+    def test_an_unproven_first_input_offers_each_input(self):
+        result = self.shape("through-unknown")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(result["reason"], resolver.SELECTOR_BRANCHES_REASON)
+        self.assertEqual(
+            self.candidates(result),
+            [("resolved", switch_graphs.POSITIVE), ("resolved", self.JOINED)],
+        )
+
+    def test_a_run_time_first_input_is_never_replaced_by_prompt_manager(self):
+        # rgthree outputs the generated text, not the PromptManager text.
+        result = self.shape("runtime-first")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            self.candidates(result),
+            [("unresolved", None), ("resolved", switch_graphs.POSITIVE)],
+        )
+        self.assertEqual(result["candidates"][0]["reason_code"], "runtime-value")
+
+    def test_inputs_with_one_outcome_are_one_candidate(self):
+        # Three inputs, two with one text: two candidates, not three, so one
+        # text never reads as a choice between two.
+        result = self.shape("repeated-text")
+        self.assertEqual(result["reason"], resolver.SELECTOR_BRANCHES_REASON)
+        self.assertEqual(
+            self.candidates(result),
+            [("resolved", switch_graphs.POSITIVE), ("resolved", self.JOINED)],
+        )
+        result = self.shape("repeated-text-failed-middle")
+        self.assertEqual(
+            self.candidates(result),
+            [("resolved", switch_graphs.POSITIVE), ("unresolved", None)],
+        )
+
+    def test_inputs_with_one_text_need_no_choice(self):
+        self.assertResolved(self.shape("same-text"), switch_graphs.OTHER)
+
+    def test_a_literal_for_conditioning_is_malformed(self):
+        result = self.shape("literal-conditioning")
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_one_participating_input_is_traced_as_usual(self):
+        self.assertResolved(self.shape("one-input-unknown"), switch_graphs.POSITIVE)
+        # An input set to null is not passed on (rgthree skips None).
+        self.assertResolved(self.shape("null-first"), self.JOINED)
+
+    def test_no_participating_input_is_malformed(self):
+        result = self.shape("no-input")
+        self.assertEqual(result["state"], "unresolved")
+        self.assertEqual(result["reason_code"], "malformed")
+
+    def test_a_selector_upstream_gives_one_result_per_choice(self):
+        result = self.shape("selector-upstream")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            [text for _, text in self.candidates(result)],
+            # Each selector choice applies the switch rule; the joined text
+            # both choices reach is listed once.
+            [switch_graphs.OTHER, self.JOINED, switch_graphs.POSITIVE],
+        )
+
+    def test_a_switch_never_proves_a_value(self):
+        result = self.shape("nested-switch")
+        self.assertEqual(result["state"], "ambiguous")
+        self.assertEqual(
+            [text for _, text in self.candidates(result)],
+            [switch_graphs.POSITIVE, switch_graphs.OTHER],
+        )
+
+    def test_a_limit_on_the_first_input_is_that_limit(self):
+        result = self.shape("depth-limit")
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "depth-limit")
+        )
+        long = switch_graphs.switched(
+            {"any_01": ["50", 0], "any_02": ["32", 0]},
+            **{
+                "50": {"class_type": "VendorPassText", "inputs": {"src": ["31", 0]}},
+                "31": _primitive("x" * 50),
+                "32": _primitive("short"),
+            },
+        )
+        result = _inspect(long, max_text_length=20)
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "text-limit")
+        )
+        chain = switch_graphs.switched(
+            {"any_01": ["r0", 0], "any_02": ["32", 0]},
+            **switch_graphs._reroutes(30, 0, ["12", 0]),
+            **{"32": _primitive("short")},
+        )
+        result = _inspect(chain, max_visits=20)
+        self.assertEqual(
+            (result["state"], result["reason_code"]), ("unresolved", "work-limit")
+        )
+
+    def test_a_pair_record_check_through_a_diverging_switch_is_unverifiable(self):
+        # While a pair's execution record is checked, a switch choice cannot be
+        # read statically: that input is skipped, and the record still applies.
+        source = switch_graphs.switched(
+            {"any_01": ["50", 0], "any_02": ["32", 0]},
+            **{
+                "50": {"class_type": "VendorPassText", "inputs": {"src": ["31", 0]}},
+                "31": _primitive(switch_graphs.OTHER),
+                "32": _primitive(switch_graphs.POSITIVE),
+                "60": switch_graphs.pair(text=["14", 0]),
+            },
+        )
+        source["26"]["inputs"]["positive"] = ["60", 0]
+        source["26"]["inputs"]["negative"] = ["60", 1]
+        metadata = {
+            "prompt": source,
+            "comfyassets_prompt_pairs": switch_graphs.execution(
+                "60", switch_graphs.GENERATED
+            ),
+        }
+        result = resolve_prompt_pair(metadata, profile=resolver.INSPECTION_PROFILE)
+        self.assertEqual(result["state"], "resolved", result["reason"])
+        self.assertEqual(_sides(result), (switch_graphs.GENERATED, ""))
+
+
 def _primitive(value: str) -> dict:
     return {"class_type": "PrimitiveString", "inputs": {"value": value}}
 
@@ -2255,12 +2452,14 @@ class TestDetailerStages(unittest.TestCase):
             ],
         )
         self.assertEqual(_inspect(_detailed(), output_node_id="9"), result)
-        # Neither the upstream prompt nor the detailer prompt is shown as the answer.
+        # Neither the upstream prompt nor the detailer prompt is shown as the
+        # answer; the negative both stages share is (#658).
         prompts = inspect_prompt_evidence({"prompt": _detailed()})["prompts"]
         self.assertEqual(
             [prompts[role]["status"] for role in ("positive", "negative")],
-            ["ambiguous", "ambiguous"],
+            ["ambiguous", "resolved"],
         )
+        self.assertEqual(prompts["negative"]["text"], parity.NEG)
         self.assertNotIn(parity.POS, str(prompts))
 
     def test_detailer_of_a_loaded_image_is_a_single_stage(self):
