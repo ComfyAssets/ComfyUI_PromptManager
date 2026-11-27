@@ -55,6 +55,19 @@ def two_samplers(first="golden dunes", second="harbor lights", negative="blur"):
     return nodes
 
 
+def last_inserted_item(db):
+    """The id of the review item inserted last.
+
+    Not ``review_items_for(locator)[-1]``: that list is ordered by
+    ``(created_at, id)``, so two items recorded in one clock tick come back in
+    id order, and half the time the last one is the older item (#682).
+    """
+    conn = db.model.get_connection()
+    return conn.execute(
+        "SELECT id FROM media_review_items ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()[0]
+
+
 class ReviewItemsMixin:
     """Queue items for a file under the output root, as the recorder stores them."""
 
@@ -80,7 +93,7 @@ class ReviewItemsMixin:
             limited=True,
         )
         self.assertTrue(stored)
-        return self.api.db.review_items_for(locator)[-1]["id"]
+        return last_inserted_item(self.api.db)
 
     def decide(self, item_id):
         conn = self.api.db.model.get_connection()
@@ -152,6 +165,24 @@ class TestReviewItemAt(ReviewItemsMixin, ImageAPITestCase):
         conn = self.api.db.model.get_connection()
         with conn:
             conn.execute("UPDATE media_review_items SET created_at=?", (NOW,))
+        self.assertEqual(
+            self.api.db.review_item_at(*self.stat(path)),
+            {"state": "pending", "item_id": newest},
+        )
+
+    async def test_two_items_recorded_in_one_tick_give_the_later_insert(self):
+        # #682: Windows' clock stood still between two inserts, and the second
+        # id sorted before the first.
+        path = png(self.output_dir / "a.png", prompt=two_samplers())
+        later, earlier = (f"{c * 8}-{c * 4}-4{c * 3}-8{c * 3}-{c * 12}" for c in "ba")
+        ids = iter((later, earlier))
+        with (
+            patch("database.review.utc_now_iso", return_value=NOW),
+            patch("database.review._new_id", side_effect=lambda: next(ids)),
+        ):
+            first = self.queue(path, sha256="a" * 64)
+            newest = self.queue(path, sha256="b" * 64)
+        self.assertEqual((first, newest), (later, earlier))
         self.assertEqual(
             self.api.db.review_item_at(*self.stat(path)),
             {"state": "pending", "item_id": newest},

@@ -1782,7 +1782,9 @@ class HistoryOutputAPITests(ImageAPITestCase):
                 limited=True,
             )
         )
-        return self.api.db.review_items_for(os.path.normcase(spelled))[-1]["id"]
+        from tests.test_inspection_review import last_inserted_item
+
+        return last_inserted_item(self.api.db)
 
     async def test_current_inspection_names_the_files_pending_review_item(self):
         """#659 (C4): History's current-file read carries ``review`` as Images does."""
